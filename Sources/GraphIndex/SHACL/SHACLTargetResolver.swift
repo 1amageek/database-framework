@@ -29,17 +29,20 @@ public struct SHACLTargetResolver: Sendable {
     private let executor: SPARQLQueryExecutor
     private let transaction: any TransactionAccess
     private let graphScope: SHACLDataGraphScope
+    private let entailmentContext: (any SHACLEntailmentContext)?
     private let budget: SHACLValidationWorkBudget
 
     public init(
         executor: SPARQLQueryExecutor,
         transaction: any TransactionAccess,
         graphScope: SHACLDataGraphScope,
+        entailmentContext: (any SHACLEntailmentContext)? = nil,
         budget: SHACLValidationWorkBudget
     ) {
         self.executor = executor
         self.transaction = transaction
         self.graphScope = graphScope
+        self.entailmentContext = entailmentContext
         self.budget = budget
     }
 
@@ -79,19 +82,17 @@ public struct SHACLTargetResolver: Sendable {
             return [node]
 
         case .class_(let classIRI):
-            // { ?node rdf:type <classIRI> }
-            return try await querySubjects(
-                predicate: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
-                object: classIRI
-            )
+            return try await queryInstances(of: classIRI)
 
         case .subjectsOf(let predicateIRI):
-            // { ?node <predicateIRI> ?o }
-            return try await querySubjects(predicate: predicateIRI)
+            return try await queryEntailedSubjects(
+                predicate: predicateIRI
+            )
 
         case .objectsOf(let predicateIRI):
-            // { ?s <predicateIRI> ?node }
-            return try await queryObjects(predicate: predicateIRI)
+            return try await queryEntailedObjects(
+                predicate: predicateIRI
+            )
 
         case .implicitClass:
             // An IRI shape identifier is treated as an rdfs:Class.
@@ -99,11 +100,81 @@ public struct SHACLTargetResolver: Sendable {
                 throw SHACLTargetResolutionError
                     .implicitClassRequiresIRI(shapeIdentifier)
             }
-            return try await querySubjects(
-                predicate: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
-                object: iri.rawValue
+            return try await queryInstances(of: iri.rawValue)
+        }
+    }
+
+    private func queryInstances(
+        of classIRI: String
+    ) async throws -> Set<RDFTerm> {
+        var entailedClasses: Set<String> = [classIRI]
+        if let entailmentContext {
+            entailedClasses.formUnion(
+                entailmentContext.subClasses(of: classIRI)
+            )
+            entailedClasses.formUnion(
+                entailmentContext.equivalentClasses(of: classIRI)
             )
         }
+        try budget.consume(
+            UInt64(entailedClasses.count),
+            at: .projection
+        )
+
+        var instances = Set<RDFTerm>()
+        for entailedClass in entailedClasses.sorted() {
+            instances.formUnion(
+                try await querySubjects(
+                    predicate: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+                    object: entailedClass
+                )
+            )
+        }
+        if let entailmentContext {
+            for individual in try entailmentContext.instances(
+                of: classIRI
+            ).sorted() {
+                try budget.consume(at: .deduplication)
+                instances.insert(individual)
+            }
+        }
+        return instances
+    }
+
+    private func queryEntailedSubjects(
+        predicate: String
+    ) async throws -> Set<RDFTerm> {
+        var predicates: Set<String> = [predicate]
+        if let entailmentContext {
+            predicates.formUnion(
+                entailmentContext.subProperties(of: predicate)
+            )
+        }
+        var nodes = Set<RDFTerm>()
+        for entailedPredicate in predicates.sorted() {
+            nodes.formUnion(
+                try await querySubjects(predicate: entailedPredicate)
+            )
+        }
+        return nodes
+    }
+
+    private func queryEntailedObjects(
+        predicate: String
+    ) async throws -> Set<RDFTerm> {
+        var predicates: Set<String> = [predicate]
+        if let entailmentContext {
+            predicates.formUnion(
+                entailmentContext.subProperties(of: predicate)
+            )
+        }
+        var nodes = Set<RDFTerm>()
+        for entailedPredicate in predicates.sorted() {
+            nodes.formUnion(
+                try await queryObjects(predicate: entailedPredicate)
+            )
+        }
+        return nodes
     }
 
     /// Query subjects matching { ?node <predicate> <object>? }

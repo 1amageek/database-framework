@@ -5,7 +5,7 @@ public enum DatabaseSHACLValidationError: Error, Sendable, Equatable,
     case resolvedScopeMismatch
     case resolvedGraphScopeMismatch
     case resolvedEntailmentMismatch
-    case missingOWLReasoner(String)
+    case missingOWLEntailment(String)
     case invalidSnapshotFingerprint
     case invalidContinuation
     case workLimitExceeded(requested: UInt64, maximum: UInt64)
@@ -22,8 +22,8 @@ public enum DatabaseSHACLValidationError: Error, Sendable, Equatable,
             return "SHACL data source resolver returned a different RDF graph scope"
         case .resolvedEntailmentMismatch:
             return "SHACL data source resolver returned a different entailment mode"
-        case .missingOWLReasoner(let ontology):
-            return "SHACL OWL entailment requires a reasoner for \(ontology)"
+        case .missingOWLEntailment(let ontology):
+            return "SHACL OWL entailment is unavailable for \(ontology)"
         case .invalidSnapshotFingerprint:
             return "SHACL data source returned an invalid snapshot fingerprint"
         case .invalidContinuation:

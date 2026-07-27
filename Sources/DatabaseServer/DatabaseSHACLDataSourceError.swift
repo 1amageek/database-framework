@@ -14,7 +14,6 @@ public enum DatabaseSHACLDataSourceError: Error, Sendable, Equatable,
     case focusPartitionMismatch(EntityReference)
     case focusEntityNotFound(EntityReference)
     case focusSubjectMissing(entity: EntityReference, field: String)
-    case unsupportedEntailment(SHACLExecuteOperation.Entailment)
 
     public var description: String {
         switch self {
@@ -38,8 +37,6 @@ public enum DatabaseSHACLDataSourceError: Error, Sendable, Equatable,
             return "SHACL focus entity was not found: \(identity)"
         case .focusSubjectMissing(let identity, let field):
             return "SHACL focus entity \(identity) has no RDF subject in field '\(field)'"
-        case .unsupportedEntailment(let entailment):
-            return "SHACL entailment is not implemented completely: \(entailment)"
         }
     }
 }

@@ -85,13 +85,14 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
             executor: resolved.executor,
             transaction: transaction,
             graphScope: resolved.graphScope,
+            entailmentContext: resolved.entailmentContext,
             budget: workBudget
         )
         let evaluator = SHACLConstraintEvaluator(
             executor: resolved.executor,
             transaction: transaction,
             graphScope: resolved.graphScope,
-            reasoner: resolved.reasoner,
+            entailmentContext: resolved.entailmentContext,
             budget: workBudget
         )
         let validator = SHACLValidator(
@@ -208,8 +209,8 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
             throw DatabaseSHACLValidationError.invalidSnapshotFingerprint
         }
         if case .owl(let ontology) = expectedEntailment,
-           resolved.reasoner == nil {
-            throw DatabaseSHACLValidationError.missingOWLReasoner(
+           resolved.entailmentContext == nil {
+            throw DatabaseSHACLValidationError.missingOWLEntailment(
                 ontology
             )
         }

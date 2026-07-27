@@ -13,7 +13,6 @@ import Foundation
 #endif
 import StorageKit
 import DatabaseKit
-import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
 
@@ -147,41 +146,59 @@ public struct SHACLContextAPI: Sendable {
         // Build SPARQLQueryExecutor for the type's graph index
         let executor = try await buildExecutor(for: type)
 
-        // Build OWL reasoner and ontology context if entailment requires it
-        let reasoner: OWLReasoner?
-        let ontoCtx: OntologyContext?
-        if entailment == .owl, let ontIRI = ontologyIRI {
+        let configuredEntailmentContext: (any SHACLEntailmentContext)?
+        let configuredOntologyContext: OntologyContext?
+        switch entailment {
+        case .owl:
+            guard let ontIRI = ontologyIRI else {
+                throw SHACLError.ontologyIdentifierRequired
+            }
             guard let ontology = try await context.ontology.get(iri: ontIRI) else {
                 throw SHACLError.ontologyNotFound(ontIRI)
             }
-            reasoner = OWLReasoner(ontology: ontology)
-            ontoCtx = OntologyContext(ontology: ontology)
-        } else {
-            reasoner = nil
-            ontoCtx = nil
-        }
-
-        // F-8: Rebuild executor with ontology context for OWL-aware evaluation
-        let validationExecutor: SPARQLQueryExecutor
-        if let ontoCtx {
-            validationExecutor = try await buildExecutor(for: type, ontologyContext: ontoCtx)
-        } else {
-            validationExecutor = executor
+            configuredEntailmentContext = OWLGraphEntailment(
+                reasoner: OWLReasoner(ontology: ontology)
+            )
+            configuredOntologyContext = OntologyContext(
+                ontology: ontology
+            )
+        case .none, .rdfs:
+            configuredEntailmentContext = nil
+            configuredOntologyContext = nil
         }
 
         let workBudget = SHACLValidationWorkBudget(budget: budget)
         return try await context.indexQueryContext.withTransaction { transaction in
+            let entailmentContext: (any SHACLEntailmentContext)?
+            let ontologyContext: OntologyContext?
+            if entailment == .rdfs {
+                let rdfs = try await RDFSGraphEntailment.resolve(
+                    executor: executor,
+                    graphScope: .defaultGraph,
+                    transaction: transaction,
+                    budget: workBudget
+                )
+                entailmentContext = rdfs
+                ontologyContext = rdfs.ontologyContext
+            } else {
+                entailmentContext = configuredEntailmentContext
+                ontologyContext = configuredOntologyContext
+            }
+            let validationExecutor = executor.withOntology(
+                ontologyContext
+            )
             let targetResolver = SHACLTargetResolver(
                 executor: validationExecutor,
                 transaction: transaction,
                 graphScope: .defaultGraph,
+                entailmentContext: entailmentContext,
                 budget: workBudget
             )
             let constraintEvaluator = SHACLConstraintEvaluator(
                 executor: validationExecutor,
                 transaction: transaction,
                 graphScope: .defaultGraph,
-                reasoner: reasoner,
+                entailmentContext: entailmentContext,
                 budget: workBudget
             )
             let validator = SHACLValidator(

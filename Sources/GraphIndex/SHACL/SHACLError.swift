@@ -5,6 +5,7 @@ import DatabaseTypes
 public enum SHACLError: Error, Sendable, Equatable, CustomStringConvertible {
     case shapesGraphNotFound(String)
     case shapeNotFound(RDFTerm)
+    case ontologyIdentifierRequired
     case ontologyNotFound(String)
     case graphIndexNotFound(String)
     case invalidPattern(regex: String, reason: String)
@@ -24,6 +25,8 @@ public enum SHACLError: Error, Sendable, Equatable, CustomStringConvertible {
             return "SHACL shapes graph not found: \(iri)"
         case .shapeNotFound(let identifier):
             return "SHACL shape not found: \(identifier)"
+        case .ontologyIdentifierRequired:
+            return "SHACL OWL entailment requires an ontology identifier"
         case .ontologyNotFound(let iri):
             return "Ontology not found (required for OWL entailment): \(iri)"
         case .graphIndexNotFound(let typeName):

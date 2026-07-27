@@ -4,8 +4,8 @@ import DatabaseEngine
 import DatabaseServer
 import DatabaseTypes
 import DatabaseWire
-import DatabaseKit
 import GraphIndex
+import OntologyIndex
 import StorageKit
 import Testing
 
@@ -102,6 +102,96 @@ struct DatabaseSHACLValidationProcessorTests {
         #expect(response.continuation == nil)
     }
 
+    @Test("OWL entailment applies ontology hierarchy to data targets and class constraints")
+    func owlEntailmentAppliesToStoredData() async throws {
+        var ontology = OWLOntology(
+            iri: "urn:test:shacl-ontology",
+            classes: [
+                OWLClass(iri: "urn:Person"),
+                OWLClass(iri: "urn:Employee")
+            ]
+        )
+        ontology.axioms = [
+            .subClassOf(
+                sub: .named("urn:Employee"),
+                sup: .named("urn:Person")
+            )
+        ]
+        let validationContext = try await makeSHACLValidationContext(
+            entailmentContext: OWLGraphEntailment(
+                reasoner: OWLReasoner(ontology: ontology)
+            )
+        )
+        try await insertEntailedPeople(
+            validationContext: validationContext
+        )
+        try await upsertShapes(
+            try entailedShapes(),
+            key: "entailed-shapes",
+            validationContext: validationContext
+        )
+
+        let response = try await validate(
+            page: QueryExecuteOperation.Page(limit: 10),
+            entailment: .owl(ontology: ontology.iri),
+            validationContext: validationContext
+        )
+
+        #expect(response.conforms == false)
+        #expect(response.issues.count == 1)
+        #expect(
+            response.issues.first?.focusNode
+                == (try RDFTerm.iri(validating: "urn:Dave"))
+        )
+        #expect(
+            response.issues.first?.code
+                == "sh:MinCountConstraintComponent"
+        )
+    }
+
+    @Test("RDFS entailment applies subclass, domain, and subproperty closure")
+    func rdfsEntailmentAppliesToValidationQueries() async throws {
+        let dataQuads = try rdfsData()
+        let workBudget = SHACLValidationWorkBudget(
+            budget: ExecutionBudget(maximumWorkUnits: 1_000)
+        )
+        let entailment = try RDFSGraphEntailment(
+            quads: dataQuads,
+            budget: workBudget
+        )
+        let validationContext = try await makeSHACLValidationContext(
+            entailmentContext: entailment,
+            ontologyContext: entailment.ontologyContext
+        )
+        try await insert(
+            dataQuads,
+            validationContext: validationContext
+        )
+        try await upsertShapes(
+            try rdfsShapes(),
+            key: "rdfs-shapes",
+            validationContext: validationContext
+        )
+
+        let response = try await validate(
+            page: QueryExecuteOperation.Page(limit: 10),
+            entailment: .rdfs,
+            validationContext: validationContext
+        )
+
+        #expect(response.conforms == false)
+        #expect(response.issues.count == 2)
+        #expect(
+            Set(response.issues.compactMap(\.focusNode))
+                == [try RDFTerm.iri(validating: "urn:Dave")]
+        )
+        #expect(
+            response.issues.allSatisfy {
+                $0.code == "sh:MinCountConstraintComponent"
+            }
+        )
+    }
+
     @Test("invalid shapes roll back the canonical document")
     func invalidShapesRollbackCanonicalDocument() async throws {
         let validationContext = try await makeSHACLValidationContext()
@@ -130,7 +220,10 @@ struct DatabaseSHACLValidationProcessorTests {
         }
     }
 
-    private func makeSHACLValidationContext() async throws -> SHACLValidationContext {
+    private func makeSHACLValidationContext(
+        entailmentContext: (any SHACLEntailmentContext)? = nil,
+        ontologyContext: OntologyContext? = nil
+    ) async throws -> SHACLValidationContext {
         let container = try await DBContainer.open(
             for: try Schema(
                 entities: [try DatabaseSHACLStatement.schemaEntity],
@@ -168,11 +261,13 @@ struct DatabaseSHACLValidationProcessorTests {
         )
         let executor = SPARQLQueryExecutor(
             database: container.engine,
-            sources: [source]
+            sources: [source],
+            ontologyContext: ontologyContext
         )
         let resolver = MutableSnapshotSHACLDataSourceResolver(
             executor: executor,
             graphScope: .named(try RDFGraphName(iri: Self.dataGraph)),
+            entailmentContext: entailmentContext,
             snapshotFingerprint: [1]
         )
         let store = try await DatabaseRDFDocumentStore(
@@ -216,6 +311,57 @@ struct DatabaseSHACLValidationProcessorTests {
         try await context.save()
     }
 
+    private func insertEntailedPeople(
+        validationContext: SHACLValidationContext
+    ) async throws {
+        let statements = [
+            ("dave-type", "urn:Dave", Self.rdfType, "urn:Employee"),
+            ("alice-type", "urn:Alice", Self.rdfType, "urn:Person"),
+            ("alice-name", "urn:Alice", "urn:name", "Alice"),
+            ("alice-knows", "urn:Alice", "urn:knows", "urn:Bob"),
+            ("bob-type", "urn:Bob", Self.rdfType, "urn:Employee"),
+            ("bob-name", "urn:Bob", "urn:name", "Bob")
+        ]
+        let context = validationContext.container.newContext()
+        for (id, subject, predicate, object) in statements {
+            let objectTerm: RDFTerm
+            if predicate == "urn:name" {
+                objectTerm = .string(object)
+            } else {
+                objectTerm = try .iri(validating: object)
+            }
+            try context.insert(
+                DatabaseSHACLStatement(
+                    id: id,
+                    subject: try .iri(validating: subject),
+                    predicate: try .iri(validating: predicate),
+                    object: objectTerm,
+                    graph: try .iri(validating: Self.dataGraph)
+                )
+            )
+        }
+        try await context.save()
+    }
+
+    private func insert(
+        _ quads: [RDFQuad],
+        validationContext: SHACLValidationContext
+    ) async throws {
+        let context = validationContext.container.newContext()
+        for (offset, quad) in quads.enumerated() {
+            try context.insert(
+                DatabaseSHACLStatement(
+                    id: "rdfs-\(offset)",
+                    subject: quad.subject.term,
+                    predicate: quad.predicate.term,
+                    object: quad.object,
+                    graph: try .iri(validating: Self.dataGraph)
+                )
+            )
+        }
+        try await context.save()
+    }
+
     private func upsertShapes(
         _ shapes: [RDFQuad],
         key: String,
@@ -246,6 +392,7 @@ struct DatabaseSHACLValidationProcessorTests {
     private func validate(
         page: QueryExecuteOperation.Page,
         focus: SHACLExecuteOperation.Focus = .targets,
+        entailment: SHACLExecuteOperation.Entailment = .none,
         validationContext: SHACLValidationContext
     ) async throws -> MaterializedValidationReport {
         let response = try await validationContext.service.execute(
@@ -254,7 +401,7 @@ struct DatabaseSHACLValidationProcessorTests {
                     shapesGraph: Self.shapesGraph,
                     data: validationContext.data,
                     focus: focus,
-                    entailment: .none
+                    entailment: entailment
                 ),
                 page: page
             ),
@@ -299,6 +446,144 @@ struct DatabaseSHACLValidationProcessorTests {
             ),
             try quad(
                 property,
+                Self.shMinCount,
+                .literal(
+                    try RDFLiteral(
+                        lexicalForm: "1",
+                        datatype: Self.xsdInteger
+                    )
+                )
+            )
+        ]
+    }
+
+    private func entailedShapes() throws -> [RDFQuad] {
+        let aliceShape = try RDFTerm.iri(validating: "urn:AliceShape")
+        let knowsProperty = try RDFTerm.blankNode(
+            identifier: "knows-property"
+        )
+        return try shapes() + [
+            try quad(
+                aliceShape,
+                Self.rdfType,
+                try RDFTerm.iri(validating: Self.shNodeShape)
+            ),
+            try quad(
+                aliceShape,
+                Self.shTargetNode,
+                try RDFTerm.iri(validating: "urn:Alice")
+            ),
+            try quad(aliceShape, Self.shProperty, knowsProperty),
+            try quad(
+                knowsProperty,
+                Self.rdfType,
+                try RDFTerm.iri(validating: Self.shPropertyShape)
+            ),
+            try quad(
+                knowsProperty,
+                Self.shPath,
+                try RDFTerm.iri(validating: "urn:knows")
+            ),
+            try quad(
+                knowsProperty,
+                Self.shClass,
+                try RDFTerm.iri(validating: "urn:Person")
+            )
+        ]
+    }
+
+    private func rdfsData() throws -> [RDFQuad] {
+        [
+            try quad(
+                try RDFTerm.iri(validating: "urn:Employee"),
+                Self.rdfsSubClassOf,
+                try RDFTerm.iri(validating: "urn:Person")
+            ),
+            try quad(
+                try RDFTerm.iri(validating: "urn:manages"),
+                Self.rdfsSubPropertyOf,
+                try RDFTerm.iri(validating: "urn:knows")
+            ),
+            try quad(
+                try RDFTerm.iri(validating: "urn:worksFor"),
+                Self.rdfsDomain,
+                try RDFTerm.iri(validating: "urn:Employee")
+            ),
+            try quad(
+                try RDFTerm.iri(validating: "urn:Dave"),
+                "urn:worksFor",
+                try RDFTerm.iri(validating: "urn:Acme")
+            ),
+            try quad(
+                try RDFTerm.iri(validating: "urn:Dave"),
+                "urn:manages",
+                try RDFTerm.iri(validating: "urn:Bob")
+            )
+        ]
+    }
+
+    private func rdfsShapes() throws -> [RDFQuad] {
+        let personShape = try RDFTerm.iri(validating: "urn:PersonShape")
+        let personName = try RDFTerm.blankNode(identifier: "person-name")
+        let subjectShape = try RDFTerm.iri(
+            validating: "urn:KnowsSubjectShape"
+        )
+        let subjectName = try RDFTerm.blankNode(identifier: "subject-name")
+        return [
+            try quad(
+                personShape,
+                Self.rdfType,
+                try RDFTerm.iri(validating: Self.shNodeShape)
+            ),
+            try quad(
+                personShape,
+                Self.shTargetClass,
+                try RDFTerm.iri(validating: "urn:Person")
+            ),
+            try quad(personShape, Self.shProperty, personName),
+            try quad(
+                personName,
+                Self.rdfType,
+                try RDFTerm.iri(validating: Self.shPropertyShape)
+            ),
+            try quad(
+                personName,
+                Self.shPath,
+                try RDFTerm.iri(validating: "urn:name")
+            ),
+            try quad(
+                personName,
+                Self.shMinCount,
+                .literal(
+                    try RDFLiteral(
+                        lexicalForm: "1",
+                        datatype: Self.xsdInteger
+                    )
+                )
+            ),
+            try quad(
+                subjectShape,
+                Self.rdfType,
+                try RDFTerm.iri(validating: Self.shNodeShape)
+            ),
+            try quad(
+                subjectShape,
+                Self.shTargetSubjectsOf,
+                try RDFTerm.iri(validating: "urn:knows")
+            ),
+            try quad(subjectShape, Self.shProperty, subjectName),
+            try quad(
+                subjectName,
+                Self.rdfType,
+                try RDFTerm.iri(validating: Self.shPropertyShape)
+            ),
+            try quad(
+                subjectName,
+                Self.shPath,
+                try RDFTerm.iri(validating: "urn:name")
+            ),
+            try quad(
+                subjectName,
                 Self.shMinCount,
                 .literal(
                     try RDFLiteral(
@@ -358,9 +643,19 @@ struct DatabaseSHACLValidationProcessorTests {
     private static let shNodeShape = shNamespace + "NodeShape"
     private static let shPropertyShape = shNamespace + "PropertyShape"
     private static let shTargetClass = shNamespace + "targetClass"
+    private static let shTargetNode = shNamespace + "targetNode"
+    private static let shTargetSubjectsOf =
+        shNamespace + "targetSubjectsOf"
     private static let shProperty = shNamespace + "property"
     private static let shPath = shNamespace + "path"
+    private static let shClass = shNamespace + "class"
     private static let shMinCount = shNamespace + "minCount"
     private static let xsdInteger =
         "http://www.w3.org/2001/XMLSchema#integer"
+    private static let rdfsSubClassOf =
+        "http://www.w3.org/2000/01/rdf-schema#subClassOf"
+    private static let rdfsSubPropertyOf =
+        "http://www.w3.org/2000/01/rdf-schema#subPropertyOf"
+    private static let rdfsDomain =
+        "http://www.w3.org/2000/01/rdf-schema#domain"
 }

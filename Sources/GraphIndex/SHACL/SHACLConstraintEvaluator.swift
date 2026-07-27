@@ -4,7 +4,7 @@
 // Delegates to existing components:
 // - SPARQLValueComparator for datatype and value-range semantics
 // - SPARQLQueryExecutor for cardinality and property pair constraints
-// - OWLReasoner for class hierarchy (when OWL entailment is enabled)
+// - SHACLEntailmentContext for selected graph reasoning
 //
 // Reference: W3C SHACL §4 (Core Constraint Components)
 // https://www.w3.org/TR/shacl/#core-components
@@ -17,9 +17,7 @@ import Foundation
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
-import DatabaseKit
 import DatabaseEngine
-
 import OntologyIndex
 /// Evaluates individual SHACL constraints against focus nodes and value nodes
 public struct SHACLConstraintEvaluator: Sendable {
@@ -28,7 +26,7 @@ public struct SHACLConstraintEvaluator: Sendable {
     private let transaction: any TransactionAccess
     private let graphScope: SHACLDataGraphScope
     private let valueComparator: SPARQLValueComparator
-    private let reasoner: OWLReasoner?
+    private let entailmentContext: (any SHACLEntailmentContext)?
     private let budget: SHACLValidationWorkBudget
 
     public init(
@@ -36,7 +34,7 @@ public struct SHACLConstraintEvaluator: Sendable {
         transaction: any TransactionAccess,
         graphScope: SHACLDataGraphScope,
         xsdValidationLimits: XSDValidationLimits = .default,
-        reasoner: OWLReasoner? = nil,
+        entailmentContext: (any SHACLEntailmentContext)? = nil,
         budget: SHACLValidationWorkBudget
     ) {
         self.executor = executor
@@ -45,7 +43,7 @@ public struct SHACLConstraintEvaluator: Sendable {
         self.valueComparator = SPARQLValueComparator(
             limits: xsdValidationLimits
         )
-        self.reasoner = reasoner
+        self.entailmentContext = entailmentContext
         self.budget = budget
     }
 
@@ -165,41 +163,10 @@ public struct SHACLConstraintEvaluator: Sendable {
                 continue
             }
 
-            let isInstance: Bool
-            if let reasoner = reasoner {
-                let result = reasoner.isInstanceOf(
-                    individual: nodeIRI.rawValue,
-                    classExpr: .named(classIRI)
-                )
-                isInstance = result.value
-            } else {
-                // Fallback: SPARQL rdf:type query
-                let pattern = ExecutionPattern.basic([
-                    ExecutionTriple(
-                        subject: .value(.rdfTerm(.iri(nodeIRI))),
-                        predicate: .value(
-                            .rdfTerm(
-                                .iri(
-                                    try RDFIRI(
-                                        "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
-                                    )
-                                )
-                            )
-                        ),
-                        object: .value(
-                            .rdfTerm(.iri(try RDFIRI(classIRI)))
-                        )
-                    )
-                ])
-                let (bindings, _) = try await executor.executeInTransaction(
-                    pattern: graphScope.apply(to: pattern),
-                    transaction: transaction,
-                    limit: 1,
-                    offset: 0,
-                    workMeter: budget.workMeter
-                )
-                isInstance = !bindings.isEmpty
-            }
+            let isInstance = try await isInstance(
+                nodeIRI,
+                of: classIRI
+            )
 
             if !isInstance {
                 results.append(try makeResult(focusNode: focusNode, path: path, value: value,
@@ -208,6 +175,56 @@ public struct SHACLConstraintEvaluator: Sendable {
             }
         }
         return results
+    }
+
+    private func isInstance(
+        _ individual: RDFIRI,
+        of classIRI: String
+    ) async throws -> Bool {
+        if let entailmentContext,
+           entailmentContext.contains(.iri(individual), in: classIRI) {
+            return true
+        }
+
+        let pattern = ExecutionPattern.basic([
+            ExecutionTriple(
+                subject: .value(.rdfTerm(.iri(individual))),
+                predicate: .value(
+                    .rdfTerm(
+                        .iri(
+                            try RDFIRI(
+                                "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+                            )
+                        )
+                    )
+                ),
+                object: .variable("?type")
+            )
+        ])
+        let (bindings, _) = try await executor.executeInTransaction(
+            pattern: graphScope.apply(to: pattern),
+            transaction: transaction,
+            limit: nil,
+            offset: 0,
+            workMeter: budget.workMeter
+        )
+        for binding in bindings {
+            guard let value = binding["?type"],
+                  case .rdfTerm(.iri(let assertedType)) = value else {
+                continue
+            }
+            if assertedType.rawValue == classIRI {
+                return true
+            }
+            if let entailmentContext,
+               entailmentContext.subsumes(
+                    superClass: classIRI,
+                    subClass: assertedType.rawValue
+               ) {
+                return true
+            }
+        }
+        return false
     }
 
     private func evaluateDatatype(

@@ -1,7 +1,6 @@
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 import GraphIndex
-import OntologyIndex
 
 public struct DatabaseSHACLResolvedDataSource: Sendable {
     public let data: SHACLExecuteOperation.DataSource
@@ -9,7 +8,7 @@ public struct DatabaseSHACLResolvedDataSource: Sendable {
     public let entailment: SHACLExecuteOperation.Entailment
     public let executor: SPARQLQueryExecutor
     public let graphScope: SHACLDataGraphScope
-    public let reasoner: OWLReasoner?
+    public let entailmentContext: (any SHACLEntailmentContext)?
     public let selectedFocusNodes: [RDFTerm]?
     public let snapshotFingerprint: ByteString
 
@@ -19,7 +18,7 @@ public struct DatabaseSHACLResolvedDataSource: Sendable {
         entailment: SHACLExecuteOperation.Entailment,
         executor: SPARQLQueryExecutor,
         graphScope: SHACLDataGraphScope,
-        reasoner: OWLReasoner? = nil,
+        entailmentContext: (any SHACLEntailmentContext)? = nil,
         selectedFocusNodes: [RDFTerm]? = nil,
         snapshotFingerprint: ByteString
     ) {
@@ -28,7 +27,7 @@ public struct DatabaseSHACLResolvedDataSource: Sendable {
         self.entailment = entailment
         self.executor = executor
         self.graphScope = graphScope
-        self.reasoner = reasoner
+        self.entailmentContext = entailmentContext
         self.selectedFocusNodes = selectedFocusNodes
         self.snapshotFingerprint = snapshotFingerprint
     }

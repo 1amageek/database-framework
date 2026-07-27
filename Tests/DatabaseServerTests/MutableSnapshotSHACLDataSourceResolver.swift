@@ -2,20 +2,24 @@ import DatabaseServer
 import DatabaseTypes
 import DatabaseWire
 import GraphIndex
+import OntologyIndex
 import StorageKit
 
 actor MutableSnapshotSHACLDataSourceResolver: DatabaseSHACLDataSourceResolver {
     private let executor: SPARQLQueryExecutor
     private let graphScope: SHACLDataGraphScope
+    private let entailmentContext: (any SHACLEntailmentContext)?
     private var snapshotFingerprint: ByteString
 
     init(
         executor: SPARQLQueryExecutor,
         graphScope: SHACLDataGraphScope,
+        entailmentContext: (any SHACLEntailmentContext)? = nil,
         snapshotFingerprint: ByteString
     ) {
         self.executor = executor
         self.graphScope = graphScope
+        self.entailmentContext = entailmentContext
         self.snapshotFingerprint = snapshotFingerprint
     }
 
@@ -38,6 +42,7 @@ actor MutableSnapshotSHACLDataSourceResolver: DatabaseSHACLDataSourceResolver {
             entailment: entailment,
             executor: executor,
             graphScope: graphScope,
+            entailmentContext: entailmentContext,
             selectedFocusNodes: selectedNodes(for: focus),
             snapshotFingerprint: snapshotFingerprint
         )

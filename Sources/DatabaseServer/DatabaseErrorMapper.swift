@@ -1420,7 +1420,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             code = "INVALID_CONTINUATION"
         case .resolvedScopeMismatch, .resolvedGraphScopeMismatch,
              .resolvedEntailmentMismatch,
-             .missingOWLReasoner, .invalidSnapshotFingerprint:
+             .missingOWLEntailment, .invalidSnapshotFingerprint:
             category = .internalFailure
             code = "SHACL_RUNTIME_CONFIGURATION_INVALID"
         case .invalidShapesGraph:
@@ -1454,6 +1454,9 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .ontologyNotFound:
             category = .notFound
             code = "SHACL_ONTOLOGY_NOT_FOUND"
+        case .ontologyIdentifierRequired:
+            category = .invalidRequest
+            code = "SHACL_ONTOLOGY_IDENTIFIER_REQUIRED"
         case .graphIndexNotFound, .runtimeFailure,
              .resultBindingMissing, .resultBindingTypeMismatch:
             category = .internalFailure
@@ -1476,9 +1479,6 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .schemaEntityNotFound, .indexNotFound, .focusEntityNotFound:
             category = .notFound
             code = "SHACL_DATA_SOURCE_NOT_FOUND"
-        case .unsupportedEntailment:
-            category = .invalidRequest
-            code = "SHACL_ENTAILMENT_UNSUPPORTED"
         case .indexIsNotRDFDataset, .graphNotCovered, .invalidGraphName,
              .invalidPartition, .focusEntityMismatch,
              .focusPartitionMismatch, .focusSubjectMissing:

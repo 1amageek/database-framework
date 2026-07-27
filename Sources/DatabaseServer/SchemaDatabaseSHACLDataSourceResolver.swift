@@ -2,7 +2,6 @@ import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
-import DatabaseKit
 import GraphIndex
 import OntologyIndex
 import StorageKit
@@ -30,9 +29,21 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         workBudget: SHACLValidationWorkBudget,
         transaction: any TransactionAccess
     ) async throws -> DatabaseSHACLResolvedDataSource {
-        try validate(entailment: entailment)
         let resolved = try await resolveSource(
             data,
+            transaction: transaction
+        )
+        let executor = SPARQLQueryExecutor(
+            database: container.engine,
+            sources: resolved.source.map { [$0] } ?? []
+        )
+        let entailmentResolution = try await DatabaseSHACLEntailmentResolver(
+            ontologyStore: ontologyStore
+        ).resolve(
+            entailment,
+            executor: executor,
+            graphScope: resolved.graphScope,
+            workBudget: workBudget,
             transaction: transaction
         )
         let selectedFocusNodes = try await resolveFocusNodes(
@@ -52,28 +63,14 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
             data: data,
             focus: focus,
             entailment: entailment,
-            executor: SPARQLQueryExecutor(
-                database: container.engine,
-                sources: resolved.source.map { [$0] } ?? []
+            executor: executor.withOntology(
+                entailmentResolution.ontologyContext
             ),
             graphScope: resolved.graphScope,
+            entailmentContext: entailmentResolution.entailmentContext,
             selectedFocusNodes: selectedFocusNodes,
             snapshotFingerprint: Self.bigEndianBytes(logicalVersion)
         )
-    }
-
-    private func validate(
-        entailment: SHACLExecuteOperation.Entailment
-    ) throws {
-        switch entailment {
-        case .none:
-            return
-        case .rdfs, .owl:
-            _ = ontologyStore
-            throw DatabaseSHACLDataSourceError.unsupportedEntailment(
-                entailment
-            )
-        }
     }
 
     private func resolveSource(

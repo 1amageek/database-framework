@@ -5,12 +5,40 @@ import Foundation
 #endif
 import DatabaseKit
 import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
-import DatabaseKit
 import StorageKit
 
 extension SPARQLQueryExecutor {
+    /// Returns an executor over the same dataset with ontology-aware paths.
+    public func withOntology(_ context: OntologyContext?) -> Self {
+        Self(
+            database: database,
+            datasetScanner: datasetScanner,
+            readMode: readMode,
+            datasetScope: datasetScope,
+            functionRegistry: functionRegistry,
+            ontologyContext: context,
+            propertyPathConfiguration: propertyPathConfiguration
+        )
+    }
+
+    package func scanDatasetInTransaction(
+        graphScope: RDFGraphScanScope,
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> RDFDatasetScanResult {
+        try await datasetScanner.scan(
+            subject: nil,
+            predicate: nil,
+            object: nil,
+            graphScope: graphScope,
+            limit: nil,
+            readMode: readMode,
+            transaction: transaction,
+            workMeter: workMeter
+        )
+    }
+
     func scoped(to datasetScope: SPARQLDatasetExecutionScope) -> Self {
         Self(
             database: database,
