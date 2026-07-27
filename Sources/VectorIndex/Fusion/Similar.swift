@@ -12,7 +12,7 @@ import StorageKit
 /// Vector similarity search query for Fusion
 ///
 /// Searches vector embeddings using distance metrics.
-/// Supports ACORN filtering when candidates are provided.
+/// Supports candidate-restricted vector filtering.
 ///
 /// **Usage**:
 /// ```swift
@@ -337,8 +337,8 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// 1. Small candidate set (≤ bruteForceThreshold): Fetch candidates and compute distances directly
     /// 2. Large candidate set: Use expanded kNN search with post-filtering
     ///
-    /// Reference: For true ACORN-style filtering during HNSW traversal, use VectorQueryBuilder's
-    /// filter() API instead.
+    /// `VectorQueryBuilder.filter()` uses the same expanded-candidate post-filter
+    /// contract when no candidate set has already been materialized.
     private func executeWithCandidates(
         indexName: String,
         queryVector: [Float],

@@ -22,12 +22,12 @@ import StorageKit
 ///     .execute()
 /// // Returns: [(item: Product, distance: Double)]
 ///
-/// // Filtered search (ACORN algorithm)
+/// // Filtered search using expanded HNSW candidates
 /// let filtered = try await context.findSimilar(Product.self)
 ///     .vector(Product.fields.embedding, dimensions: 128)
 ///     .query(queryVector, k: 10)
 ///     .filter { product in product.category == "electronics" }
-///     .acorn(expansionFactor: 3)
+///     .postFilter(expansionFactor: 3)
 ///     .execute()
 /// ```
 public struct VectorQueryBuilder<T: Persistable>: Sendable {
@@ -38,7 +38,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     private var k: Int = 10
     private var distanceMetric: VectorDistanceMetric = .cosine
     private var filterPredicate: (@Sendable (T) async throws -> Bool)?
-    private var acornParams: ACORNParameters = .default
+    private var postFilterParameters: HNSWPostFilterParameters = .default
 
     internal init(queryContext: IndexQueryContext, fieldName: String, dimensions: Int) {
         self.queryContext = queryContext
@@ -75,15 +75,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
-    // MARK: - ACORN Filter API
+    // MARK: - Filter API
 
-    /// Add a filter predicate for ACORN filtered search
-    ///
-    /// Uses the ACORN algorithm (Approximate Containment Queries Over Real-Value
-    /// Navigable Networks) to efficiently filter results during graph traversal.
-    ///
-    /// **Reference**: Patel et al., "ACORN: Performant and Predicate-Agnostic Search
-    /// Over Vector Embeddings and Structured Data", SIGMOD 2024
+    /// Add a predicate that is evaluated against expanded HNSW candidates.
     ///
     /// **Usage**:
     /// ```swift
@@ -104,7 +98,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
-    /// Add an async filter predicate for ACORN filtered search
+    /// Add an async predicate evaluated against expanded HNSW candidates.
     ///
     /// - Parameter predicate: Async filter predicate
     /// - Returns: Updated query builder
@@ -135,25 +129,30 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         filter { item in item[keyPath: keyPath] == value }
     }
 
-    /// Set ACORN parameters for filtered search
+    /// Set candidate expansion parameters for post-filtered search.
     ///
     /// - Parameter expansionFactor: ef expansion multiplier (default: 2)
     /// - Returns: Updated query builder
-    public func acorn(expansionFactor: Int) -> Self {
+    public func postFilter(expansionFactor: Int) -> Self {
         var copy = self
-        copy.acornParams = ACORNParameters(expansionFactor: expansionFactor)
+        copy.postFilterParameters = HNSWPostFilterParameters(
+            expansionFactor: expansionFactor
+        )
         return copy
     }
 
-    /// Set ACORN parameters for filtered search
+    /// Set candidate expansion and predicate evaluation limits.
     ///
     /// - Parameters:
     ///   - expansionFactor: ef expansion multiplier (default: 2)
     ///   - maxPredicateEvaluations: Maximum predicate evaluations (nil for unlimited)
     /// - Returns: Updated query builder
-    public func acorn(expansionFactor: Int = 2, maxPredicateEvaluations: Int?) -> Self {
+    public func postFilter(
+        expansionFactor: Int = 2,
+        maxPredicateEvaluations: Int?
+    ) -> Self {
         var copy = self
-        copy.acornParams = ACORNParameters(
+        copy.postFilterParameters = HNSWPostFilterParameters(
             expansionFactor: expansionFactor,
             maxPredicateEvaluations: maxPredicateEvaluations
         )
@@ -162,7 +161,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
     /// Execute the vector similarity search
     ///
-    /// If a filter predicate is set, uses ACORN filtered search.
+    /// If a filter predicate is set, applies it to expanded HNSW candidates.
     /// Otherwise, uses HNSW or Flat search based on index configuration.
     ///
     /// - Returns: Array of (item, distance) tuples sorted by distance
@@ -201,7 +200,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
         let indexName = try buildIndexName()
 
-        // If filter is set, use ACORN filtered search
+        // If a filter is set, expand HNSW candidates before post-filtering.
         if let predicate = filterPredicate {
             return try await executeWithFilter(
                 indexName: indexName,
@@ -455,7 +454,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         return count
     }
 
-    /// Execute filtered vector search using ACORN algorithm
+    /// Execute HNSW search followed by application predicate evaluation.
     private func executeWithFilter(
         indexName: String,
         queryVector: [Float],
@@ -480,21 +479,21 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         if let vectorConfig = vectorConfig {
             switch vectorConfig.algorithm {
             case .auto(let autoParams):
-                // For auto mode with filtering, we use HNSW parameters since ACORN requires HNSW
+                // Auto mode uses its HNSW parameters for candidate expansion.
                 // The user must ensure dataset is large enough that auto would select HNSW
                 hnswParams = autoParams.hnswParameters
             case .hnsw(let params):
                 hnswParams = params
             case .flat:
-                throw VectorQueryError.filterNotSupported("ACORN filtering is only supported for HNSW indexes. Configure the index with .hnsw() algorithm.")
+                throw VectorQueryError.filterNotSupported("Post-filtered search requires an HNSW index. Configure the index with .hnsw() algorithm.")
             case .ivf:
-                throw VectorQueryError.filterNotSupported("ACORN filtering is only supported for HNSW indexes. IVF does not support filtered search.")
+                throw VectorQueryError.filterNotSupported("Post-filtered search requires an HNSW index. IVF does not provide HNSW candidates.")
             case .pq:
-                throw VectorQueryError.filterNotSupported("ACORN filtering is only supported for HNSW indexes. PQ does not support filtered search.")
+                throw VectorQueryError.filterNotSupported("Post-filtered search requires an HNSW index. PQ does not provide HNSW candidates.")
             }
         } else {
             // No explicit config - default is auto, but filtering requires explicit HNSW
-            throw VectorQueryError.filterNotSupported("ACORN filtering requires HNSW index. Add VectorIndexConfiguration with .hnsw() or .auto() algorithm.")
+            throw VectorQueryError.filterNotSupported("Post-filtered search requires an HNSW index. Add VectorIndexConfiguration with .hnsw() or .auto() algorithm.")
         }
 
         // Build subspace
@@ -529,7 +528,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 )
             )
 
-            // Create fetch function for ACORN
+            // Fetch each HNSW candidate before evaluating the application predicate.
             let fetchItem: @Sendable (Tuple, any TransactionAccess) async throws -> T? = { primaryKey, tx in
                 // Fetch item using IndexQueryContext
                 let items = try await self.queryContext.fetchItems(
@@ -541,12 +540,12 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             }
 
             // Execute filtered search
-            let results = try await maintainer.searchWithFilter(
+            let results = try await maintainer.searchWithPostFilter(
                 queryVector: queryVector,
                 k: self.k,
                 predicate: predicate,
                 fetchItem: fetchItem,
-                acornParams: self.acornParams,
+                postFilterParameters: self.postFilterParameters,
                 transaction: transaction
             )
 

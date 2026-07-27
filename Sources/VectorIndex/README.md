@@ -98,23 +98,25 @@ let similar = try await context.findSimilar(Product.self)
     .execute()
 ```
 
-### 3. Filtered Vector Search (ACORN)
+### 3. Post-Filtered HNSW Search
 
-**Scenario**: Find similar products within a category using ACORN algorithm.
+**Scenario**: Find similar products within a category by oversampling HNSW
+candidates and applying an application predicate in distance order.
 
 ```swift
-// Filtered search with ACORN
+// HNSW candidate oversampling followed by predicate evaluation
 let results = try await context.findSimilar(Product.self)
     .vector(\.embedding, dimensions: 768)
     .query(queryEmbedding, k: 10)
     .filter { product in
         product.category == "electronics" && product.price < 1000
     }
-    .acorn(expansionFactor: 3)
+    .postFilter(expansionFactor: 3)
     .execute()
 ```
 
-**Reference**: Patel et al., "ACORN: Performant and Predicate-Agnostic Search Over Vector Embeddings and Structured Data", SIGMOD 2024
+The predicate is evaluated after HNSW traversal. This API does not implement
+ACORN predicate-subgraph traversal and does not claim ACORN recall semantics.
 
 ### 4. Image Similarity
 
@@ -259,7 +261,7 @@ against the model metadata.
 | Cosine distance | ✅ Complete | 1 - cosine_similarity |
 | Euclidean distance | ✅ Complete | L2 distance |
 | Dot product | ✅ Complete | Inner product |
-| ACORN filtering | ✅ Complete | Predicate-agnostic filtering |
+| HNSW post-filtering | ✅ Complete | Expanded candidate search followed by predicate evaluation |
 | Sparse index (nil) | ✅ Complete | nil vectors not indexed |
 | Polymorphic vector search | ✅ Complete | KeyPath public API, shared logical index |
 | IVF (inverted file) | ❌ Not implemented | Cluster-based ANN |
@@ -317,6 +319,5 @@ The production path uses the Swift backend from `swift-hnsw`. The C++ hnswlib ba
 ## References
 
 - [HNSW Paper](https://arxiv.org/abs/1603.09320) - Malkov & Yashunin, 2016
-- [ACORN Paper](https://arxiv.org/abs/2403.04871) - Patel et al., SIGMOD 2024
 - [swift-hnsw Library](https://github.com/1amageek/swift-hnsw)
 - [Pinecone Vector DB Guide](https://www.pinecone.io/learn/vector-similarity/)

@@ -446,9 +446,9 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         )
     }
 
-    // MARK: - ACORN Filtered Search
+    // MARK: - Post-Filtered Search
 
-    /// Search with predicate filter (ACORN algorithm)
+    /// Search an expanded HNSW candidate set and then apply a predicate.
     ///
     /// Uses expanded ef to ensure sufficient candidates pass the filter.
     ///
@@ -457,16 +457,16 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ///   - k: Number of nearest neighbors to return
     ///   - predicate: Filter predicate
     ///   - fetchItem: Function to fetch item by primary key
-    ///   - acornParams: ACORN parameters
+    ///   - postFilterParameters: Candidate expansion and predicate evaluation limits
     ///   - searchParams: HNSW search parameters
     ///   - transaction: FDB transaction
     /// - Returns: Array of (primaryKey, distance) for items passing the predicate
-    public func searchWithFilter(
+    public func searchWithPostFilter(
         queryVector: [Float],
         k: Int,
         predicate: @escaping @Sendable (Item) async throws -> Bool,
         fetchItem: @escaping @Sendable (Tuple, any TransactionAccess) async throws -> Item?,
-        acornParams: ACORNParameters = .default,
+        postFilterParameters: HNSWPostFilterParameters = .default,
         searchParams: HNSWSearchParameters = HNSWSearchParameters(),
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
@@ -485,9 +485,38 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             throw VectorIndexError.invalidArgument("ef must be positive")
         }
 
-        // Expand ef for filtered search
-        let expandedK = k * acornParams.expansionFactor * 2
-        let expandedEf = max(expandedK, searchParams.ef) * acornParams.expansionFactor
+        guard postFilterParameters.expansionFactor > 0 else {
+            throw VectorIndexError.invalidArgument(
+                "post-filter expansion factor must be positive"
+            )
+        }
+        if let maximum = postFilterParameters.maxPredicateEvaluations,
+           maximum < 0 {
+            throw VectorIndexError.invalidArgument(
+                "maximum predicate evaluations must not be negative"
+            )
+        }
+        let (candidateMultiplier, multiplierOverflow) =
+            postFilterParameters.expansionFactor.multipliedReportingOverflow(by: 2)
+        let (expandedK, candidateCountOverflow) = k.multipliedReportingOverflow(
+            by: candidateMultiplier
+        )
+        guard !multiplierOverflow, !candidateCountOverflow else {
+            throw VectorIndexError.invalidArgument(
+                "post-filter candidate count exceeds the current platform limit"
+            )
+        }
+        let (expandedEf, explorationOverflow) = max(
+            expandedK,
+            searchParams.ef
+        ).multipliedReportingOverflow(
+            by: postFilterParameters.expansionFactor
+        )
+        guard !explorationOverflow else {
+            throw VectorIndexError.invalidArgument(
+                "post-filter exploration count exceeds the current platform limit"
+            )
+        }
 
         let snapshot = try await loadSearchSnapshot(transaction: transaction)
         let results = try snapshot.search(
@@ -502,7 +531,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         for result in results {
             // Check predicate evaluation limit
-            if let maxEvals = acornParams.maxPredicateEvaluations,
+            if let maxEvals = postFilterParameters.maxPredicateEvaluations,
                predicateEvaluations >= maxEvals {
                 break
             }

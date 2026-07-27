@@ -72,7 +72,7 @@ snapshot. Current validation follows the repository-wide Xcode test and Swift
 | 2026-06-29 | `swift test --traits SQLite --filter VectorConversionTests` with Swift 6.4 | Passed: 6 tests |
 | 2026-06-29 | `swift test --filter VectorConversionTests` with Swift 6.4 | Passed: 6 tests |
 | 2026-06-29 | `swift test --filter HNSWBasicBehaviorTests` with Swift 6.4 | Passed: 8 tests |
-| 2026-06-29 | `swift test --filter ACORN` with Swift 6.4 | Passed: 9 tests |
+| 2026-06-29 | Legacy filtered-search suite with Swift 6.4 | Passed: 9 tests; the API was subsequently renamed to describe post-filter semantics accurately |
 | 2026-06-29 | `swift test --traits SQLite --filter VectorAlgorithmMaintainerTests` with Swift 6.4 | Passed: 4 tests / 1 suite |
 | 2026-06-29 | `swift test --traits SQLite --filter VectorIndexTests` with Swift 6.4 | Passed: 56 tests / 9 suites |
 | 2026-06-29 | `swift test --filter VectorIndexTests` with Swift 6.4 and local FoundationDB | Passed: 65 tests / 11 suites |

@@ -1,5 +1,5 @@
-// ACORNFilteredSearchTests.swift
-// Tests for ACORN filtered vector search functionality
+// HNSWPostFilteredSearchTests.swift
+// Tests for expanded HNSW candidate search followed by predicate evaluation
 
 import Testing
 import TestHeartbeat
@@ -13,7 +13,7 @@ import DatabaseTypes
 // MARK: - Test Model
 
 @Persistable
-struct ACORNProduct {
+struct PostFilteredProduct {
     var id: String
     var name: String
     var category: String
@@ -21,22 +21,27 @@ struct ACORNProduct {
     var embedding: Vector
 }
 
-// MARK: - ACORN Search Context
+// MARK: - Post-Filtered Search Context
 
-private struct ACORNSearchContext {
+private struct PostFilteredSearchContext {
     let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: HNSWIndexMaintainer<ACORNProduct>
+    let maintainer: HNSWIndexMaintainer<PostFilteredProduct>
     let dimensions: Int
     let itemsSubspace: Subspace
     let blobsSubspace: Subspace
 
-    init(dimensions: Int = 4, indexName: String = "ACORNProduct_embedding") async throws {
+    init(
+        dimensions: Int = 4,
+        indexName: String = "PostFilteredProduct_embedding"
+    ) async throws {
         self.database = InMemoryEngine()
         self.dimensions = dimensions
         let testId = UUID().uuidString.prefix(8)
-        self.subspace = Subspace(prefix: Tuple("test", "acorn", String(testId)).pack())
+        self.subspace = Subspace(
+            prefix: Tuple("test", "post-filter", String(testId)).pack()
+        )
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.itemsSubspace = subspace.subspace("R")
         self.blobsSubspace = subspace.subspace("B")
@@ -52,12 +57,12 @@ private struct ACORNSearchContext {
             kind: metadata,
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
             subspaceKey: indexName,
-            itemTypes: Set(["ACORNProduct"])
+            itemTypes: Set(["PostFilteredProduct"])
         )
 
         let hnswParams = VectorIndex.HNSWParameters(m: 8, efConstruction: 100, efSearch: 50)
 
-        self.maintainer = HNSWIndexMaintainer<ACORNProduct>(
+        self.maintainer = HNSWIndexMaintainer<PostFilteredProduct>(
             index: index,
             dimensions: dimensions,
             metric: .cosine,
@@ -74,7 +79,7 @@ private struct ACORNSearchContext {
         }
     }
 
-    func insertProduct(_ product: ACORNProduct) async throws {
+    func insertProduct(_ product: PostFilteredProduct) async throws {
         try await database.withTransaction { transaction in
             // Store the item using ItemStorage
             let itemKey = itemsSubspace.pack(try product.persistableIdentifierTuple())
@@ -92,20 +97,20 @@ private struct ACORNSearchContext {
         }
     }
 
-    func insertProducts(_ products: [ACORNProduct]) async throws {
+    func insertProducts(_ products: [PostFilteredProduct]) async throws {
         for product in products {
             try await insertProduct(product)
         }
     }
 
-    func fetchProduct(id: String) async throws -> ACORNProduct? {
+    func fetchProduct(id: String) async throws -> PostFilteredProduct? {
         try await database.withTransaction { transaction in
             let identifier = try PersistableIdentifierKeyCodec.tuple(for: id)
             let itemKey = itemsSubspace.pack(identifier)
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             if let data = try await storage.read(for: itemKey) {
                 return try PersistableStorageCodec.decode(
-                    ACORNProduct.self,
+                    PostFilteredProduct.self,
                     from: data
                 )
             }
@@ -113,35 +118,35 @@ private struct ACORNSearchContext {
         }
     }
 
-    func searchWithFilter(
+    func searchWithPostFilter(
         query: [Float],
         k: Int,
-        predicate: @escaping @Sendable (ACORNProduct) async throws -> Bool,
-        acornParams: ACORNParameters = .default
+        predicate: @escaping @Sendable (PostFilteredProduct) async throws -> Bool,
+        parameters: HNSWPostFilterParameters = .default
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         try await database.withTransaction { transaction in
             // Create fetch function using ItemStorage for proper envelope handling
             let fetchItem: @Sendable (
                 Tuple,
                 any TransactionAccess
-            ) async throws -> ACORNProduct? = { primaryKey, tx in
+            ) async throws -> PostFilteredProduct? = { primaryKey, tx in
                 let itemKey = self.itemsSubspace.pack(primaryKey)
                 let storage = ItemStorage(transaction: tx, blobsSubspace: self.blobsSubspace, configuration: .v1)
                 if let data = try await storage.read(for: itemKey) {
                     return try PersistableStorageCodec.decode(
-                        ACORNProduct.self,
+                        PostFilteredProduct.self,
                         from: data
                     )
                 }
                 return nil
             }
 
-            return try await maintainer.searchWithFilter(
+            return try await maintainer.searchWithPostFilter(
                 queryVector: query,
                 k: k,
                 predicate: predicate,
                 fetchItem: fetchItem,
-                acornParams: acornParams,
+                postFilterParameters: parameters,
                 transaction: transaction
             )
         }
@@ -154,14 +159,14 @@ private struct ACORNSearchContext {
     }
 }
 
-// MARK: - ACORN Parameters Unit Tests
+// MARK: - Post-Filter Parameters Unit Tests
 
-@Suite("ACORN Parameters Unit Tests", .heartbeat)
-struct ACORNParametersUnitTests {
+@Suite("HNSW Post-Filter Parameters Unit Tests", .heartbeat)
+struct HNSWPostFilterParametersUnitTests {
 
     @Test("Default parameters")
     func testDefaultParameters() {
-        let params = ACORNParameters.default
+        let params = HNSWPostFilterParameters.default
 
         #expect(params.expansionFactor == 2, "Default expansion factor should be 2")
         #expect(params.maxPredicateEvaluations == nil, "Default should have no evaluation limit")
@@ -169,17 +174,66 @@ struct ACORNParametersUnitTests {
 
     @Test("Custom parameters")
     func testCustomParameters() {
-        let params = ACORNParameters(expansionFactor: 5, maxPredicateEvaluations: 100)
+        let params = HNSWPostFilterParameters(
+            expansionFactor: 5,
+            maxPredicateEvaluations: 100
+        )
 
         #expect(params.expansionFactor == 5)
         #expect(params.maxPredicateEvaluations == 100)
     }
+
+    @Test("non-positive expansion fails explicitly")
+    func rejectsNonPositiveExpansion() async throws {
+        let context = try await PostFilteredSearchContext()
+
+        await #expect(throws: VectorIndexError.self) {
+            try await context.searchWithPostFilter(
+                query: [1, 0, 0, 0],
+                k: 1,
+                predicate: { _ in true },
+                parameters: HNSWPostFilterParameters(expansionFactor: 0)
+            )
+        }
+    }
+
+    @Test("candidate count overflow fails explicitly")
+    func rejectsCandidateCountOverflow() async throws {
+        let context = try await PostFilteredSearchContext()
+
+        await #expect(throws: VectorIndexError.self) {
+            try await context.searchWithPostFilter(
+                query: [1, 0, 0, 0],
+                k: Int.max,
+                predicate: { _ in true },
+                parameters: HNSWPostFilterParameters(
+                    expansionFactor: Int.max
+                )
+            )
+        }
+    }
+
+    @Test("negative predicate evaluation limit fails explicitly")
+    func rejectsNegativePredicateEvaluationLimit() async throws {
+        let context = try await PostFilteredSearchContext()
+
+        await #expect(throws: VectorIndexError.self) {
+            try await context.searchWithPostFilter(
+                query: [1, 0, 0, 0],
+                k: 1,
+                predicate: { _ in true },
+                parameters: HNSWPostFilterParameters(
+                    maxPredicateEvaluations: -1
+                )
+            )
+        }
+    }
 }
 
-// MARK: - ACORN Integration Tests
+// MARK: - Post-Filtered Search Integration Tests
 
-@Suite("ACORN Filtered Search Tests", .serialized, .heartbeat)
-struct ACORNFilteredSearchTests {
+@Suite("HNSW Post-Filtered Search Tests", .serialized, .heartbeat)
+struct HNSWPostFilteredSearchTests {
 
     // Creates normalized unit vectors.
     private func normalizedVector(_ components: [Float]) -> [Float] {
@@ -189,23 +243,23 @@ struct ACORNFilteredSearchTests {
 
     @Test("Basic filtered search")
     func testBasicFilteredSearch() async throws {
-        let ctx = try await ACORNSearchContext(dimensions: 4)
+        let ctx = try await PostFilteredSearchContext(dimensions: 4)
 
         // Create products with different categories
         let products = [
-            ACORNProduct(
+            PostFilteredProduct(
                 id: "p1", name: "Laptop", category: "electronics", price: 1000,
                 embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))
             ),
-            ACORNProduct(
+            PostFilteredProduct(
                 id: "p2", name: "Phone", category: "electronics", price: 500,
                 embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0]))
             ),
-            ACORNProduct(
+            PostFilteredProduct(
                 id: "p3", name: "Chair", category: "furniture", price: 200,
                 embedding: try Vector(float32: normalizedVector([0.8, 0.2, 0.0, 0.0]))
             ),
-            ACORNProduct(
+            PostFilteredProduct(
                 id: "p4", name: "Desk", category: "furniture", price: 300,
                 embedding: try Vector(float32: normalizedVector([0.7, 0.3, 0.0, 0.0]))
             )
@@ -217,7 +271,7 @@ struct ACORNFilteredSearchTests {
         let queryVector = normalizedVector([1.0, 0.0, 0.0, 0.0])
 
         // Search with category filter
-        let results = try await ctx.searchWithFilter(
+        let results = try await ctx.searchWithPostFilter(
             query: queryVector,
             k: 10,
             predicate: { product in product.category == "electronics" }
@@ -236,24 +290,24 @@ struct ACORNFilteredSearchTests {
 
     @Test("Filtered search respects distance ordering")
     func testFilteredSearchRespectsDistanceOrdering() async throws {
-        let ctx = try await ACORNSearchContext(dimensions: 4)
+        let ctx = try await PostFilteredSearchContext(dimensions: 4)
 
         // Create electronics products at varying distances
         let products = [
-            ACORNProduct(
+            PostFilteredProduct(
                 id: "close", name: "Close", category: "electronics", price: 100,
                 embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))
             ),
-            ACORNProduct(
+            PostFilteredProduct(
                 id: "medium", name: "Medium", category: "electronics", price: 200,
                 embedding: try Vector(float32: normalizedVector([0.7, 0.7, 0.0, 0.0]))
             ),
-            ACORNProduct(
+            PostFilteredProduct(
                 id: "far", name: "Far", category: "electronics", price: 300,
                 embedding: try Vector(float32: normalizedVector([0.0, 1.0, 0.0, 0.0]))
             ),
             // Furniture (should be filtered out even though close)
-            ACORNProduct(
+            PostFilteredProduct(
                 id: "furniture", name: "Furniture", category: "furniture", price: 50,
                 embedding: try Vector(float32: normalizedVector([0.99, 0.01, 0.0, 0.0]))
             )
@@ -263,7 +317,7 @@ struct ACORNFilteredSearchTests {
 
         let queryVector = normalizedVector([1.0, 0.0, 0.0, 0.0])
 
-        let results = try await ctx.searchWithFilter(
+        let results = try await ctx.searchWithPostFilter(
             query: queryVector,
             k: 10,
             predicate: { product in product.category == "electronics" }
@@ -289,16 +343,16 @@ struct ACORNFilteredSearchTests {
 
     @Test("Complex predicate filter")
     func testComplexPredicateFilter() async throws {
-        let ctx = try await ACORNSearchContext(dimensions: 4)
+        let ctx = try await PostFilteredSearchContext(dimensions: 4)
 
         let products = [
-            ACORNProduct(id: "p1", name: "Cheap Electronics", category: "electronics", price: 100,
+            PostFilteredProduct(id: "p1", name: "Cheap Electronics", category: "electronics", price: 100,
                              embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))),
-            ACORNProduct(id: "p2", name: "Expensive Electronics", category: "electronics", price: 2000,
+            PostFilteredProduct(id: "p2", name: "Expensive Electronics", category: "electronics", price: 2000,
                              embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0]))),
-            ACORNProduct(id: "p3", name: "Cheap Furniture", category: "furniture", price: 50,
+            PostFilteredProduct(id: "p3", name: "Cheap Furniture", category: "furniture", price: 50,
                              embedding: try Vector(float32: normalizedVector([0.8, 0.2, 0.0, 0.0]))),
-            ACORNProduct(id: "p4", name: "Mid Furniture", category: "furniture", price: 500,
+            PostFilteredProduct(id: "p4", name: "Mid Furniture", category: "furniture", price: 500,
                              embedding: try Vector(float32: normalizedVector([0.7, 0.3, 0.0, 0.0])))
         ]
 
@@ -307,7 +361,7 @@ struct ACORNFilteredSearchTests {
         let queryVector = normalizedVector([1.0, 0.0, 0.0, 0.0])
 
         // Complex filter: electronics under $1000 OR furniture under $100
-        let results = try await ctx.searchWithFilter(
+        let results = try await ctx.searchWithPostFilter(
             query: queryVector,
             k: 10,
             predicate: { product in
@@ -327,13 +381,13 @@ struct ACORNFilteredSearchTests {
 
     @Test("Filter with k limit")
     func testFilterWithKLimit() async throws {
-        let ctx = try await ACORNSearchContext(dimensions: 4)
+        let ctx = try await PostFilteredSearchContext(dimensions: 4)
 
         // Create 10 electronics products
-        var products: [ACORNProduct] = []
+        var products: [PostFilteredProduct] = []
         for i in 0..<10 {
             let angle = Float(i) * 0.1
-            products.append(ACORNProduct(
+            products.append(PostFilteredProduct(
                 id: "p\(i)", name: "Product \(i)", category: "electronics", price: Int64(i * 100),
                 embedding: try Vector(float32: normalizedVector([cos(angle), sin(angle), 0.0, 0.0]))
             ))
@@ -344,7 +398,7 @@ struct ACORNFilteredSearchTests {
         let queryVector = normalizedVector([1.0, 0.0, 0.0, 0.0])
 
         // Request only k=3
-        let results = try await ctx.searchWithFilter(
+        let results = try await ctx.searchWithPostFilter(
             query: queryVector,
             k: 3,
             predicate: { _ in true }  // Accept all
@@ -357,12 +411,12 @@ struct ACORNFilteredSearchTests {
 
     @Test("Filter that excludes all")
     func testFilterExcludesAll() async throws {
-        let ctx = try await ACORNSearchContext(dimensions: 4)
+        let ctx = try await PostFilteredSearchContext(dimensions: 4)
 
         let products = [
-            ACORNProduct(id: "p1", name: "Product 1", category: "electronics", price: 100,
+            PostFilteredProduct(id: "p1", name: "Product 1", category: "electronics", price: 100,
                              embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))),
-            ACORNProduct(id: "p2", name: "Product 2", category: "electronics", price: 200,
+            PostFilteredProduct(id: "p2", name: "Product 2", category: "electronics", price: 200,
                              embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0])))
         ]
 
@@ -371,7 +425,7 @@ struct ACORNFilteredSearchTests {
         let queryVector = normalizedVector([1.0, 0.0, 0.0, 0.0])
 
         // Filter that matches nothing
-        let results = try await ctx.searchWithFilter(
+        let results = try await ctx.searchWithPostFilter(
             query: queryVector,
             k: 10,
             predicate: { product in product.category == "nonexistent" }
@@ -382,16 +436,16 @@ struct ACORNFilteredSearchTests {
         try await ctx.cleanup()
     }
 
-    @Test("ACORN expansion factor affects results")
-    func testACORNExpansionFactorAffectsResults() async throws {
-        let ctx = try await ACORNSearchContext(dimensions: 4)
+    @Test("candidate expansion factor affects recall")
+    func testCandidateExpansionFactorAffectsRecall() async throws {
+        let ctx = try await PostFilteredSearchContext(dimensions: 4)
 
         // Create a mix of products
-        var products: [ACORNProduct] = []
+        var products: [PostFilteredProduct] = []
         for i in 0..<20 {
             let category = i % 3 == 0 ? "target" : "other"
             let angle = Float(i) * 0.15
-            products.append(ACORNProduct(
+            products.append(PostFilteredProduct(
                 id: "p\(i)", name: "Product \(i)", category: category, price: Int64(i * 50),
                 embedding: try Vector(float32: normalizedVector([cos(angle), sin(angle), 0.0, 0.0]))
             ))
@@ -402,19 +456,19 @@ struct ACORNFilteredSearchTests {
         let queryVector = normalizedVector([1.0, 0.0, 0.0, 0.0])
 
         // Low expansion factor
-        let resultsLow = try await ctx.searchWithFilter(
+        let resultsLow = try await ctx.searchWithPostFilter(
             query: queryVector,
             k: 5,
             predicate: { product in product.category == "target" },
-            acornParams: ACORNParameters(expansionFactor: 1)
+            parameters: HNSWPostFilterParameters(expansionFactor: 1)
         )
 
         // High expansion factor
-        let resultsHigh = try await ctx.searchWithFilter(
+        let resultsHigh = try await ctx.searchWithPostFilter(
             query: queryVector,
             k: 5,
             predicate: { product in product.category == "target" },
-            acornParams: ACORNParameters(expansionFactor: 5)
+            parameters: HNSWPostFilterParameters(expansionFactor: 5)
         )
 
         // Both should return results for "target" category
@@ -431,16 +485,16 @@ struct ACORNFilteredSearchTests {
 
     @Test("Comparison: filtered vs unfiltered search")
     func testComparisonFilteredVsUnfiltered() async throws {
-        let ctx = try await ACORNSearchContext(dimensions: 4)
+        let ctx = try await PostFilteredSearchContext(dimensions: 4)
 
         let products = [
-            ACORNProduct(id: "e1", name: "Electronics 1", category: "electronics", price: 100,
+            PostFilteredProduct(id: "e1", name: "Electronics 1", category: "electronics", price: 100,
                              embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))),
-            ACORNProduct(id: "f1", name: "Furniture 1", category: "furniture", price: 200,
+            PostFilteredProduct(id: "f1", name: "Furniture 1", category: "furniture", price: 200,
                              embedding: try Vector(float32: normalizedVector([0.95, 0.05, 0.0, 0.0]))),
-            ACORNProduct(id: "e2", name: "Electronics 2", category: "electronics", price: 300,
+            PostFilteredProduct(id: "e2", name: "Electronics 2", category: "electronics", price: 300,
                              embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0]))),
-            ACORNProduct(id: "f2", name: "Furniture 2", category: "furniture", price: 400,
+            PostFilteredProduct(id: "f2", name: "Furniture 2", category: "furniture", price: 400,
                              embedding: try Vector(float32: normalizedVector([0.85, 0.15, 0.0, 0.0])))
         ]
 
@@ -452,7 +506,7 @@ struct ACORNFilteredSearchTests {
         let unfilteredResults = try await ctx.searchUnfiltered(query: queryVector, k: 10)
 
         // Filtered search (only electronics)
-        let filteredResults = try await ctx.searchWithFilter(
+        let filteredResults = try await ctx.searchWithPostFilter(
             query: queryVector,
             k: 10,
             predicate: { product in product.category == "electronics" }
