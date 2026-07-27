@@ -345,14 +345,13 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
 
         var bitmap: RoaringBitmap
         if let existingBytes = try await transaction.getValue(for: key) {
-            bitmap = try RoaringBitmap.deserialize(Data(existingBytes))
+            bitmap = try RoaringBitmap(serializedBytes: existingBytes)
         } else {
             bitmap = RoaringBitmap()
         }
 
         bitmap.add(UInt32(sequentialId))
-        let data = try bitmap.serialize()
-        try transaction.setValue(Bytes(data), for: key)
+        try transaction.setValue(bitmap.serializedBytes(), for: key)
     }
 
     /// Remove a sequential ID from a bitmap
@@ -367,14 +366,13 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
             return
         }
 
-        var bitmap = try RoaringBitmap.deserialize(Data(existingBytes))
+        var bitmap = try RoaringBitmap(serializedBytes: existingBytes)
         bitmap.remove(UInt32(sequentialId))
 
         if bitmap.isEmpty {
             try transaction.clear(key: key)
         } else {
-            let data = try bitmap.serialize()
-            try transaction.setValue(Bytes(data), for: key)
+            try transaction.setValue(bitmap.serializedBytes(), for: key)
         }
     }
 

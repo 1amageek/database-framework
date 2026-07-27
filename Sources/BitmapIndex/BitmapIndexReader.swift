@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
 import StorageKit
 
@@ -28,7 +23,7 @@ struct BitmapIndexReader: Sendable {
         guard let bytes = try await transaction.getValue(for: key) else {
             return RoaringBitmap()
         }
-        return try RoaringBitmap.deserialize(Data(bytes))
+        return try RoaringBitmap(serializedBytes: bytes)
     }
 
     func intersection(
@@ -60,11 +55,10 @@ struct BitmapIndexReader: Sendable {
         for bitmap: RoaringBitmap,
         transaction: any TransactionAccess
     ) async throws -> [Tuple] {
-        let identifiers = bitmap.toArray()
         var results: [Tuple] = []
-        results.reserveCapacity(identifiers.count)
+        results.reserveCapacity(bitmap.cardinality)
 
-        for identifier in identifiers {
+        for identifier in bitmap {
             let key = idsSubspace.pack(Tuple(Int(identifier)))
             if let bytes = try await transaction.getValue(for: key) {
                 results.append(Tuple(try Tuple.unpack(from: bytes)))

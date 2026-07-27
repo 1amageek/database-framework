@@ -364,8 +364,8 @@ struct Article {
 | AND | O(min(n,m)) | Iterate smaller bitmap |
 | OR | O(n + m) | Merge containers |
 | Cardinality | O(containers) | Cached per container |
-| Serialize | O(n) | JSON encoding |
-| Deserialize | O(n) | JSON decoding |
+| Serialize | O(n) | One final `Bytes` allocation, little-endian binary encoding |
+| Deserialize | O(n) | Borrowed `Bytes` input with bounded validation |
 | Get count | O(1) | Direct cardinality |
 | Get items | O(n) | Fetch n primary keys |
 
@@ -385,68 +385,26 @@ struct Article {
 ### FDB Considerations
 
 - **Value Size**: Roaring bitmaps can grow large; FDB has 100KB value limit
-- **Serialization**: JSON encoding (can be optimized to binary)
+- **Serialization**: Deterministic little-endian binary representation
 - **Transaction Size**: Large bitmap updates may approach 10MB limit
 - **Sequential IDs**: 32-bit limit (~4 billion records per index)
 
-## Benchmark Results
+## Benchmarking
 
-Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:PerformanceBenchmarks/SerializationBenchmark`
+Run the current binary representation benchmark on the target deployment
+hardware. The benchmark reports encoding, borrowed-input decoding, round-trip,
+and set-operation measurements without retaining historical machine-specific
+numbers in this document.
 
-### Latest Results (2026-04-11)
+```bash
+xcodebuild test \
+  -scheme database-framework-Package \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:PerformanceBenchmarks/PersistedRepresentationBenchmark
+```
 
-**Environment**: macOS 26.3, Apple M4 Max, local Docker FoundationDB cluster
-
-### JSON Serialization Performance (Current Implementation)
-
-**Test Configuration**:
-- Warmup: 5 iterations
-- Measurement: 100 iterations
-- Throughput test: 5.0 seconds
-- Test bitmaps: Sparse (100 values), Dense (8000 values), Mixed (1500 values)
-
-| Metric | Baseline | Optimized | Notes |
-|--------|----------|-----------|-------|
-| **Latency (p50)** | 0.06ms | 0.07ms | JSON encoding |
-| **Latency (p95)** | 0.07ms | 0.08ms | Current implementation rerun |
-| **Latency (p99)** | 0.07ms | 0.08ms | Low variance |
-| **Throughput** | 14,910 ops/s | 14,818 ops/s | 3 bitmap serializations |
-
-**Serialization Sizes** (JSON Format):
-- Sparse bitmap (100 values): **532 bytes**
-- Dense bitmap (8000 values): **4,468 bytes**
-- Mixed bitmap (1500 values): **6,434 bytes**
-
-**Expected Improvements with Binary Format**:
-- 50-70% faster serialization/deserialization
-- 30-50% smaller storage footprint
-- Reference: [Roaring Bitmap Format Spec](https://github.com/RoaringBitmap/RoaringFormatSpec)
-
-### Round-trip Performance (Serialize + Deserialize)
-
-| Data Size | Latency (p50) | Latency (p95) | Throughput |
-|-----------|---------------|---------------|------------|
-| 100 values | 0.81ms | 0.87ms | 1,300 ops/s |
-| 500 values | 17.33ms | 17.73ms | 57 ops/s |
-| 1,000 values | 68.44ms | 69.22ms | 14 ops/s |
-| 5,000 values | 1132.74ms | 1208.72ms | <1 ops/s |
-| 10,000 values | 1136.59ms | 1148.92ms | <1 ops/s |
-
-### Bitmap Operations (In-Memory)
-
-**Test Setup**: 5000 ∩ 3333 values (10,000 value range)
-
-| Operation | Latency (p50) | Latency (p95) | Throughput |
-|-----------|---------------|---------------|------------|
-| **AND** | 0.24ms | 0.25ms | 4,096 ops/s |
-| **OR** | 0.26ms | 0.31ms | 3,640 ops/s |
-
-**Memory Efficiency**:
-- Container auto-selection (Array vs Bitmap vs Run)
-- Sparse bitmaps: 2 bytes per value
-- Dense bitmaps: 8KB fixed per 65,536 value range
-
-*Benchmarks run with Swift Testing `PerformanceBenchmarks` on Apple Silicon Mac and local Docker FoundationDB cluster.*
+Record the Swift toolchain, storage backend, processor, input distribution, and
+result bundle with any performance claim.
 
 ## References
 

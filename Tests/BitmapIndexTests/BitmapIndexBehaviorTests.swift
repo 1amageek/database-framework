@@ -231,18 +231,54 @@ struct RoaringBitmapUnitTests {
         #expect(!result.contains(3))
     }
 
-    @Test("Serialization round-trip")
-    func testSerializationRoundTrip() throws {
+    @Test("Persisted representation round-trip")
+    func persistedRepresentationRoundTrip() throws {
         var original = RoaringBitmap()
         for i in stride(from: 0, to: 1000, by: 7) {
             original.add(UInt32(i))
         }
 
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(RoaringBitmap.self, from: data)
+        let bytes = try original.serializedBytes()
+        let decoded = try RoaringBitmap(serializedBytes: bytes)
 
         #expect(decoded == original)
         #expect(decoded.cardinality == original.cardinality)
+        #expect(Array(bytes.prefix(8)) == [0x52, 0x42, 0x4D, 1, 1, 0, 0, 0])
+    }
+
+    @Test("Persisted representation rejects truncated input")
+    func persistedRepresentationRejectsTruncatedInput() throws {
+        var original = RoaringBitmap()
+        original.add(1)
+        let bytes = try original.serializedBytes()
+
+        #expect(throws: RoaringBitmapFormatError.self) {
+            _ = try RoaringBitmap(serializedBytes: bytes[0..<(bytes.count - 1)])
+        }
+    }
+
+    @Test("Persisted representation rejects trailing input")
+    func persistedRepresentationRejectsTrailingInput() throws {
+        var original = RoaringBitmap()
+        original.add(1)
+        var bytes = try original.serializedBytes()
+        bytes.append(0)
+
+        #expect(throws: RoaringBitmapFormatError.trailingBytes(1)) {
+            _ = try RoaringBitmap(serializedBytes: bytes)
+        }
+    }
+
+    @Test("Persisted representation rejects an unknown format version")
+    func persistedRepresentationRejectsUnknownFormatVersion() throws {
+        var original = RoaringBitmap()
+        original.add(1)
+        var bytes = try original.serializedBytes()
+        bytes[3] = 2
+
+        #expect(throws: RoaringBitmapFormatError.unsupportedFormatVersion(2)) {
+            _ = try RoaringBitmap(serializedBytes: bytes)
+        }
     }
 
     @Test("Empty bitmap operations")

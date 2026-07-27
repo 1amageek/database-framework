@@ -184,18 +184,18 @@ struct RoaringBitmapPerformanceTests {
             bitmap.add(i)
         }
 
-        var data: Data!
+        var bytes: Bytes!
         let (serializeMs, _) = try await benchmark("Serialize 10,000", iterations: 100) {
-            data = try bitmap.serialize()
+            bytes = try bitmap.serializedBytes()
         }
 
         print("Serialize (100 iterations): \(String(format: "%.2f", serializeMs))ms")
         print("Per serialize: \(String(format: "%.3f", serializeMs / 100))ms")
-        print("Serialized size: \(data.count) bytes")
+        print("Serialized size: \(bytes.count) bytes")
 
         var restored: RoaringBitmap!
         let (deserializeMs, _) = try await benchmark("Deserialize 10,000", iterations: 100) {
-            restored = try RoaringBitmap.deserialize(data)
+            restored = try RoaringBitmap(serializedBytes: bytes)
         }
 
         #expect(restored.cardinality == 10000)

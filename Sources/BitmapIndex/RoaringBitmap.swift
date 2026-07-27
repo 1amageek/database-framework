@@ -5,11 +5,7 @@
 // Software Library", Software: Practice and Experience, 2016
 // https://arxiv.org/abs/1603.06549
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
+import StorageKit
 
 /// Roaring Bitmap implementation for efficient set operations
 ///
@@ -28,12 +24,12 @@ import Foundation
 /// - OR: O(n + m)
 /// - Cardinality: O(containers) with cached counts
 /// - Memory: Adaptive based on density
-public struct RoaringBitmap: Sendable, Codable, Equatable {
+public struct RoaringBitmap: Sendable, Equatable, Sequence {
     /// Container threshold: switch from array to bitmap at 4096 elements
     private static let arrayMaxSize = 4096
 
     /// Containers indexed by high 16 bits
-    private var containers: [UInt16: Container]
+    fileprivate var containers: [UInt16: Container]
 
     /// Container storage types
     ///
@@ -48,7 +44,7 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
     ///
     /// Any code iterating a run must therefore use `start...start + length`
     /// (inclusive) and any code computing cardinality must add 1.
-    enum Container: Sendable, Codable, Equatable {
+    enum Container: Sendable, Equatable {
         case array([UInt16])           // Sorted array of low 16 bits
         case bitmap([UInt64])          // 1024 × 64-bit words
         case run([(start: UInt16, length: UInt16)])  // Run-length encoded (length = end offset inclusive)
@@ -437,46 +433,6 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
             }
         }
 
-        // MARK: - Codable
-
-        enum CodingKeys: String, CodingKey {
-            case type, data
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            let type = try container.decode(String.self, forKey: .type)
-
-            switch type {
-            case "array":
-                let arr = try container.decode([UInt16].self, forKey: .data)
-                self = .array(arr)
-            case "bitmap":
-                let bits = try container.decode([UInt64].self, forKey: .data)
-                self = .bitmap(bits)
-            case "run":
-                let runs = try container.decode([[UInt16]].self, forKey: .data)
-                self = .run(runs.map { ($0[0], $0[1]) })
-            default:
-                throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown container type")
-            }
-        }
-
-        func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: CodingKeys.self)
-
-            switch self {
-            case .array(let arr):
-                try container.encode("array", forKey: .type)
-                try container.encode(arr, forKey: .data)
-            case .bitmap(let bits):
-                try container.encode("bitmap", forKey: .type)
-                try container.encode(bits, forKey: .data)
-            case .run(let runs):
-                try container.encode("run", forKey: .type)
-                try container.encode(runs.map { [$0.start, $0.length] }, forKey: .data)
-            }
-        }
     }
 
     // MARK: - Initialization
@@ -711,181 +667,407 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
 
     // MARK: - Iteration
 
+    public struct Iterator: IteratorProtocol {
+        private let containers: [(key: UInt16, value: Container)]
+        private var containerIndex = 0
+        private var valueIterator: ContainerIterator?
+
+        fileprivate init(containers: [UInt16: Container]) {
+            self.containers = containers.sorted { $0.key < $1.key }
+        }
+
+        public mutating func next() -> UInt32? {
+            while true {
+                if var iterator = valueIterator {
+                    if let value = iterator.next() {
+                        valueIterator = iterator
+                        return value
+                    }
+                    valueIterator = nil
+                }
+
+                guard containerIndex < containers.count else {
+                    return nil
+                }
+                let entry = containers[containerIndex]
+                containerIndex += 1
+                valueIterator = ContainerIterator(
+                    high: entry.key,
+                    container: entry.value
+                )
+            }
+        }
+    }
+
+    public func makeIterator() -> Iterator {
+        Iterator(containers: containers)
+    }
+
     /// Get all values as an array
     public func toArray() -> [UInt32] {
         var result: [UInt32] = []
         result.reserveCapacity(cardinality)
-        for (high, container) in containers.sorted(by: { $0.key < $1.key }) {
-            let highPart = UInt32(high) << 16
-            for low in container.toArray() {
-                result.append(highPart | UInt32(low))
-            }
+        for value in self {
+            result.append(value)
         }
         return result
     }
 
     /// Iterate over all values
     public func forEach(_ body: (UInt32) -> Void) {
-        for (high, container) in containers.sorted(by: { $0.key < $1.key }) {
-            let highPart = UInt32(high) << 16
-            for low in container.toArray() {
-                body(highPart | UInt32(low))
-            }
+        for value in self {
+            body(value)
         }
     }
 
     // MARK: - Serialization
 
-    /// Serialize to bytes using binary format for maximum performance
+    /// Returns the deterministic persisted representation.
     ///
     /// **Binary Format**:
-    /// - Header: UInt32 container count
+    /// - Header: `RBM`, UInt8 format version, UInt32 container count
     /// - For each container:
     ///   - UInt16 high part
     ///   - UInt8 container type (0=array, 1=bitmap, 2=run)
     ///   - Container data (format depends on type)
-    public func serialize() throws -> Data {
-        var data = Data()
-        data.reserveCapacity(containers.count * 100)  // Estimate
+    public func serializedBytes() throws(RoaringBitmapFormatError) -> Bytes {
+        let sortedContainers = containers.sorted { $0.key < $1.key }
+        var byteCount = 8
 
-        // Container count
-        var count = UInt32(containers.count)
-        withUnsafeBytes(of: &count) { data.append(contentsOf: $0) }
+        func adding(_ amount: Int) throws(RoaringBitmapFormatError) {
+            let (sum, overflow) = byteCount.addingReportingOverflow(amount)
+            guard !overflow else {
+                throw .encodedSizeOverflow
+            }
+            byteCount = sum
+        }
 
-        // Containers sorted by high part
-        for (high, container) in containers.sorted(by: { $0.key < $1.key }) {
-            // High part
-            var highValue = high
-            withUnsafeBytes(of: &highValue) { data.append(contentsOf: $0) }
-
-            // Container type and data
+        for (_, container) in sortedContainers {
+            try adding(3)
             switch container {
-            case .array(let arr):
-                data.append(0)  // Type: array
-                var arrCount = UInt32(arr.count)
-                withUnsafeBytes(of: &arrCount) { data.append(contentsOf: $0) }
-                for value in arr {
-                    var v = value
-                    withUnsafeBytes(of: &v) { data.append(contentsOf: $0) }
+            case .array(let values):
+                let (payloadByteCount, overflow) = values.count.multipliedReportingOverflow(by: 2)
+                guard !overflow else {
+                    throw .encodedSizeOverflow
                 }
-
-            case .bitmap(let bits):
-                data.append(1)  // Type: bitmap
-                for word in bits {
-                    var w = word
-                    withUnsafeBytes(of: &w) { data.append(contentsOf: $0) }
+                try adding(4)
+                try adding(payloadByteCount)
+            case .bitmap(let words):
+                guard words.count == 1024 else {
+                    throw .invalidBitmapWordCount(words.count)
                 }
-
+                try adding(1024 * 8)
             case .run(let runs):
-                data.append(2)  // Type: run
-                var runCount = UInt32(runs.count)
-                withUnsafeBytes(of: &runCount) { data.append(contentsOf: $0) }
-                for (start, length) in runs {
-                    var s = start
-                    var l = length
-                    withUnsafeBytes(of: &s) { data.append(contentsOf: $0) }
-                    withUnsafeBytes(of: &l) { data.append(contentsOf: $0) }
+                let (payloadByteCount, overflow) = runs.count.multipliedReportingOverflow(by: 4)
+                guard !overflow else {
+                    throw .encodedSizeOverflow
                 }
+                try adding(4)
+                try adding(payloadByteCount)
             }
         }
 
-        return data
+        return Bytes.copying(count: byteCount) { output in
+            var encoder = RoaringBitmapRepresentationEncoder(output: output)
+            encoder.write(UInt8(0x52))
+            encoder.write(UInt8(0x42))
+            encoder.write(UInt8(0x4D))
+            encoder.write(UInt8(1))
+            encoder.write(UInt32(sortedContainers.count))
+            for (high, container) in sortedContainers {
+                encoder.write(high)
+                switch container {
+                case .array(let values):
+                    encoder.write(UInt8(0))
+                    encoder.write(UInt32(values.count))
+                    for value in values {
+                        encoder.write(value)
+                    }
+                case .bitmap(let words):
+                    encoder.write(UInt8(1))
+                    for word in words {
+                        encoder.write(word)
+                    }
+                case .run(let runs):
+                    encoder.write(UInt8(2))
+                    encoder.write(UInt32(runs.count))
+                    for run in runs {
+                        encoder.write(run.start)
+                        encoder.write(run.length)
+                    }
+                }
+            }
+            precondition(encoder.offset == output.count)
+        }
     }
 
-    /// Deserialize from bytes using binary format
-    public static func deserialize(_ data: Data) throws -> RoaringBitmap {
-        var result = RoaringBitmap()
-        var offset = 0
-
-        guard data.count >= 4 else {
-            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Data too short"))
-        }
-
-        // Helper to read values safely (handles alignment)
-        func readUInt16() -> UInt16 {
-            var value: UInt16 = 0
-            _ = withUnsafeMutableBytes(of: &value) { dest in
-                data.copyBytes(to: dest, from: offset..<(offset + 2))
+    /// Creates a bitmap by borrowing the persisted bytes for the duration of decoding.
+    public init(serializedBytes bytes: Bytes) throws(RoaringBitmapFormatError) {
+        let decoded: Result<RoaringBitmap, RoaringBitmapFormatError> = bytes.withUnsafeBytes { input in
+            var decoder = RoaringBitmapRepresentationDecoder(input: input)
+            do {
+                return .success(try decoder.decodeBitmap())
+            } catch let error as RoaringBitmapFormatError {
+                return .failure(error)
+            } catch {
+                preconditionFailure("Roaring bitmap decoding threw an unexpected error type")
             }
-            offset += 2
+        }
+        switch decoded {
+        case .success(let bitmap):
+            self = bitmap
+        case .failure(let error):
+            throw error
+        }
+    }
+}
+
+private struct ContainerIterator {
+    let highPart: UInt32
+    let container: RoaringBitmap.Container
+    private var arrayIndex = 0
+    private var bitmapWordIndex = 0
+    private var remainingBitmapWord: UInt64 = 0
+    private var runIndex = 0
+    private var runOffset: UInt32 = 0
+
+    init(high: UInt16, container: RoaringBitmap.Container) {
+        self.highPart = UInt32(high) << 16
+        self.container = container
+    }
+
+    mutating func next() -> UInt32? {
+        switch container {
+        case .array(let values):
+            guard arrayIndex < values.count else {
+                return nil
+            }
+            let value = highPart | UInt32(values[arrayIndex])
+            arrayIndex += 1
+            return value
+
+        case .bitmap(let words):
+            while true {
+                if remainingBitmapWord != 0 {
+                    let bitIndex = remainingBitmapWord.trailingZeroBitCount
+                    remainingBitmapWord &= remainingBitmapWord - 1
+                    return highPart | UInt32((bitmapWordIndex - 1) * 64 + bitIndex)
+                }
+                guard bitmapWordIndex < words.count else {
+                    return nil
+                }
+                remainingBitmapWord = words[bitmapWordIndex]
+                bitmapWordIndex += 1
+            }
+
+        case .run(let runs):
+            guard runIndex < runs.count else {
+                return nil
+            }
+            let run = runs[runIndex]
+            let value = highPart | UInt32(run.start) + runOffset
+            if runOffset == UInt32(run.length) {
+                runIndex += 1
+                runOffset = 0
+            } else {
+                runOffset += 1
+            }
             return value
         }
+    }
+}
 
-        func readUInt32() -> UInt32 {
-            var value: UInt32 = 0
-            _ = withUnsafeMutableBytes(of: &value) { dest in
-                data.copyBytes(to: dest, from: offset..<(offset + 4))
-            }
-            offset += 4
-            return value
+// `output` is the final allocation owned by `Bytes.copying`. The encoder exists
+// only inside that synchronous initialization closure, so the pointer cannot
+// escape and every byte in the allocation is initialized exactly once.
+private struct RoaringBitmapRepresentationEncoder {
+    let output: UnsafeMutableRawBufferPointer
+    private(set) var offset = 0
+
+    mutating func write(_ value: UInt8) {
+        output[offset] = value
+        offset += 1
+    }
+
+    mutating func write(_ value: UInt16) {
+        write(UInt8(truncatingIfNeeded: value))
+        write(UInt8(truncatingIfNeeded: value >> 8))
+    }
+
+    mutating func write(_ value: UInt32) {
+        write(UInt8(truncatingIfNeeded: value))
+        write(UInt8(truncatingIfNeeded: value >> 8))
+        write(UInt8(truncatingIfNeeded: value >> 16))
+        write(UInt8(truncatingIfNeeded: value >> 24))
+    }
+
+    mutating func write(_ value: UInt64) {
+        write(UInt32(truncatingIfNeeded: value))
+        write(UInt32(truncatingIfNeeded: value >> 32))
+    }
+}
+
+// `input` is borrowed from the `Bytes` argument and this decoder is created and
+// consumed entirely inside `withUnsafeBytes`. Bounds are checked before every
+// load, unaligned loads are explicit, and the pointer never crosses suspension
+// or Sendable boundaries.
+private struct RoaringBitmapRepresentationDecoder {
+    let input: UnsafeRawBufferPointer
+    private(set) var offset = 0
+
+    mutating func decodeBitmap() throws(RoaringBitmapFormatError) -> RoaringBitmap {
+        let signature0 = try readUInt8()
+        let signature1 = try readUInt8()
+        let signature2 = try readUInt8()
+        guard signature0 == 0x52, signature1 == 0x42, signature2 == 0x4D else {
+            throw .invalidSignature
+        }
+        let formatVersion = try readUInt8()
+        guard formatVersion == 1 else {
+            throw .unsupportedFormatVersion(formatVersion)
         }
 
-        func readUInt64() -> UInt64 {
-            var value: UInt64 = 0
-            _ = withUnsafeMutableBytes(of: &value) { dest in
-                data.copyBytes(to: dest, from: offset..<(offset + 8))
-            }
-            offset += 8
-            return value
+        let containerCount = try readUInt32()
+        guard containerCount <= UInt32(UInt16.max) + 1 else {
+            throw .invalidContainerCount(containerCount)
         }
 
-        // Container count
-        let containerCount = readUInt32()
-
+        var bitmap = RoaringBitmap()
         for _ in 0..<containerCount {
-            guard offset + 3 <= data.count else {
-                throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Unexpected end of data"))
+            let high = try readUInt16()
+            guard bitmap.containers[high] == nil else {
+                throw .duplicateContainer(high)
             }
 
-            // High part
-            let high = readUInt16()
-
-            // Container type
-            let containerType = data[offset]
-            offset += 1
-
-            switch containerType {
-            case 0:  // Array
-                guard offset + 4 <= data.count else {
-                    throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Array header truncated"))
-                }
-                let arrCount = readUInt32()
-
-                var arr: [UInt16] = []
-                arr.reserveCapacity(Int(arrCount))
-                for _ in 0..<arrCount {
-                    arr.append(readUInt16())
-                }
-                result.containers[high] = .array(arr)
-
-            case 1:  // Bitmap
-                var bits: [UInt64] = []
-                bits.reserveCapacity(1024)
-                for _ in 0..<1024 {
-                    bits.append(readUInt64())
-                }
-                result.containers[high] = .bitmap(bits)
-
-            case 2:  // Run
-                guard offset + 4 <= data.count else {
-                    throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Run header truncated"))
-                }
-                let runCount = readUInt32()
-
-                var runs: [(start: UInt16, length: UInt16)] = []
-                runs.reserveCapacity(Int(runCount))
-                for _ in 0..<runCount {
-                    let start = readUInt16()
-                    let length = readUInt16()
-                    runs.append((start, length))
-                }
-                result.containers[high] = .run(runs)
-
-            default:
-                throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Unknown container type: \(containerType)"))
+            switch try readUInt8() {
+            case 0:
+                bitmap.containers[high] = try readArrayContainer(high: high)
+            case 1:
+                bitmap.containers[high] = try readBitmapContainer(high: high)
+            case 2:
+                bitmap.containers[high] = try readRunContainer(high: high)
+            case let type:
+                throw .unknownContainerType(type)
             }
         }
 
-        return result
+        guard offset == input.count else {
+            throw .trailingBytes(input.count - offset)
+        }
+        return bitmap
+    }
+
+    private mutating func readArrayContainer(
+        high: UInt16
+    ) throws(RoaringBitmapFormatError) -> RoaringBitmap.Container {
+        let count = try readUInt32()
+        guard count > 0, count <= UInt32(UInt16.max) + 1 else {
+            if count == 0 {
+                throw .emptyContainer(high)
+            }
+            throw .invalidArrayCount(count)
+        }
+        try require(Int(count) * 2)
+
+        var values: [UInt16] = []
+        values.reserveCapacity(Int(count))
+        var previous: UInt16?
+        for _ in 0..<count {
+            let value = readAvailableUInt16()
+            if let previous, value <= previous {
+                throw .unorderedArray(container: high)
+            }
+            values.append(value)
+            previous = value
+        }
+        return .array(values)
+    }
+
+    private mutating func readBitmapContainer(
+        high: UInt16
+    ) throws(RoaringBitmapFormatError) -> RoaringBitmap.Container {
+        try require(1024 * 8)
+        var words: [UInt64] = []
+        words.reserveCapacity(1024)
+        var containsValue = false
+        for _ in 0..<1024 {
+            let word = readAvailableUInt64()
+            containsValue = containsValue || word != 0
+            words.append(word)
+        }
+        guard containsValue else {
+            throw .emptyContainer(high)
+        }
+        return .bitmap(words)
+    }
+
+    private mutating func readRunContainer(
+        high: UInt16
+    ) throws(RoaringBitmapFormatError) -> RoaringBitmap.Container {
+        let count = try readUInt32()
+        guard count > 0, count <= UInt32(UInt16.max) + 1 else {
+            if count == 0 {
+                throw .emptyContainer(high)
+            }
+            throw .invalidRunCount(count)
+        }
+        try require(Int(count) * 4)
+
+        var runs: [(start: UInt16, length: UInt16)] = []
+        runs.reserveCapacity(Int(count))
+        var previousEnd: Int?
+        for _ in 0..<count {
+            let start = readAvailableUInt16()
+            let length = readAvailableUInt16()
+            let end = Int(start) + Int(length)
+            guard end <= Int(UInt16.max), previousEnd.map({ Int(start) > $0 }) ?? true else {
+                throw .invalidRun(container: high)
+            }
+            runs.append((start, length))
+            previousEnd = end
+        }
+        return .run(runs)
+    }
+
+    private mutating func readUInt8() throws(RoaringBitmapFormatError) -> UInt8 {
+        try require(1)
+        let value = input[offset]
+        offset += 1
+        return value
+    }
+
+    private mutating func readUInt16() throws(RoaringBitmapFormatError) -> UInt16 {
+        try require(2)
+        return readAvailableUInt16()
+    }
+
+    private mutating func readUInt32() throws(RoaringBitmapFormatError) -> UInt32 {
+        try require(4)
+        let value = input.loadUnaligned(fromByteOffset: offset, as: UInt32.self)
+        offset += 4
+        return UInt32(littleEndian: value)
+    }
+
+    private mutating func readAvailableUInt16() -> UInt16 {
+        let value = input.loadUnaligned(fromByteOffset: offset, as: UInt16.self)
+        offset += 2
+        return UInt16(littleEndian: value)
+    }
+
+    private mutating func readAvailableUInt64() -> UInt64 {
+        let value = input.loadUnaligned(fromByteOffset: offset, as: UInt64.self)
+        offset += 8
+        return UInt64(littleEndian: value)
+    }
+
+    private func require(_ byteCount: Int) throws(RoaringBitmapFormatError) {
+        let available = input.count - offset
+        guard byteCount <= available else {
+            throw .truncated(
+                offset: offset,
+                requiredByteCount: byteCount,
+                availableByteCount: available
+            )
+        }
     }
 }

@@ -181,7 +181,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
             case .in(let values):
                 // OR query across multiple values
                 var allPks: [Tuple] = []
-                var seen: Set<Data> = []
+                var seen: Set<Bytes> = []
 
                 for value in values {
                     let fieldValues = [try TupleEncoder.encode(value)]
@@ -191,9 +191,9 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
                         transaction: transaction
                     )
                     for pk in pks {
-                        let pkData = Data(pk.pack())
-                        if !seen.contains(pkData) {
-                            seen.insert(pkData)
+                        let packedPrimaryKey = pk.pack()
+                        if !seen.contains(packedPrimaryKey) {
+                            seen.insert(packedPrimaryKey)
                             allPks.append(pk)
                         }
                     }
@@ -235,12 +235,12 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
             return []
         }
 
-        // Deserialize bitmap
-        let bitmap = try RoaringBitmap.deserialize(Data(bitmapBytes))
+        let bitmap = try RoaringBitmap(serializedBytes: bitmapBytes)
 
         // Convert sequential IDs to primary keys
         var primaryKeys: [Tuple] = []
-        for seqId in bitmap.toArray() {
+        primaryKeys.reserveCapacity(bitmap.cardinality)
+        for seqId in bitmap {
             let idKey = idsSubspace.pack(Tuple(Int(seqId)))
             if let pkBytes = try await transaction.getValue(for: idKey) {
                 let pkElements = try Tuple.unpack(from: pkBytes)
