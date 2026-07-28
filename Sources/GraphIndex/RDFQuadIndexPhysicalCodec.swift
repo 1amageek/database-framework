@@ -201,7 +201,8 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
         }
 
         let graph: ByteString?
-        if encodedGraph.count == 1 && encodedGraph[0] == 0xff {
+        if encodedGraph.count == 1
+            && encodedGraph[encodedGraph.startIndex] == 0xff {
             graph = nil
         } else {
             graph = encodedGraph

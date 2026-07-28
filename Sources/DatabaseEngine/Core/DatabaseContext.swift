@@ -191,12 +191,12 @@ public final class DatabaseContext: Sendable {
 
     private struct ActiveSave: Sendable {
         let identifier: UInt64
-        let capturedMutations: [EntityReference: PendingMutation]
+        let capturedMutations: ContextPendingMutations
         var followupMutations: [StagedMutation]
 
         init(
             identifier: UInt64,
-            capturedMutations: [EntityReference: PendingMutation]
+            capturedMutations: ContextPendingMutations
         ) {
             self.identifier = identifier
             self.capturedMutations = capturedMutations
@@ -205,7 +205,7 @@ public final class DatabaseContext: Sendable {
     }
 
     private struct ContextState: Sendable {
-        var pending: [EntityReference: PendingMutation] = [:]
+        var pending = ContextPendingMutations()
         var activeSave: ActiveSave?
         var nextSaveIdentifier: UInt64 = 1
         var commitOutcomeUnknown = false
@@ -232,13 +232,18 @@ public final class DatabaseContext: Sendable {
     private func cachedStore<T: Persistable>(
         for type: T.Type
     ) async throws -> DatabaseDataStore {
-        let storeKey = ContextDataStoreIdentity(typeName: T.persistableType, resolvedPath: [])
-        if let cached = storeRegistry.withLock({ $0.stores[storeKey] }) {
+        let storeKey = DatabaseStoreCacheKey(
+            entity: T.persistableType,
+            components: []
+        )
+        if let cached = storeRegistry.withLock({
+            $0.stores.value(for: storeKey)
+        }) {
             return cached
         }
 
         let store = try await container.store(for: type)
-        storeRegistry.withLock { $0.stores[storeKey] = store }
+        storeRegistry.withLock { $0.stores.insert(store, for: storeKey) }
         return store
     }
 
@@ -257,16 +262,18 @@ public final class DatabaseContext: Sendable {
         path: DirectoryPath<T>
     ) async throws -> DatabaseDataStore {
         let resolvedPath = try AnyDirectoryPath(path).resolve()
-        let storeKey = ContextDataStoreIdentity(
-            typeName: T.persistableType,
-            resolvedPath: resolvedPath
+        let storeKey = DatabaseStoreCacheKey(
+            entity: T.persistableType,
+            components: resolvedPath
         )
-        if let cached = storeRegistry.withLock({ $0.stores[storeKey] }) {
+        if let cached = storeRegistry.withLock({
+            $0.stores.value(for: storeKey)
+        }) {
             return cached
         }
 
         let store = try await container.store(for: type, path: path)
-        storeRegistry.withLock { $0.stores[storeKey] = store }
+        storeRegistry.withLock { $0.stores.insert(store, for: storeKey) }
         return store
     }
 
@@ -420,7 +427,7 @@ public final class DatabaseContext: Sendable {
 
     private static func apply(
         _ stagedMutation: StagedMutation,
-        to mutations: inout [EntityReference: PendingMutation]
+        to mutations: inout ContextPendingMutations
     ) {
         let identity = stagedMutation.identity
         switch stagedMutation.intent {
@@ -442,7 +449,7 @@ public final class DatabaseContext: Sendable {
             switch current {
             case .save(_, let initialPrecondition):
                 if initialPrecondition == .notExists {
-                    mutations.removeValue(forKey: identity)
+                    mutations.remove(identifiedBy: identity)
                 } else {
                     mutations[identity] = .delete(
                         model: model,
@@ -931,7 +938,7 @@ public final class DatabaseContext: Sendable {
             case identifierExhausted
             case start(
                 identifier: UInt64,
-                mutations: [EntityReference: PendingMutation]
+                mutations: ContextPendingMutations
             )
         }
 
@@ -1019,11 +1026,11 @@ public final class DatabaseContext: Sendable {
     }
 
     private static func persistableMutations(
-        from mutations: [EntityReference: PendingMutation]
+        from mutations: ContextPendingMutations
     ) -> [PersistableMutation] {
         var result: [PersistableMutation] = []
         result.reserveCapacity(mutations.count)
-        for mutation in mutations.values {
+        mutations.forEach { mutation in
             switch mutation {
             case .save(let model, let precondition):
                 result.append(
@@ -1390,7 +1397,7 @@ extension DatabaseContext: CustomStringConvertible {
         let stateDescription = stateLock.withLock { state in
             var saves = 0
             var deletes = 0
-            for mutation in state.pending.values {
+            state.pending.forEach { mutation in
                 switch mutation {
                 case .save:
                     saves += 1

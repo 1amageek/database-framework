@@ -83,7 +83,7 @@ public final class DBContainer: Sendable {
     }
 
     private struct DataStoreCache: Sendable {
-        var stores: [DatabaseStoreCacheKey: DatabaseDataStore] = [:]
+        var stores = DatabaseStoreCache<DatabaseDataStore>()
     }
 
     // MARK: - Properties
@@ -558,7 +558,9 @@ public final class DBContainer: Sendable {
         path: DirectoryPath<T> = DirectoryPath()
     ) async throws -> DatabaseDataStore {
         let cacheKey = try storeCacheKey(for: type, path: AnyDirectoryPath(path))
-        if let cached = dataStoreCache.withLock({ $0.stores[cacheKey] }) {
+        if let cached = dataStoreCache.withLock({
+            $0.stores.value(for: cacheKey)
+        }) {
             return cached
         }
 
@@ -571,7 +573,7 @@ public final class DBContainer: Sendable {
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
-        dataStoreCache.withLock { $0.stores[cacheKey] = store }
+        dataStoreCache.withLock { $0.stores.insert(store, for: cacheKey) }
         return store
     }
 
@@ -581,7 +583,9 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil
     ) async throws -> DatabaseDataStore {
         let cacheKey = try storeCacheKey(for: type, path: path)
-        if let cached = dataStoreCache.withLock({ $0.stores[cacheKey] }) {
+        if let cached = dataStoreCache.withLock({
+            $0.stores.value(for: cacheKey)
+        }) {
             return cached
         }
 
@@ -594,7 +598,7 @@ public final class DBContainer: Sendable {
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
-        dataStoreCache.withLock { $0.stores[cacheKey] = store }
+        dataStoreCache.withLock { $0.stores.insert(store, for: cacheKey) }
         return store
     }
 

@@ -271,6 +271,25 @@ struct TDigestTests {
         #expect(abs(decodedMedian - originalMedian) < 0.001)
     }
 
+    @Test("Decode accepts a retained non-zero-index slice")
+    func decodeRetainedSlice() throws {
+        var original = TDigest()
+        try original.add(1)
+        try original.add(2)
+        try original.add(3)
+        _ = try original.quantile(0.5)
+        let encoded = try original.encodeBytes()
+        let framed = ByteString([0xFF])
+            .appending(contentsOf: encoded)
+            .appending(0xEE)
+        let slice = framed[1..<(1 + encoded.count)]
+
+        #expect(slice.startIndex == 1)
+        var decoded = try TDigest.decode(from: slice)
+        _ = try decoded.quantile(0.5)
+        #expect(decoded == original)
+    }
+
     @Test("Decode invalid data throws a typed error")
     func testDecodeInvalidData() {
         let invalidData = ByteString([0, 1, 2, 3])

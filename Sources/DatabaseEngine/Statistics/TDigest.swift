@@ -540,10 +540,11 @@ public struct TDigest: Sendable, Equatable {
                 actual: bytes.count
             )
         }
-        guard bytes[0] == 0x54,
-              bytes[1] == 0x44,
-              bytes[2] == 0x47,
-              bytes[3] == 0x01 else {
+        let startIndex = bytes.startIndex
+        guard bytes[startIndex] == 0x54,
+              bytes[startIndex + 1] == 0x44,
+              bytes[startIndex + 2] == 0x47,
+              bytes[startIndex + 3] == 0x01 else {
             throw .invalidHeader
         }
 

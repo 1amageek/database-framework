@@ -86,15 +86,16 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
                 expected: serializedSize
             )
         }
-        guard bytes[0] == magic[0],
-              bytes[1] == magic[1],
-              bytes[2] == magic[2],
-              bytes[3] == magic[3] else {
+        guard byte(in: bytes, at: 0) == magic[0],
+              byte(in: bytes, at: 1) == magic[1],
+              byte(in: bytes, at: 2) == magic[2],
+              byte(in: bytes, at: 3) == magic[3] else {
             throw DatabaseFormatDescriptorError.invalidMagic
         }
-        guard bytes[4] == descriptorVersion else {
+        let encodedDescriptorVersion = byte(in: bytes, at: 4)
+        guard encodedDescriptorVersion == descriptorVersion else {
             throw DatabaseFormatDescriptorError.unsupportedDescriptorVersion(
-                bytes[4]
+                encodedDescriptorVersion
             )
         }
 
@@ -119,15 +120,16 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
                 persistableFormatVersion
             )
         }
-        let envelopeVersion = bytes[7]
+        let envelopeVersion = byte(in: bytes, at: 7)
         guard envelopeVersion == ItemEnvelope.currentVersion else {
             throw DatabaseFormatDescriptorError.unsupportedEnvelopeVersion(
                 envelopeVersion
             )
         }
-        guard let encoding = ItemPayloadEncoding(rawValue: bytes[8]) else {
+        let encodingByte = byte(in: bytes, at: 8)
+        guard let encoding = ItemPayloadEncoding(rawValue: encodingByte) else {
             throw DatabaseFormatDescriptorError.unsupportedPayloadEncoding(
-                bytes[8]
+                encodingByte
             )
         }
 
@@ -201,13 +203,14 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
     }
 
     private static func readUInt16(_ bytes: ByteString, at offset: Int) -> UInt16 {
-        (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
+        (UInt16(byte(in: bytes, at: offset)) << 8)
+            | UInt16(byte(in: bytes, at: offset + 1))
     }
 
     private static func readUInt32(_ bytes: ByteString, at offset: Int) -> UInt32 {
         var value: UInt32 = 0
         for index in 0..<4 {
-            value = (value << 8) | UInt32(bytes[offset + index])
+            value = (value << 8) | UInt32(byte(in: bytes, at: offset + index))
         }
         return value
     }
@@ -215,8 +218,15 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
     private static func readUInt64(_ bytes: ByteString, at offset: Int) -> UInt64 {
         var value: UInt64 = 0
         for index in 0..<8 {
-            value = (value << 8) | UInt64(bytes[offset + index])
+            value = (value << 8) | UInt64(byte(in: bytes, at: offset + index))
         }
         return value
+    }
+
+    private static func byte(
+        in bytes: ByteString,
+        at offset: Int
+    ) -> UInt8 {
+        bytes[bytes.index(bytes.startIndex, offsetBy: offset)]
     }
 }

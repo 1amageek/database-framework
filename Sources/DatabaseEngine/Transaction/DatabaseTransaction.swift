@@ -29,23 +29,16 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     private var validationScope: DatabaseTransactionScope?
     private var state: State = .open
     private var nextOperationID: UInt64 = 1
-    private var subspaceCache: [DatabaseStoreCacheKey: ResolvedSubspaces] = [:]
-    private var scheduledDeletions = Set<EntityReference>()
-    private var scheduledWrites = Set<EntityReference>()
-    private var activeMutationIdentities = Set<EntityReference>()
-    private var mutationOrder: [EntityReference] = []
-    private var orderedMutationIdentities = Set<EntityReference>()
-    private var mutationJournal: [EntityReference: MutationJournalEntry] = [:]
+    private var subspaceCache = DatabaseStoreCache<ResolvedSubspaces>()
+    private var scheduledDeletions = EntityReferenceSet()
+    private var scheduledWrites = EntityReferenceSet()
+    private var activeMutationIdentities = EntityReferenceSet()
+    private var mutationJournal = TransactionMutationJournal()
 
-    private struct ResolvedSubspaces {
+    private struct ResolvedSubspaces: Sendable {
         let items: Subspace
         let blobs: Subspace
         let partitionPath: [String]
-    }
-
-    private struct MutationJournalEntry: Sendable {
-        let originalModel: (any Persistable)?
-        var currentModel: (any Persistable)?
     }
 
     package init(
@@ -397,33 +390,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         guard state == .open else {
             throw lifecycleError(for: state)
         }
-        return mutationOrder.compactMap { identity in
-            guard let entry = mutationJournal[identity] else {
-                return nil
-            }
-            switch (entry.originalModel, entry.currentModel) {
-            case (nil, .some(let model)):
-                return PersistableMutationEffect(
-                    kind: .insert,
-                    identity: identity,
-                    model: model
-                )
-            case (.some, .some(let model)):
-                return PersistableMutationEffect(
-                    kind: .update,
-                    identity: identity,
-                    model: model
-                )
-            case (.some, nil):
-                return PersistableMutationEffect(
-                    kind: .delete,
-                    identity: identity,
-                    model: nil
-                )
-            case (nil, nil):
-                return nil
-            }
-        }
+        return mutationJournal.persistedEffects()
     }
 
     package func fetchPersistedModel(
@@ -507,9 +474,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         )
         do {
             try await mutationMaintenanceService.validateFinalState(
-                of: mutationOrder.compactMap {
-                    mutationJournal[$0]?.currentModel
-                },
+                of: mutationJournal.currentModels(),
                 context: context
             )
             await context.closeAndWait()
@@ -538,14 +503,15 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         _ mutations: [PersistableMutation],
         operationID: UInt64
     ) async throws {
-        var identities = Set<EntityReference>()
-        identities.reserveCapacity(mutations.count)
+        var identities = EntityReferenceSet(
+            minimumCapacity: mutations.count
+        )
 
         for mutation in mutations {
             let identity = try EntityReferenceEncoder.encode(
                 mutation.model
             )
-            guard identities.insert(identity).inserted else {
+            guard identities.insert(identity) else {
                 throw DatabaseTransactionError.duplicateMutation(identity)
             }
             switch mutation {
@@ -597,14 +563,12 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         if source == .requested {
             scheduledWrites.insert(identity)
         }
-        guard activeMutationIdentities.insert(identity).inserted else {
+        guard activeMutationIdentities.insert(identity) else {
             throw DatabaseTransactionError.conflictingDerivedMutation(identity)
         }
         defer {
             activeMutationIdentities.remove(identity)
         }
-        reserveMutationIdentity(identity)
-
         let modelType = type(of: model)
         let partition = try partition(for: model)
         let store = try await container.store(
@@ -658,14 +622,12 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         if source == .requested {
             scheduledDeletions.insert(identity)
         }
-        guard activeMutationIdentities.insert(identity).inserted else {
+        guard activeMutationIdentities.insert(identity) else {
             throw DatabaseTransactionError.conflictingDerivedMutation(identity)
         }
         defer {
             activeMutationIdentities.remove(identity)
         }
-        reserveMutationIdentity(identity)
-
         let modelType = type(of: model)
         let partition = try partition(for: model)
         let store = try await container.store(
@@ -706,29 +668,16 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         )
     }
 
-    private func reserveMutationIdentity(
-        _ identity: EntityReference
-    ) {
-        guard orderedMutationIdentities.insert(identity).inserted else {
-            return
-        }
-        mutationOrder.append(identity)
-    }
-
     private func updateMutationJournal(
         identity: EntityReference,
         previousModel: (any Persistable)?,
         currentModel: (any Persistable)?
     ) {
-        if var entry = mutationJournal[identity] {
-            entry.currentModel = currentModel
-            mutationJournal[identity] = entry
-        } else {
-            mutationJournal[identity] = MutationJournalEntry(
-                originalModel: previousModel,
-                currentModel: currentModel
-            )
-        }
+        mutationJournal.record(
+            identity: identity,
+            previousModel: previousModel,
+            currentModel: currentModel
+        )
     }
 
     private func loadPersistedModelUnchecked(
@@ -932,7 +881,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             entity: type.persistableType,
             components: partitionPath
         )
-        if let cached = subspaceCache[cacheKey] {
+        if let cached = subspaceCache.value(for: cacheKey) {
             return cached
         }
         guard try await container.engine.namespaceResolver.namespaceExists(
@@ -951,7 +900,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             blobs: root.subspace(SubspaceKey.blobs),
             partitionPath: partitionPath
         )
-        subspaceCache[cacheKey] = resolved
+        subspaceCache.insert(resolved, for: cacheKey)
         return resolved
     }
 

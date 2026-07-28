@@ -497,80 +497,84 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
 /// validator preserves that behavior while avoiding both `Data` and `String`
 /// materialization in the scan loop.
 func containsHNSWMarker(in key: ByteString) -> Bool {
-    var index = 0
-    var containsMarker = false
-    while index < key.count {
-        if index + 3 < key.count,
-           key[index] == 104,
-           key[index + 1] == 110,
-           key[index + 2] == 115,
-           key[index + 3] == 119 {
-            containsMarker = true
-        }
+    key.withUnsafeBytes { bytes in
+        var index = 0
+        var containsMarker = false
+        while index < bytes.count {
+            if index + 3 < bytes.count,
+               bytes[index] == 104,
+               bytes[index + 1] == 110,
+               bytes[index + 2] == 115,
+               bytes[index + 3] == 119 {
+                containsMarker = true
+            }
 
-        let leadingByte = key[index]
-        let sequenceLength: Int
-        switch leadingByte {
-        case 0x00...0x7F:
-            sequenceLength = 1
-        case 0xC2...0xDF:
-            sequenceLength = 2
-        case 0xE0:
-            guard index + 2 < key.count,
-                  key[index + 1] >= 0xA0,
-                  key[index + 1] <= 0xBF,
-                  isUTF8Continuation(key[index + 2]) else {
-                return false
-            }
-            sequenceLength = 3
-        case 0xE1...0xEC, 0xEE...0xEF:
-            sequenceLength = 3
-        case 0xED:
-            guard index + 2 < key.count,
-                  key[index + 1] >= 0x80,
-                  key[index + 1] <= 0x9F,
-                  isUTF8Continuation(key[index + 2]) else {
-                return false
-            }
-            sequenceLength = 3
-        case 0xF0:
-            guard index + 3 < key.count,
-                  key[index + 1] >= 0x90,
-                  key[index + 1] <= 0xBF,
-                  isUTF8Continuation(key[index + 2]),
-                  isUTF8Continuation(key[index + 3]) else {
-                return false
-            }
-            sequenceLength = 4
-        case 0xF1...0xF3:
-            sequenceLength = 4
-        case 0xF4:
-            guard index + 3 < key.count,
-                  key[index + 1] >= 0x80,
-                  key[index + 1] <= 0x8F,
-                  isUTF8Continuation(key[index + 2]),
-                  isUTF8Continuation(key[index + 3]) else {
-                return false
-            }
-            sequenceLength = 4
-        default:
-            return false
-        }
-
-        guard index + sequenceLength <= key.count else { return false }
-        if leadingByte != 0xE0,
-           leadingByte != 0xED,
-           leadingByte != 0xF0,
-           leadingByte != 0xF4 {
-            for continuationIndex in (index + 1)..<(index + sequenceLength) {
-                guard isUTF8Continuation(key[continuationIndex]) else {
+            let leadingByte = bytes[index]
+            let sequenceLength: Int
+            switch leadingByte {
+            case 0x00...0x7F:
+                sequenceLength = 1
+            case 0xC2...0xDF:
+                sequenceLength = 2
+            case 0xE0:
+                guard index + 2 < bytes.count,
+                      bytes[index + 1] >= 0xA0,
+                      bytes[index + 1] <= 0xBF,
+                      isUTF8Continuation(bytes[index + 2]) else {
                     return false
                 }
+                sequenceLength = 3
+            case 0xE1...0xEC, 0xEE...0xEF:
+                sequenceLength = 3
+            case 0xED:
+                guard index + 2 < bytes.count,
+                      bytes[index + 1] >= 0x80,
+                      bytes[index + 1] <= 0x9F,
+                      isUTF8Continuation(bytes[index + 2]) else {
+                    return false
+                }
+                sequenceLength = 3
+            case 0xF0:
+                guard index + 3 < bytes.count,
+                      bytes[index + 1] >= 0x90,
+                      bytes[index + 1] <= 0xBF,
+                      isUTF8Continuation(bytes[index + 2]),
+                      isUTF8Continuation(bytes[index + 3]) else {
+                    return false
+                }
+                sequenceLength = 4
+            case 0xF1...0xF3:
+                sequenceLength = 4
+            case 0xF4:
+                guard index + 3 < bytes.count,
+                      bytes[index + 1] >= 0x80,
+                      bytes[index + 1] <= 0x8F,
+                      isUTF8Continuation(bytes[index + 2]),
+                      isUTF8Continuation(bytes[index + 3]) else {
+                    return false
+                }
+                sequenceLength = 4
+            default:
+                return false
             }
+
+            guard index + sequenceLength <= bytes.count else {
+                return false
+            }
+            if leadingByte != 0xE0,
+               leadingByte != 0xED,
+               leadingByte != 0xF0,
+               leadingByte != 0xF4 {
+                for continuationIndex in (index + 1)..<(index + sequenceLength) {
+                    guard isUTF8Continuation(bytes[continuationIndex]) else {
+                        return false
+                    }
+                }
+            }
+            index += sequenceLength
         }
-        index += sequenceLength
+        return containsMarker
     }
-    return containsMarker
 }
 
 private func isUTF8Continuation(_ byte: UInt8) -> Bool {

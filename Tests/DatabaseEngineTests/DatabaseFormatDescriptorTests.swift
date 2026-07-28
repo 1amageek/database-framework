@@ -22,6 +22,18 @@ struct DatabaseFormatDescriptorTests {
         #expect(try DatabaseFormatDescriptor.deserialize(goldenV1) == descriptor)
     }
 
+    @Test("A retained non-zero-index slice decodes without rebasing")
+    func retainedSlice() throws {
+        let descriptor = DatabaseFormatDescriptor.v1(itemStorage: .v1)
+        let framed = ByteString([0xFF])
+            .appending(contentsOf: descriptor.serialize())
+            .appending(0xEE)
+        let slice = framed[1..<(1 + DatabaseFormatDescriptor.serializedSize)]
+
+        #expect(slice.startIndex == 1)
+        #expect(try DatabaseFormatDescriptor.deserialize(slice) == descriptor)
+    }
+
     @Test("Every truncated and trailing descriptor is rejected")
     func rejectsNonExactLengths() {
         for end in 0..<goldenV1.count {

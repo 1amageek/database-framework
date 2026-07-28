@@ -142,21 +142,23 @@ public struct ItemEnvelope: Sendable, Equatable {
         guard bytes.count >= headerSize else {
             throw ItemEnvelopeError.invalidHeader
         }
-        guard bytes[0] == magic[0],
-              bytes[1] == magic[1],
-              bytes[2] == magic[2],
-              bytes[3] == magic[3] else {
+        guard byte(in: bytes, at: 0) == magic[0],
+              byte(in: bytes, at: 1) == magic[1],
+              byte(in: bytes, at: 2) == magic[2],
+              byte(in: bytes, at: 3) == magic[3] else {
             throw ItemEnvelopeError.invalidMagic
         }
-        let version = bytes[4]
+        let version = byte(in: bytes, at: 4)
         guard version == currentVersion else {
             throw ItemEnvelopeError.unsupportedVersion(version)
         }
-        guard let storageKind = StorageKind(rawValue: bytes[5]) else {
-            throw ItemEnvelopeError.invalidStorageKind(bytes[5])
+        let storageKindByte = byte(in: bytes, at: 5)
+        guard let storageKind = StorageKind(rawValue: storageKindByte) else {
+            throw ItemEnvelopeError.invalidStorageKind(storageKindByte)
         }
-        guard let encoding = ItemPayloadEncoding(rawValue: bytes[6]) else {
-            throw ItemEnvelopeError.unsupportedEncoding(bytes[6])
+        let encodingByte = byte(in: bytes, at: 6)
+        guard let encoding = ItemPayloadEncoding(rawValue: encodingByte) else {
+            throw ItemEnvelopeError.unsupportedEncoding(encodingByte)
         }
 
         let plainByteCount = readUInt64(bytes, at: 7)
@@ -168,7 +170,11 @@ public struct ItemEnvelope: Sendable, Equatable {
             storedByteCount: storedByteCount
         )
 
-        let contentBytes = bytes[headerSize..<bytes.count]
+        let contentStart = bytes.index(
+            bytes.startIndex,
+            offsetBy: headerSize
+        )
+        let contentBytes = bytes[contentStart..<bytes.endIndex]
         let content: Content
         switch storageKind {
         case .inline:
@@ -199,10 +205,10 @@ public struct ItemEnvelope: Sendable, Equatable {
 
     public static func isEnvelope(_ bytes: ByteString) -> Bool {
         bytes.count >= headerSize
-            && bytes[0] == magic[0]
-            && bytes[1] == magic[1]
-            && bytes[2] == magic[2]
-            && bytes[3] == magic[3]
+            && byte(in: bytes, at: 0) == magic[0]
+            && byte(in: bytes, at: 1) == magic[1]
+            && byte(in: bytes, at: 2) == magic[2]
+            && byte(in: bytes, at: 3) == magic[3]
     }
 
     private static func validateEncodingSizes(
@@ -314,7 +320,7 @@ public struct ItemEnvelope: Sendable, Equatable {
     private static func readUInt64(_ bytes: ByteString, at offset: Int) -> UInt64 {
         var value: UInt64 = 0
         for index in 0..<8 {
-            value = (value << 8) | UInt64(bytes[offset + index])
+            value = (value << 8) | UInt64(byte(in: bytes, at: offset + index))
         }
         return value
     }
@@ -322,9 +328,16 @@ public struct ItemEnvelope: Sendable, Equatable {
     private static func readUInt32(_ bytes: ByteString, at offset: Int) -> UInt32 {
         var value: UInt32 = 0
         for index in 0..<4 {
-            value = (value << 8) | UInt32(bytes[offset + index])
+            value = (value << 8) | UInt32(byte(in: bytes, at: offset + index))
         }
         return value
+    }
+
+    private static func byte(
+        in bytes: ByteString,
+        at offset: Int
+    ) -> UInt8 {
+        bytes[bytes.index(bytes.startIndex, offsetBy: offset)]
     }
 }
 

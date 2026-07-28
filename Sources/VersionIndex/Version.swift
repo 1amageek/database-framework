@@ -74,6 +74,8 @@ public struct Version: Sendable, Comparable, Hashable, CustomStringConvertible {
 
     /// Extract batch order (last 2 bytes, big-endian)
     public var batchOrder: UInt16 {
-        return UInt16(bytes[8]) << 8 | UInt16(bytes[9])
+        let startIndex = bytes.startIndex
+        return UInt16(bytes[startIndex + 8]) << 8
+            | UInt16(bytes[startIndex + 9])
     }
 }

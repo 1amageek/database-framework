@@ -1122,8 +1122,17 @@ public enum FieldValueTupleCodec {
 
         let bytes: ByteString
         let limits: FieldValueTupleCodecLimits
-        var offset = 0
+        var offset: Int
         var objectCount = 0
+
+        init(
+            bytes: ByteString,
+            limits: FieldValueTupleCodecLimits
+        ) {
+            self.bytes = bytes
+            self.limits = limits
+            self.offset = bytes.startIndex
+        }
 
         mutating func decodeRoot() throws(FieldValueTupleCodecError) -> FieldValue {
             let (encodedCount, overflow) = bytes.count.addingReportingOverflow(2)
@@ -1146,7 +1155,7 @@ public enum FieldValueTupleCodec {
                 throw .unsupportedEnvelopeVersion(actualVersion)
             }
             let value = try readValue(depth: 0)
-            guard offset == bytes.count else {
+            guard offset == bytes.endIndex else {
                 throw .trailingBytes
             }
             return value
@@ -1380,7 +1389,7 @@ public enum FieldValueTupleCodec {
         ) throws(FieldValueTupleCodecError) -> [FieldValue] {
             var values: [FieldValue] = []
             while true {
-                guard offset < bytes.count else {
+                guard offset < bytes.endIndex else {
                     throw .truncated
                 }
                 if bytes[offset] == end {
@@ -1419,7 +1428,7 @@ public enum FieldValueTupleCodec {
         ) throws(FieldValueTupleCodecError) -> FieldObject {
             var fields: [(key: String, value: FieldValue)] = []
             while true {
-                guard offset < bytes.count else {
+                guard offset < bytes.endIndex else {
                     throw .truncated
                 }
                 if bytes[offset] == end {
@@ -1562,7 +1571,7 @@ public enum FieldValueTupleCodec {
             case identifierCompositeTag:
                 var components: [ReferenceIdentifier] = []
                 while true {
-                    guard offset < bytes.count else {
+                    guard offset < bytes.endIndex else {
                         throw .truncated
                     }
                     if bytes[offset] == end {
@@ -1865,7 +1874,7 @@ public enum FieldValueTupleCodec {
         private mutating func consumeEnd() throws(
             FieldValueTupleCodecError
         ) -> Bool {
-            guard offset < bytes.count else {
+            guard offset < bytes.endIndex else {
                 throw .truncated
             }
             guard bytes[offset] == end else {
@@ -1928,7 +1937,7 @@ public enum FieldValueTupleCodec {
             let start = offset
             var cursor = offset
             var digitCount = 0
-            while cursor < bytes.count {
+            while cursor < bytes.endIndex {
                 let byte = bytes[cursor]
                 if byte == end {
                     guard digitCount.isMultiple(of: 2) else {
@@ -2134,7 +2143,7 @@ public enum FieldValueTupleCodec {
         }
 
         private mutating func readByte() throws(FieldValueTupleCodecError) -> UInt8 {
-            guard offset < bytes.count else {
+            guard offset < bytes.endIndex else {
                 throw .truncated
             }
             let value = bytes[offset]

@@ -803,14 +803,15 @@ private enum DistinctSummaryCodec {
         _ bytes: ByteString,
         expectedPrecision: Int
     ) throws -> HyperLogLog {
+        let startIndex = bytes.startIndex
         guard bytes.count >= headerByteCount,
-              bytes[0] == 0x44,
-              bytes[1] == 0x48,
-              bytes[2] == 0x4C,
-              bytes[3] == 0x01 else {
+              bytes[startIndex] == 0x44,
+              bytes[startIndex + 1] == 0x48,
+              bytes[startIndex + 2] == 0x4C,
+              bytes[startIndex + 3] == 0x01 else {
             throw DistinctIndexError.corruptedSummary
         }
-        let precision = Int(bytes[4])
+        let precision = Int(bytes[startIndex + 4])
         guard precision == expectedPrecision else {
             throw DistinctIndexError.precisionMismatch(
                 expected: expectedPrecision,
@@ -837,7 +838,8 @@ private enum DistinctSummaryCodec {
             var offset = headerByteCount
             for index in 0..<registerCount {
                 while accumulatedBits < registerBitCount {
-                    accumulator |= UInt16(bytes[offset]) << accumulatedBits
+                    accumulator |= UInt16(bytes[startIndex + offset])
+                        << accumulatedBits
                     offset += 1
                     accumulatedBits += 8
                 }
