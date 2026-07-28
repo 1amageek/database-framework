@@ -6,9 +6,9 @@
 
 import Testing
 import TestHeartbeat
-import Foundation
 import DatabaseTypes
 import DatabaseKit
+@testable import DatabaseEngine
 @testable import GraphIndex
 @testable import OntologyIndex
 
@@ -36,22 +36,71 @@ struct OntologyMetadataTests {
         #expect(version.description == "2.3.1")
     }
 
-    @Test("Metadata encoding and decoding")
+    @Test("Metadata binary storage round trip")
     func metadataEncodeDecode() throws {
+        let createdAt = try Timestamp(
+            secondsSinceUnixEpoch: 1_000,
+            nanoseconds: 123_456_789
+        )
+        let updatedAt = try Timestamp(
+            secondsSinceUnixEpoch: 2_000,
+            nanoseconds: 987_654_321
+        )
         let metadata = OntologyMetadata(
             iri: "http://example.org/test-ontology",
             versionIRI: "http://example.org/test-ontology/1.0",
+            createdAt: createdAt,
+            updatedAt: updatedAt,
             imports: ["http://www.w3.org/2002/07/owl"],
             prefixes: ["ex": "http://example.org/"]
         )
 
-        let encoded = try JSONEncoder().encode(metadata)
-        let decoded = try JSONDecoder().decode(OntologyMetadata.self, from: encoded)
+        let encoded = try OntologyStorageFormat.encode(metadata)
+        let decoded = try OntologyStorageFormat.decodeMetadata(encoded)
 
-        #expect(decoded.iri == metadata.iri)
-        #expect(decoded.versionIRI == metadata.versionIRI)
-        #expect(decoded.imports == metadata.imports)
-        #expect(decoded.prefixes == metadata.prefixes)
+        #expect(decoded == metadata)
+    }
+
+    @Test("Ontology metadata storage rejects invalid and trailing bytes")
+    func metadataRejectsInvalidFrames() throws {
+        let encoded = try OntologyStorageFormat.encode(
+            OntologyMetadata(
+                iri: "http://example.org/test-ontology",
+                createdAt: try Timestamp(secondsSinceUnixEpoch: 1_000),
+                updatedAt: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            )
+        )
+
+        var invalidMagic = Array(encoded)
+        invalidMagic[0] ^= 0xff
+        #expect(throws: StorageFrameError.invalidMagic) {
+            try OntologyStorageFormat.decodeMetadata(ByteString(invalidMagic))
+        }
+
+        var trailing = Array(encoded)
+        trailing.append(0)
+        #expect(throws: StorageFrameError.trailingBytes) {
+            try OntologyStorageFormat.decodeMetadata(ByteString(trailing))
+        }
+    }
+
+    @Test("Ontology metadata storage rejects invalid nanoseconds")
+    func metadataRejectsInvalidTimestamp() throws {
+        let encoded = try StorageFrameEncoder.encode {
+            (writer: inout StorageFrameEncoder) throws(StorageFrameError) in
+            writer.writeUInt32(0x314D_544F)
+            try writer.writeString("urn:test:ontology")
+            try writer.writeOptionalString(nil)
+            writer.writeInt64(1)
+            writer.writeInt64(0)
+            writer.writeInt64(0)
+            writer.writeInt64(1_000)
+            writer.writeUInt32(1_000_000_000)
+        }
+
+        #expect(throws: StorageFrameError.invalidTimestamp) {
+            try OntologyStorageFormat.decodeMetadata(encoded)
+        }
     }
 
     @Test("Ontology status values")
@@ -64,8 +113,13 @@ struct OntologyMetadataTests {
     }
 
     @Test("Ontology status metadata")
-    func ontologyStatusMetadata() {
-        let metadata = OntologyMetadata(iri: "http://example.org/test")
+    func ontologyStatusMetadata() throws {
+        let timestamp = try Timestamp(secondsSinceUnixEpoch: 1_000)
+        let metadata = OntologyMetadata(
+            iri: "http://example.org/test",
+            createdAt: timestamp,
+            updatedAt: timestamp
+        )
         let statusMetadata = OntologyStatusMetadata(
             metadata: metadata,
             status: .ready
@@ -117,7 +171,7 @@ struct StoredClassDefinitionTests {
         #expect(classDef.isPrimitive == true)
     }
 
-    @Test("Class definition encoding and decoding")
+    @Test("Class definition binary storage round trip")
     func classEncodeDecode() throws {
         let classDef = StoredClassDefinition(
             iri: "http://example.org/Employee",
@@ -127,8 +181,8 @@ struct StoredClassDefinitionTests {
             isPrimitive: false
         )
 
-        let encoded = try classDef.encode()
-        let decoded = try StoredClassDefinition.decode(from: Data(encoded))
+        let encoded = try OntologyStorageFormat.encode(classDef)
+        let decoded = try OntologyStorageFormat.decodeClass(encoded)
 
         #expect(decoded.iri == classDef.iri)
         #expect(decoded.label == classDef.label)
@@ -249,7 +303,7 @@ struct StoredPropertyDefinitionTests {
         #expect(propDef.propertyChains[0].count == 2)
     }
 
-    @Test("Property encoding and decoding")
+    @Test("Property binary storage round trip")
     func propertyEncodeDecode() throws {
         let propDef = StoredPropertyDefinition(
             iri: "http://example.org/knows",
@@ -259,8 +313,8 @@ struct StoredPropertyDefinitionTests {
             propertyChains: [["http://example.org/friendOf", "http://example.org/friendOf"]]
         )
 
-        let encoded = try propDef.encode()
-        let decoded = try StoredPropertyDefinition.decode(from: Data(encoded))
+        let encoded = try OntologyStorageFormat.encode(propDef)
+        let decoded = try OntologyStorageFormat.decodeProperty(encoded)
 
         #expect(decoded.iri == propDef.iri)
         #expect(decoded.type == .objectProperty)

@@ -33,18 +33,16 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
             timeoutMilliseconds: timeoutMilliseconds,
             clock: context.container.monotonicClock
         )
-        let executed = try await executePrepared(
+        return try await executeAtomically(
             operation: operation,
             requestPayload: requestPayload,
             context: context,
             deadline: deadline,
             body: body,
-            decodeStoredResponse: { _ in () },
             makeResponse: { value, logicalVersion in
-                (try makeResponse(value, logicalVersion), ())
+                try makeResponse(value, logicalVersion)
             }
         )
-        return executed.coordinated
     }
 
     /// Prepares non-transactional input only after an idempotency preflight.
@@ -89,7 +87,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         }
 
         let preparation = try await deadline.run(prepare)
-        let executed = try await executePrepared(
+        return try await executeAtomically(
             operation: operation,
             requestPayload: requestPayload,
             context: context,
@@ -97,31 +95,23 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
             body: { transactionContext in
                 try await body(preparation, transactionContext)
             },
-            decodeStoredResponse: { _ in () },
             makeResponse: { value, logicalVersion in
-                (try makeResponse(value, logicalVersion), ())
+                try makeResponse(value, logicalVersion)
             }
         )
-        return executed.coordinated
     }
 
-    private func executePrepared<Value: Sendable, Prepared: Sendable>(
+    private func executeAtomically<Value: Sendable>(
         operation: DatabaseOperationIdentifier,
         requestPayload: ByteString,
         context: DatabaseOperationContext,
         deadline: DatabaseExecutionDeadline,
         body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
-        decodeStoredResponse: @Sendable @escaping (
-            ByteString
-        ) throws -> Prepared,
         makeResponse: @Sendable @escaping (
             Value,
             UInt64
-        ) throws -> (DatabaseOperationResponseEncoder, Prepared)
-    ) async throws -> (
-        coordinated: DatabaseCoordinatedOperationResponse,
-        prepared: Prepared
-    ) {
+        ) throws -> DatabaseOperationResponseEncoder
+    ) async throws -> DatabaseCoordinatedOperationResponse {
         try stateStore.validate(container: context.container)
         let idempotencyKey = try validatedIdempotencyKey(
             context.metadata.idempotencyKey
@@ -165,19 +155,13 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                             operation: operation,
                             payload: successPayload.bytes
                         )
-                        let prepared = try decodeStoredResponse(
-                            successPayload.bytes
-                        )
-                        return (
-                            DatabaseCoordinatedOperationResponse(
-                                result: DatabaseOperationResult(
-                                    operation: operation,
-                                    requestID: context.requestID,
-                                    frame: frame
-                                ),
-                                successPayload: successPayload
+                        return DatabaseCoordinatedOperationResponse(
+                            result: DatabaseOperationResult(
+                                operation: operation,
+                                requestID: context.requestID,
+                                frame: frame
                             ),
-                            prepared
+                            successPayload: successPayload
                         )
                     } catch {
                         throw DatabaseMutationError.idempotencyEntryCorrupted
@@ -188,7 +172,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 let logicalVersion = try await stateStore.nextLogicalVersion(
                     transaction: transaction
                 )
-                let (encoder, prepared) = try makeResponse(
+                let encoder = try makeResponse(
                     value,
                     logicalVersion
                 )
@@ -233,16 +217,13 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                     transaction: transaction,
                     limits: wireLimits
                 )
-                return (
-                    DatabaseCoordinatedOperationResponse(
-                        result: DatabaseOperationResult(
-                            operation: operation,
-                            requestID: context.requestID,
-                            frame: encodedResponse.frame
-                        ),
-                        successPayload: payload
+                return DatabaseCoordinatedOperationResponse(
+                    result: DatabaseOperationResult(
+                        operation: operation,
+                        requestID: context.requestID,
+                        frame: encodedResponse.frame
                     ),
-                    prepared
+                    successPayload: payload
                 )
             }
         } catch let error as TransactionExecutionDeadlineExceeded
@@ -256,55 +237,6 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 timeoutMilliseconds
             )
         }
-    }
-
-    public func execute<
-        Operation: ServerOperationDeclaration,
-        Value: Sendable
-    >(
-        _ operation: Operation.Type,
-        requestPayload: ByteString,
-        context: DatabaseOperationContext,
-        timeoutMilliseconds: UInt32,
-        body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
-        makeResponse: @Sendable @escaping (
-            Value,
-            UInt64
-        ) throws -> Operation.Response
-    ) async throws -> DatabasePreparedOperationResponse<Operation> {
-        let deadline = DatabaseExecutionDeadline(
-            timeoutMilliseconds: timeoutMilliseconds,
-            clock: context.container.monotonicClock
-        )
-        let executed = try await executePrepared(
-            operation: Operation.operation.identifier,
-            requestPayload: requestPayload,
-            context: context,
-            deadline: deadline,
-            body: body,
-            decodeStoredResponse: { bytes in
-                try DatabaseWireDecoder(
-                    limits: wireLimits
-                ).decodeResponsePayload(
-                    Operation.operation,
-                    from: bytes,
-                )
-            },
-            makeResponse: { value, logicalVersion in
-                let response = try makeResponse(value, logicalVersion)
-                return (
-                    DatabaseOperationResponseEncoder(
-                        Operation.self,
-                        response: response
-                    ),
-                    response
-                )
-            }
-        )
-        return DatabasePreparedOperationResponse(
-            response: executed.prepared,
-            operationResult: executed.coordinated.result
-        )
     }
 
     private func validatedIdempotencyKey(_ key: String?) throws -> String {

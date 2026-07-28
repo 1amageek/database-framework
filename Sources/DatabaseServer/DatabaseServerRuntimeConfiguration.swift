@@ -7,12 +7,14 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
     public let runtimeLimits: DatabaseRuntimeLimits
     public let wireLimits: DatabaseWireLimits
     public let errorMapper: AnyDatabaseErrorMapper
+    public let clock: AnyDatabaseWallClock
     private let serviceFactory: AnyDatabaseServerServiceFactory
 
-    public init(
+    public init<Clock: DatabaseWallClock>(
         identity: DatabaseRuntimeIdentity,
         serviceFactory: AnyDatabaseServerServiceFactory,
         admissionPolicy: AnyDatabaseOperationAdmissionPolicy,
+        clock: Clock,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
         runtimeLimits: DatabaseRuntimeLimits = .default,
         wireLimits: DatabaseWireLimits = .default,
@@ -27,6 +29,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
         self.runtimeLimits = runtimeLimits
         self.wireLimits = wireLimits
         self.errorMapper = errorMapper
+        self.clock = AnyDatabaseWallClock(clock)
     }
 
     public func makeServices(

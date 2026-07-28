@@ -5,11 +5,6 @@
 //
 // Reference: W3C OWL 2 Syntax https://www.w3.org/TR/owl2-syntax/#Classes
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 
 /// Stored class definition for persistent TBox storage
@@ -32,7 +27,7 @@ import DatabaseKit
 ///     disjointClasses: ["http://example.org/Organization"]
 /// )
 /// ```
-public struct StoredClassDefinition: Codable, Sendable, Hashable {
+public struct StoredClassDefinition: Sendable, Hashable {
 
     // MARK: - Identity
 
@@ -149,20 +144,6 @@ public struct StoredClassDefinition: Codable, Sendable, Hashable {
     /// Add a disjoint class
     public mutating func addDisjointClass(_ classIRI: String) {
         disjointClasses.insert(classIRI)
-    }
-}
-
-// MARK: - Encoding/Decoding
-
-extension StoredClassDefinition {
-    /// Encode to JSON bytes
-    public func encode() throws -> Data {
-        try JSONEncoder().encode(self)
-    }
-
-    /// Decode from JSON bytes
-    public static func decode(from data: Data) throws -> StoredClassDefinition {
-        try JSONDecoder().decode(StoredClassDefinition.self, from: data)
     }
 }
 

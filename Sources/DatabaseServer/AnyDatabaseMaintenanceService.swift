@@ -7,9 +7,7 @@ public final class AnyDatabaseMaintenanceService:
     private let executeMaintenance: @Sendable (
         MaintenanceExecuteOperation.Request,
         DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<
-        MaintenanceExecuteOperation
-    >
+    ) async throws -> MaintenanceExecutionResult
 
     public init<Service: DatabaseMaintenanceService>(_ service: Service) {
         self.executeMaintenance = { request, context in
@@ -20,9 +18,7 @@ public final class AnyDatabaseMaintenanceService:
     public func execute(
         _ request: MaintenanceExecuteOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<
-        MaintenanceExecuteOperation
-    > {
+    ) async throws -> MaintenanceExecutionResult {
         try await executeMaintenance(request, context)
     }
 }

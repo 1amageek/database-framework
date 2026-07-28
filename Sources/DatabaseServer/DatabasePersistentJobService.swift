@@ -45,7 +45,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
     public func start(
         _ request: JobStartOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<JobStartOperation> {
+    ) async throws -> JobStartExecutionResult {
         try validate(request)
         let store = self.store
         let registry = self.registry
@@ -56,8 +56,8 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
         let wireLimits = self.wireLimits
         let storageLimits = self.storageLimits
         let requestPayload = context.requestPayload
-        let prepared = try await coordinator.execute(
-            JobStartOperation.self,
+        let coordinated = try await coordinator.execute(
+            operation: JobStartOperation.identifier,
             requestPayload: requestPayload,
             context: context,
             timeoutMilliseconds: runtimeLimits.maximumTimeoutMilliseconds
@@ -151,10 +151,16 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
                 operation: request.operation
             )
         } makeResponse: { job, _ in
-            JobStartOperation.Response(job: job)
+            return DatabaseOperationResponseEncoder(
+                JobStartOperation.self,
+                response: JobStartOperation.Response(job: job)
+            )
         }
         try await runner.recoverSchedule()
-        return prepared
+        return try JobStartExecutionResult(
+            coordinated: coordinated,
+            limits: wireLimits
+        )
     }
 
     public func status(
@@ -244,12 +250,12 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
     public func cancel(
         _ request: JobCancelOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<JobCancelOperation> {
+    ) async throws -> JobCancellationExecutionResult {
         let store = self.store
         let clock = self.clock
         let requestPayload = context.requestPayload
-        let prepared = try await coordinator.execute(
-            JobCancelOperation.self,
+        let coordinated = try await coordinator.execute(
+            operation: JobCancelOperation.identifier,
             requestPayload: requestPayload,
             context: context,
             timeoutMilliseconds: runtimeLimits.maximumTimeoutMilliseconds
@@ -308,10 +314,16 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
                 accepted: true
             )
         } makeResponse: { response, _ in
-            response
+            DatabaseOperationResponseEncoder(
+                JobCancelOperation.self,
+                response: response
+            )
         }
         try await runner.recoverSchedule()
-        return prepared
+        return try JobCancellationExecutionResult(
+            coordinated: coordinated,
+            limits: wireLimits
+        )
     }
 
     public func runScheduledWork() async throws {

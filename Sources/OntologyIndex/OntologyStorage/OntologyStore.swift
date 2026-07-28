@@ -1,20 +1,15 @@
 // OntologyStore.swift
 // GraphIndex - Persistent ontology storage operations
 //
-// Provides CRUD operations for ontology storage in FoundationDB.
+// Provides CRUD operations for ontology storage through StorageKit.
 //
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import DatabaseTypes
 
-/// Ontology store for persistent TBox/RBox storage
+/// Ontology store for persistent TBox/RBox storage.
 ///
 /// **Design**: Operations receive transactions as parameters.
 /// Does NOT create transactions - follows DatabaseDataStore pattern.
@@ -69,7 +64,7 @@ public struct OntologyStore: Sendable {
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
             return nil
         }
-        return try JSONDecoder().decode(OntologyMetadata.self, from: Data(data))
+        return try OntologyStorageFormat.decodeMetadata(data)
     }
 
     /// Save ontology metadata
@@ -82,8 +77,10 @@ public struct OntologyStore: Sendable {
         transaction: any TransactionAccess
     ) async throws {
         let key = subspace.metadata(metadata.iri).pack(Tuple())
-        let data = try JSONEncoder().encode(metadata)
-        try transaction.setValue(ByteString(retaining: data), for: key)
+        try transaction.setValue(
+            try OntologyStorageFormat.encode(metadata),
+            for: key
+        )
     }
 
     /// Delete ontology metadata
@@ -136,7 +133,7 @@ public struct OntologyStore: Sendable {
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
             return nil
         }
-        return try StoredClassDefinition.decode(from: Data(data))
+        return try OntologyStorageFormat.decodeClass(data)
     }
 
     /// Save class definition
@@ -146,8 +143,10 @@ public struct OntologyStore: Sendable {
         transaction: any TransactionAccess
     ) async throws {
         let key = subspace.classKey(ontologyIRI, classIRI: classDef.iri)
-        let data = try classDef.encode()
-        try transaction.setValue(ByteString(retaining: data), for: key)
+        try transaction.setValue(
+            try OntologyStorageFormat.encode(classDef),
+            for: key
+        )
     }
 
     /// Delete class definition
@@ -175,7 +174,7 @@ public struct OntologyStore: Sendable {
         )
 
         for (_, value) in stream {
-            let classDef = try StoredClassDefinition.decode(from: Data(value))
+            let classDef = try OntologyStorageFormat.decodeClass(value)
             classes.append(classDef)
         }
 
@@ -194,7 +193,7 @@ public struct OntologyStore: Sendable {
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
             return nil
         }
-        return try StoredPropertyDefinition.decode(from: Data(data))
+        return try OntologyStorageFormat.decodeProperty(data)
     }
 
     /// Save property definition
@@ -204,8 +203,10 @@ public struct OntologyStore: Sendable {
         transaction: any TransactionAccess
     ) async throws {
         let key = subspace.propertyKey(ontologyIRI, propertyIRI: propDef.iri)
-        let data = try propDef.encode()
-        try transaction.setValue(ByteString(retaining: data), for: key)
+        try transaction.setValue(
+            try OntologyStorageFormat.encode(propDef),
+            for: key
+        )
     }
 
     /// Delete property definition
@@ -233,7 +234,7 @@ public struct OntologyStore: Sendable {
         )
 
         for (_, value) in stream {
-            let propDef = try StoredPropertyDefinition.decode(from: Data(value))
+            let propDef = try OntologyStorageFormat.decodeProperty(value)
             properties.append(propDef)
         }
 
@@ -242,7 +243,7 @@ public struct OntologyStore: Sendable {
 
     // MARK: - Axiom Operations
 
-    /// Save axioms to FDB
+    /// Save axioms to persistent storage.
     ///
     /// Persists raw OWLAxiom values so they can be reconstructed when
     /// loading the ontology back. This is essential for reasoning, since
@@ -542,8 +543,10 @@ public struct OntologyStore: Sendable {
 
         let chainID = maxID + 1
         let key = subspace.chainKey(ontologyIRI, targetProperty: targetProperty, chainID: chainID)
-        let data = try JSONEncoder().encode(chain)
-        try transaction.setValue(ByteString(retaining: data), for: key)
+        try transaction.setValue(
+            try OntologyStorageFormat.encode(chain),
+            for: key
+        )
     }
 
     /// Get property chains for a target property
@@ -562,7 +565,7 @@ public struct OntologyStore: Sendable {
         )
 
         for (_, value) in stream {
-            let chain = try JSONDecoder().decode([String].self, from: Data(value))
+            let chain = try OntologyStorageFormat.decodeStrings(value)
             chains.append(chain)
         }
 
@@ -586,7 +589,7 @@ public struct OntologyStore: Sendable {
         for (key, value) in stream {
             let tuple = try subspace.chains(ontologyIRI).unpack(key)
             if let targetProp = tuple[0] as? String {
-                let chain = try JSONDecoder().decode([String].self, from: Data(value))
+                let chain = try OntologyStorageFormat.decodeStrings(value)
                 result[targetProp, default: []].append(chain)
             }
         }
@@ -604,6 +607,7 @@ public struct OntologyStore: Sendable {
     /// same ontology produces the same result.
     public func loadOntology(
         _ ontology: OWLOntology,
+        at timestamp: Timestamp,
         transaction: any TransactionAccess
     ) async throws {
         // Clear existing data for this ontology to ensure idempotency.
@@ -615,6 +619,8 @@ public struct OntologyStore: Sendable {
         let metadata = OntologyMetadata(
             iri: ontology.iri,
             versionIRI: ontology.versionIRI,
+            createdAt: timestamp,
+            updatedAt: timestamp,
             imports: ontology.imports,
             prefixes: ontology.prefixes
         )

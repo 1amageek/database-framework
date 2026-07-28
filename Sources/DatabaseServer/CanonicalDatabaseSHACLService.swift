@@ -25,7 +25,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
     public func execute(
         _ request: SHACLExecuteOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<SHACLExecuteOperation> {
+    ) async throws -> SHACLExecutionResult {
         let workBudget = SHACLValidationWorkBudget(budget: request.budget)
         switch request.invocation {
         case .describeShapes(let graph):
@@ -141,9 +141,9 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
         request: SHACLExecuteOperation.Request,
         workBudget: SHACLValidationWorkBudget,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<SHACLExecuteOperation> {
-        try await coordinator.execute(
-                SHACLExecuteOperation.self,
+    ) async throws -> SHACLExecutionResult {
+        let coordinated = try await coordinator.execute(
+                operation: SHACLExecuteOperation.identifier,
                 requestPayload: context.requestPayload,
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
@@ -164,13 +164,20 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 try workBudget.workMeter.recordOutputRows()
                 return revision
             } makeResponse: { revision, commitVersion in
-                .mutation(
-                    RevisionMutationResult(
-                        commitVersion: commitVersion,
-                        revision: revision
+                DatabaseOperationResponseEncoder(
+                    SHACLExecuteOperation.self,
+                    response: .mutation(
+                        RevisionMutationResult(
+                            commitVersion: commitVersion,
+                            revision: revision
+                        )
                     )
                 )
             }
+        return try SHACLExecutionResult(
+            coordinated: coordinated,
+            limits: wireLimits
+        )
     }
 
     private func delete(
@@ -179,9 +186,9 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
         request: SHACLExecuteOperation.Request,
         workBudget: SHACLValidationWorkBudget,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<SHACLExecuteOperation> {
-        try await coordinator.execute(
-                SHACLExecuteOperation.self,
+    ) async throws -> SHACLExecutionResult {
+        let coordinated = try await coordinator.execute(
+                operation: SHACLExecuteOperation.identifier,
                 requestPayload: context.requestPayload,
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
@@ -195,13 +202,20 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 try workBudget.workMeter.recordOutputRows()
                 return revision
             } makeResponse: { revision, commitVersion in
-                .mutation(
-                    RevisionMutationResult(
-                        commitVersion: commitVersion,
-                        revision: revision
+                DatabaseOperationResponseEncoder(
+                    SHACLExecuteOperation.self,
+                    response: .mutation(
+                        RevisionMutationResult(
+                            commitVersion: commitVersion,
+                            revision: revision
+                        )
                     )
                 )
             }
+        return try SHACLExecutionResult(
+            coordinated: coordinated,
+            limits: wireLimits
+        )
     }
 
     private func read<Value: Sendable>(

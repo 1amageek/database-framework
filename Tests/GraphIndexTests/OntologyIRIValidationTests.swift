@@ -162,7 +162,10 @@ struct OntologyIRIValidationTests {
         ontology.axioms = [
             .subClassOf(sub: .named("http://test.org/onto#Employee"), sup: .named("http://test.org/onto#Person")),
         ]
-        try await context.ontology.load(ontology)
+        try await context.ontology.load(
+            ontology,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
     }
 
     // MARK: - Class Validation

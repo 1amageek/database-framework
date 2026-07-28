@@ -10,11 +10,12 @@ import Synchronization
 /// repeatedly materializing semantic RDF strings.
 package final class GraphIdentityPool: Sendable {
     private struct Entry: Sendable {
+        let fingerprint: RDFTermStorageFingerprint
         let identity: GraphIdentity
     }
 
     private let identities = Mutex(
-        [RDFTermStorageFingerprint: [Entry]]()
+        [UInt64: [Entry]]()
     )
 
     func internRDF(
@@ -27,9 +28,13 @@ package final class GraphIdentityPool: Sendable {
                 role: role.databaseRole
             ) { buffer, validation in
                 identities.withLock { identities in
-                    if let bucket = identities[validation.fingerprint] {
+                    let bucketKey = Self.bucketKey(
+                        for: validation.fingerprint
+                    )
+                    if let bucket = identities[bucketKey] {
                         for entry in bucket where
-                            entry.identity.canonicalRDFBytesEqual(buffer) {
+                            entry.fingerprint == validation.fingerprint
+                                && entry.identity.canonicalRDFBytesEqual(buffer) {
                             return entry.identity
                         }
                     }
@@ -39,8 +44,11 @@ package final class GraphIdentityPool: Sendable {
                             encoded,
                             fingerprint: validation.fingerprint
                         )
-                    identities[validation.fingerprint, default: []].append(
-                        Entry(identity: identity)
+                    identities[bucketKey, default: []].append(
+                        Entry(
+                            fingerprint: validation.fingerprint,
+                            identity: identity
+                        )
                     )
                     return identity
                 }
@@ -51,6 +59,14 @@ package final class GraphIdentityPool: Sendable {
             }
             throw GraphIndexError.invalidRDFEncoding(error)
         }
+    }
+
+    private static func bucketKey(
+        for fingerprint: RDFTermStorageFingerprint
+    ) -> UInt64 {
+        fingerprint.high
+            ^ ((fingerprint.low << 29) | (fingerprint.low >> 35))
+            ^ UInt64(truncatingIfNeeded: fingerprint.byteCount)
     }
 
     private func invalidRoleError(

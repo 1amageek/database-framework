@@ -241,6 +241,7 @@ struct DatabaseServerRuntimeTests {
                 admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
                     UnrestrictedDatabaseOperationAdmissionPolicy()
                 ),
+                clock: RealtimeDatabaseWallClock(),
                 wireLimits: wireLimits
             )
         )
@@ -448,32 +449,28 @@ struct DatabaseServerRuntimeTests {
         func execute(
             _ request: OntologyExecuteOperation.Request,
             context: DatabaseOperationContext
-        ) async throws
-            -> DatabasePreparedOperationResponse<OntologyExecuteOperation> {
+        ) async throws -> OntologyExecutionResult {
             throw UnavailableError()
         }
 
         func execute(
             _ request: SHACLExecuteOperation.Request,
             context: DatabaseOperationContext
-        ) async throws
-            -> DatabasePreparedOperationResponse<SHACLExecuteOperation> {
+        ) async throws -> SHACLExecutionResult {
             throw UnavailableError()
         }
 
         func execute(
             _ request: MaintenanceExecuteOperation.Request,
             context: DatabaseOperationContext
-        ) async throws
-            -> DatabasePreparedOperationResponse<MaintenanceExecuteOperation> {
+        ) async throws -> MaintenanceExecutionResult {
             throw UnavailableError()
         }
 
         func start(
             _ request: JobStartOperation.Request,
             context: DatabaseOperationContext
-        ) async throws
-            -> DatabasePreparedOperationResponse<JobStartOperation> {
+        ) async throws -> JobStartExecutionResult {
             throw UnavailableError()
         }
 
@@ -494,8 +491,7 @@ struct DatabaseServerRuntimeTests {
         func cancel(
             _ request: JobCancelOperation.Request,
             context: DatabaseOperationContext
-        ) async throws
-            -> DatabasePreparedOperationResponse<JobCancelOperation> {
+        ) async throws -> JobCancellationExecutionResult {
             throw UnavailableError()
         }
 

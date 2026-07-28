@@ -173,6 +173,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
             transaction in
             try await resolutionContext.ontologyStore.loadOntology(
                 ontology,
+                at: try Timestamp(secondsSinceUnixEpoch: 1_000),
                 transaction: transaction
             )
         }

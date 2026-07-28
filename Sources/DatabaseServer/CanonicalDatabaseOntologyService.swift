@@ -24,7 +24,7 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
     public func execute(
         _ request: OntologyExecuteOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<OntologyExecuteOperation> {
+    ) async throws -> OntologyExecutionResult {
         switch request.invocation {
         case .describe(let ontology):
             return .encoding(
@@ -147,9 +147,9 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
         expectedRevision: UInt64?,
         request: OntologyExecuteOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<OntologyExecuteOperation> {
-        try await coordinator.execute(
-                OntologyExecuteOperation.self,
+    ) async throws -> OntologyExecutionResult {
+        let coordinated = try await coordinator.execute(
+                operation: OntologyExecuteOperation.identifier,
                 requestPayload: context.requestPayload,
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
@@ -169,13 +169,20 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
                 )
                 return revision
             } makeResponse: { revision, commitVersion in
-                .mutation(
-                    RevisionMutationResult(
-                        commitVersion: commitVersion,
-                        revision: revision
+                DatabaseOperationResponseEncoder(
+                    OntologyExecuteOperation.self,
+                    response: .mutation(
+                        RevisionMutationResult(
+                            commitVersion: commitVersion,
+                            revision: revision
+                        )
                     )
                 )
             }
+        return try OntologyExecutionResult(
+            coordinated: coordinated,
+            limits: wireLimits
+        )
     }
 
     private func delete(
@@ -183,9 +190,9 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
         expectedRevision: UInt64?,
         request: OntologyExecuteOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<OntologyExecuteOperation> {
-        try await coordinator.execute(
-                OntologyExecuteOperation.self,
+    ) async throws -> OntologyExecutionResult {
+        let coordinated = try await coordinator.execute(
+                operation: OntologyExecuteOperation.identifier,
                 requestPayload: context.requestPayload,
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
@@ -203,13 +210,20 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
                 )
                 return revision
             } makeResponse: { revision, commitVersion in
-                .mutation(
-                    RevisionMutationResult(
-                        commitVersion: commitVersion,
-                        revision: revision
+                DatabaseOperationResponseEncoder(
+                    OntologyExecuteOperation.self,
+                    response: .mutation(
+                        RevisionMutationResult(
+                            commitVersion: commitVersion,
+                            revision: revision
+                        )
                     )
                 )
             }
+        return try OntologyExecutionResult(
+            coordinated: coordinated,
+            limits: wireLimits
+        )
     }
 
     private func read<Value: Sendable>(

@@ -64,7 +64,7 @@ public struct CommandExecuteHandler: DatabaseOperationEndpointHandler {
                 request.command.identifier
             )
             return try await coordinator.execute(
-                CommandExecuteOperation.self,
+                operation: CommandExecuteOperation.identifier,
                 requestPayload: context.requestPayload,
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
@@ -78,12 +78,15 @@ public struct CommandExecuteHandler: DatabaseOperationEndpointHandler {
                     )
                 )
             } makeResponse: { result, commitVersion in
-                .write(
-                    output: result.output,
-                    commitVersion: commitVersion,
-                    continuation: result.continuation
+                DatabaseOperationResponseEncoder(
+                    CommandExecuteOperation.self,
+                    response: .write(
+                        output: result.output,
+                        commitVersion: commitVersion,
+                        continuation: result.continuation
+                    )
                 )
-            }.operationResult
+            }.result
         }
     }
 }

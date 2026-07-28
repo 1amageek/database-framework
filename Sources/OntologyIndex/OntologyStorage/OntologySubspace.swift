@@ -1,23 +1,18 @@
 // OntologySubspace.swift
 // GraphIndex - Subspace key definitions for ontology storage
 //
-// Defines the key layout for persistent ontology storage in FoundationDB.
+// Defines the key layout for persistent ontology storage.
 //
 // Reference: W3C OWL 2 Profiles https://www.w3.org/TR/owl2-profiles/
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 
 /// Subspace key definitions for ontology storage
 ///
 /// **Key Layout**:
 /// ```
-/// [fdb]/O/[ontologyIRI]/
+/// [ontology]/[ontologyIRI]/
 /// ├── 0 (metadata)     → OntologyMetadata
 /// ├── 1 (classes)      → [classIRI] → StoredClassDefinition
 /// ├── 2 (properties)   → [propertyIRI] → StoredPropertyDefinition

@@ -158,7 +158,9 @@ extension SchemaMigrationPlan {
         }
 
         // Verify each stage connects consecutive schemas
-        for (index, stage) in stages.enumerated() {
+        var index = 0
+        while index < stages.count {
+            let stage = stages[index]
             let expectedFrom = schemas[index].versionIdentifier
             let expectedTo = schemas[index + 1].versionIdentifier
 
@@ -187,6 +189,7 @@ extension SchemaMigrationPlan {
                     )
                 }
             }
+            index += 1
         }
     }
 }

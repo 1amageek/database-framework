@@ -18,9 +18,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
     public func execute(
         _ request: MaintenanceExecuteOperation.Request,
         context operationContext: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<
-        MaintenanceExecuteOperation
-    > {
+    ) async throws -> MaintenanceExecutionResult {
         try context.runtimeLimits.validate(request.budget)
         switch request.invocation {
         case .migrationStatus:
@@ -165,8 +163,8 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
             let runtime = DatabaseIndexMaintenanceRuntime(
                 container: context.container
             )
-            return try await context.coordinator.execute(
-                MaintenanceExecuteOperation.self,
+            let coordinated = try await context.coordinator.execute(
+                operation: MaintenanceExecuteOperation.identifier,
                 requestPayload: operationContext.requestPayload,
                 context: operationContext,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
@@ -206,15 +204,22 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                         ),
                         limits: context.wireLimits
                     )
-                return .execution(
-                    MaintenanceExecuteOperation.ExecutionResult(
-                        kind: .indexRebuild,
-                        completedWorkUnits: slice.indexedEntityCount,
-                        isComplete: slice.isComplete,
-                        continuation: continuation
+                return DatabaseOperationResponseEncoder(
+                    MaintenanceExecuteOperation.self,
+                    response: .execution(
+                        MaintenanceExecuteOperation.ExecutionResult(
+                            kind: .indexRebuild,
+                            completedWorkUnits: slice.indexedEntityCount,
+                            isComplete: slice.isComplete,
+                            continuation: continuation
+                        )
                     )
                 )
             }
+            return try MaintenanceExecutionResult(
+                coordinated: coordinated,
+                limits: context.wireLimits
+            )
         case .compact:
             throw DatabaseMaintenanceRuntimeError.compactionRequiresJob
         }

@@ -1,3 +1,5 @@
+@_spi(DatabaseServer) import DatabaseWire
+
 public struct DatabaseCoordinatedOperationResponse: Sendable {
     public let result: DatabaseOperationResult
     let successPayload: DatabaseSuccessPayload
@@ -8,5 +10,15 @@ public struct DatabaseCoordinatedOperationResponse: Sendable {
     ) {
         self.result = result
         self.successPayload = successPayload
+    }
+
+    func decodeResponse<Operation: ServerOperationDeclaration>(
+        _ operation: Operation.Type,
+        limits: DatabaseWireLimits
+    ) throws -> Operation.Response {
+        try DatabaseWireDecoder(limits: limits).decodeResponsePayload(
+            Operation.operation,
+            from: successPayload.bytes
+        )
     }
 }

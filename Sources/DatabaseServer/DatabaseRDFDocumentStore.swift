@@ -95,7 +95,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
             identifier: identifier
         )
         let canonicalQuads = try canonicalize(quads)
-        let canonicalAuxiliary = Array(Set(auxiliaryIdentifiers)).sorted()
+        let canonicalAuxiliary = canonicalize(auxiliaryIdentifiers)
         let document = documentSubspace(identifier)
         try clear(document.subspace("auxiliary"), transaction: transaction)
         try clear(document.subspace("quads"), transaction: transaction)
@@ -268,16 +268,50 @@ public struct DatabaseRDFDocumentStore: Sendable {
     private func canonicalize(
         _ quads: [RDFQuad]
     ) throws -> [ByteString] {
-        var unique = Set<ByteString>()
-        unique.reserveCapacity(quads.count)
-        for quad in quads {
-            unique.insert(
-                try ServerPayloadEncoder.encode(quad, limits: wireLimits)
+        var encoded: [ByteString] = []
+        encoded.reserveCapacity(quads.count)
+        var inputIndex = 0
+        while inputIndex < quads.count {
+            encoded.append(
+                try ServerPayloadEncoder.encode(
+                    quads[inputIndex],
+                    limits: wireLimits
+                )
             )
+            inputIndex += 1
         }
-        return unique.sorted { left, right in
+        encoded.sort { left, right in
             left.lexicographicallyPrecedes(right)
         }
+
+        var canonical: [ByteString] = []
+        canonical.reserveCapacity(encoded.count)
+        var encodedIndex = 0
+        while encodedIndex < encoded.count {
+            let value = encoded[encodedIndex]
+            if canonical.last != value {
+                canonical.append(value)
+            }
+            encodedIndex += 1
+        }
+        return canonical
+    }
+
+    private func canonicalize(_ values: [String]) -> [String] {
+        var sorted = values
+        sorted.sort()
+
+        var canonical: [String] = []
+        canonical.reserveCapacity(sorted.count)
+        var index = 0
+        while index < sorted.count {
+            let value = sorted[index]
+            if canonical.last != value {
+                canonical.append(value)
+            }
+            index += 1
+        }
+        return canonical
     }
 
     private func validate(identifier: String) throws {

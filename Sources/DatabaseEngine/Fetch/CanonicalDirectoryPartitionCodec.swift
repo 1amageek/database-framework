@@ -13,9 +13,14 @@ enum CanonicalDirectoryPartitionCodec {
 
         var encoded = prefix
         encoded.reserveCapacity(prefix.count + bytes.count * 2)
-        for byte in bytes {
-            encoded.append(hexDigit(byte >> 4))
-            encoded.append(hexDigit(byte & 0x0f))
+        bytes.withUnsafeBytes { source in
+            var offset = 0
+            while offset < source.count {
+                let byte = source[offset]
+                encoded.append(hexDigit(byte >> 4))
+                encoded.append(hexDigit(byte & 0x0f))
+                offset += 1
+            }
         }
         return encoded
     }

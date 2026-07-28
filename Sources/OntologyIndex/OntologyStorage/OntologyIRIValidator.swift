@@ -1,11 +1,6 @@
 // OntologyIRIValidator.swift
 // GraphIndex - Validates @OWLClass / @OWLObjectProperty IRIs against OntologyStore
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import DatabaseEngine
@@ -37,7 +32,7 @@ public struct OntologyIRIValidator: Sendable {
     /// - Parameters:
     ///   - classIRI: The OWL class IRI (from @OWLClass macro)
     ///   - ontologyIRI: The ontology to check against
-    ///   - transaction: The FDB transaction
+    ///   - transaction: The storage transaction
     /// - Throws: OntologyValidationError.classNotFound if the IRI is not defined
     public func validateClass(
         _ classIRI: String,
@@ -63,7 +58,7 @@ public struct OntologyIRIValidator: Sendable {
     /// - Parameters:
     ///   - propertyIRI: The OWL property IRI (from @OWLObjectProperty macro)
     ///   - ontologyIRI: The ontology to check against
-    ///   - transaction: The FDB transaction
+    ///   - transaction: The storage transaction
     /// - Throws: OntologyValidationError.propertyNotFound if the IRI is not defined,
     ///           OntologyValidationError.propertyTypeMismatch if the IRI is not an ObjectProperty
     public func validateObjectProperty(
@@ -98,7 +93,7 @@ public struct OntologyIRIValidator: Sendable {
     /// - Parameters:
     ///   - propertyIRI: The OWL property IRI (from @OWLDataProperty macro)
     ///   - ontologyIRI: The ontology to check against
-    ///   - transaction: The FDB transaction
+    ///   - transaction: The storage transaction
     /// - Throws: OntologyValidationError.propertyNotFound if the IRI is not defined,
     ///           OntologyValidationError.propertyTypeMismatch if the IRI is not a DataProperty
     public func validateDataProperty(

@@ -9,14 +9,17 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     private let documentStore: DatabaseRDFDocumentStore
     private let ontologyStore: OntologyStore
     private let wireLimits: DatabaseWireLimits
+    private let clock: AnyDatabaseWallClock
 
     public init(
         documentStore: DatabaseRDFDocumentStore,
         ontologyStore: OntologyStore,
+        clock: AnyDatabaseWallClock,
         wireLimits: DatabaseWireLimits = .default
     ) {
         self.documentStore = documentStore
         self.ontologyStore = ontologyStore
+        self.clock = clock
         self.wireLimits = wireLimits
     }
 
@@ -26,6 +29,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         transaction: any TransactionAccess
     ) async throws {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
+        let timestamp = clock.now()
         _ = try sourceOntology(
             identifier: document.ontology,
             imports: document.imports,
@@ -38,6 +42,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         )
         try await rebuild(
             ontology: document.ontology,
+            at: timestamp,
             transaction: transaction,
             work: &work
         )
@@ -55,6 +60,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             ) {
                 try await rebuild(
                     ontology: identifier,
+                    at: timestamp,
                     transaction: transaction,
                     work: &work
                 )
@@ -358,6 +364,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
 
     private func rebuild(
         ontology: String,
+        at timestamp: Timestamp,
         transaction: any TransactionAccess,
         work: inout WorkBudget
     ) async throws {
@@ -369,6 +376,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         let merged = try mergedOntology(from: entailmentClosure.documents, root: ontology)
         try await ontologyStore.loadOntology(
             merged,
+            at: timestamp,
             transaction: transaction
         )
     }

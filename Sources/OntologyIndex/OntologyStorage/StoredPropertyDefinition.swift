@@ -5,15 +5,10 @@
 //
 // Reference: W3C OWL 2 Syntax https://www.w3.org/TR/owl2-syntax/#Properties
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 
 /// Property type enumeration
-public enum StoredPropertyType: String, Codable, Sendable {
+public enum StoredPropertyType: String, Sendable {
     /// Object property (relates individuals to individuals)
     case objectProperty
 
@@ -46,7 +41,7 @@ public enum StoredPropertyType: String, Codable, Sendable {
 ///     inverseOf: "http://example.org/hasChild"
 /// )
 /// ```
-public struct StoredPropertyDefinition: Codable, Sendable, Hashable {
+public struct StoredPropertyDefinition: Sendable, Hashable {
 
     // MARK: - Identity
 
@@ -285,20 +280,6 @@ public struct StoredPropertyDefinition: Codable, Sendable, Hashable {
     /// Set inverse property
     public mutating func setInverse(_ inverseIRI: String) {
         inverseOf = inverseIRI
-    }
-}
-
-// MARK: - Encoding/Decoding
-
-extension StoredPropertyDefinition {
-    /// Encode to JSON bytes
-    public func encode() throws -> Data {
-        try JSONEncoder().encode(self)
-    }
-
-    /// Decode from JSON bytes
-    public static func decode(from data: Data) throws -> StoredPropertyDefinition {
-        try JSONDecoder().decode(StoredPropertyDefinition.self, from: data)
     }
 }
 

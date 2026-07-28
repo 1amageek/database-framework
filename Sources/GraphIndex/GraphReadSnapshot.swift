@@ -5,7 +5,7 @@ import StorageKit
 /// The owner of the transaction controls retry, timeout, commit, and cancel.
 /// Algorithms never create nested transactions and therefore cannot mix read
 /// versions while traversing a graph.
-package struct GraphReadSnapshot: Sendable {
+package final class GraphReadSnapshot: Sendable {
     package let transaction: any TransactionAccess
     package let workBudget: GraphAlgorithmWorkBudget?
     package let identityPool: GraphIdentityPool

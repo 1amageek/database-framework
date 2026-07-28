@@ -50,6 +50,7 @@ public final class CanonicalDatabaseServerServiceFactory:
         let ontologyProcessor = DatabaseOntologyReasoningProcessor(
             documentStore: ontologyStore,
             ontologyStore: ontologyIndexStore,
+            clock: context.clock,
             wireLimits: context.wireLimits
         )
         let shaclStore = try await DatabaseRDFDocumentStore(

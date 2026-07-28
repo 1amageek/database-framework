@@ -25,7 +25,8 @@ public final class DatabaseServerRuntime: Sendable {
                 stateStore: stateStore,
                 coordinator: coordinator,
                 runtimeLimits: configuration.runtimeLimits,
-                wireLimits: configuration.wireLimits
+                wireLimits: configuration.wireLimits,
+                clock: configuration.clock
             )
         )
         let handlers = [

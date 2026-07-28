@@ -1591,7 +1591,6 @@ struct DatabasePersistentJobServiceTests {
         let factory = try DatabasePersistentJobServiceFactory(
             registry: missingRegistry,
             scheduler: jobContext.scheduler,
-            clock: jobContext.clock,
             identifierGenerator: jobContext.identifiers,
             storageLimits: persistentJobTestStorageLimits
         )
@@ -1601,7 +1600,8 @@ struct DatabasePersistentJobServiceTests {
                 stateStore: jobContext.stateStore,
                 coordinator: jobContext.coordinator,
                 runtimeLimits: .default,
-                wireLimits: .default
+                wireLimits: .default,
+                clock: AnyDatabaseWallClock(jobContext.clock)
             )
         )
 
@@ -1668,7 +1668,6 @@ struct DatabasePersistentJobServiceTests {
         let factory = try DatabasePersistentJobServiceFactory(
             registry: jobContext.registry,
             scheduler: scheduler,
-            clock: jobContext.clock,
             identifierGenerator: jobContext.identifiers,
             storageLimits: persistentJobTestStorageLimits
         )
@@ -1678,7 +1677,8 @@ struct DatabasePersistentJobServiceTests {
                 stateStore: jobContext.stateStore,
                 coordinator: jobContext.coordinator,
                 runtimeLimits: .default,
-                wireLimits: .default
+                wireLimits: .default,
+                clock: AnyDatabaseWallClock(jobContext.clock)
             )
         )
         let request = try jobRequest()
@@ -2013,7 +2013,6 @@ struct DatabasePersistentJobServiceTests {
             let factory = try DatabasePersistentJobServiceFactory(
                 registry: registry,
                 scheduler: scheduler,
-                clock: clock,
                 identifierGenerator: identifiers,
                 storageLimits: persistentJobTestStorageLimits
             )
@@ -2023,7 +2022,8 @@ struct DatabasePersistentJobServiceTests {
                     stateStore: stateStore,
                     coordinator: coordinator,
                     runtimeLimits: .default,
-                    wireLimits: .default
+                    wireLimits: .default,
+                    clock: AnyDatabaseWallClock(clock)
                 )
             )
         }

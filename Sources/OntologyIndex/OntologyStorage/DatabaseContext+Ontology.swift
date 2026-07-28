@@ -6,11 +6,6 @@
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import DatabaseEngine
@@ -25,7 +20,7 @@ extension DatabaseContext {
     /// import GraphIndex
     ///
     /// // Load an ontology
-    /// try await context.ontology.load(familyOntology)
+    /// try await context.ontology.load(familyOntology, at: timestamp)
     ///
     /// // Get an ontology by IRI
     /// if let ontology = try await context.ontology.get(iri: "http://example.org/family") {
@@ -52,7 +47,7 @@ extension DatabaseContext {
 
 /// High-level API for ontology operations
 ///
-/// Provides CRUD operations for OWL ontologies stored in FoundationDB.
+/// Provides CRUD operations for OWL ontologies stored through StorageKit.
 /// All operations are performed within transactions managed by the context.
 ///
 /// **Thread Safety**: This struct is Sendable and all methods are async.
@@ -86,7 +81,9 @@ public struct OntologyContextAPI: Sendable {
     /// This performs full materialization of class and property hierarchies.
     /// If an ontology with the same IRI already exists, it will be replaced.
     ///
-    /// - Parameter ontology: The OWL ontology to load
+    /// - Parameters:
+    ///   - ontology: The OWL ontology to load
+    ///   - timestamp: The canonical storage timestamp for this load
     /// - Throws: Error if save fails
     ///
     /// **Example**:
@@ -98,25 +95,41 @@ public struct OntologyContextAPI: Sendable {
     ///         .transitiveProperty("ex:ancestorOf")
     ///     ]
     /// )
-    /// try await context.ontology.load(ontology)
+    /// try await context.ontology.load(ontology, at: timestamp)
     /// ```
-    public func load(_ ontology: OWLOntology) async throws {
+    public func load(
+        _ ontology: OWLOntology,
+        at timestamp: Timestamp
+    ) async throws {
         let store = store()
         try await context.indexQueryContext.withTransaction { transaction in
             // loadOntology is idempotent — it clears existing data internally
-            try await store.loadOntology(ontology, transaction: transaction)
+            try await store.loadOntology(
+                ontology,
+                at: timestamp,
+                transaction: transaction
+            )
         }
     }
 
     /// Load multiple ontologies in a single transaction
     ///
-    /// - Parameter ontologies: Array of ontologies to load
+    /// - Parameters:
+    ///   - ontologies: Array of ontologies to load
+    ///   - timestamp: The canonical storage timestamp shared by this load
     /// - Throws: Error if save fails
-    public func loadAll(_ ontologies: [OWLOntology]) async throws {
+    public func loadAll(
+        _ ontologies: [OWLOntology],
+        at timestamp: Timestamp
+    ) async throws {
         let store = store()
         try await context.indexQueryContext.withTransaction { transaction in
             for ontology in ontologies {
-                try await store.loadOntology(ontology, transaction: transaction)
+                try await store.loadOntology(
+                    ontology,
+                    at: timestamp,
+                    transaction: transaction
+                )
             }
         }
     }

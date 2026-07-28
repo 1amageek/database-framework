@@ -6,7 +6,7 @@ public protocol DatabaseJobService: Sendable {
     func start(
         _ request: JobStartOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<JobStartOperation>
+    ) async throws -> JobStartExecutionResult
 
     func status(
         _ request: JobStatusOperation.Request,
@@ -21,7 +21,7 @@ public protocol DatabaseJobService: Sendable {
     func cancel(
         _ request: JobCancelOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<JobCancelOperation>
+    ) async throws -> JobCancellationExecutionResult
 
     func runScheduledWork() async throws
 }

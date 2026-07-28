@@ -90,7 +90,10 @@ struct OntologyPersistenceTests {
         ]
 
         // Save
-        try await context.ontology.load(ontology)
+        try await context.ontology.load(
+            ontology,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
 
         // Load
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
@@ -136,7 +139,10 @@ struct OntologyPersistenceTests {
         ]
 
         // Save
-        try await context.ontology.load(ontology)
+        try await context.ontology.load(
+            ontology,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
 
         // Load
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
@@ -183,7 +189,10 @@ struct OntologyPersistenceTests {
         ]
 
         // Save
-        try await context.ontology.load(ontology)
+        try await context.ontology.load(
+            ontology,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
 
         // Load
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
@@ -218,7 +227,10 @@ struct OntologyPersistenceTests {
         ]
 
         // Save then load (simulates FDB persistence cycle)
-        try await context.ontology.load(ontology)
+        try await context.ontology.load(
+            ontology,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
         var reasoningOntology = try #require(loaded)
 
@@ -264,7 +276,10 @@ struct OntologyPersistenceTests {
         ]
 
         // Save then load
-        try await context.ontology.load(ontology)
+        try await context.ontology.load(
+            ontology,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
         var reasoningOntology = try #require(loaded)
 
@@ -300,7 +315,10 @@ struct OntologyPersistenceTests {
 
         let ontology = OWLOntology(iri: Self.testOntologyIRI)
 
-        try await context.ontology.load(ontology)
+        try await context.ontology.load(
+            ontology,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
         let loadedOntology = try #require(loaded)
 
@@ -323,7 +341,10 @@ struct OntologyPersistenceTests {
         ontology1.axioms = [
             .subClassOf(sub: .named("ex:A"), sup: .named("ex:B")),
         ]
-        try await context.ontology.load(ontology1)
+        try await context.ontology.load(
+            ontology1,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
 
         // Second save: different axiom
         var ontology2 = OWLOntology(iri: Self.testOntologyIRI)
@@ -331,7 +352,10 @@ struct OntologyPersistenceTests {
         ontology2.axioms = [
             .subClassOf(sub: .named("ex:X"), sup: .named("ex:Y")),
         ]
-        try await context.ontology.load(ontology2)
+        try await context.ontology.load(
+            ontology2,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
 
         // Load: should have only the second save's data
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
@@ -366,7 +390,10 @@ struct OntologyPersistenceTests {
             .objectPropertyRange(property: "ex:rel", range: .named("ex:B")),
         ]
 
-        try await context.ontology.load(ontology)
+        try await context.ontology.load(
+            ontology,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
         let loadedOntology = try #require(loaded)
 
@@ -458,7 +485,10 @@ struct OntologyPersistenceTests {
             .subClassOf(sub: .named("ex:TechCompany"), sup: .named("ex:Company")),
             .subClassOf(sub: .named("ex:AICompany"), sup: .named("ex:TechCompany")),
         ]
-        try await context.ontology.load(ontology)
+        try await context.ontology.load(
+            ontology,
+            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
 
         // Step 2: ClassifyTool loads ontology from FDB
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)

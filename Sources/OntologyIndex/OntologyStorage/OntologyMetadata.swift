@@ -5,11 +5,7 @@
 //
 // Reference: W3C OWL 2 Syntax https://www.w3.org/TR/owl2-syntax/#Ontologies
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
+import DatabaseTypes
 
 /// Schema version for ontology storage format
 ///
@@ -19,7 +15,7 @@ import Foundation
 /// - Major: Breaking changes to storage format
 /// - Minor: Backward-compatible additions
 /// - Patch: Bug fixes without format changes
-public struct SchemaVersion: Codable, Sendable, Hashable, Comparable {
+public struct SchemaVersion: Sendable, Hashable, Comparable {
 
     /// Major version (breaking changes)
     public let major: Int
@@ -52,7 +48,7 @@ extension SchemaVersion: CustomStringConvertible {
     }
 }
 
-/// Ontology metadata stored in FoundationDB
+/// Ontology metadata stored by the ontology index.
 ///
 /// Contains all metadata necessary to identify and manage an ontology.
 ///
@@ -61,11 +57,13 @@ extension SchemaVersion: CustomStringConvertible {
 /// let metadata = OntologyMetadata(
 ///     iri: "http://example.org/family",
 ///     versionIRI: "http://example.org/family/1.0",
+///     createdAt: timestamp,
+///     updatedAt: timestamp,
 ///     imports: ["http://www.w3.org/2002/07/owl#"],
 ///     prefixes: ["ex": "http://example.org/"]
 /// )
 /// ```
-public struct OntologyMetadata: Codable, Sendable, Hashable {
+public struct OntologyMetadata: Sendable, Hashable {
 
     /// Ontology IRI (unique identifier)
     public let iri: String
@@ -77,10 +75,10 @@ public struct OntologyMetadata: Codable, Sendable, Hashable {
     public let schemaVersion: SchemaVersion
 
     /// Creation timestamp
-    public let createdAt: Date
+    public let createdAt: Timestamp
 
     /// Last update timestamp
-    public var updatedAt: Date
+    public var updatedAt: Timestamp
 
     /// Imported ontology IRIs
     public var imports: [String]
@@ -96,8 +94,8 @@ public struct OntologyMetadata: Codable, Sendable, Hashable {
         iri: String,
         versionIRI: String? = nil,
         schemaVersion: SchemaVersion = .current,
-        createdAt: Date = Date(),
-        updatedAt: Date = Date(),
+        createdAt: Timestamp,
+        updatedAt: Timestamp,
         imports: [String] = [],
         prefixes: [String: String] = [:],
         statistics: OntologyStatistics = OntologyStatistics()
@@ -113,23 +111,26 @@ public struct OntologyMetadata: Codable, Sendable, Hashable {
     }
 
     /// Update timestamp and return new metadata
-    public func withUpdatedTimestamp() -> OntologyMetadata {
+    public func updated(at timestamp: Timestamp) -> OntologyMetadata {
         var copy = self
-        copy.updatedAt = Date()
+        copy.updatedAt = timestamp
         return copy
     }
 
     /// Update statistics and return new metadata
-    public func withStatistics(_ stats: OntologyStatistics) -> OntologyMetadata {
+    public func updatingStatistics(
+        _ statistics: OntologyStatistics,
+        at timestamp: Timestamp
+    ) -> OntologyMetadata {
         var copy = self
-        copy.statistics = stats
-        copy.updatedAt = Date()
+        copy.statistics = statistics
+        copy.updatedAt = timestamp
         return copy
     }
 }
 
 /// Statistics about ontology content
-public struct OntologyStatistics: Codable, Sendable, Hashable {
+public struct OntologyStatistics: Sendable, Hashable {
 
     /// Number of class definitions
     public var classCount: Int
@@ -177,7 +178,7 @@ public struct OntologyStatistics: Codable, Sendable, Hashable {
 }
 
 /// Ontology loading status
-public enum OntologyStatus: String, Codable, Sendable {
+public enum OntologyStatus: String, Sendable {
     /// Ontology is being loaded/indexed
     case loading
 
@@ -195,7 +196,7 @@ public enum OntologyStatus: String, Codable, Sendable {
 }
 
 /// Extended metadata with status tracking
-public struct OntologyStatusMetadata: Codable, Sendable {
+public struct OntologyStatusMetadata: Sendable {
 
     /// Core metadata
     public let metadata: OntologyMetadata

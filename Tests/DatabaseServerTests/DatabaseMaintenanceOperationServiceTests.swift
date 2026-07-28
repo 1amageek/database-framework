@@ -400,7 +400,6 @@ struct DatabaseMaintenanceOperationServiceTests {
         let factory = try DatabasePersistentJobServiceFactory(
             registry: registry,
             scheduler: scheduler,
-            clock: try FixedClock(),
             identifierGenerator: identifiers,
             storageLimits: maintenanceJobTestStorageLimits
         )
@@ -689,7 +688,6 @@ struct DatabaseMaintenanceOperationServiceTests {
         let factory = try DatabasePersistentJobServiceFactory(
             registry: registry,
             scheduler: RecordingScheduler(),
-            clock: try FixedClock(),
             identifierGenerator: identifiers,
             storageLimits: maintenanceJobTestStorageLimits
         )
@@ -786,7 +784,8 @@ struct DatabaseMaintenanceOperationServiceTests {
                     stateStore: stateStore
                 ),
                 runtimeLimits: .default,
-                wireLimits: wireLimits
+                wireLimits: wireLimits,
+                clock: AnyDatabaseWallClock(try FixedClock())
             )
         )
     }
@@ -814,7 +813,6 @@ struct DatabaseMaintenanceOperationServiceTests {
         let factory = try DatabasePersistentJobServiceFactory(
             registry: registry,
             scheduler: scheduler,
-            clock: try FixedClock(),
             identifierGenerator: identifiers,
             storageLimits: storageLimits
         )

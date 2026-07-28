@@ -7,7 +7,7 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
     private let startJob: @Sendable (
         JobStartOperation.Request,
         DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<JobStartOperation>
+    ) async throws -> JobStartExecutionResult
     private let readJobStatus: @Sendable (
         JobStatusOperation.Request,
         DatabaseOperationContext
@@ -19,7 +19,7 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
     private let cancelJob: @Sendable (
         JobCancelOperation.Request,
         DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<JobCancelOperation>
+    ) async throws -> JobCancellationExecutionResult
     private let performScheduledWork: @Sendable () async throws -> Void
 
     public init<Service: DatabaseJobService>(_ service: Service) {
@@ -44,7 +44,7 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
     public func start(
         _ request: JobStartOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<JobStartOperation> {
+    ) async throws -> JobStartExecutionResult {
         try await startJob(request, context)
     }
 
@@ -65,7 +65,7 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
     public func cancel(
         _ request: JobCancelOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<JobCancelOperation> {
+    ) async throws -> JobCancellationExecutionResult {
         try await cancelJob(request, context)
     }
 

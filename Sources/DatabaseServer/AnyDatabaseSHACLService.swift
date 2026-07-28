@@ -5,7 +5,7 @@ public final class AnyDatabaseSHACLService: DatabaseSHACLService, Sendable {
     private let executeSHACL: @Sendable (
         SHACLExecuteOperation.Request,
         DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<SHACLExecuteOperation>
+    ) async throws -> SHACLExecutionResult
 
     public init<Service: DatabaseSHACLService>(_ service: Service) {
         self.executeSHACL = { request, context in
@@ -16,7 +16,7 @@ public final class AnyDatabaseSHACLService: DatabaseSHACLService, Sendable {
     public func execute(
         _ request: SHACLExecuteOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<SHACLExecuteOperation> {
+    ) async throws -> SHACLExecutionResult {
         try await executeSHACL(request, context)
     }
 }

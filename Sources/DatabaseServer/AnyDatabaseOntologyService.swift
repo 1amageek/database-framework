@@ -7,7 +7,7 @@ public final class AnyDatabaseOntologyService:
     private let executeOntology: @Sendable (
         OntologyExecuteOperation.Request,
         DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<OntologyExecuteOperation>
+    ) async throws -> OntologyExecutionResult
 
     public init<Service: DatabaseOntologyService>(_ service: Service) {
         self.executeOntology = { request, context in
@@ -18,7 +18,7 @@ public final class AnyDatabaseOntologyService:
     public func execute(
         _ request: OntologyExecuteOperation.Request,
         context: DatabaseOperationContext
-    ) async throws -> DatabasePreparedOperationResponse<OntologyExecuteOperation> {
+    ) async throws -> OntologyExecutionResult {
         try await executeOntology(request, context)
     }
 }

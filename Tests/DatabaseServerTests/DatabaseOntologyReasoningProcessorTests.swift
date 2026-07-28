@@ -400,7 +400,8 @@ struct DatabaseOntologyReasoningProcessorTests {
             documentStore: documentStore,
             ontologyStore: OntologyStore(
                 subspace: OntologySubspace(base: ontologySubspace)
-            )
+            ),
+            clock: AnyDatabaseWallClock(RealtimeDatabaseWallClock())
         )
         let stateStore = try await DatabaseMutationStateStore(
             container: container

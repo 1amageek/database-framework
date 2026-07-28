@@ -31,7 +31,8 @@ struct CanonicalDatabaseServerServiceFactoryTests {
                 stateStore: stateStore
             ),
             runtimeLimits: .default,
-            wireLimits: .default
+            wireLimits: .default,
+            clock: AnyDatabaseWallClock(RealtimeDatabaseWallClock())
         )
         let platform = RejectingPlatformServices()
         let services = try await CanonicalDatabaseServerServiceFactory(
@@ -70,8 +71,7 @@ struct CanonicalDatabaseServerServiceFactoryTests {
         func execute(
             _ request: MaintenanceExecuteOperation.Request,
             context: DatabaseOperationContext
-        ) async throws
-            -> DatabasePreparedOperationResponse<MaintenanceExecuteOperation> {
+        ) async throws -> MaintenanceExecutionResult {
             _ = request
             _ = context
             throw UnexpectedPlatformInvocation.unexpectedInvocation
@@ -80,8 +80,7 @@ struct CanonicalDatabaseServerServiceFactoryTests {
         func start(
             _ request: JobStartOperation.Request,
             context: DatabaseOperationContext
-        ) async throws
-            -> DatabasePreparedOperationResponse<JobStartOperation> {
+        ) async throws -> JobStartExecutionResult {
             _ = request
             _ = context
             throw UnexpectedPlatformInvocation.unexpectedInvocation
@@ -108,8 +107,7 @@ struct CanonicalDatabaseServerServiceFactoryTests {
         func cancel(
             _ request: JobCancelOperation.Request,
             context: DatabaseOperationContext
-        ) async throws
-            -> DatabasePreparedOperationResponse<JobCancelOperation> {
+        ) async throws -> JobCancellationExecutionResult {
             _ = request
             _ = context
             throw UnexpectedPlatformInvocation.unexpectedInvocation
