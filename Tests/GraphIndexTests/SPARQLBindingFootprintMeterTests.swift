@@ -34,11 +34,15 @@ struct SPARQLBindingFootprintMeterTests {
         defer { meter.shutdown() }
         let backing = [UInt8](repeating: 7, count: 4_096)
         let bytes = ByteString(backing)[0..<1]
+        let retainedByteCount = try #require(bytes.retainedByteCount)
 
         #expect(
             try meter.footprint(
                 of: VariableBinding(["?x": .bytes(bytes)])
-            ) == DatabaseIntermediateFootprint(rows: 1, bytes: 4_322)
+            ) == DatabaseIntermediateFootprint(
+                rows: 1,
+                bytes: UInt64(retainedByteCount) + 226
+            )
         )
     }
 
