@@ -36,7 +36,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
             )
         }
 
-        var seen = Set<ResolvedEntityReference.Key>()
+        var seen = ResolvedEntityMap<Void>()
         var result: [PreparedChange] = []
         result.reserveCapacity(changes.count)
         for change in changes {
@@ -73,7 +73,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
                 id: resolved.id.pack(),
                 partitionPath: resolved.partitionPath
             )
-            guard seen.insert(key).inserted else {
+            guard seen.insert((), for: key) else {
                 throw DatabaseMutationError.duplicateChange(change.identity)
             }
             result.append(
@@ -112,27 +112,33 @@ struct DatabaseEntityMutationExecutor: Sendable {
         workMeter: DatabaseWorkMeter,
         transaction: DatabaseTransaction
     ) async throws -> [MutationExecuteOperation.EntityEffect] {
-        var states: [ResolvedEntityReference.Key: DatabaseEntityState] = [:]
+        var states = ResolvedEntityMap<DatabaseEntityState>()
 
         for prepared in changes {
-            states[prepared.key] = try await load(
-                prepared.resolved,
-                transaction: transaction,
-                workMeter: workMeter
+            states.insert(
+                try await load(
+                    prepared.resolved,
+                    transaction: transaction,
+                    workMeter: workMeter
+                ),
+                for: prepared.key
             )
         }
         for precondition in preconditions {
             let identity = precondition.identity
             let key = try ResolvedEntityReference.key(identity, container: container)
-            if states[key] == nil {
+            if states.value(for: key) == nil {
                 let resolved = try ResolvedEntityReference.resolve(
                     identity,
                     container: container
                 )
-                states[key] = try await load(
-                    resolved,
-                    transaction: transaction,
-                    workMeter: workMeter
+                states.insert(
+                    try await load(
+                        resolved,
+                        transaction: transaction,
+                        workMeter: workMeter
+                    ),
+                    for: key
                 )
             }
         }
@@ -142,13 +148,13 @@ struct DatabaseEntityMutationExecutor: Sendable {
                 precondition.identity,
                 container: container
             )
-            guard let state = states[key] else {
+            guard let state = states.value(for: key) else {
                 throw DatabaseMutationError.entityNotFound(precondition.identity)
             }
             try validate(precondition, state: state)
         }
         for prepared in changes {
-            guard let state = states[prepared.key] else {
+            guard let state = states.value(for: prepared.key) else {
                 throw DatabaseMutationError.entityNotFound(prepared.change.identity)
             }
             switch (prepared.change.kind, state) {
@@ -182,7 +188,9 @@ struct DatabaseEntityMutationExecutor: Sendable {
                     )
                 )
             case .delete:
-                guard case .present(let model) = states[prepared.key] else {
+                guard case .present(let model) = states.value(
+                    for: prepared.key
+                ) else {
                     throw DatabaseMutationError.entityNotFound(
                         prepared.change.identity
                     )
@@ -297,20 +305,21 @@ struct DatabaseEntityMutationExecutor: Sendable {
     private func validatePreconditionSet(
         _ preconditions: [MutationExecuteOperation.Precondition]
     ) throws {
-        struct Flags {
+        struct Flags: Sendable {
             var requiresExistence = false
             var requiresAbsence = false
             var version: ByteString?
-            var values = Set<MutationExecuteOperation.Precondition>()
+            var values: [MutationExecuteOperation.Precondition] = []
         }
-        var flagsByKey: [ResolvedEntityReference.Key: Flags] = [:]
+        var flagsByKey = ResolvedEntityMap<Flags>()
         for precondition in preconditions {
             let identity = precondition.identity
             let key = try ResolvedEntityReference.key(identity, container: container)
-            var flags = flagsByKey[key] ?? Flags()
-            guard flags.values.insert(precondition).inserted else {
+            var flags = flagsByKey.value(for: key) ?? Flags()
+            guard !flags.values.contains(precondition) else {
                 throw DatabaseMutationError.duplicatePrecondition(identity)
             }
+            flags.values.append(precondition)
             switch precondition {
             case .expectedVersion(_, let version):
                 flags.requiresExistence = true
@@ -326,7 +335,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
             guard !(flags.requiresExistence && flags.requiresAbsence) else {
                 throw DatabaseMutationError.incompatiblePreconditions(identity)
             }
-            flagsByKey[key] = flags
+            flagsByKey.insert(flags, for: key)
         }
     }
 

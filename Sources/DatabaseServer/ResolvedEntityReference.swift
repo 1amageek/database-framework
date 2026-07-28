@@ -95,10 +95,25 @@ struct ResolvedEntityReference: Sendable {
         )
     }
 
-    struct Key: Sendable, Hashable {
+    struct Key: Sendable, Equatable, Comparable {
         let entity: String
         let id: ByteString
         let partitionPath: [String]
+
+        static func < (lhs: Key, rhs: Key) -> Bool {
+            if lhs.entity != rhs.entity {
+                return lhs.entity < rhs.entity
+            }
+            if lhs.id != rhs.id {
+                return lhs.id < rhs.id
+            }
+            for (left, right) in zip(lhs.partitionPath, rhs.partitionPath) {
+                if left != right {
+                    return left < right
+                }
+            }
+            return lhs.partitionPath.count < rhs.partitionPath.count
+        }
     }
 
 }
