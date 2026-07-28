@@ -42,6 +42,21 @@ struct SPARQLBindingFootprintMeterTests {
         )
     }
 
+    @Test("unknown retained byte storage fails admission explicitly")
+    func unknownRetainedByteStorageFailsAdmission() throws {
+        let meter = try makeFootprintMeter()
+        defer { meter.shutdown() }
+        let bytes = ByteString(
+            retaining: UnknownRetainedByteOwner(bytes: [1, 2, 3])
+        )
+
+        #expect(throws: SPARQLBindingFootprintError.unknownByteStringRetainedSize) {
+            try meter.footprint(
+                of: VariableBinding(["?x": .bytes(bytes)])
+            )
+        }
+    }
+
     @Test("join preflight matches the materialized left-biased row")
     func joinPreflightMatchesMaterializedRow() throws {
         let meter = try makeFootprintMeter()
@@ -244,5 +259,17 @@ struct SPARQLBindingFootprintMeterTests {
             value = .array([value, .null])
         }
         return value
+    }
+
+    private struct UnknownRetainedByteOwner: ByteStringOwner {
+        let bytes: [UInt8]
+
+        var count: Int { bytes.count }
+
+        func borrowBytes(
+            _ body: (UnsafeRawBufferPointer) throws -> Void
+        ) rethrows {
+            try bytes.withUnsafeBytes(body)
+        }
     }
 }

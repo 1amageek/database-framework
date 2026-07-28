@@ -16,6 +16,9 @@ final class GraphSnapshotByteOwner: ByteStringOwner, Sendable {
 
     var count: Int { data.count }
 
+    /// `Data` does not expose the size of the allocation retained by a view.
+    var retainedByteCount: Int? { nil }
+
     func borrowBytes(
         _ body: (UnsafeRawBufferPointer) throws -> Void
     ) rethrows {
