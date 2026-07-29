@@ -369,6 +369,7 @@ public actor DatabasePersistentJobRunner {
                 reported: slice.totalWorkUnits,
                 completed: cumulativeWorkUnits
             )
+            let reportedTotalWorkUnits = slice.totalWorkUnits
             let completedAt = max(clock.now(), current.state.updatedAt)
             let updated: DatabasePersistentJobState
             switch slice.outcome {
@@ -381,7 +382,7 @@ public actor DatabasePersistentJobRunner {
                 )
                 updated = try current.state.succeeding(
                     cumulativeWorkUnits: cumulativeWorkUnits,
-                    totalWorkUnits: slice.totalWorkUnits ?? cumulativeWorkUnits,
+                    totalWorkUnits: reportedTotalWorkUnits ?? cumulativeWorkUnits,
                     resultDigest: responseDigest,
                     updatedAt: completedAt
                 )
@@ -389,7 +390,7 @@ public actor DatabasePersistentJobRunner {
                 updated = try current.state.continuing(
                     operationStatePayload: operationStatePayload,
                     cumulativeWorkUnits: cumulativeWorkUnits,
-                    totalWorkUnits: slice.totalWorkUnits
+                    totalWorkUnits: reportedTotalWorkUnits
                         ?? current.state.totalWorkUnits,
                     nextAttemptAt: completedAt,
                     updatedAt: completedAt
@@ -468,6 +469,7 @@ public actor DatabasePersistentJobRunner {
                 reported: slice.totalWorkUnits,
                 completed: cumulativeWorkUnits
             )
+            let reportedTotalWorkUnits = slice.totalWorkUnits
             let completedAt = max(clock.now(), current.state.updatedAt)
             let updated: DatabasePersistentJobState
             switch slice.outcome {
@@ -480,12 +482,12 @@ public actor DatabasePersistentJobRunner {
                 )
                 updated = try current.state.succeeding(
                     cumulativeWorkUnits: cumulativeWorkUnits,
-                    totalWorkUnits: slice.totalWorkUnits ?? cumulativeWorkUnits,
+                    totalWorkUnits: reportedTotalWorkUnits ?? cumulativeWorkUnits,
                     resultDigest: responseDigest,
                     updatedAt: completedAt
                 )
             case .incomplete(let operationStatePayload):
-                let totalWorkUnits = slice.totalWorkUnits
+                let totalWorkUnits = reportedTotalWorkUnits
                     ?? current.state.totalWorkUnits
                 if current.state.cancellationRequested {
                     updated = try current.state.schedulingCancellationOutcomeCommitAfterCheckpoint(
@@ -778,7 +780,7 @@ public actor DatabasePersistentJobRunner {
     }
 
     private static func validate(
-        _ slice: AnyDatabaseResumableOperation.Slice,
+        _ slice: borrowing AnyDatabaseResumableOperation.Slice,
         maximumWorkUnits: UInt64
     ) throws {
         guard slice.completedWorkUnits <= maximumWorkUnits else {
@@ -787,8 +789,7 @@ public actor DatabasePersistentJobRunner {
                 maximum: maximumWorkUnits
             )
         }
-        if case .incomplete = slice.outcome,
-           slice.completedWorkUnits == 0 {
+        if !slice.isComplete, slice.completedWorkUnits == 0 {
             throw DatabaseJobRuntimeError.invalidStateTransition
         }
     }

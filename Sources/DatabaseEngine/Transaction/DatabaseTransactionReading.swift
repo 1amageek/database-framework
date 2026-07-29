@@ -27,7 +27,7 @@ public protocol DatabaseTransactionReading: Sendable {
         after continuation: DatabaseScanContinuation?,
         limit: Int,
         consistency: DatabaseReadConsistency
-    ) async throws -> DatabaseScanPage<Model>
+    ) async throws -> sending DatabaseScanPage<Model>
 }
 
 public extension DatabaseTransactionReading {
@@ -59,7 +59,7 @@ public extension DatabaseTransactionReading {
         _ type: Model.Type,
         after continuation: DatabaseScanContinuation? = nil,
         limit: Int
-    ) async throws -> DatabaseScanPage<Model> {
+    ) async throws -> sending DatabaseScanPage<Model> {
         try await scan(
             type,
             in: DirectoryPath<Model>(),
@@ -74,7 +74,7 @@ public extension DatabaseTransactionReading {
         in partition: DirectoryPath<Model>,
         after continuation: DatabaseScanContinuation? = nil,
         limit: Int
-    ) async throws -> DatabaseScanPage<Model> {
+    ) async throws -> sending DatabaseScanPage<Model> {
         try await scan(
             type,
             in: partition,

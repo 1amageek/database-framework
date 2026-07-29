@@ -1,48 +1,63 @@
+import Synchronization
+
 /// Owns admission and completion for capabilities issued by one logical
 /// database transaction.
 ///
 /// Closing a scope rejects work that has not started and waits for admitted
 /// work to leave before the physical transaction can commit or be discarded.
-package actor DatabaseTransactionScope {
-    private var acceptsOperations = true
-    private var activeOperationCount = 0
-    private var closeWaiters: [CheckedContinuation<Void, Never>] = []
+package final class DatabaseTransactionScope: Sendable {
+    private struct State: Sendable {
+        var acceptsOperations = true
+        var activeOperationCount = 0
+        var closeWaiters: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let state = Mutex(State())
 
     package init() {}
 
     package func enter() throws {
-        guard acceptsOperations else {
-            throw DatabaseTransactionError.closed
+        try state.withLock { state in
+            guard state.acceptsOperations else {
+                throw DatabaseTransactionError.closed
+            }
+            guard state.activeOperationCount == 0 else {
+                throw DatabaseTransactionError.concurrentOperation
+            }
+            state.activeOperationCount += 1
         }
-        guard activeOperationCount == 0 else {
-            throw DatabaseTransactionError.concurrentOperation
-        }
-        activeOperationCount += 1
     }
 
     package func leave() {
-        precondition(activeOperationCount > 0)
-        activeOperationCount -= 1
-        resumeCloseWaitersIfDrained()
+        let closeWaiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
+            precondition(state.activeOperationCount > 0)
+            state.activeOperationCount -= 1
+            guard !state.acceptsOperations,
+                  state.activeOperationCount == 0 else {
+                return []
+            }
+            let closeWaiters = state.closeWaiters
+            state.closeWaiters.removeAll(keepingCapacity: false)
+            return closeWaiters
+        }
+        for closeWaiter in closeWaiters {
+            closeWaiter.resume()
+        }
     }
 
     package func closeAndWait() async {
-        acceptsOperations = false
-        if activeOperationCount > 0 {
-            await withCheckedContinuation { continuation in
-                closeWaiters.append(continuation)
+        await withCheckedContinuation { continuation in
+            let resumesImmediately = state.withLock { state in
+                state.acceptsOperations = false
+                guard state.activeOperationCount > 0 else {
+                    return true
+                }
+                state.closeWaiters.append(continuation)
+                return false
             }
-        }
-    }
-
-    private func resumeCloseWaitersIfDrained() {
-        guard !acceptsOperations, activeOperationCount == 0 else {
-            return
-        }
-        let waiters = closeWaiters
-        closeWaiters.removeAll(keepingCapacity: false)
-        for waiter in waiters {
-            waiter.resume()
+            if resumesImmediately {
+                continuation.resume()
+            }
         }
     }
 }

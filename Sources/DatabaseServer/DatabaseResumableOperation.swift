@@ -23,14 +23,14 @@ public protocol DatabaseResumableOperation: Sendable {
         state: State,
         maximumWorkUnits: UInt64,
         context: DatabaseResumableOperationContext
-    ) async throws -> DatabaseResumableOperationSlice<State, Response>
+    ) async throws -> sending DatabaseResumableOperationSlice<State, Response>
 
     func runCheckpointedSlice(
         plan: Plan,
         state: State,
         maximumWorkUnits: UInt64,
         context: DatabaseCheckpointedResumableOperationContext
-    ) async throws -> DatabaseResumableOperationSlice<State, Response>
+    ) async throws -> sending DatabaseResumableOperationSlice<State, Response>
 
     /// Applies operation-owned state in the same transaction that publishes
     /// the job's unsuccessful outcome. The transaction may retry this invocation.
@@ -55,7 +55,7 @@ public extension DatabaseResumableOperation {
         state: State,
         maximumWorkUnits: UInt64,
         context: DatabaseCheckpointedResumableOperationContext
-    ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+    ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
         _ = plan
         _ = state
         _ = maximumWorkUnits

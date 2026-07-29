@@ -129,7 +129,7 @@ private struct EmptyResumableOperation<Job: EmptyJobKind>:
         state: State,
         maximumWorkUnits: UInt64,
         context: DatabaseResumableOperationContext
-    ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+    ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
         _ = plan
         _ = state
         _ = maximumWorkUnits

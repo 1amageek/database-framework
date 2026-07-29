@@ -27,17 +27,17 @@ public struct PersistableValidationContext: ~Copyable, Sendable {
     public func fetch(
         _ identity: EntityReference
     ) async throws -> (any Persistable)? {
-        try await scope.enter()
+        try scope.enter()
         do {
             try Task.checkCancellation()
             let model = try await transaction.fetchPersistedModel(
                 identifiedBy: identity,
                 within: operationID
             )
-            await scope.leave()
+            scope.leave()
             return model
         } catch {
-            await scope.leave()
+            scope.leave()
             throw error
         }
     }

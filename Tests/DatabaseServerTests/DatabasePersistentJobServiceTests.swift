@@ -2351,7 +2351,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(1), maximumWorkUnits == 1 else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2455,7 +2455,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             _ = plan
             _ = state
             _ = maximumWorkUnits
@@ -2468,7 +2468,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseCheckpointedResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(13),
                   state == JobStepValue(0),
                   maximumWorkUnits == 1 else {
@@ -2539,7 +2539,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(5), maximumWorkUnits == 1 else {
                 throw PersistentJobScenarioError.invalidPayload
             }
@@ -2599,7 +2599,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(7),
                   state == JobStepValue(0),
                   maximumWorkUnits == 1 else {
@@ -2650,7 +2650,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(8),
                   state == JobStepValue(0),
                   maximumWorkUnits == 1 else {
@@ -2730,7 +2730,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             _ = plan
             _ = state
             _ = maximumWorkUnits
@@ -2774,7 +2774,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobPayload,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(10),
                   state.value.isEmpty,
                   maximumWorkUnits == 1 else {
@@ -2835,7 +2835,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(11),
                   state == JobStepValue(0),
                   maximumWorkUnits == 1 else {
@@ -2896,7 +2896,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(12),
                   state == JobStepValue(0),
                   maximumWorkUnits == 1 else {
@@ -2943,7 +2943,7 @@ struct DatabasePersistentJobServiceTests {
             state: JobStepValue,
             maximumWorkUnits: UInt64,
             context: DatabaseResumableOperationContext
-        ) async throws -> DatabaseResumableOperationSlice<State, Response> {
+        ) async throws -> sending DatabaseResumableOperationSlice<State, Response> {
             guard plan == JobStepValue(3), maximumWorkUnits == 1 else {
                 throw PersistentJobScenarioError.invalidPayload
             }

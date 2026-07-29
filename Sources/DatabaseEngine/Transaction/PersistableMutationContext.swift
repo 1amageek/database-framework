@@ -84,14 +84,14 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
     private func perform<Value: Sendable>(
         _ operation: () async throws -> Value
     ) async throws -> Value {
-        try await scope.enter()
+        try scope.enter()
         do {
             try Task.checkCancellation()
             let value = try await operation()
-            await scope.leave()
+            scope.leave()
             return value
         } catch {
-            await scope.leave()
+            scope.leave()
             throw error
         }
     }

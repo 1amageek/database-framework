@@ -72,6 +72,13 @@ host storage adapter
   execution details and must not become competing public value models.
 - ByteString is the owned byte primitive. Borrowed storage views are retained only
   for the lifetime guaranteed by their owner.
+- Bounded scan pages and resumable-operation slices are single-owner values.
+  Asynchronous and type-erasure boundaries transfer them with `sending`; callers
+  consume each page or slice once instead of implicitly copying a potentially
+  large work product.
+- A typed resumable-operation slice is encoded into its erased persistent form
+  immediately. The framework does not cache both representations or materialize
+  an intermediate byte array.
 - Large binary paths prepare and measure once, write directly into a destination
   buffer, and avoid intermediate Data or Array materialization.
 - Copies are allowed at explicit ownership, persistence, or external API
@@ -110,3 +117,10 @@ registration is not part of the runtime contract.
 Shared mutable state uses the same actor or Synchronization.Mutex owner on native
 and WASI targets. Target conditions may select an ABI or platform facility, but
 must not weaken isolation, Sendable, ownership, or shutdown semantics.
+
+DBContainer and DatabaseTransaction retain actor ownership of asynchronous
+database behavior. DatabaseTransactionScope protects only short, in-memory
+admission state with `Synchronization.Mutex`: no I/O or suspension occurs while
+the lock is held, and close continuations resume after the lock is released.
+This synchronization and lifecycle contract is identical on native and WASI
+targets.

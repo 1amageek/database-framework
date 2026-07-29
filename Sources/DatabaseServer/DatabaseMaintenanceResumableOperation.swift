@@ -152,7 +152,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
         state: DatabaseMaintenanceJobState,
         maximumWorkUnits: UInt64,
         context: DatabaseCheckpointedResumableOperationContext
-    ) async throws -> DatabaseResumableOperationSlice<
+    ) async throws -> sending DatabaseResumableOperationSlice<
         DatabaseMaintenanceJobState,
         MaintenanceExecuteOperation.Response
     > {
@@ -217,7 +217,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
         state: DatabaseMaintenanceJobState,
         maximumWorkUnits: UInt64,
         context: DatabaseResumableOperationContext
-    ) async throws -> DatabaseResumableOperationSlice<
+    ) async throws -> sending DatabaseResumableOperationSlice<
         DatabaseMaintenanceJobState,
         MaintenanceExecuteOperation.Response
     > {

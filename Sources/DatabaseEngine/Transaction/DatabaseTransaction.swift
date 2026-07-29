@@ -127,8 +127,8 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         after continuation: DatabaseScanContinuation?,
         limit: Int,
         consistency: DatabaseReadConsistency
-    ) async throws -> DatabaseScanPage<Model> {
-        try await performOperation { _ in
+    ) async throws -> sending DatabaseScanPage<Model> {
+        return try await performOperation { _ in
             guard limit > 0, limit < Int.max else {
                 throw DatabaseTransactionError.invalidLimit(limit)
             }
@@ -142,7 +142,10 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
                 for: type,
                 in: partition
             ) else {
-                return DatabaseScanPage(items: [], continuation: nil)
+                return DatabaseScanPage<Model>(
+                    items: [],
+                    continuation: nil
+                )
             }
             try validate(
                 continuation,
@@ -203,7 +206,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
                     storageKey: $0.0
                 )
             } : nil
-            return DatabaseScanPage(
+            return DatabaseScanPage<Model>(
                 items: models,
                 continuation: next
             )
@@ -760,10 +763,10 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
 
     // MARK: - Operation lifecycle
 
-    private func performOperation<Value: Sendable>(
-        _ operation: (UInt64) async throws -> Value
-    ) async throws -> Value {
-        try await transactionScope.enter()
+    private func performOperation<Value: ~Copyable & Sendable>(
+        _ operation: (UInt64) async throws -> sending Value
+    ) async throws -> sending Value {
+        try transactionScope.enter()
         var operationID: UInt64?
         do {
             try Task.checkCancellation()
@@ -782,13 +785,13 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
                 throw lifecycleError(for: state)
             }
             state = .open
-            await transactionScope.leave()
+            transactionScope.leave()
             return value
         } catch {
             if let operationID, state == .executing(operationID) {
                 state = .closed
             }
-            await transactionScope.leave()
+            transactionScope.leave()
             throw error
         }
     }
