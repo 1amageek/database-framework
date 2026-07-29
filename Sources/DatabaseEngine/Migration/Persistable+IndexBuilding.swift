@@ -19,12 +19,25 @@ extension Persistable {
             providers: container.runtimeConfiguration.indexMaintainerProviders,
             configurations: configurations
         )
+        let uniquenessMaintainer: (any IndexUniquenessMaintainer<Self>)?
+        if index.isUnique {
+            uniquenessMaintainer = try container.runtimeConfiguration
+                .indexMaintainerProviders.makeIndexUniquenessMaintainer(
+                index: index,
+                subspace: indexSubspace,
+                idExpression: FieldKeyExpression(fieldName: "id"),
+                configurations: configurations
+            )
+        } else {
+            uniquenessMaintainer = nil
+        }
         let indexer = try OnlineIndexer<Self>(
             container: container,
             storeSubspace: storeSubspace,
             itemType: Self.persistableType,
             index: index,
             indexMaintainer: maintainer,
+            uniquenessMaintainer: uniquenessMaintainer,
             indexLifecycleStore: indexLifecycleStore,
             batchSize: batchSize
         )

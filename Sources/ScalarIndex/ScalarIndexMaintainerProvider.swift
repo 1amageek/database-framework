@@ -23,6 +23,32 @@ public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration]
     ) throws -> any IndexMaintainer<Item> {
+        _ = configurations
+        try validateIndexDefinition(index)
+
+        return ScalarIndexMaintainer<Item>(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression
+        )
+    }
+
+    public func makeIndexUniquenessMaintainer<Item: Persistable>(
+        index: Index,
+        subspace: Subspace,
+        idExpression: KeyExpression,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> any IndexUniquenessMaintainer<Item> {
+        _ = configurations
+        try validateIndexDefinition(index)
+        return ScalarIndexMaintainer<Item>(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression
+        )
+    }
+
+    private func validateIndexDefinition(_ index: Index) throws {
         guard index.kind.identifier == kindIdentifier else {
             throw IndexMaintainerProviderError.kindMismatch(
                 registered: kindIdentifier,
@@ -41,11 +67,5 @@ public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
                 key: "metadata"
             )
         }
-
-        return ScalarIndexMaintainer<Item>(
-            index: index,
-            subspace: subspace,
-            idExpression: idExpression
-        )
     }
 }

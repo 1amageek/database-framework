@@ -78,6 +78,7 @@ struct StorageInvariantTests {
                 itemType: Player.persistableType,
                 index: index,
                 indexMaintainer: maintainer,
+                uniquenessMaintainer: maintainer,
                 indexLifecycleStore: lifecycleStore,
                 batchSize: 10
             )

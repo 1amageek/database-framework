@@ -8,16 +8,11 @@ enum IndexUniquenessConstraint {
         item: borrowing Item,
         id: Tuple,
         state: IndexState,
-        maintainer: any IndexMaintainer<Item>,
+        maintainer: any IndexUniquenessMaintainer<Item>,
         violationTracker: UniquenessViolationTracker,
         transaction: any TransactionAccess
     ) async throws {
-        guard let uniquenessMaintainer = maintainer as? any IndexUniquenessMaintainer<Item> else {
-            throw IndexUniquenessCapabilityError.unsupported(
-                maintainerType: String(reflecting: type(of: maintainer))
-            )
-        }
-        let conflicts = try await uniquenessMaintainer.uniquenessConflicts(
+        let conflicts = try await maintainer.uniquenessConflicts(
             for: item,
             id: id,
             transaction: transaction

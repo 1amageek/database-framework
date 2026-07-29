@@ -7,6 +7,7 @@ enum OnlineIndexBatchWriter {
         _ entries: [(item: Item, id: Tuple)],
         index: Index,
         maintainer: any IndexMaintainer<Item>,
+        uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)?,
         violationTracker: UniquenessViolationTracker,
         transaction: any TransactionAccess
     ) async throws {
@@ -15,13 +16,19 @@ enum OnlineIndexBatchWriter {
             return
         }
 
+        guard let uniquenessMaintainer else {
+            throw OnlineIndexBuildError.unsupportedUniquenessConstraint(
+                indexName: index.name
+            )
+        }
+
         for entry in entries {
             try await IndexUniquenessConstraint.enforce(
                 index: index,
                 item: entry.item,
                 id: entry.id,
                 state: .writeOnly,
-                maintainer: maintainer,
+                maintainer: uniquenessMaintainer,
                 violationTracker: violationTracker,
                 transaction: transaction
             )

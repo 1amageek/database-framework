@@ -119,12 +119,19 @@ internal final class IndexMaintenanceService: Sendable {
                 )
 
             if descriptor.isUnique, let newModel = newModel {
+                let uniquenessMaintainer: any IndexUniquenessMaintainer<T> =
+                    try maintainerProviders.makeIndexUniquenessMaintainer(
+                        index: index,
+                        subspace: indexSubspaceForIndex,
+                        idExpression: idExpression,
+                        configurations: configurations
+                    )
                 try await IndexUniquenessConstraint.enforce(
                     index: index,
                     item: newModel,
                     id: id,
                     state: state,
-                    maintainer: maintainer,
+                    maintainer: uniquenessMaintainer,
                     violationTracker: violationTracker,
                     transaction: transaction
                 )
@@ -300,12 +307,19 @@ internal final class IndexMaintenanceService: Sendable {
             let typedNew = newModel as? T
 
             if index.isUnique, let typedNew {
+                let uniquenessMaintainer: any IndexUniquenessMaintainer<T> =
+                    try maintainerProviders.makeIndexUniquenessMaintainer(
+                        index: index,
+                        subspace: subspace,
+                        idExpression: idExpression,
+                        configurations: configurations
+                    )
                 try await IndexUniquenessConstraint.enforce(
                     index: index,
                     item: typedNew,
                     id: id,
                     state: state,
-                    maintainer: maintainer,
+                    maintainer: uniquenessMaintainer,
                     violationTracker: violationTracker,
                     transaction: transaction
                 )

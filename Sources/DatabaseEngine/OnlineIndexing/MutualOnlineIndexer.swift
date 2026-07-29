@@ -67,8 +67,12 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     /// Forward index maintainer
     private let forwardMaintainer: any IndexMaintainer<Item>
 
+    private let forwardUniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)?
+
     /// Reverse index maintainer
     private let reverseMaintainer: any IndexMaintainer<Item>
+
+    private let reverseUniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)?
 
     /// Index state manager
     private let lifecycleStore: IndexLifecycleStore
@@ -115,6 +119,8 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         reverseIndex: Index,
         forwardMaintainer: any IndexMaintainer<Item>,
         reverseMaintainer: any IndexMaintainer<Item>,
+        forwardUniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)? = nil,
+        reverseUniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)? = nil,
         lifecycleStore: IndexLifecycleStore,
         batchSize: Int = 100,
         throttleDelayMs: Int = 0
@@ -134,12 +140,10 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         if reverseMaintainer.customBuildStrategy != nil {
             throw .unsupportedCustomBuildStrategy(indexName: reverseIndex.name)
         }
-        if forwardIndex.isUnique,
-           !(forwardMaintainer is any IndexUniquenessMaintainer<Item>) {
+        if forwardIndex.isUnique, forwardUniquenessMaintainer == nil {
             throw .unsupportedUniquenessConstraint(indexName: forwardIndex.name)
         }
-        if reverseIndex.isUnique,
-           !(reverseMaintainer is any IndexUniquenessMaintainer<Item>) {
+        if reverseIndex.isUnique, reverseUniquenessMaintainer == nil {
             throw .unsupportedUniquenessConstraint(indexName: reverseIndex.name)
         }
         self.container = container
@@ -150,7 +154,9 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         self.forwardIndex = forwardIndex
         self.reverseIndex = reverseIndex
         self.forwardMaintainer = forwardMaintainer
+        self.forwardUniquenessMaintainer = forwardUniquenessMaintainer
         self.reverseMaintainer = reverseMaintainer
+        self.reverseUniquenessMaintainer = reverseUniquenessMaintainer
         self.lifecycleStore = lifecycleStore
         self.violationTracker = UniquenessViolationTracker(
             container: container,
@@ -327,6 +333,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                         batchEntries,
                         index: self.forwardIndex,
                         maintainer: self.forwardMaintainer,
+                        uniquenessMaintainer: self.forwardUniquenessMaintainer,
                         violationTracker: self.violationTracker,
                         transaction: transaction
                     )
@@ -334,6 +341,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                         batchEntries,
                         index: self.reverseIndex,
                         maintainer: self.reverseMaintainer,
+                        uniquenessMaintainer: self.reverseUniquenessMaintainer,
                         violationTracker: self.violationTracker,
                         transaction: transaction
                     )

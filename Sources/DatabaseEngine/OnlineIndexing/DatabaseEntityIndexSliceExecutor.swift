@@ -28,6 +28,20 @@ enum DatabaseEntityIndexSliceExecutor {
                     idExpression: FieldKeyExpression(fieldName: "id"),
                     configurations: container.indexConfigurations[index.name] ?? []
                 )
+            let uniquenessMaintainer: (any IndexUniquenessMaintainer<T>)?
+            if index.isUnique {
+                uniquenessMaintainer = try container.runtimeConfiguration
+                    .indexMaintainerProviders.makeIndexUniquenessMaintainer(
+                        index: index,
+                        subspace: storeSubspace
+                            .subspace(SubspaceKey.indexes)
+                            .subspace(index.subspaceKey),
+                        idExpression: FieldKeyExpression(fieldName: "id"),
+                        configurations: container.indexConfigurations[index.name] ?? []
+                    )
+            } else {
+                uniquenessMaintainer = nil
+            }
             let itemTypeSubspace = storeSubspace
                 .subspace(SubspaceKey.items)
                 .subspace(T.persistableType)
@@ -61,6 +75,7 @@ enum DatabaseEntityIndexSliceExecutor {
                 batch,
                 index: index,
                 maintainer: maintainer,
+                uniquenessMaintainer: uniquenessMaintainer,
                 violationTracker: UniquenessViolationTracker(
                     container: container,
                     metadataSubspace: storeSubspace.subspace(SubspaceKey.metadata)

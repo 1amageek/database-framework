@@ -119,7 +119,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
             throw .unsupportedCustomBuildStrategy(indexName: target.index.name)
         }
         for target in targets where target.index.isUnique {
-            guard target.maintainer is any IndexUniquenessMaintainer<Item> else {
+            guard target.uniquenessMaintainer != nil else {
                 throw .unsupportedUniquenessConstraint(
                     indexName: target.index.name
                 )
@@ -291,6 +291,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                             batchEntries,
                             index: target.index,
                             maintainer: target.maintainer,
+                            uniquenessMaintainer: target.uniquenessMaintainer,
                             violationTracker: self.violationTracker,
                             transaction: transaction
                         )
@@ -404,9 +405,17 @@ public struct IndexBuildTarget<Item: Persistable>: Sendable {
     /// The maintainer for this index
     public let maintainer: any IndexMaintainer<Item>
 
-    public init(index: Index, maintainer: any IndexMaintainer<Item>) {
+    /// The conflict lookup used when `index` is unique.
+    public let uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)?
+
+    public init(
+        index: Index,
+        maintainer: any IndexMaintainer<Item>,
+        uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)? = nil
+    ) {
         self.index = index
         self.maintainer = maintainer
+        self.uniquenessMaintainer = uniquenessMaintainer
     }
 }
 

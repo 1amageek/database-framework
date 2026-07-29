@@ -63,6 +63,35 @@ struct ScalarUInt64IndexRuntimeTests {
         #expect(keys[0].lexicographicallyPrecedes(keys[1]))
         #expect(keys[1].lexicographicallyPrecedes(keys[2]))
     }
+
+    @Test("Provider exposes uniqueness without runtime capability casts")
+    func providerBuildsUniquenessMaintainer() async throws {
+        let index = Index(
+            name: "UnsignedScalarEntity_value",
+            kind: scalarIndexMetadata(
+                fields: [FieldIdentity(name: "value", number: 2)]
+            ),
+            rootExpression: FieldKeyExpression(fieldName: "value"),
+            subspaceKey: "UnsignedScalarEntity_value",
+            itemTypes: [UnsignedScalarEntity.persistableType],
+            isUnique: true
+        )
+        let provider = ScalarIndexMaintainerProvider()
+
+        let maintainer: any IndexUniquenessMaintainer<UnsignedScalarEntity> =
+            try provider.makeIndexUniquenessMaintainer(
+                index: index,
+                subspace: Subspace(prefix: Tuple("scalar-unique-runtime").pack()),
+                idExpression: FieldKeyExpression(fieldName: "id"),
+                configurations: []
+            )
+
+        let keys = try await maintainer.computeIndexKeys(
+            for: UnsignedScalarEntity(id: "entity", value: UInt64.max),
+            id: Tuple("entity")
+        )
+        #expect(keys.count == 1)
+    }
 }
 
 @Persistable

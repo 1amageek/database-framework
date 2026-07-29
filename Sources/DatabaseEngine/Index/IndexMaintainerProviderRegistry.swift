@@ -65,4 +65,25 @@ public struct IndexMaintainerProviderRegistry: Sendable {
             configurations: configurations
         )
     }
+
+    public func makeIndexUniquenessMaintainer<Item: Persistable>(
+        index: Index,
+        subspace: Subspace,
+        idExpression: KeyExpression,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> any IndexUniquenessMaintainer<Item> {
+        let kindIdentifier = index.kind.identifier
+        guard let provider = providers[kindIdentifier] else {
+            throw IndexMaintainerProviderRegistryError.providerNotRegistered(
+                kindIdentifier: kindIdentifier,
+                indexName: index.name
+            )
+        }
+        return try provider.makeIndexUniquenessMaintainer(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression,
+            configurations: configurations
+        )
+    }
 }

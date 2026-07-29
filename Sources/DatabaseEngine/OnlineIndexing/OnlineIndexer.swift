@@ -72,6 +72,9 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// IndexMaintainer for this index
     private let indexMaintainer: any IndexMaintainer<Item>
 
+    /// Uniqueness conflict lookup for unique indexes.
+    private let uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)?
+
     /// Index state manager
     private let indexLifecycleStore: IndexLifecycleStore
 
@@ -119,6 +122,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         itemType: String,
         index: Index,
         indexMaintainer: any IndexMaintainer<Item>,
+        uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)? = nil,
         indexLifecycleStore: IndexLifecycleStore,
         batchSize: Int = 100,
         throttleDelayMs: Int = 0
@@ -132,8 +136,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         if index.isUnique, indexMaintainer.customBuildStrategy != nil {
             throw .unsupportedUniqueCustomBuildStrategy(indexName: index.name)
         }
-        if index.isUnique,
-           !(indexMaintainer is any IndexUniquenessMaintainer<Item>) {
+        if index.isUnique, uniquenessMaintainer == nil {
             throw .unsupportedUniquenessConstraint(indexName: index.name)
         }
         self.container = container
@@ -144,6 +147,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         self.itemType = itemType
         self.index = index
         self.indexMaintainer = indexMaintainer
+        self.uniquenessMaintainer = uniquenessMaintainer
         self.indexLifecycleStore = indexLifecycleStore
         self.batchSize = batchSize
         self.throttleDelayMs = throttleDelayMs
@@ -336,6 +340,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                         batchEntries,
                         index: self.index,
                         maintainer: self.indexMaintainer,
+                        uniquenessMaintainer: self.uniquenessMaintainer,
                         violationTracker: self.violationTracker,
                         transaction: transaction
                     )
@@ -718,6 +723,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     batchEntries,
                     index: self.index,
                     maintainer: self.indexMaintainer,
+                    uniquenessMaintainer: self.uniquenessMaintainer,
                     violationTracker: self.violationTracker,
                     transaction: transaction
                 )
