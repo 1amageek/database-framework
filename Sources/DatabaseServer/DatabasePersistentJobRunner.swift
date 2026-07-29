@@ -780,7 +780,7 @@ public actor DatabasePersistentJobRunner {
     }
 
     private static func validate(
-        _ slice: borrowing AnyDatabaseResumableOperation.Slice,
+        _ slice: AnyDatabaseResumableOperation.Slice,
         maximumWorkUnits: UInt64
     ) throws {
         guard slice.completedWorkUnits <= maximumWorkUnits else {
@@ -789,7 +789,8 @@ public actor DatabasePersistentJobRunner {
                 maximum: maximumWorkUnits
             )
         }
-        if !slice.isComplete, slice.completedWorkUnits == 0 {
+        if case .incomplete = slice.outcome,
+           slice.completedWorkUnits == 0 {
             throw DatabaseJobRuntimeError.invalidStateTransition
         }
     }

@@ -8,8 +8,8 @@ public struct AnyDatabaseResumableOperation: Sendable {
         let sliceTimeoutMilliseconds: UInt32
     }
 
-    struct Slice: ~Copyable, Sendable {
-        enum Outcome: ~Copyable, Sendable {
+    struct Slice: Sendable {
+        enum Outcome: Sendable {
             case incomplete(ByteString)
             case complete(ByteString)
         }
@@ -17,45 +17,6 @@ public struct AnyDatabaseResumableOperation: Sendable {
         let completedWorkUnits: UInt64
         let totalWorkUnits: UInt64?
         let outcome: Outcome
-        let isComplete: Bool
-
-        static func incomplete(
-            completedWorkUnits: UInt64,
-            totalWorkUnits: UInt64?,
-            statePayload: ByteString
-        ) -> sending Self {
-            Self(
-                completedWorkUnits: completedWorkUnits,
-                totalWorkUnits: totalWorkUnits,
-                outcome: .incomplete(statePayload),
-                isComplete: false
-            )
-        }
-
-        static func complete(
-            completedWorkUnits: UInt64,
-            totalWorkUnits: UInt64?,
-            resultPayload: ByteString
-        ) -> sending Self {
-            Self(
-                completedWorkUnits: completedWorkUnits,
-                totalWorkUnits: totalWorkUnits,
-                outcome: .complete(resultPayload),
-                isComplete: true
-            )
-        }
-
-        private init(
-            completedWorkUnits: UInt64,
-            totalWorkUnits: UInt64?,
-            outcome: consuming Outcome,
-            isComplete: Bool
-        ) {
-            self.completedWorkUnits = completedWorkUnits
-            self.totalWorkUnits = totalWorkUnits
-            self.outcome = outcome
-            self.isComplete = isComplete
-        }
     }
 
     public let operation: JobOperationIdentifier
@@ -78,7 +39,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
         DatabaseResumableOperationContext,
         DatabaseWireLimits,
         DatabasePersistentJobStorageLimits
-    ) async throws -> sending Slice
+    ) async throws -> Slice
     private let executeCheckpointedSlice: @Sendable (
         ByteString,
         ByteString,
@@ -86,7 +47,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
         DatabaseCheckpointedResumableOperationContext,
         DatabaseWireLimits,
         DatabasePersistentJobStorageLimits
-    ) async throws -> sending Slice
+    ) async throws -> Slice
     private let applyUnsuccessfulOutcome: @Sendable (
         ByteString,
         ByteString,
@@ -169,14 +130,11 @@ public struct AnyDatabaseResumableOperation: Sendable {
                 maximumWorkUnits: workUnits,
                 context: context
             )
-            let completedWorkUnits = slice.completedWorkUnits
-            let totalWorkUnits = slice.totalWorkUnits
+            let outcome: Slice.Outcome
             switch slice.outcome {
             case .incomplete(let nextState):
-                return Slice.incomplete(
-                    completedWorkUnits: completedWorkUnits,
-                    totalWorkUnits: totalWorkUnits,
-                    statePayload: try encodePersistentJobPayload(
+                outcome = .incomplete(
+                    try encodePersistentJobPayload(
                         nextState,
                         limits: try storageLimits.stateWireLimits(
                             basedOn: limits
@@ -186,10 +144,8 @@ public struct AnyDatabaseResumableOperation: Sendable {
                     )
                 )
             case .complete(let result):
-                return Slice.complete(
-                    completedWorkUnits: completedWorkUnits,
-                    totalWorkUnits: totalWorkUnits,
-                    resultPayload: try encodePersistentJobResult(
+                outcome = .complete(
+                    try encodePersistentJobResult(
                         result,
                         job: job,
                         limits: try storageLimits.resultWireLimits(
@@ -200,6 +156,11 @@ public struct AnyDatabaseResumableOperation: Sendable {
                     )
                 )
             }
+            return Slice(
+                completedWorkUnits: slice.completedWorkUnits,
+                totalWorkUnits: slice.totalWorkUnits,
+                outcome: outcome
+            )
         }
         self.executeCheckpointedSlice = {
             planPayload,
@@ -234,14 +195,11 @@ public struct AnyDatabaseResumableOperation: Sendable {
                 maximumWorkUnits: workUnits,
                 context: context
             )
-            let completedWorkUnits = slice.completedWorkUnits
-            let totalWorkUnits = slice.totalWorkUnits
+            let outcome: Slice.Outcome
             switch slice.outcome {
             case .incomplete(let nextState):
-                return Slice.incomplete(
-                    completedWorkUnits: completedWorkUnits,
-                    totalWorkUnits: totalWorkUnits,
-                    statePayload: try encodePersistentJobPayload(
+                outcome = .incomplete(
+                    try encodePersistentJobPayload(
                         nextState,
                         limits: try storageLimits.stateWireLimits(
                             basedOn: limits
@@ -251,10 +209,8 @@ public struct AnyDatabaseResumableOperation: Sendable {
                     )
                 )
             case .complete(let result):
-                return Slice.complete(
-                    completedWorkUnits: completedWorkUnits,
-                    totalWorkUnits: totalWorkUnits,
-                    resultPayload: try encodePersistentJobResult(
+                outcome = .complete(
+                    try encodePersistentJobResult(
                         result,
                         job: job,
                         limits: try storageLimits.resultWireLimits(
@@ -265,6 +221,11 @@ public struct AnyDatabaseResumableOperation: Sendable {
                     )
                 )
             }
+            return Slice(
+                completedWorkUnits: slice.completedWorkUnits,
+                totalWorkUnits: slice.totalWorkUnits,
+                outcome: outcome
+            )
         }
         self.applyUnsuccessfulOutcome = {
             planPayload,
@@ -323,7 +284,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
         context: DatabaseResumableOperationContext,
         limits: DatabaseWireLimits,
         storageLimits: DatabasePersistentJobStorageLimits
-    ) async throws -> sending Slice {
+    ) async throws -> Slice {
         try await executeSlice(
             planPayload,
             statePayload,
@@ -349,7 +310,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
         context: DatabaseCheckpointedResumableOperationContext,
         limits: DatabaseWireLimits,
         storageLimits: DatabasePersistentJobStorageLimits
-    ) async throws -> sending Slice {
+    ) async throws -> Slice {
         try await executeCheckpointedSlice(
             planPayload,
             statePayload,

@@ -72,13 +72,15 @@ host storage adapter
   execution details and must not become competing public value models.
 - ByteString is the owned byte primitive. Borrowed storage views are retained only
   for the lifetime guaranteed by their owner.
-- Bounded scan pages and resumable-operation slices are single-owner values.
-  Asynchronous and type-erasure boundaries transfer them with `sending`; callers
+- Bounded scan pages and typed resumable-operation slices are single-owner
+  values. Asynchronous typed boundaries transfer them with `sending`; callers
   consume each page or slice once instead of implicitly copying a potentially
   large work product.
 - A typed resumable-operation slice is encoded into its erased persistent form
-  immediately. The framework does not cache both representations or materialize
-  an intermediate byte array.
+  immediately. The erased form is a copyable ByteString handle whose backing
+  storage remains shared; copying that handle does not copy payload bytes. The
+  framework does not cache both representations or materialize an intermediate
+  byte array.
 - Large binary paths prepare and measure once, write directly into a destination
   buffer, and avoid intermediate Data or Array materialization.
 - Copies are allowed at explicit ownership, persistence, or external API
