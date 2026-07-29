@@ -159,8 +159,8 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             let (begin, end) = typeSubspace.range()
             let beginSelector: KeySelector
             if let continuation {
-                guard !continuation.storageKey.lexicographicallyPrecedes(begin),
-                      continuation.storageKey.lexicographicallyPrecedes(end) else {
+                guard continuation.storageKey >= begin,
+                      continuation.storageKey < end else {
                     throw DatabaseScanContinuationError.keyOutsideEntityRange
                 }
                 beginSelector = .firstGreaterThan(continuation.storageKey)

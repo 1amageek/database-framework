@@ -1,4 +1,5 @@
 import DatabaseKit
+import DatabaseTypes
 @testable import DatabaseEngine
 import StorageKit
 import Synchronization
@@ -22,6 +23,56 @@ private struct TransactionLifecycleChild: Equatable {
 
 @Suite("Database transaction lifecycle")
 struct DatabaseTransactionLifecycleTests {
+    @Test(
+        "Scan continuation remains valid after nested byte framing",
+        .timeLimit(.minutes(1))
+    )
+    func scanContinuationSurvivesNestedByteFraming() async throws {
+        let container = try await makeContainer()
+        let context = container.newContext()
+        for identifier in ["a", "b", "c"] {
+            try await context.withTransaction { transaction in
+                try await transaction.save(
+                    TransactionLifecycleParent(
+                        id: identifier,
+                        value: identifier
+                    ),
+                    precondition: .notExists
+                )
+            }
+        }
+
+        let firstContinuation = try await context.withTransaction {
+            transaction in
+            let page = try await transaction.scan(
+                TransactionLifecycleParent.self,
+                limit: 2
+            )
+            let identifiers = page.items.map(\.id)
+            let continuation = page.continuation
+            #expect(identifiers == ["a", "b"])
+            return try #require(continuation).encodedBytes
+        }
+        let framedBytes = ByteString([0xA5])
+            .appending(contentsOf: firstContinuation)
+            .appending(0x5A)
+        let nestedContinuation = try DatabaseScanContinuation(
+            encodedBytes: framedBytes[1..<(framedBytes.count - 1)]
+        )
+
+        try await context.withTransaction { transaction in
+            let page = try await transaction.scan(
+                TransactionLifecycleParent.self,
+                after: nestedContinuation,
+                limit: 2
+            )
+            let identifiers = page.items.map(\.id)
+            let continuation = page.continuation
+            #expect(identifiers == ["c"])
+            #expect(continuation == nil)
+        }
+    }
+
     @Test(
         "External overlap is rejected while maintainer reentry completes",
         .timeLimit(.minutes(1))
