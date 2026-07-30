@@ -1,5 +1,6 @@
 #if SQLITE
 import Testing
+import TestSupport
 import Foundation
 import Database
 import DatabaseTypes
@@ -217,10 +218,7 @@ struct PolymorphicFetchSQLiteTests {
         return try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    SQLitePolymorphicArticle.self,
-                    SQLitePolymorphicReport.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self)]
             ),
             security: .disabled
         )
@@ -238,12 +236,9 @@ struct PolymorphicFetchSQLiteTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try vectorRuntimeConfiguration(
-                persistableTypes: [
-                    SQLitePolymorphicVectorArticle.self,
-                    SQLitePolymorphicVectorReport.self,
-                ]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorReport.self)]
             ),
             security: .disabled
         )
@@ -261,27 +256,23 @@ struct PolymorphicFetchSQLiteTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try vectorRuntimeConfiguration(
-                persistableTypes: [
-                    SQLitePolymorphicOptionalVectorArticle.self,
-                    SQLitePolymorphicOptionalVectorReport.self,
-                ]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicOptionalVectorArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicOptionalVectorReport.self)]
             ),
             security: .disabled
         )
     }
 
     private func vectorRuntimeConfiguration(
-        persistableTypes: [any Persistable.Type]
+        entityRuntimes: [EntityRuntimeRegistration]
     ) throws -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
-            indexMaintainerProviders: [
-                VectorIndexMaintainerProvider()
+            indexMaintainerProviderDescriptors: [
+                .init(describing: VectorIndexMaintainerProvider())
             ],
-            indexReadExecutors: [VectorReadExecutors.indexExecutor],
-            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor],
-            persistableTypes: persistableTypes
+            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor()],
+            entityRuntimes: entityRuntimes
         )
     }
 
@@ -294,7 +285,7 @@ struct PolymorphicFetchSQLiteTests {
         return try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLitePolymorphicVectorNoIndexArticle.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorNoIndexArticle.self)]
             ),
             security: .disabled
         )
@@ -307,25 +298,27 @@ struct PolymorphicFetchSQLiteTests {
     ) async throws -> Int {
         let group = try container.polymorphicGroup(identifier: SQLitePolymorphicArticle.polymorphableType)
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        var indexSubspace = groupSubspace
+        let baseIndexSubspace = groupSubspace
             .subspace(SubspaceKey.indexes)
             .subspace(indexName)
-
+        let indexSubspace: Subspace
         if let valuePrefix {
             indexSubspace = Subspace(
-                prefix: indexSubspace.prefix + Tuple(
+                prefix: baseIndexSubspace.prefix.appending(contentsOf: Tuple(
                     try FieldValue.string(valuePrefix).toTupleElement()
-                ).pack()
+                ).pack())
             )
+        } else {
+            indexSubspace = baseIndexSubspace
         }
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 
@@ -338,11 +331,11 @@ struct PolymorphicFetchSQLiteTests {
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 
@@ -354,25 +347,27 @@ struct PolymorphicFetchSQLiteTests {
             identifier: SQLiteSecurePolymorphicArticle.polymorphableType
         )
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        var indexSubspace = groupSubspace
+        let baseIndexSubspace = groupSubspace
             .subspace(SubspaceKey.indexes)
             .subspace("SQLiteSecurePolymorphicDocument_title")
-
+        let indexSubspace: Subspace
         if let valuePrefix {
             indexSubspace = Subspace(
-                prefix: indexSubspace.prefix + Tuple(
+                prefix: baseIndexSubspace.prefix.appending(contentsOf: Tuple(
                     try FieldValue.string(valuePrefix).toTupleElement()
-                ).pack()
+                ).pack())
             )
+        } else {
+            indexSubspace = baseIndexSubspace
         }
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 
@@ -387,39 +382,39 @@ struct PolymorphicFetchSQLiteTests {
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 
-    private func sqliteVectorResultID(_ result: PolymorphicQueryResult) -> String? {
-        if let article = result.item(as: SQLitePolymorphicVectorArticle.self) {
+    private func sqliteVectorResultID(_ result: PolymorphicQueryResult) throws -> String? {
+        if let article = try result.decodedModel(as: SQLitePolymorphicVectorArticle.self) {
             return article.id
         }
-        if let report = result.item(as: SQLitePolymorphicVectorReport.self) {
+        if let report = try result.decodedModel(as: SQLitePolymorphicVectorReport.self) {
             return report.id
         }
         return nil
     }
 
-    private func sqliteOptionalVectorResultID(_ result: PolymorphicQueryResult) -> String? {
-        if let article = result.item(as: SQLitePolymorphicOptionalVectorArticle.self) {
+    private func sqliteOptionalVectorResultID(_ result: PolymorphicQueryResult) throws -> String? {
+        if let article = try result.decodedModel(as: SQLitePolymorphicOptionalVectorArticle.self) {
             return article.id
         }
-        if let report = result.item(as: SQLitePolymorphicOptionalVectorReport.self) {
+        if let report = try result.decodedModel(as: SQLitePolymorphicOptionalVectorReport.self) {
             return report.id
         }
         return nil
     }
 
-    private func sqlitePolymorphicResultID(_ result: PolymorphicQueryResult) -> String? {
-        if let article = result.item(as: SQLitePolymorphicArticle.self) {
+    private func sqlitePolymorphicResultID(_ result: PolymorphicQueryResult) throws -> String? {
+        if let article = try result.decodedModel(as: SQLitePolymorphicArticle.self) {
             return article.id
         }
-        if let report = result.item(as: SQLitePolymorphicReport.self) {
+        if let report = try result.decodedModel(as: SQLitePolymorphicReport.self) {
             return report.id
         }
         return nil
@@ -437,12 +432,9 @@ struct PolymorphicFetchSQLiteTests {
         )
         let initialContainer = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    SQLitePolymorphicArticle.self,
-                    SQLitePolymorphicReport.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self)]
             ),
             security: .disabled
         )
@@ -457,7 +449,7 @@ struct PolymorphicFetchSQLiteTests {
         try initialContext.insert(report)
         try await initialContext.save()
 
-        let registry = SchemaRegistry(database: engine)
+        let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
         let persistedEntities = try await registry.loadAll()
         let persistedEntityNames = persistedEntities.map(\.name)
         #expect(persistedEntityNames.contains(SQLitePolymorphicArticle.persistableType))
@@ -465,12 +457,9 @@ struct PolymorphicFetchSQLiteTests {
 
         let reopenedContainer = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    SQLitePolymorphicArticle.self,
-                    SQLitePolymorphicReport.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self)]
             ),
             security: .disabled
         )
@@ -480,7 +469,7 @@ struct PolymorphicFetchSQLiteTests {
             .fullText(SQLitePolymorphicArticle.fields.title)
             .term("needle")
             .execute()
-        let fullTextIDs = Set(fullTextResults.compactMap(sqlitePolymorphicResultID))
+        let fullTextIDs = try Set(fullTextResults.compactMap(sqlitePolymorphicResultID))
 
         #expect(fetched.count == 2)
         #expect(fullTextIDs == Set([article.id, report.id]))
@@ -505,8 +494,10 @@ struct PolymorphicFetchSQLiteTests {
         let items = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self)
 
         #expect(items.count == 2)
-        #expect(items.compactMap { $0 as? SQLitePolymorphicArticle }.count == 1)
-        #expect(items.compactMap { $0 as? SQLitePolymorphicReport }.count == 1)
+        #expect(Set(items.map(\.entity)) == Set([
+            SQLitePolymorphicArticle.persistableType,
+            SQLitePolymorphicReport.persistableType,
+        ]))
     }
 
     @Test("fetchPolymorphic(id:) retrieves SQLite items across concrete types")
@@ -525,8 +516,8 @@ struct PolymorphicFetchSQLiteTests {
         let fetchedReport = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self, id: report.id)
         let missing = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self, id: "does-not-exist")
 
-        #expect((fetchedArticle as? SQLitePolymorphicArticle)?.title == "Headline")
-        #expect((fetchedReport as? SQLitePolymorphicReport)?.pageCount == 7)
+        #expect(try fetchedArticle?.decode(as: SQLitePolymorphicArticle.self).title == "Headline")
+        #expect(try fetchedReport?.decode(as: SQLitePolymorphicReport.self).pageCount == 7)
         #expect(missing == nil)
     }
 
@@ -550,8 +541,8 @@ struct PolymorphicFetchSQLiteTests {
             .executePage()
 
         #expect(firstPage.results.map { $0.fields["title"]?.stringValue } == ["Alpha", "Beta"])
-        #expect(firstPage.results.first?.item(as: SQLitePolymorphicReport.self)?.id == alpha.id)
-        #expect(firstPage.results.dropFirst().first?.item(as: SQLitePolymorphicArticle.self)?.id == beta.id)
+        #expect(try firstPage.results.first?.decodedModel(as: SQLitePolymorphicReport.self)?.id == alpha.id)
+        #expect(try firstPage.results.dropFirst().first?.decodedModel(as: SQLitePolymorphicArticle.self)?.id == beta.id)
         #expect(firstPage.continuation != nil)
 
         let secondPage = try await context.findPolymorphic(SQLitePolymorphicArticle.self)
@@ -561,7 +552,7 @@ struct PolymorphicFetchSQLiteTests {
             .executePage()
 
         #expect(secondPage.results.map { $0.fields["title"]?.stringValue } == ["Gamma"])
-        #expect(secondPage.results.first?.item(as: SQLitePolymorphicArticle.self)?.id == gamma.id)
+        #expect(try secondPage.results.first?.decodedModel(as: SQLitePolymorphicArticle.self)?.id == gamma.id)
         #expect(secondPage.continuation == nil)
     }
 
@@ -733,14 +724,15 @@ struct PolymorphicFetchSQLiteTests {
         try await context.save()
 
         let remaining = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self)
-        let remainingIDs = Set(remaining.compactMap { item -> String? in
-            if let article = item as? SQLitePolymorphicArticle {
-                return article.id
+        let remainingIDs = try Set(remaining.map { item -> String in
+            switch item.entity {
+            case SQLitePolymorphicArticle.persistableType:
+                return try item.decode(as: SQLitePolymorphicArticle.self).id
+            case SQLitePolymorphicReport.persistableType:
+                return try item.decode(as: SQLitePolymorphicReport.self).id
+            default:
+                throw PolymorphicQueryError.unknownType(item.entity)
             }
-            if let report = item as? SQLitePolymorphicReport {
-                return report.id
-            }
-            return nil
         })
 
         #expect(remainingIDs == Set([report.id]))
@@ -769,9 +761,9 @@ struct PolymorphicFetchSQLiteTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteSecurePolymorphicArticle.self],
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSecurePolymorphicArticle.self)],
                 authorizationPolicies: [
                     AuthorizationPolicyHandler(
                         SQLiteSecurePolymorphicArticle.self
@@ -835,7 +827,7 @@ struct PolymorphicFetchSQLiteTests {
             Issue.record("Expected transferred polymorphic delete to be denied")
         } catch let error as SecurityError {
             #expect(error.operation == .delete)
-            #expect(error.resourceID == original.id)
+            #expect(error.resource?.id == .string(original.id))
             #expect(error.userID == "alice")
         }
 
@@ -860,8 +852,11 @@ struct PolymorphicFetchSQLiteTests {
                 id: original.id
             )
         }
-        #expect((fetchedAsBob as? SQLiteSecurePolymorphicArticle)?.title == "Secure Transferred")
-        #expect((fetchedAsBob as? SQLiteSecurePolymorphicArticle)?.ownerID == "bob")
+        let decodedForBob = try fetchedAsBob?.decode(
+            as: SQLiteSecurePolymorphicArticle.self
+        )
+        #expect(decodedForBob?.title == "Secure Transferred")
+        #expect(decodedForBob?.ownerID == "bob")
 
         try await RequestAuthorization.$context.withValue(
             .authenticated(Principal(identifier: "bob"))
@@ -892,7 +887,7 @@ struct PolymorphicFetchSQLiteTests {
             .fullText(SQLitePolymorphicArticle.fields.title)
             .term("needle")
             .execute()
-        let initialIDs = Set(initial.compactMap(sqlitePolymorphicResultID))
+        let initialIDs = try Set(initial.compactMap(sqlitePolymorphicResultID))
 
         #expect(initialIDs == Set([article.id, report.id]))
 
@@ -910,9 +905,9 @@ struct PolymorphicFetchSQLiteTests {
             .execute()
 
         #expect(afterUpdateNeedle.count == 1)
-        #expect(afterUpdateNeedle.first?.item(as: SQLitePolymorphicArticle.self)?.id == article.id)
+        #expect(try afterUpdateNeedle.first?.decodedModel(as: SQLitePolymorphicArticle.self)?.id == article.id)
         #expect(afterUpdateBeacon.count == 1)
-        #expect(afterUpdateBeacon.first?.item(as: SQLitePolymorphicReport.self)?.id == report.id)
+        #expect(try afterUpdateBeacon.first?.decodedModel(as: SQLitePolymorphicReport.self)?.id == report.id)
 
         try context.delete(article)
         try await context.save()
@@ -938,8 +933,8 @@ struct PolymorphicFetchSQLiteTests {
         let fetchedByID = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self, id: article.id)
 
         #expect(scanned.count == 1)
-        #expect((scanned.first as? SQLitePolymorphicArticle)?.title == "Direct")
-        #expect((fetchedByID as? SQLitePolymorphicArticle)?.id == article.id)
+        #expect(try scanned.first?.decode(as: SQLitePolymorphicArticle.self).title == "Direct")
+        #expect(try fetchedByID?.decode(as: SQLitePolymorphicArticle.self).id == article.id)
     }
 
     @Test("staged delete removes a SQLite item from the shared directory")
@@ -1051,7 +1046,7 @@ struct PolymorphicFetchSQLiteTests {
             .query([1.0, 0.0, 0.0], k: 1)
             .first()
 
-        #expect(first?.item(as: SQLitePolymorphicOptionalVectorArticle.self)?.id == article.id)
+        #expect(try first?.decodedModel(as: SQLitePolymorphicOptionalVectorArticle.self)?.id == article.id)
 
         let results = try await context.findPolymorphic(SQLitePolymorphicOptionalVectorReport.self)
             .vector(
@@ -1060,7 +1055,7 @@ struct PolymorphicFetchSQLiteTests {
             )
             .query([1.0, 0.0, 0.0], k: 2)
             .execute()
-        let resultIDs = Set(results.compactMap(sqliteOptionalVectorResultID))
+        let resultIDs = try Set(results.compactMap(sqliteOptionalVectorResultID))
 
         #expect(resultIDs == Set([article.id, report.id]))
     }
@@ -1101,15 +1096,15 @@ struct PolymorphicFetchSQLiteTests {
             .executePage()
 
         #expect(firstPage.results.count == 2)
-        #expect(firstPage.results.first?.item(as: SQLitePolymorphicVectorArticle.self)?.id == article.id)
-        #expect(firstPage.results.dropFirst().first?.item(as: SQLitePolymorphicVectorReport.self)?.id == report.id)
+        #expect(try firstPage.results.first?.decodedModel(as: SQLitePolymorphicVectorArticle.self)?.id == article.id)
+        #expect(try firstPage.results.dropFirst().first?.decodedModel(as: SQLitePolymorphicVectorReport.self)?.id == report.id)
 
         let reportStartedPage = try await context.findPolymorphic(SQLitePolymorphicVectorReport.self)
             .vector(SQLitePolymorphicVectorReport.fields.embedding, dimensions: 3)
             .query([1.0, 0.0, 0.0], k: 2)
             .metric(.cosine)
             .executePage()
-        let reportStartedIDs = Set(reportStartedPage.results.compactMap(sqliteVectorResultID))
+        let reportStartedIDs = try Set(reportStartedPage.results.compactMap(sqliteVectorResultID))
 
         #expect(reportStartedIDs == Set([article.id, report.id]))
 
@@ -1124,7 +1119,7 @@ struct PolymorphicFetchSQLiteTests {
             .query([1.0, 0.0, 0.0], k: 2)
             .metric(.cosine)
             .executePage()
-        let updatedIDs = Set(updatedPage.results.compactMap(sqliteVectorResultID))
+        let updatedIDs = try Set(updatedPage.results.compactMap(sqliteVectorResultID))
 
         #expect(updatedIDs == Set([article.id, report.id]))
 
@@ -1140,7 +1135,7 @@ struct PolymorphicFetchSQLiteTests {
             .executePage()
 
         #expect(finalPage.results.count == 1)
-        #expect(finalPage.results.first?.item(as: SQLitePolymorphicVectorReport.self)?.id == report.id)
+        #expect(try finalPage.results.first?.decodedModel(as: SQLitePolymorphicVectorReport.self)?.id == report.id)
     }
 }
 #endif

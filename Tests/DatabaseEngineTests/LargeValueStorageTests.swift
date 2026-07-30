@@ -34,7 +34,7 @@ struct LargeValueStorageTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try LargeDataModel.schemaEntity])
-        return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [LargeDataModel.self]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(LargeDataModel.self)]), security: .disabled)
     }
 
     private func uniqueID(_ prefix: String) -> String {
@@ -204,12 +204,16 @@ struct LargeValueStorageTests {
 
         // Use withTransaction API
         try await context.withTransaction { tx in
-            try await tx.save(modelToSave)
+            try await tx.save(modelToSave, precondition: .notExists)
         }
 
         // Verify
         try await context.withTransaction { tx in
-            let fetched: LargeDataModel? = try await tx.fetch(LargeDataModel.self, identifiedBy: modelId)
+            let fetched: LargeDataModel? = try await tx.fetch(
+                LargeDataModel.self,
+                identifiedBy: modelId,
+                consistency: .serializable
+            )
             #expect(fetched != nil)
             #expect(fetched?.data.count == 95_000)
         }
@@ -286,9 +290,10 @@ struct LargeValueStorageTests {
 
             var model = LargeDataModel(name: "Item \(id)", data: data)
             model.id = id
+            let storedModel = model
 
             try await database.withTransaction { transaction in
-                let serialized = try DataAccess.serialize(model)
+                let serialized = try DataAccess.serialize(storedModel)
                 let key = itemSubspace.pack(Tuple(id))
                 let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
                 try await storage.write(serialized, for: key)
@@ -353,9 +358,10 @@ struct LargeValueStorageTests {
 
             var model = LargeDataModel(name: "Large \(i)", data: data)
             model.id = id
+            let storedModel = model
 
             try await database.withTransaction { transaction in
-                let serialized = try DataAccess.serialize(model)
+                let serialized = try DataAccess.serialize(storedModel)
                 let key = itemSubspace.pack(Tuple(id))
                 let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
                 try await storage.write(serialized, for: key)
@@ -403,9 +409,10 @@ struct LargeValueStorageTests {
 
         var model = LargeDataModel(name: "Snapshot Test", data: data)
         model.id = id
+        let storedModel = model
 
         try await database.withTransaction { transaction in
-            let serialized = try DataAccess.serialize(model)
+            let serialized = try DataAccess.serialize(storedModel)
             let key = itemSubspace.pack(Tuple(id))
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(serialized, for: key)
@@ -486,14 +493,14 @@ struct LargeValueStorageTests {
 
         var model = LargeDataModel(name: "Very Large", data: data)
         model.id = id
+        let storedModel = model
 
-        var serializedSize = 0
-        try await database.withTransaction { transaction in
-            let serialized = try DataAccess.serialize(model)
-            serializedSize = serialized.count
+        let serializedSize = try await database.withTransaction { transaction in
+            let serialized = try DataAccess.serialize(storedModel)
             let key = itemSubspace.pack(Tuple(id))
             let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(serialized, for: key)
+            return serialized.count
         }
 
         // Debug: Verify serialized size triggers splitting (>90KB)
@@ -502,11 +509,11 @@ struct LargeValueStorageTests {
         // Direct getRange on items subspace (without ItemStorage)
         let rawItemsCount = try await database.withTransaction { transaction in
             let (begin, end) = itemSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: false) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: false
+            ).count
         }
 
         // Should be exactly 1 item key in items subspace (not multiple chunk keys)
@@ -515,11 +522,11 @@ struct LargeValueStorageTests {
         // Verify blobs subspace has the chunks
         let blobsCount = try await database.withTransaction { transaction in
             let (begin, end) = blobsSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: false) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: false
+            ).count
         }
 
         #expect(blobsCount >= 5, "Blobs subspace should have multiple chunks (got \(blobsCount))")

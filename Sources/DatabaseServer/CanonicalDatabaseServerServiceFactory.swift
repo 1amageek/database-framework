@@ -1,5 +1,7 @@
+import DatabaseEngine
 import GraphIndex
 import OntologyIndex
+import StorageKit
 
 public final class CanonicalDatabaseServerServiceFactory:
     DatabaseServerServiceFactory,
@@ -51,6 +53,7 @@ public final class CanonicalDatabaseServerServiceFactory:
             documentStore: ontologyStore,
             ontologyStore: ontologyIndexStore,
             clock: context.clock,
+            monotonicClock: context.container.monotonicClock,
             wireLimits: context.wireLimits
         )
         let shaclStore = try await DatabaseRDFDocumentStore(

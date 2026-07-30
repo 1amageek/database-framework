@@ -10,14 +10,15 @@ public protocol PersistableMutationMaintainer: Sendable {
 
     /// Applies the derived mutation in the caller's transaction.
     func update(
-        oldModel: (any Persistable)?,
-        newModel: (any Persistable)?,
+        identity: EntityReference,
+        oldModel: PersistedModel?,
+        newModel: PersistedModel?,
         context: borrowing PersistableMutationContext
     ) async throws
 
     /// Validates invariants after all primary mutations are visible in the transaction.
     func validateFinalState(
-        of models: [any Persistable],
+        of models: [PersistedModel],
         context: borrowing PersistableValidationContext
     ) async throws
 }

@@ -3,6 +3,7 @@
 // Comprehensive tests for high-level OWLReasoner API
 
 import Testing
+import TestSupport
 import TestHeartbeat
 import Foundation
 import DatabaseKit
@@ -17,7 +18,7 @@ struct OWLReasonerInitTests {
     @Test("Create reasoner with empty ontology")
     func createWithEmptyOntology() {
         let ontology = OWLOntology(iri: "http://test.org/empty")
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isConsistent().value == true)
         #expect(!reasoner.isClassified)
     }
@@ -29,9 +30,13 @@ struct OWLReasonerInitTests {
             maxExpansionSteps: 500,
             enableIncrementalReasoning: false,
             cacheClassification: true,
-            timeout: 30.0
+            timeout: .seconds(30)
         )
-        let reasoner = OWLReasoner(ontology: ontology, configuration: config)
+        let reasoner = OWLReasoner(
+            ontology: ontology,
+            clock: TestProcessMonotonicClock(),
+            configuration: config
+        )
         #expect(reasoner.isConsistent().value == true)
     }
 }
@@ -50,7 +55,7 @@ struct OWLReasonerConsistencyTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:john"))
         ontology.axioms.append(.classAssertion(individual: "ex:john", class_: .named("ex:Employee")))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isConsistent().value == true)
     }
 
@@ -59,7 +64,7 @@ struct OWLReasonerConsistencyTests {
         var ontology = OWLOntology(iri: "http://test.org/disjoint")
         ontology.axioms.append(.disjointClasses([.named("ex:Dog"), .named("ex:Cat")]))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.isSatisfiable(.intersection([.named("ex:Dog"), .named("ex:Cat")]))
         #expect(result.value == false)
     }
@@ -73,14 +78,14 @@ struct OWLReasonerSatisfiabilityTests {
     @Test("Named class is satisfiable")
     func namedClassSatisfiable() {
         let ontology = OWLOntology(iri: "http://test.org/sat")
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isSatisfiable(.named("ex:Person")).value == true)
     }
 
     @Test("Complement intersection is unsatisfiable")
     func complementIntersectionUnsatisfiable() {
         let ontology = OWLOntology(iri: "http://test.org/unsat")
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.isSatisfiable(.intersection([
             .named("ex:Person"),
             .complement(.named("ex:Person"))
@@ -91,7 +96,7 @@ struct OWLReasonerSatisfiabilityTests {
     @Test("Union with satisfiable disjunct is satisfiable")
     func unionSatisfiable() {
         let ontology = OWLOntology(iri: "http://test.org/union")
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.isSatisfiable(.union([.nothing, .named("ex:Person")]))
         #expect(result.value == true)
     }
@@ -99,7 +104,7 @@ struct OWLReasonerSatisfiabilityTests {
     @Test("Existential with satisfiable filler")
     func existentialSatisfiable() {
         let ontology = OWLOntology(iri: "http://test.org/exist")
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.isSatisfiable(.someValuesFrom(property: "ex:hasChild", filler: .named("ex:Person")))
         #expect(result.value == true)
     }
@@ -107,7 +112,7 @@ struct OWLReasonerSatisfiabilityTests {
     @Test("Existential with unsatisfiable filler")
     func existentialUnsatisfiable() {
         let ontology = OWLOntology(iri: "http://test.org/exist-unsat")
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.isSatisfiable(.someValuesFrom(property: "ex:hasChild", filler: .nothing))
         #expect(result.value == false)
     }
@@ -115,7 +120,11 @@ struct OWLReasonerSatisfiabilityTests {
     @Test("Caching works for repeated queries")
     func cachingWorks() {
         let config = OWLReasoner.Configuration(cacheClassification: true)
-        let reasoner = OWLReasoner(ontology: OWLOntology(iri: "http://test.org/cache"), configuration: config)
+        let reasoner = OWLReasoner(
+            ontology: OWLOntology(iri: "http://test.org/cache"),
+            clock: TestProcessMonotonicClock(),
+            configuration: config
+        )
 
         let r1 = reasoner.isSatisfiable(.named("ex:Person"))
         let s1 = r1.statistics
@@ -129,7 +138,11 @@ struct OWLReasonerSatisfiabilityTests {
     @Test("Canonicalized cache key ensures hit for equivalent expressions")
     func canonicalizedCacheKey() {
         let config = OWLReasoner.Configuration(cacheClassification: true)
-        let reasoner = OWLReasoner(ontology: OWLOntology(iri: "http://test.org/canon"), configuration: config)
+        let reasoner = OWLReasoner(
+            ontology: OWLOntology(iri: "http://test.org/canon"),
+            clock: TestProcessMonotonicClock(),
+            configuration: config
+        )
 
         // intersection([A, B]) and intersection([B, A]) should share cache
         _ = reasoner.isSatisfiable(.intersection([.named("ex:A"), .named("ex:B")]))
@@ -152,37 +165,37 @@ struct OWLReasonerSubsumptionTests {
 
     @Test("Direct subsumption")
     func directSubsumption() {
-        let reasoner = OWLReasoner(ontology: hierarchyOntology())
+        let reasoner = OWLReasoner(ontology: hierarchyOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .named("ex:Mammal"), subClass: .named("ex:Dog")).value == true)
     }
 
     @Test("Transitive subsumption")
     func transitiveSubsumption() {
-        let reasoner = OWLReasoner(ontology: hierarchyOntology())
+        let reasoner = OWLReasoner(ontology: hierarchyOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .named("ex:Animal"), subClass: .named("ex:Dog")).value == true)
     }
 
     @Test("Inverse subsumption fails")
     func inverseSubsumptionFails() {
-        let reasoner = OWLReasoner(ontology: hierarchyOntology())
+        let reasoner = OWLReasoner(ontology: hierarchyOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .named("ex:Dog"), subClass: .named("ex:Animal")).value == false)
     }
 
     @Test("Self subsumption")
     func selfSubsumption() {
-        let reasoner = OWLReasoner(ontology: hierarchyOntology())
+        let reasoner = OWLReasoner(ontology: hierarchyOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .named("ex:Dog"), subClass: .named("ex:Dog")).value == true)
     }
 
     @Test("Thing subsumes everything")
     func thingSubsumesAll() {
-        let reasoner = OWLReasoner(ontology: hierarchyOntology())
+        let reasoner = OWLReasoner(ontology: hierarchyOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .thing, subClass: .named("ex:Dog")).value == true)
     }
 
     @Test("Nothing is subsumed by everything")
     func nothingSubsumedByAll() {
-        let reasoner = OWLReasoner(ontology: hierarchyOntology())
+        let reasoner = OWLReasoner(ontology: hierarchyOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .named("ex:Dog"), subClass: .nothing).value == true)
     }
 }
@@ -197,14 +210,14 @@ struct OWLReasonerEquivDisjointTests {
         var ontology = OWLOntology(iri: "http://test.org/equiv")
         ontology.axioms.append(.equivalentClasses([.named("ex:Human"), .named("ex:Person")]))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.areEquivalent(.named("ex:Human"), .named("ex:Person")).value == true)
     }
 
     @Test("Non-equivalent classes")
     func nonEquivalent() {
         let ontology = OWLOntology(iri: "http://test.org/noneq")
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         // Unrelated classes are not equivalent (they could have disjoint extensions)
         // subsumes neither way → not equivalent
         #expect(reasoner.areEquivalent(.named("ex:Dog"), .named("ex:Cat")).value == false)
@@ -215,14 +228,14 @@ struct OWLReasonerEquivDisjointTests {
         var ontology = OWLOntology(iri: "http://test.org/disj")
         ontology.axioms.append(.disjointClasses([.named("ex:Dog"), .named("ex:Cat")]))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.areDisjoint(.named("ex:Dog"), .named("ex:Cat")).value == true)
     }
 
     @Test("Non-disjoint classes")
     func nonDisjoint() {
         let ontology = OWLOntology(iri: "http://test.org/nondisj")
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.areDisjoint(.named("ex:Dog"), .named("ex:Cat")).value == false)
     }
 }
@@ -247,7 +260,7 @@ struct OWLReasonerInstanceTests {
 
     @Test("Direct instances")
     func directInstances() {
-        let reasoner = OWLReasoner(ontology: instanceOntology())
+        let reasoner = OWLReasoner(ontology: instanceOntology(), clock: TestProcessMonotonicClock())
         let employees = reasoner.instances(of: .named("ex:Employee"))
         #expect(employees.contains("ex:john"))
         #expect(!employees.contains("ex:mary"))
@@ -255,7 +268,7 @@ struct OWLReasonerInstanceTests {
 
     @Test("Inferred instances through subsumption")
     func inferredInstances() {
-        let reasoner = OWLReasoner(ontology: instanceOntology())
+        let reasoner = OWLReasoner(ontology: instanceOntology(), clock: TestProcessMonotonicClock())
         let persons = reasoner.instances(of: .named("ex:Person"))
         #expect(persons.contains("ex:john"))
         #expect(persons.contains("ex:mary"))
@@ -263,7 +276,7 @@ struct OWLReasonerInstanceTests {
 
     @Test("isInstanceOf check")
     func isInstanceOfCheck() {
-        let reasoner = OWLReasoner(ontology: instanceOntology())
+        let reasoner = OWLReasoner(ontology: instanceOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.isInstanceOf(individual: "ex:john", classExpr: .named("ex:Employee")).value == true)
         #expect(reasoner.isInstanceOf(individual: "ex:john", classExpr: .named("ex:Person")).value == true)
         #expect(reasoner.isInstanceOf(individual: "ex:mary", classExpr: .named("ex:Employee")).value == false)
@@ -271,7 +284,7 @@ struct OWLReasonerInstanceTests {
 
     @Test("Types of individual include hierarchy")
     func typesOfIndividual() {
-        let reasoner = OWLReasoner(ontology: instanceOntology())
+        let reasoner = OWLReasoner(ontology: instanceOntology(), clock: TestProcessMonotonicClock())
         let types = reasoner.types(of: "ex:john")
         #expect(types.contains("ex:Employee"))
         #expect(types.contains("ex:Person"))
@@ -280,14 +293,14 @@ struct OWLReasonerInstanceTests {
 
     @Test("Types of unasserted individual is only owl:Thing")
     func typesOfUnassertedIndividual() {
-        let reasoner = OWLReasoner(ontology: instanceOntology())
+        let reasoner = OWLReasoner(ontology: instanceOntology(), clock: TestProcessMonotonicClock())
         let types = reasoner.types(of: "ex:bob")
         #expect(types == Set(["owl:Thing"]))
     }
 
     @Test("Types of unknown individual is only owl:Thing")
     func typesOfUnknownIndividual() {
-        let reasoner = OWLReasoner(ontology: instanceOntology())
+        let reasoner = OWLReasoner(ontology: instanceOntology(), clock: TestProcessMonotonicClock())
         let types = reasoner.types(of: "ex:nonexistent")
         #expect(types == Set(["owl:Thing"]))
     }
@@ -327,7 +340,7 @@ struct OWLReasonerDefinedClassTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:Local"))
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:LocalShop", property: "ex:hasScale", object: "ex:Local"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let toyotaTypes = reasoner.types(of: "ex:Toyota")
         #expect(toyotaTypes.contains("ex:GlobalCorp"))
@@ -362,7 +375,7 @@ struct OWLReasonerDefinedClassTests {
         ontology.axioms.append(.classAssertion(individual: "ex:Acme", class_: .named("ex:Corporation")))
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:Acme", property: "ex:hasScale", object: "ex:Global"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let types = reasoner.types(of: "ex:Acme")
 
         #expect(types.contains("ex:GlobalCorp"))
@@ -388,7 +401,7 @@ struct OWLReasonerClassificationTests {
         ontology.axioms.append(.subClassOf(sub: .named("ex:Dog"), sup: .named("ex:Mammal")))
         ontology.axioms.append(.subClassOf(sub: .named("ex:Cat"), sup: .named("ex:Mammal")))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         var hierarchy = reasoner.classify()
 
         #expect(reasoner.isClassified)
@@ -407,7 +420,7 @@ struct OWLReasonerClassificationTests {
         ontology.axioms.append(.subClassOf(sub: .named("ex:C"), sup: .named("ex:B")))
         ontology.axioms.append(.subClassOf(sub: .named("ex:B"), sup: .named("ex:A")))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // Direct only
         let directSupers = reasoner.superClasses(of: "ex:C", direct: true)
@@ -430,7 +443,7 @@ struct OWLReasonerClassificationTests {
         var ontology = OWLOntology(iri: "http://test.org/equiv-query")
         ontology.axioms.append(.equivalentClasses([.named("ex:Human"), .named("ex:Person")]))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let equivs = reasoner.equivalentClasses(of: "ex:Human")
         #expect(equivs.contains("ex:Person"))
     }
@@ -440,7 +453,7 @@ struct OWLReasonerClassificationTests {
         var ontology = OWLOntology(iri: "http://test.org/disj-query")
         ontology.axioms.append(.disjointClasses([.named("ex:Dog"), .named("ex:Cat")]))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let disjoints = reasoner.disjointClasses(of: "ex:Dog")
         #expect(disjoints.contains("ex:Cat"))
     }
@@ -464,7 +477,7 @@ struct OWLReasonerPropertyTests {
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:alice", property: "ex:ancestorOf", object: "ex:bob"))
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:bob", property: "ex:ancestorOf", object: "ex:carol"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let reachable = reasoner.reachableIndividuals(from: "ex:alice", via: "ex:ancestorOf", includeInferred: true)
         #expect(reachable.contains("ex:bob"))
         #expect(reachable.contains("ex:carol"))
@@ -481,7 +494,7 @@ struct OWLReasonerPropertyTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:bob"))
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:alice", property: "ex:friendOf", object: "ex:bob"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isSymmetric("ex:friendOf"))
 
         let reachable = reasoner.reachableIndividuals(from: "ex:bob", via: "ex:friendOf", includeInferred: true)
@@ -497,7 +510,7 @@ struct OWLReasonerPropertyTests {
         ontology.objectProperties.append(OWLObjectProperty(iri: "ex:childOf"))
         ontology.axioms.append(.inverseObjectProperties(first: "ex:parentOf", second: "ex:childOf"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.inverseProperty(of: "ex:parentOf") == "ex:childOf")
     }
 
@@ -508,7 +521,7 @@ struct OWLReasonerPropertyTests {
         hasMother.characteristics.insert(.functional)
         ontology.objectProperties.append(hasMother)
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isFunctional("ex:hasMother"))
         #expect(!reasoner.isFunctional("ex:hasChild"))
     }
@@ -520,7 +533,7 @@ struct OWLReasonerPropertyTests {
         ancestorOf.characteristics.insert(.transitive)
         ontology.objectProperties.append(ancestorOf)
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isTransitive("ex:ancestorOf"))
         #expect(!reasoner.isTransitive("ex:hasChild"))
     }
@@ -532,7 +545,7 @@ struct OWLReasonerPropertyTests {
         ontology.objectProperties.append(OWLObjectProperty(iri: "ex:hasMother"))
         ontology.axioms.append(.subObjectPropertyOf(sub: "ex:hasMother", sup: "ex:hasParent"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let superProps = reasoner.superProperties(of: "ex:hasMother")
         #expect(superProps.contains("ex:hasParent"))
 
@@ -551,7 +564,7 @@ struct OWLReasonerPropertyTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:eve"))
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:alice", property: "ex:hasMother", object: "ex:eve"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let reachable = reasoner.reachableIndividuals(from: "ex:alice", via: "ex:hasParent", includeInferred: true)
         #expect(reachable.contains("ex:eve"))
     }
@@ -568,7 +581,7 @@ struct OWLReasonerValidationTests {
         ontology.classes.append(OWLClass(iri: "ex:Person"))
         ontology.axioms.append(.subClassOf(sub: .named("ex:Person"), sup: .thing))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let (isValid, _) = reasoner.validateOWLDL()
         #expect(isValid)
     }
@@ -582,7 +595,7 @@ struct OWLReasonerValidationTests {
             sup: .maxCardinality(property: "ex:hasAncestor", n: 10, filler: nil)
         ))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let (isValid, violations) = reasoner.validateOWLDL()
         #expect(!isValid)
         #expect(!violations.isEmpty)
@@ -596,7 +609,7 @@ struct OWLReasonerStatisticsTests {
 
     @Test("Statistics are tracked")
     func statisticsTracked() {
-        let reasoner = OWLReasoner(ontology: OWLOntology(iri: "http://test.org/stats"))
+        let reasoner = OWLReasoner(ontology: OWLOntology(iri: "http://test.org/stats"), clock: TestProcessMonotonicClock())
         _ = reasoner.isConsistent()
         _ = reasoner.isSatisfiable(.named("ex:Person"))
         _ = reasoner.isSatisfiable(.named("ex:Employee"))
@@ -607,7 +620,7 @@ struct OWLReasonerStatisticsTests {
 
     @Test("Clear caches resets hit count")
     func clearCachesResetsHitCount() {
-        let reasoner = OWLReasoner(ontology: OWLOntology(iri: "http://test.org/reset"))
+        let reasoner = OWLReasoner(ontology: OWLOntology(iri: "http://test.org/reset"), clock: TestProcessMonotonicClock())
         _ = reasoner.isSatisfiable(.named("ex:Person"))
         _ = reasoner.isSatisfiable(.named("ex:Person")) // cache hit
 
@@ -618,7 +631,7 @@ struct OWLReasonerStatisticsTests {
 
     @Test("Subsumption checks are counted")
     func subsumptionChecksCounted() {
-        let reasoner = OWLReasoner(ontology: OWLOntology(iri: "http://test.org/sub-stats"))
+        let reasoner = OWLReasoner(ontology: OWLOntology(iri: "http://test.org/sub-stats"), clock: TestProcessMonotonicClock())
         _ = reasoner.subsumes(superClass: .thing, subClass: .named("ex:A"))
         _ = reasoner.subsumes(superClass: .named("ex:A"), subClass: .named("ex:B"))
 

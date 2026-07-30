@@ -66,8 +66,8 @@ struct OntologyMetadataTests {
         let encoded = try OntologyStorageFormat.encode(
             OntologyMetadata(
                 iri: "http://example.org/test-ontology",
-                createdAt: try Timestamp(secondsSinceUnixEpoch: 1_000),
-                updatedAt: try Timestamp(secondsSinceUnixEpoch: 1_000)
+                createdAt: Timestamp(secondsSinceUnixEpoch: 1_000),
+                updatedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
             )
         )
 
@@ -114,7 +114,7 @@ struct OntologyMetadataTests {
 
     @Test("Ontology status metadata")
     func ontologyStatusMetadata() throws {
-        let timestamp = try Timestamp(secondsSinceUnixEpoch: 1_000)
+        let timestamp = Timestamp(secondsSinceUnixEpoch: 1_000)
         let metadata = OntologyMetadata(
             iri: "http://example.org/test",
             createdAt: timestamp,
@@ -575,7 +575,7 @@ struct InferenceStatisticsTests {
         #expect(stats.triplesInferred == 0)
         #expect(stats.duplicateInferences == 0)
         #expect(stats.inconsistenciesDetected == 0)
-        #expect(stats.inferenceTime == 0)
+        #expect(stats.inferenceTime == .zero)
         #expect(stats.triplesExamined == 0)
     }
 
@@ -587,14 +587,14 @@ struct InferenceStatisticsTests {
         stats.triplesInferred = 50
         stats.duplicateInferences = 10
         stats.inconsistenciesDetected = 2
-        stats.inferenceTime = 1.5
+        stats.inferenceTime = .milliseconds(1_500)
         stats.triplesExamined = 1000
 
         #expect(stats.ruleApplications == 100)
         #expect(stats.triplesInferred == 50)
         #expect(stats.duplicateInferences == 10)
         #expect(stats.inconsistenciesDetected == 2)
-        #expect(stats.inferenceTime == 1.5)
+        #expect(stats.inferenceTime == .milliseconds(1_500))
         #expect(stats.triplesExamined == 1000)
     }
 }

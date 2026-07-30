@@ -560,7 +560,7 @@ extension DatabaseContext {
 
         let sourceRows = try entities.map { entity in
             try options.workMeter.consume(at: .resultMaterialization)
-            let row = try QueryRowCodec.encodeAny(
+            let row = try QueryRowCodec.encode(
                 entity.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(entity.typeName),
@@ -686,7 +686,7 @@ extension DatabaseContext {
             )
             let sourceName = logicalSource.alias ?? logicalSource.effectiveName
             return try entities.map { entity in
-                let row = try QueryRowCodec.encodeAny(
+                let row = try QueryRowCodec.encode(
                     entity.item,
                     annotations: [
                         PolymorphicRowAnnotation.typeName: .string(entity.typeName),

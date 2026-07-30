@@ -73,7 +73,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
             // Count documents (sample-based for large collections)
             var count: Int64 = 0
-            for _ in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
+            for _ in try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
                 count += 1
                 // Limit to avoid timeout
                 if count >= 100_000 {
@@ -127,7 +127,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             )
 
             var count: Int64 = 0
-            for _ in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
+            for _ in try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
                 count += 1
                 if count >= 100_000 {
                     break
@@ -442,12 +442,13 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     }
 
     private func resolveDirectoryForEntity(_ entity: Schema.Entity) async throws -> Subspace {
-        guard let persistableType = container.runtimeConfiguration
-            .entityRuntimes.modelType(named: entity.name) else {
+        guard container.runtimeConfiguration.entityRuntimes.registration(
+            named: entity.name
+        ) != nil else {
             throw AdminError.operationFailed("Entity '\(entity.name)' has no Persistable type")
         }
         // Use container's resolveDirectory to respect #Directory definitions
-        return try await container.resolveDirectory(for: persistableType)
+        return try await container.resolveDirectory(for: entity)
     }
 
     private func describeCondition<T>(_ predicate: Predicate<T>) -> String {

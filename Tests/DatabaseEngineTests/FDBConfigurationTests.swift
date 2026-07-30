@@ -54,6 +54,8 @@ struct DBConfigurationTests {
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
+                monotonicClock: TestProcessMonotonicClock(),
+                wallClock: FixedTestWallClock(),
                 indexConfigurations: [
                     ContainerEmbeddingConfiguration(
                         fieldName: "embedding",
@@ -62,7 +64,7 @@ struct DBConfigurationTests {
                     )
                 ]
             ),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [IndexConfigurationUser.self]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
             security: .disabled,
         )
 
@@ -82,6 +84,8 @@ struct DBConfigurationTests {
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
+                monotonicClock: TestProcessMonotonicClock(),
+                wallClock: FixedTestWallClock(),
                 indexConfigurations: [
                     ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "en"),
                     ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "ja"),
@@ -89,7 +93,7 @@ struct DBConfigurationTests {
                     ContainerEmbeddingConfiguration(fieldName: "embedding", entityName: "IndexConfigurationUser", profileIdentifier: "test")
                 ]
             ),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [IndexConfigurationUser.self]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
             security: .disabled,
         )
 
@@ -107,8 +111,8 @@ struct DBConfigurationTests {
 
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [IndexConfigurationUser.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
             security: .disabled,
         )
 
@@ -120,9 +124,11 @@ struct DBConfigurationTests {
         let schema = try Schema(
             entities: [try IndexConfigurationUser.schemaEntity]
         )
-        let persistableTypes = try PersistableTypeRegistry(
-            types: [IndexConfigurationUser.self]
-        )
+        let entityRuntimes = try DatabaseFrameworkRuntime.configuration(
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)
+            ]
+        ).entityRuntimes
         let configuration = ContainerLocalizedTextConfiguration(
             fieldName: "embedding",
             entityName: "IndexConfigurationUser",
@@ -139,7 +145,7 @@ struct DBConfigurationTests {
             try IndexRuntimeConfigurationValidator.validate(
                 [configuration],
                 schema: schema,
-                persistableTypes: persistableTypes
+                entityRuntimes: entityRuntimes
             )
         }
     }
@@ -149,9 +155,11 @@ struct DBConfigurationTests {
         let schema = try Schema(
             entities: [try IndexConfigurationUser.schemaEntity]
         )
-        let persistableTypes = try PersistableTypeRegistry(
-            types: [IndexConfigurationUser.self]
-        )
+        let entityRuntimes = try DatabaseFrameworkRuntime.configuration(
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)
+            ]
+        ).entityRuntimes
         let configuration = ContainerEmbeddingConfiguration(
             fieldName: "missing",
             entityName: "IndexConfigurationUser",
@@ -166,15 +174,15 @@ struct DBConfigurationTests {
             try IndexRuntimeConfigurationValidator.validate(
                 [configuration],
                 schema: schema,
-                persistableTypes: persistableTypes
+                entityRuntimes: entityRuntimes
             )
         }
     }
 
     // MARK: - Configuration Access Helper Tests
 
-    @Test("indexConfiguration(for:as:) returns correct typed configuration")
-    func indexConfigurationTypedAccess() async throws {
+    @Test("Grouped index configuration preserves its concrete policy type")
+    func groupedIndexConfigurationPreservesPolicyType() async throws {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
@@ -184,6 +192,8 @@ struct DBConfigurationTests {
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
+                monotonicClock: TestProcessMonotonicClock(),
+                wallClock: FixedTestWallClock(),
                 indexConfigurations: [
                     ContainerEmbeddingConfiguration(
                         fieldName: "embedding",
@@ -192,21 +202,20 @@ struct DBConfigurationTests {
                     )
                 ]
             ),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [IndexConfigurationUser.self]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
             security: .disabled,
         )
 
-        let vectorConfig = container.indexConfiguration(
-            for: "IndexConfigurationUser_embedding",
-            as: ContainerEmbeddingConfiguration.self
-        )
+        let vectorConfig = container.indexConfigurations[
+            "IndexConfigurationUser_embedding"
+        ]?.first as? ContainerEmbeddingConfiguration
 
         #expect(vectorConfig != nil)
         #expect(vectorConfig?.profileIdentifier == "typed-access")
     }
 
-    @Test("indexConfigurations(for:as:) returns all matching typed configurations")
-    func indexConfigurationsTypedAccess() async throws {
+    @Test("Grouped index configurations preserve every matching policy")
+    func groupedIndexConfigurationsPreserveMatchingPolicies() async throws {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
@@ -216,19 +225,22 @@ struct DBConfigurationTests {
             testing: schema,
             configuration: .init(
                 backend: .custom(database),
+                monotonicClock: TestProcessMonotonicClock(),
+                wallClock: FixedTestWallClock(),
                 indexConfigurations: [
                     ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "en"),
                     ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "ja")
                 ]
             ),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [IndexConfigurationUser.self]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
             security: .disabled,
         )
 
-        let ftConfigs = container.indexConfigurations(
-            for: "IndexConfigurationUser_name",
-            as: ContainerLocalizedTextConfiguration.self
-        )
+        let ftConfigs = container.indexConfigurations[
+            "IndexConfigurationUser_name"
+        ]?.compactMap { configuration in
+            configuration as? ContainerLocalizedTextConfiguration
+        } ?? []
 
         #expect(ftConfigs.count == 2)
         let languages = Set(ftConfigs.map { $0.language })
@@ -259,6 +271,8 @@ struct DBConfigurationPropertiesTests {
         let config = DBConfiguration(
             name: "test-config",
             backend: .fdb(),
+            monotonicClock: TestProcessMonotonicClock(),
+            wallClock: FixedTestWallClock(),
             indexConfigurations: configs
         )
 
@@ -268,7 +282,11 @@ struct DBConfigurationPropertiesTests {
 
     @Test("DBConfiguration initializer stores common defaults")
     func initializerDefaults() {
-        let config = DBConfiguration(backend: .fdb())
+        let config = DBConfiguration(
+            backend: .fdb(),
+            monotonicClock: TestProcessMonotonicClock(),
+            wallClock: FixedTestWallClock()
+        )
 
         #expect(config.name == nil)
         #expect(config.indexConfigurations.isEmpty)
@@ -279,6 +297,8 @@ struct DBConfigurationPropertiesTests {
         let config = DBConfiguration(
             name: "debug-test",
             backend: .fdb(),
+            monotonicClock: TestProcessMonotonicClock(),
+            wallClock: FixedTestWallClock(),
             indexConfigurations: [
                 ContainerEmbeddingConfiguration(fieldName: "embedding", entityName: "IndexConfigurationUser", profileIdentifier: "test")
             ]

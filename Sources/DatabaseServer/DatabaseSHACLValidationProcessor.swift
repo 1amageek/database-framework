@@ -174,7 +174,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
             )
         } catch {
             throw DatabaseSHACLValidationError.invalidShapesGraph(
-                String(describing: error)
+                "SHACL shapes graph is invalid"
             )
         }
     }
@@ -250,7 +250,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
             try workBudget.consume(2, at: .sortComparison)
             return left.0.lexicographicallyPrecedes(right.0)
         }
-        return encoded.map(\.1)
+        return encoded.map { $0.1 }
     }
 
     private func severity(

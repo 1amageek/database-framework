@@ -496,8 +496,9 @@ struct SpatialIndexPerformanceTests {
             try randomLocation(id: "\(uniqueID("loc"))-\(i)")
         }
 
+        let indexedLocations = locations
         try await ctx.database.withTransaction { transaction in
-            for location in locations {
+            for location in indexedLocations {
                 try await ctx.maintainer.updateIndex(
                     oldItem: nil,
                     newItem: location,

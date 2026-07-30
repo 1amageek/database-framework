@@ -3,6 +3,7 @@
 // Transaction semantics tests against PostgreSQL backend
 
 import Testing
+import DatabaseRuntime
 import Foundation
 import StorageKit
 import PostgreSQLStorage
@@ -27,7 +28,7 @@ struct PostgreSQLTransactionTests {
 
     private func setupContainer() async throws -> DBContainer {
         let schema = try Schema(entities: [try PGTxItem.schemaEntity], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGTxItem.self])
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGTxItem.self)])
     }
 
     // MARK: - Basic Transaction

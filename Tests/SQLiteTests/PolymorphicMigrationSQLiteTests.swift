@@ -1,5 +1,6 @@
 #if SQLITE
 import Testing
+import TestSupport
 import Foundation
 import Database
 import StorageKit
@@ -320,8 +321,8 @@ struct PolymorphicMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV1.self, SQLitePolymorphicMigrationReportV1.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV1.self)]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -339,16 +340,16 @@ struct PolymorphicMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -357,7 +358,7 @@ struct PolymorphicMigrationSQLiteTests {
             .fullText(SQLitePolymorphicMigrationArticleV2.fields.title)
             .term("needle")
             .execute()
-        let migratedIDs = Set(migratedResults.compactMap(Self.resultID))
+        let migratedIDs = try Set(migratedResults.compactMap(Self.resultID))
 
         #expect(migratedIDs == Set([article.id, report.id]))
         #expect(try await Self.countPolymorphicIndexEntries(
@@ -384,8 +385,8 @@ struct PolymorphicMigrationSQLiteTests {
             .term("beacon")
             .execute()
 
-        #expect(Set(afterUpdateNeedle.compactMap(Self.resultID)) == Set([article.id]))
-        #expect(Set(afterUpdateBeacon.compactMap(Self.resultID)) == Set([report.id]))
+        #expect(try Set(afterUpdateNeedle.compactMap(Self.resultID)) == Set([article.id]))
+        #expect(try Set(afterUpdateBeacon.compactMap(Self.resultID)) == Set([report.id]))
         #expect(try await Self.countPolymorphicIndexEntries(
             container: verificationContainer,
             indexName: "SQLitePolymorphicMigrationDocument_title"
@@ -397,8 +398,8 @@ struct PolymorphicMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV1.self, SQLitePolymorphicMigrationReportV1.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV1.self)]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -424,16 +425,16 @@ struct PolymorphicMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()
@@ -455,8 +456,8 @@ struct PolymorphicMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -479,8 +480,8 @@ struct PolymorphicMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV3.self,
             migrationPlan: SQLitePolymorphicRemovalMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV3.self, SQLitePolymorphicMigrationReportV3.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV3.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV3.self)]),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
@@ -518,8 +519,8 @@ struct PolymorphicMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV2.self, SQLitePolymorphicMigrationReportV2.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -550,8 +551,8 @@ struct PolymorphicMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV4.self,
             migrationPlan: SQLitePolymorphicRebuildMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicMigrationArticleV4.self, SQLitePolymorphicMigrationReportV4.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV4.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV4.self)]),
             security: .disabled
         )
         try await migratedContainer.migrateIfNeeded()
@@ -562,7 +563,7 @@ struct PolymorphicMigrationSQLiteTests {
             .fullText(SQLitePolymorphicMigrationArticleV4.fields.title)
             .term("needle")
             .execute()
-        let rebuiltIDs = Set(rebuiltResults.compactMap(Self.resultIDV4))
+        let rebuiltIDs = try Set(rebuiltResults.compactMap(Self.resultIDV4))
 
         #expect(rebuiltIDs == Set([article.id, report.id]))
         #expect(try await Self.countPolymorphicIndexEntries(
@@ -575,21 +576,21 @@ struct PolymorphicMigrationSQLiteTests {
         ) == .readable)
     }
 
-    private static func resultID(_ result: PolymorphicQueryResult) -> String? {
-        if let article = result.item(as: SQLitePolymorphicMigrationArticleV2.self) {
+    private static func resultID(_ result: PolymorphicQueryResult) throws -> String? {
+        if let article = try result.decodedModel(as: SQLitePolymorphicMigrationArticleV2.self) {
             return article.id
         }
-        if let report = result.item(as: SQLitePolymorphicMigrationReportV2.self) {
+        if let report = try result.decodedModel(as: SQLitePolymorphicMigrationReportV2.self) {
             return report.id
         }
         return nil
     }
 
-    private static func resultIDV4(_ result: PolymorphicQueryResult) -> String? {
-        if let article = result.item(as: SQLitePolymorphicMigrationArticleV4.self) {
+    private static func resultIDV4(_ result: PolymorphicQueryResult) throws -> String? {
+        if let article = try result.decodedModel(as: SQLitePolymorphicMigrationArticleV4.self) {
             return article.id
         }
-        if let report = result.item(as: SQLitePolymorphicMigrationReportV4.self) {
+        if let report = try result.decodedModel(as: SQLitePolymorphicMigrationReportV4.self) {
             return report.id
         }
         return nil
@@ -609,11 +610,11 @@ struct PolymorphicMigrationSQLiteTests {
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 

@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 @testable import DatabaseServer
@@ -19,9 +20,9 @@ struct DatabaseMaintenanceOperationServiceTests {
         let initial = try await DBContainer.open(
             for: MaintenanceSchemaV1.self,
             migrationPlan: MaintenanceInitialMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [CatalogPartitionedEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .disabled
         )
@@ -30,9 +31,9 @@ struct DatabaseMaintenanceOperationServiceTests {
         let target = try await DBContainer.open(
             for: MaintenanceSchemaV3.self,
             migrationPlan: MaintenanceMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [CatalogPartitionedEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .disabled
         )
@@ -103,9 +104,9 @@ struct DatabaseMaintenanceOperationServiceTests {
         let initial = try await DBContainer.open(
             for: MaintenanceSchemaV1.self,
             migrationPlan: MaintenanceInitialMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [CatalogPartitionedEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .disabled
         )
@@ -114,9 +115,9 @@ struct DatabaseMaintenanceOperationServiceTests {
         let target = try await DBContainer.open(
             for: MaintenanceSchemaV3.self,
             migrationPlan: MaintenanceMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [CatalogPartitionedEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .disabled
         )
@@ -533,8 +534,11 @@ struct DatabaseMaintenanceOperationServiceTests {
             JobStatusOperation.Request(job: started.job),
             context: context
         )
-        let firstMarker = try await maintenanceContext.container.engine.withTransaction(
-            configuration: .readOnly
+        let firstMarker = try await StorageTransactionExecutor(
+            engine: maintenanceContext.container.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await transaction.getValue(
                 for: ControlledCompactionStorageEngine.markerKey,
@@ -564,8 +568,11 @@ struct DatabaseMaintenanceOperationServiceTests {
         #expect(continuation == nil)
         let response = try decodeMaintenanceResponse(responsePayloadPage)
         let execution = try executionResult(response)
-        let finalMarker = try await maintenanceContext.container.engine.withTransaction(
-            configuration: .readOnly
+        let finalMarker = try await StorageTransactionExecutor(
+            engine: maintenanceContext.container.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await transaction.getValue(
                 for: ControlledCompactionStorageEngine.markerKey,
@@ -658,8 +665,11 @@ struct DatabaseMaintenanceOperationServiceTests {
             Issue.record("Expected oversized continuation to fail the job")
             return
         }
-        let marker = try await maintenanceContext.container.engine.withTransaction(
-            configuration: .readOnly
+        let marker = try await StorageTransactionExecutor(
+            engine: maintenanceContext.container.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await transaction.getValue(
                 for: ControlledCompactionStorageEngine.markerKey,
@@ -756,9 +766,9 @@ struct DatabaseMaintenanceOperationServiceTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [CatalogPartitionedEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .disabled
         )
@@ -1012,16 +1022,14 @@ struct DatabaseMaintenanceOperationServiceTests {
         let serviceContext: DatabaseServerServiceContext
     }
 
-    private final class FixedClock: DatabaseWallClock, Sendable {
+    private final class FixedClock: WallClock, Sendable {
         private let value: Timestamp
 
         init() throws {
-            value = try Timestamp(secondsSinceUnixEpoch: 1_000)
+            value = Timestamp(secondsSinceUnixEpoch: 1_000)
         }
 
-        func now() -> Timestamp {
-            value
-        }
+        var now: Timestamp { value }
     }
 
     private actor RecordingScheduler: DatabaseJobScheduler {

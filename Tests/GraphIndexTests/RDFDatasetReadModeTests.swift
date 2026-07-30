@@ -20,6 +20,9 @@ struct RDFDatasetReadModeTests {
         let defaultObservations = ScannerCallObservations()
         let defaultExecutor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 0)
+            ),
             datasetScanner: ReadModeSpyScanner(
                 graph: graph,
                 observations: defaultObservations
@@ -38,6 +41,9 @@ struct RDFDatasetReadModeTests {
         let mutationObservations = ScannerCallObservations()
         let mutationExecutor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 0)
+            ),
             datasetScanner: ReadModeSpyScanner(
                 graph: graph,
                 observations: mutationObservations
@@ -65,7 +71,10 @@ struct RDFDatasetReadModeTests {
         )
         let quad = try makeQuad(graph: graph)
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             _ = try await store.insert(
                 quad,
                 transaction: transaction,
@@ -77,7 +86,10 @@ struct RDFDatasetReadModeTests {
         let indexedScanner = IndexedRDFDatasetScanner(
             sources: [store.datasetSource]
         )
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             let recording = RecordingTransaction(
                 underlying: transaction,
                 observations: observations
@@ -128,7 +140,10 @@ struct RDFDatasetReadModeTests {
         )
         let observations = ReadObservations()
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             let recording = RecordingTransaction(
                 underlying: transaction,
                 observations: observations
@@ -247,7 +262,8 @@ struct RDFDatasetReadModeTests {
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
     }
 
@@ -388,30 +404,6 @@ struct RDFDatasetReadModeTests {
     }
 
     private final class RecordingTransaction: TransactionAccess, Sendable {
-        struct RangeResult: TransactionRangeResult {
-            typealias Element = (ByteString, ByteString)
-
-            let cursor: KeyValueCursor
-
-            func makeAsyncIterator() -> AsyncIterator {
-                AsyncIterator(cursor: cursor)
-            }
-
-            struct AsyncIterator: TransactionRangeIterator {
-                var cursor: KeyValueCursor
-
-                mutating func next() async throws -> Element? {
-                    try await cursor.next()
-                }
-
-                mutating func finish(
-                    isolation actor: isolated (any Actor)?
-                ) async throws {
-                    try await cursor.finish()
-                }
-            }
-        }
-
         let underlying: any TransactionAccess
         let observations: ReadObservations
 
@@ -432,6 +424,10 @@ struct RDFDatasetReadModeTests {
             return try await underlying.getValue(for: key, snapshot: snapshot)
         }
 
+        func getValue(for key: ByteString) async throws -> ByteString? {
+            try await underlying.getValue(for: key)
+        }
+
         func getKey(selector: KeySelector, snapshot: Bool) async throws -> ByteString? {
             observations.recordKey(snapshot: snapshot)
             return try await underlying.getKey(
@@ -440,23 +436,23 @@ struct RDFDatasetReadModeTests {
             )
         }
 
-        func getRange(
+        func rangeCursor(
             from begin: KeySelector,
             to end: KeySelector,
             limit: Int,
             reverse: Bool,
             snapshot: Bool,
             streamingMode: StreamingMode
-        ) -> RangeResult {
+        ) -> KeyValueCursor {
             observations.entityRange(limit: limit, snapshot: snapshot)
-            return RangeResult(cursor: underlying.rangeCursor(
+            return underlying.rangeCursor(
                 from: begin,
                 to: end,
                 limit: limit,
                 reverse: reverse,
                 snapshot: snapshot,
                 streamingMode: streamingMode
-            ))
+            )
         }
 
         func setValue(_ value: ByteString, for key: ByteString) throws {

@@ -6,6 +6,7 @@ import StorageKit
 import Synchronization
 import TestHeartbeat
 import Testing
+import TestSupport
 @testable import GraphIndex
 @testable import QueryAST
 
@@ -381,6 +382,7 @@ struct SPARQLSubSelectExecutionTests {
 
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             datasetScanner: scanner
         ).execute(
             pattern: pattern,
@@ -428,6 +430,7 @@ struct SPARQLSubSelectExecutionTests {
         do {
             _ = try await SPARQLQueryExecutor(
                 database: InMemoryEngine(),
+                wallClock: FixedTestWallClock(),
                 sources: []
             ).execute(
                 pattern: pattern,
@@ -466,6 +469,7 @@ struct SPARQLSubSelectExecutionTests {
         do {
             _ = try await SPARQLQueryExecutor(
                 database: InMemoryEngine(),
+                wallClock: FixedTestWallClock(),
                 sources: []
             ).execute(
                 pattern: pattern,
@@ -510,6 +514,7 @@ struct SPARQLSubSelectExecutionTests {
         let pattern = try GraphPatternConverter.convert(.subquery(inner))
         let executor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             datasetScanner: RecordingScanner(observations: observations)
         )
 
@@ -562,6 +567,7 @@ struct SPARQLSubSelectExecutionTests {
 
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             datasetScanner: RetryAwareScanner(observations: observations)
         ).execute(
             pattern: pattern,
@@ -601,6 +607,7 @@ struct SPARQLSubSelectExecutionTests {
 
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             datasetScanner: FollowingBindingScanner()
         ).execute(
             pattern: GraphPatternConverter.convert(graphPattern),
@@ -832,6 +839,7 @@ struct SPARQLSubSelectExecutionTests {
     ) async throws -> [VariableBinding] {
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
             pattern: pattern,
@@ -853,7 +861,8 @@ struct SPARQLSubSelectExecutionTests {
                 maximumIntermediateRows: maximumIntermediateRows,
                 maximumIntermediateBytes: maximumIntermediateBytes,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
     }
 

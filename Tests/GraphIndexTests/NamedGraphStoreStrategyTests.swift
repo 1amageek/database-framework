@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TestSupport
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -147,7 +148,7 @@ struct NamedGraphStoreStrategyTests {
             object: "Carol",
             graph: nil
         )
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: database).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             for key in try await setup.maintainer.computeIndexKeys(
                 for: named,
                 id: Tuple(named.id)
@@ -209,14 +210,18 @@ struct NamedGraphStoreStrategyTests {
             strategy: .namedGraphStore,
             scope: scope
         )
-        return try await database.withTransaction(
-            configuration: .readOnly
+        return try await StorageTransactionExecutor(
+            engine: database
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             var edges: [EdgeInfo] = []
-            for try await edge in scanner.scanAllEdges(
+            var cursor = scanner.scanAllEdges(
                 edgeLabel: nil,
                 transaction: transaction
-            ) {
+            ).makeCursor()
+            while let edge = try await cursor.next() {
                 edges.append(edge)
             }
             return edges

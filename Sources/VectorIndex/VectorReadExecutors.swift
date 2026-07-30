@@ -12,14 +12,19 @@ enum VectorReadParameter {
 }
 
 public enum VectorReadExecutors {
-    public static var polymorphicIndexExecutor: any PolymorphicIndexReadExecutor {
-        PolymorphicVectorReadExecutor()
+    public static func polymorphicIndexExecutor(
+        graphResourceLimits: HNSWGraphResourceLimits = .default
+    ) -> any PolymorphicIndexReadExecutor {
+        PolymorphicVectorReadExecutor(graphResourceLimits: graphResourceLimits)
     }
 
     public static func register<Model: Persistable>(
-        with definition: inout EntityRuntimeDefinition<Model>
+        with definition: inout EntityRuntimeDefinition<Model>,
+        graphResourceLimits: HNSWGraphResourceLimits = .default
     ) throws(DatabaseRuntimeConfigurationError) {
-        try definition.register(VectorReadExecutor())
+        try definition.register(
+            VectorReadExecutor(graphResourceLimits: graphResourceLimits)
+        )
     }
 }
 
@@ -33,6 +38,12 @@ private enum VectorReadError: Error, Sendable {
 
 private struct VectorReadExecutor: IndexReadExecutor {
     let kindIdentifier = "vector"
+    private let graphCache = HNSWGraphCache()
+    private let graphResourceLimits: HNSWGraphResourceLimits
+
+    init(graphResourceLimits: HNSWGraphResourceLimits) {
+        self.graphResourceLimits = graphResourceLimits
+    }
 
     func executeRows<T: Persistable>(
         context: DatabaseContext,
@@ -69,7 +80,9 @@ private struct VectorReadExecutor: IndexReadExecutor {
         let builder = VectorQueryBuilder<T>(
             queryContext: queryContext,
             fieldName: fieldName,
-            dimensions: dimensions
+            dimensions: dimensions,
+            graphCache: graphCache,
+            graphResourceLimits: graphResourceLimits
         )
             .metric(distanceMetric)
         let configuredBuilder = try builder.query(queryVector, k: k)
@@ -124,28 +137,14 @@ private struct VectorReadExecutor: IndexReadExecutor {
     }
 }
 
-private struct PolymorphicVectorPlaceholder: Persistable {
-    typealias ID = String
-
-    var id: String = ""
-
-    static var persistableType: String { "_PolymorphicVectorPlaceholder" }
-    static var allFields: [String] { ["id"] }
-
-    static func fieldNumber(for fieldName: String) -> Int? {
-        fieldName == "id" ? 1 : nil
-    }
-
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        member == "id" ? id : nil
-    }
-
-}
-
 private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "vector"
+    private let graphCache = HNSWGraphCache()
+    private let graphResourceLimits: HNSWGraphResourceLimits
+
+    init(graphResourceLimits: HNSWGraphResourceLimits) {
+        self.graphResourceLimits = graphResourceLimits
+    }
 
     func executeRows(
         context: DatabaseContext,
@@ -251,84 +250,72 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         context: DatabaseContext,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
-        let index = Index(
-            name: indexName,
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: fieldName)
-        )
-
         let configs = context.container.indexConfigurations[indexName] ?? []
         let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs)
         let algorithm = runtimePolicy?.algorithm ?? .flat
 
         switch algorithm {
         case .flat:
-            let maintainer = FlatVectorIndexMaintainer<PolymorphicVectorPlaceholder>(
-                index: index,
-                dimensions: specification.dimensions,
-                metric: specification.metric,
+            return try await FlatVectorIndexReader(
                 subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id")
-            )
-            return try await maintainer.search(
+                dimensions: specification.dimensions,
+                metric: specification.metric
+            ).search(
                 queryVector: queryVector,
                 k: k,
                 transaction: transaction
             )
 
         case .hnsw(let hnswParams):
-            let maintainer = HNSWIndexMaintainer<PolymorphicVectorPlaceholder>(
-                index: index,
+            let parameters = HNSWParameters(
+                m: hnswParams.m,
+                efConstruction: hnswParams.efConstruction,
+                efSearch: hnswParams.efSearch
+            )
+            let storage = HNSWIndexStorage(
+                subspace: indexSubspace,
                 dimensions: specification.dimensions,
                 metric: specification.metric,
-                subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id"),
-                parameters: HNSWParameters(
-                    m: hnswParams.m,
-                    efConstruction: hnswParams.efConstruction,
-                    efSearch: hnswParams.efSearch
-                )
+                parameters: parameters,
+                graphCache: graphCache,
+                resourceLimits: graphResourceLimits
             )
-            return try await maintainer.search(
+            return try await HNSWIndexReader(storage: storage).search(
                 queryVector: queryVector,
                 k: k,
-                searchParams: HNSWSearchParameters(ef: max(k, hnswParams.efSearch)),
+                parameters: HNSWSearchParameters(
+                    ef: max(k, hnswParams.efSearch)
+                ),
                 transaction: transaction
             )
 
         case .ivf(let ivfParams):
-            let maintainer = IVFIndexMaintainer<PolymorphicVectorPlaceholder>(
-                index: index,
+            return try await IVFIndexReader(
+                subspace: indexSubspace,
                 dimensions: specification.dimensions,
                 metric: specification.metric,
-                subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id"),
                 parameters: IVFParameters(
                     nlist: ivfParams.nlist,
                     nprobe: ivfParams.nprobe,
                     kmeansIterations: ivfParams.kmeansIterations
                 )
-            )
-            return try await maintainer.search(
+            ).search(
                 queryVector: queryVector,
                 k: k,
                 transaction: transaction
             )
 
         case .pq(let pqParams):
-            let maintainer = try PQIndexMaintainer<PolymorphicVectorPlaceholder>(
-                index: index,
+            return try await PQIndexReader(
+                subspace: indexSubspace,
                 dimensions: specification.dimensions,
                 metric: specification.metric,
-                subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id"),
                 parameters: PQParameters(
                     m: pqParams.m,
                     ksub: 256,
                     niter: pqParams.niter
                 )
-            )
-            return try await maintainer.search(
+            ).search(
                 queryVector: queryVector,
                 k: k,
                 transaction: transaction
@@ -366,7 +353,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
         let rows = try orderedResults.map { result in
             try IndexReadRow.materializing(
-                any: result.entity.item,
+                result.entity.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(result.entity.typeName),
                     PolymorphicRowAnnotation.typeCode: .int64(result.entity.typeCode),

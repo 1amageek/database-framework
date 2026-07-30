@@ -99,7 +99,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.base.range()
         var seen = Set<String>()
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -170,7 +170,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.classes(ontologyIRI).range()
         var classes: [StoredClassDefinition] = []
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -233,7 +233,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.properties(ontologyIRI).range()
         var properties: [StoredPropertyDefinition] = []
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -276,7 +276,7 @@ public struct OntologyStore: Sendable {
     ) async throws -> [OWLAxiom] {
         let (beginKey, endKey) = subspace.axioms(ontologyIRI).range()
         var axioms: [OWLAxiom] = []
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -340,7 +340,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.classSuperOf(ontologyIRI).subspace(classIRI).range()
         var superClasses: Set<String> = []
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -368,7 +368,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.classSubOf(ontologyIRI).subspace(classIRI).range()
         var subClasses: Set<String> = []
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -412,7 +412,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.propertySuperOf(ontologyIRI).subspace(propertyIRI).range()
         var superProperties: Set<String> = []
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -440,7 +440,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.propertySubOf(ontologyIRI).subspace(propertyIRI).range()
         var subProperties: Set<String> = []
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -519,7 +519,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.transitive(ontologyIRI).range()
         var properties: Set<String> = []
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -555,7 +555,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.chains(ontologyIRI).subspace(targetProperty).range()
         var maxID = -1
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -588,7 +588,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.chains(ontologyIRI).subspace(targetProperty).range()
         var chains: [[String]] = []
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -613,7 +613,7 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.chains(ontologyIRI).range()
         var result: [String: [[String]]] = [:]
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,

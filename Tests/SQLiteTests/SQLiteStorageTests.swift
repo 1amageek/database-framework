@@ -33,7 +33,7 @@ struct SQLiteStorageTests {
         return try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )
@@ -47,7 +47,7 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )
@@ -66,7 +66,7 @@ struct SQLiteStorageTests {
             for: schema,
             path: dbPath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )
@@ -105,7 +105,7 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self, SQLiteStoredNote.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self), try DatabaseFrameworkRuntime.entity(SQLiteStoredNote.self)]
             ),
             security: .disabled
         )
@@ -143,7 +143,7 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )
@@ -174,7 +174,7 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )
@@ -211,7 +211,7 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )
@@ -237,7 +237,7 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )
@@ -416,7 +416,7 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )
@@ -449,7 +449,7 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )
@@ -480,7 +480,7 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )
@@ -510,7 +510,7 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteStoredItem.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .disabled
         )

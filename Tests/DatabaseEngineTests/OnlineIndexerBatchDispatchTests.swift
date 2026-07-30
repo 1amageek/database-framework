@@ -24,9 +24,9 @@ struct OnlineIndexerBatchDispatchTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
+            configuration: .testing(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [Player.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]
             ),
             security: .disabled
         )
@@ -56,13 +56,14 @@ struct OnlineIndexerBatchDispatchTests {
         first.id = "first"
         var second = Player(name: "duplicate", score: 2, level: 1)
         second.id = "second"
+        let players = [first, second]
         try await database.withTransaction { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace,
                 configuration: .v1
             )
-            for player in [first, second] {
+            for player in players {
                 let key = itemSubspace
                     .subspace(Player.persistableType)
                     .pack(Tuple(player.id))
@@ -116,9 +117,9 @@ struct OnlineIndexerBatchDispatchTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
+            configuration: .testing(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [Player.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]
             ),
             security: .disabled
         )
@@ -249,8 +250,8 @@ struct OnlineIndexerBatchDispatchTests {
         let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Player.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]),
             security: .disabled
         )
 
@@ -312,8 +313,8 @@ struct OnlineIndexerBatchDispatchTests {
         let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Player.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]),
             security: .disabled
         )
 
@@ -383,8 +384,8 @@ struct OnlineIndexerBatchDispatchTests {
         let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Player.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]),
             security: .disabled
         )
 

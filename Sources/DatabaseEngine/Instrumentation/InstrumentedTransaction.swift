@@ -210,7 +210,7 @@ public final class InstrumentedTransaction: Sendable {
             state.rangeScanCount += 1
         }
 
-        let results = try await transaction.collectRange(
+        let results = try await TransactionRangeCollection.collect(using: transaction,
             from: begin, to: end,
             limit: limit, reverse: reverse,
             snapshot: snapshot, streamingMode: streamingMode

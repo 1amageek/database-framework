@@ -143,7 +143,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 let value = try literal.toSPARQLFieldValue()
                 guard case .rdfTerm(let rdfTerm) = value else {
                     throw SPARQLUpdateError.invalidRDFTermRole(
-                        String(describing: value)
+                        "RDF term value is required"
                     )
                 }
                 resolved = rdfTerm
@@ -262,7 +262,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 return nil
             }
             throw SPARQLUpdateError.invalidRDFTermRole(
-                String(describing: resolved)
+                resolved.description
             )
         }
         return resolved
@@ -292,7 +292,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
             return .blankNode(identifier)
         case .literal, .tripleTerm:
             throw SPARQLUpdateError.invalidRDFTermRole(
-                String(describing: term)
+                term.description
             )
         }
     }
@@ -300,7 +300,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
     private func rdfPredicate(_ term: RDFTerm) throws -> RDFPredicateIRI {
         guard case .iri(let iri) = term else {
             throw SPARQLUpdateError.invalidRDFTermRole(
-                String(describing: term)
+                term.description
             )
         }
         return RDFPredicateIRI(iri)

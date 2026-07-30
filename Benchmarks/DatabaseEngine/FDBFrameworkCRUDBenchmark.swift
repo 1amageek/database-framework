@@ -47,9 +47,9 @@ private struct CRUDBenchmarkContext: Sendable {
         )
         self.container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [CRUDBenchmarkEntity.self]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(CRUDBenchmarkEntity.self)]
             ),
             security: .disabled
         )
@@ -127,7 +127,10 @@ private struct CRUDBenchmarkContext: Sendable {
 
     func dataStoreWrite(_ entity: CRUDBenchmarkEntity) async throws {
         let store = try await container.store(for: CRUDBenchmarkEntity.self, path: path)
-        try await store.executeBatch(inserts: [entity], deletes: [])
+        try await store.executeBatch(
+            inserts: [try PersistedModel(entity)],
+            deletes: []
+        )
     }
 
     func dataStoreRead(id: String) async throws -> CRUDBenchmarkEntity? {
@@ -136,7 +139,8 @@ private struct CRUDBenchmarkContext: Sendable {
             try await transaction.fetch(
                 CRUDBenchmarkEntity.self,
                 identifiedBy: id,
-                in: path
+                in: path,
+                consistency: .serializable
             )
         }
     }

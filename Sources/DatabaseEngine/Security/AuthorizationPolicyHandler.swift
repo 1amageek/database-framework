@@ -38,6 +38,7 @@ public struct AuthorizationPolicyHandler: Sendable {
             Model.permitsQuery(query, in: context)
         }
         self.readDecision = { resource, context in
+            try Self.validateEntity(of: resource, expected: Model.persistableType)
             let resource = try resource.decode(as: Model.self)
             return try AuthorizationResourceDecision(
                 isPermitted: Model.permitsRead(of: resource, in: context),
@@ -45,6 +46,7 @@ public struct AuthorizationPolicyHandler: Sendable {
             )
         }
         self.createDecision = { resource, context in
+            try Self.validateEntity(of: resource, expected: Model.persistableType)
             let resource = try resource.decode(as: Model.self)
             return try AuthorizationResourceDecision(
                 isPermitted: Model.permitsCreate(resource, in: context),
@@ -52,6 +54,14 @@ public struct AuthorizationPolicyHandler: Sendable {
             )
         }
         self.updateDecision = { oldResource, newResource, context in
+            try Self.validateEntity(
+                of: oldResource,
+                expected: Model.persistableType
+            )
+            try Self.validateEntity(
+                of: newResource,
+                expected: Model.persistableType
+            )
             let oldResource = try oldResource.decode(as: Model.self)
             let newResource = try newResource.decode(as: Model.self)
             return try AuthorizationResourceDecision(
@@ -64,10 +74,23 @@ public struct AuthorizationPolicyHandler: Sendable {
             )
         }
         self.deleteDecision = { resource, context in
+            try Self.validateEntity(of: resource, expected: Model.persistableType)
             let resource = try resource.decode(as: Model.self)
             return try AuthorizationResourceDecision(
                 isPermitted: Model.permitsDelete(resource, in: context),
                 resource: resource
+            )
+        }
+    }
+
+    private static func validateEntity(
+        of resource: borrowing PersistedModel,
+        expected entity: String
+    ) throws {
+        guard resource.entity == entity else {
+            throw AuthorizationPolicyHandlerError.modelTypeMismatch(
+                expected: entity,
+                actual: resource.entity
             )
         }
     }
@@ -111,18 +134,13 @@ public struct AuthorizationPolicyHandler: Sendable {
 
 struct AuthorizationResourceDecision: Sendable {
     let isPermitted: Bool
-    let resourceID: String
+    let resource: EntityReference
 
     init<Model: Persistable>(
         isPermitted: Bool,
         resource: borrowing Model
     ) throws {
         self.isPermitted = isPermitted
-        self.resourceID = DatabaseTextFormatting.lowercaseHex(
-            try PersistableIdentifierKeyCodec.tuple(
-                for: resource.persistableIdentifierValue,
-                expectedType: Model.persistableIdentifierType
-            ).pack()
-        )
+        self.resource = try EntityReferenceEncoder.encode(resource)
     }
 }

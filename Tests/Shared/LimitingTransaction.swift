@@ -6,141 +6,68 @@ import Synchronization
 /// Transaction wrapper for tests that need to count and limit range operations.
 ///
 /// This wrapper can:
-/// - Count `collectRange` calls
-/// - Fail if more than `maxCollectCalls` calls are performed
+/// - Count opened range cursors
+/// - Fail when the configured range cursor count is exceeded
 public final class LimitingTransaction: TransactionAccess, Sendable {
 
     public var capabilities: TransactionCapabilities {
         underlying.capabilities
     }
 
-    // MARK: - Associated Type
+    // MARK: - Range Result
 
-    /// Delegates to the underlying transaction's RangeResult via type erasure.
-    /// Since LimitingTransaction wraps type-erased storage access, range
-    /// collection is deferred to the iterator.
+    /// Delegates range advancement without materializing backend-owned bytes.
     public struct RangeResult: TransactionRangeResult {
-        public typealias Element = (ByteString, ByteString)
-
-        private let underlying: (any TransactionAccess)?
-        private let begin: KeySelector
-        private let end: KeySelector
-        private let limit: Int
-        private let reverse: Bool
-        private let snapshot: Bool
-        private let streamingMode: StreamingMode
+        private let source: KeyValueCursor?
         private let error: LimitingError?
 
-        /// Create from pre-collected pairs (e.g., when exceeded max calls).
-        init(pairs: [(ByteString, ByteString)]) {
-            self.underlying = nil
-            self.begin = KeySelector(key: [], orEqual: false, offset: 0)
-            self.end = KeySelector(key: [], orEqual: false, offset: 0)
-            self.limit = 0
-            self.reverse = false
-            self.snapshot = false
-            self.streamingMode = .wantAll
-            self._pairs = pairs
+        init(source: KeyValueCursor) {
+            self.source = source
             self.error = nil
         }
 
         init(error: LimitingError) {
-            self.underlying = nil
-            self.begin = KeySelector(key: [], orEqual: false, offset: 0)
-            self.end = KeySelector(key: [], orEqual: false, offset: 0)
-            self.limit = 0
-            self.reverse = false
-            self.snapshot = false
-            self.streamingMode = .wantAll
-            self._pairs = nil
+            self.source = nil
             self.error = error
         }
 
-        /// Create from underlying transaction parameters (lazy collection).
-        init(
-            underlying: any TransactionAccess,
-            begin: KeySelector, end: KeySelector,
-            limit: Int, reverse: Bool,
-            snapshot: Bool, streamingMode: StreamingMode
-        ) {
-            self.underlying = underlying
-            self.begin = begin
-            self.end = end
-            self.limit = limit
-            self.reverse = reverse
-            self.snapshot = snapshot
-            self.streamingMode = streamingMode
-            self._pairs = nil
-            self.error = nil
-        }
-
-        private let _pairs: [(ByteString, ByteString)]?
-
-        public func makeAsyncIterator() -> AsyncIterator {
-            AsyncIterator(
-                underlying: underlying,
-                begin: begin, end: end,
-                limit: limit, reverse: reverse,
-                snapshot: snapshot, streamingMode: streamingMode,
-                preFetched: _pairs,
+        public func makeCursor() -> Cursor {
+            Cursor(
+                source: source,
                 error: error
             )
         }
 
-        public struct AsyncIterator: TransactionRangeIterator {
-            private let underlying: (any TransactionAccess)?
-            private let begin: KeySelector
-            private let end: KeySelector
-            private let limit: Int
-            private let reverse: Bool
-            private let snapshot: Bool
-            private let streamingMode: StreamingMode
-            private var pairs: [(ByteString, ByteString)]?
-            private var index = 0
-            private let error: LimitingError?
+        public struct Cursor: TransactionRangeCursor {
+            private var source: KeyValueCursor?
+            private var pendingError: LimitingError?
 
             init(
-                underlying: (any TransactionAccess)?,
-                begin: KeySelector, end: KeySelector,
-                limit: Int, reverse: Bool,
-                snapshot: Bool, streamingMode: StreamingMode,
-                preFetched: [(ByteString, ByteString)]?,
+                source: KeyValueCursor?,
                 error: LimitingError?
             ) {
-                self.underlying = underlying
-                self.begin = begin
-                self.end = end
-                self.limit = limit
-                self.reverse = reverse
-                self.snapshot = snapshot
-                self.streamingMode = streamingMode
-                self.pairs = preFetched
-                self.error = error
+                self.source = source
+                self.pendingError = error
             }
 
             public mutating func next() async throws -> (ByteString, ByteString)? {
-                if let error {
+                if let error = pendingError {
+                    pendingError = nil
                     throw error
                 }
-                // Lazily collect on first call
-                if pairs == nil, let tx = underlying {
-                    pairs = try await tx.collectRange(
-                        from: begin, to: end,
-                        limit: limit, reverse: reverse,
-                        snapshot: snapshot, streamingMode: streamingMode
-                    )
-                }
-                guard let pairs, index < pairs.count else { return nil }
-                let pair = pairs[index]
-                index += 1
-                return pair
+                guard var activeSource = source else { return nil }
+                let row = try await activeSource.next()
+                source = activeSource
+                return row
             }
 
             public mutating func finish(
                 isolation actor: isolated (any Actor)?
             ) async throws {
-                pairs = nil
-                index = 0
+                pendingError = nil
+                guard var activeSource = source else { return }
+                source = nil
+                try await activeSource.finish()
             }
         }
     }
@@ -148,12 +75,12 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
     // MARK: - Error
 
     public enum LimitingError: Error, Equatable, CustomStringConvertible, Sendable {
-        case exceededMaxCalls(max: Int)
+        case exceededMaximumRangeCursorCount(maximum: Int)
 
         public var description: String {
             switch self {
-            case .exceededMaxCalls(let max):
-                return "Exceeded max collectRange calls (\(max))"
+            case .exceededMaximumRangeCursorCount(let maximum):
+                return "Exceeded maximum range cursor count (\(maximum))"
             }
         }
     }
@@ -161,19 +88,21 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
     // MARK: - Properties
 
     private let underlying: any TransactionAccess
-    private let maxCollectCalls: Int
-    private let callCount: Mutex<Int>
+    private let maximumRangeCursorCount: Int
+    private let rangeCursorCount: Mutex<Int>
 
     public init(
         wrapping underlying: any TransactionAccess,
-        maxCollectCalls: Int = Int.max
+        maximumRangeCursorCount: Int = Int.max
     ) {
         self.underlying = underlying
-        self.maxCollectCalls = maxCollectCalls
-        self.callCount = Mutex(0)
+        self.maximumRangeCursorCount = maximumRangeCursorCount
+        self.rangeCursorCount = Mutex(0)
     }
 
-    public var callCountValue: Int { callCount.withLock { $0 } }
+    public var openedRangeCursorCount: Int {
+        rangeCursorCount.withLock { $0 }
+    }
 
     // MARK: - Read
 
@@ -181,39 +110,45 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
         try await underlying.getValue(for: key, snapshot: snapshot)
     }
 
+    public func getValue(for key: ByteString) async throws -> ByteString? {
+        try await underlying.getValue(for: key)
+    }
+
     public func getKey(selector: KeySelector, snapshot: Bool) async throws -> ByteString? {
         try await underlying.getKey(selector: selector, snapshot: snapshot)
     }
 
-    public func getRange(
+    public func rangeCursor(
         from begin: KeySelector,
         to end: KeySelector,
         limit: Int,
         reverse: Bool,
         snapshot: Bool,
         streamingMode: StreamingMode
-    ) -> RangeResult {
-        // Count the call
-        let count = callCount.withLock { value in
+    ) -> KeyValueCursor {
+        let count = rangeCursorCount.withLock { value in
             value += 1
             return value
         }
 
-        guard count <= maxCollectCalls else {
-            return RangeResult(
-                error: .exceededMaxCalls(max: maxCollectCalls)
-            )
+        guard count <= maximumRangeCursorCount else {
+            return KeyValueCursor(consuming: RangeResult(
+                error: .exceededMaximumRangeCursorCount(
+                    maximum: maximumRangeCursorCount
+                )
+            ))
         }
 
-        // Eagerly collect from the underlying transaction.
-        // Since getRange is synchronous but underlying.collectRange is async,
-        // we store the parameters and lazily collect in the iterator.
-        return RangeResult(
-            underlying: underlying,
-            begin: begin, end: end,
-            limit: limit, reverse: reverse,
-            snapshot: snapshot, streamingMode: streamingMode
-        )
+        return KeyValueCursor(consuming: RangeResult(source:
+            underlying.rangeCursor(
+                from: begin,
+                to: end,
+                limit: limit,
+                reverse: reverse,
+                snapshot: snapshot,
+                streamingMode: streamingMode
+            )
+        ))
     }
 
     // MARK: - Write

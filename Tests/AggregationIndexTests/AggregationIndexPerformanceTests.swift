@@ -331,19 +331,18 @@ struct AggregationIndexPerformanceTests {
 
         // Insert initial data
         let itemCount = 100
-        var sales: [AggregationBenchmarkSale] = []
-        for i in 0..<itemCount {
-            let sale = AggregationBenchmarkSale(
+        var sales = (0..<itemCount).map { i in
+            AggregationBenchmarkSale(
                 id: "sale-\(i)",
                 region: "Tokyo",
                 category: "Category",
                 amount: 100.0
             )
-            sales.append(sale)
         }
+        let initialSales = sales
 
         try await database.withTransaction { transaction in
-            for sale in sales {
+            for sale in initialSales {
                 try await maintainer.updateIndex(oldItem: nil, newItem: sale, transaction: transaction)
             }
         }
@@ -871,15 +870,13 @@ struct AggregationIndexPerformanceTests {
 
         // Insert test data
         let itemCount = 300
-        var sales: [AggregationBenchmarkSale] = []
-        for i in 0..<itemCount {
-            let sale = AggregationBenchmarkSale(
+        let sales = (0..<itemCount).map { i in
+            AggregationBenchmarkSale(
                 id: "sale-\(i)",
                 region: regions[i % regions.count],
                 category: "Category",
                 amount: 100.0
             )
-            sales.append(sale)
         }
 
         try await database.withTransaction { transaction in

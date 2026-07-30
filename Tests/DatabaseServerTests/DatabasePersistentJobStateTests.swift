@@ -8,7 +8,7 @@ import Testing
 struct DatabasePersistentJobStateTests {
     @Test("Initial pending state preserves its canonical wire representation")
     func initialPendingStateRoundTrip() throws {
-        let timestamp = try Timestamp(secondsSinceUnixEpoch: 1_000)
+        let timestamp = Timestamp(secondsSinceUnixEpoch: 1_000)
         let state = DatabasePersistentJobState(
             jobID: DatabaseTypes.UUID(high: 0, low: 1),
             specificationDigest: ByteString(

@@ -196,13 +196,15 @@ struct MinMaxBatchAPITests {
         )
 
         let regions = ["US", "EU", "APAC", "SA", "AF"]
-        var orders: [Order] = []
-
-        // Create 1000 orders across 5 regions (200 per region)
-        for i in 0..<1000 {
+        let orders = (0..<1000).map { i in
             let region = regions[i % regions.count]
             let amount = Double.random(in: 10.0...10000.0)
-            orders.append(Order(id: "o\(i)", region: region, category: "Test", amount: amount))
+            return Order(
+                id: "o\(i)",
+                region: region,
+                category: "Test",
+                amount: amount
+            )
         }
 
         try await database.withTransaction { transaction in

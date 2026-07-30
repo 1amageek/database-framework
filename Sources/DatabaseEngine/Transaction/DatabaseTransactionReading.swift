@@ -1,10 +1,4 @@
-// Transaction-scoped typed database read contract.
 import DatabaseKit
-
-public enum DatabaseReadConsistency: Sendable, Equatable {
-    case serializable
-    case snapshot
-}
 
 /// Typed persistence reads scoped to one database transaction.
 public protocol DatabaseTransactionReading: Sendable {

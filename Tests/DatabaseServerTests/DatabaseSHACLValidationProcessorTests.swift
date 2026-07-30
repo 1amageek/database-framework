@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseRuntime
 import DatabaseEngine
 import DatabaseServer
@@ -119,7 +120,10 @@ struct DatabaseSHACLValidationProcessorTests {
         ]
         let validationContext = try await makeSHACLValidationContext(
             entailmentContext: OWLGraphEntailment(
-                reasoner: OWLReasoner(ontology: ontology)
+                reasoner: OWLReasoner(
+                    ontology: ontology,
+                    clock: TestProcessMonotonicClock()
+                )
             )
         )
         try await insertEntailedPeople(
@@ -153,7 +157,8 @@ struct DatabaseSHACLValidationProcessorTests {
     func rdfsEntailmentAppliesToValidationQueries() async throws {
         let dataQuads = try rdfsData()
         let workBudget = SHACLValidationWorkBudget(
-            budget: ExecutionBudget(maximumWorkUnits: 1_000)
+            budget: ExecutionBudget(maximumWorkUnits: 1_000),
+            monotonicClock: TestProcessMonotonicClock()
         )
         let entailment = try RDFSGraphEntailment(
             quads: dataQuads,
@@ -182,7 +187,7 @@ struct DatabaseSHACLValidationProcessorTests {
         #expect(response.conforms == false)
         #expect(response.issues.count == 2)
         #expect(
-            Set(response.issues.compactMap(\.focusNode))
+            Set(response.issues.compactMap { $0.focusNode })
                 == [try RDFTerm.iri(validating: "urn:Dave")]
         )
         #expect(
@@ -229,9 +234,9 @@ struct DatabaseSHACLValidationProcessorTests {
                 entities: [try DatabaseSHACLStatement.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseSHACLStatement.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self)]
             ),
             security: .disabled
         )
@@ -261,6 +266,7 @@ struct DatabaseSHACLValidationProcessorTests {
         )
         let executor = SPARQLQueryExecutor(
             database: container.engine,
+            wallClock: FixedTestWallClock(),
             sources: [source],
             ontologyContext: ontologyContext
         )

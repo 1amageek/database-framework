@@ -1,5 +1,6 @@
 #if FOUNDATION_DB
 import Testing
+import TestSupport
 import Foundation
 import DatabaseKit
 import DatabaseTypes
@@ -53,9 +54,9 @@ struct CoveringIndexBenchmark {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
+            configuration: .testing(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [User.self]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(User.self)]
             ),
             security: .disabled
         )

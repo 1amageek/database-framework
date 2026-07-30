@@ -14,64 +14,12 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct GeographicLocation: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct GeographicLocation {
+    var id: String = UUID().uuidString
     var country: String
     var city: String
     var name: String
-
-    init(id: String = UUID().uuidString, country: String, city: String, name: String) {
-        self.id = id
-        self.country = country
-        self.city = city
-        self.name = name
-    }
-
-    static var persistableType: String { "GeographicLocation" }
-    static var allFields: [String] { ["id", "country", "city", "name"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "country": return country
-        case "city": return city
-        case "name": return name
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<GeographicLocation, Value>) -> String {
-        switch keyPath {
-        case \GeographicLocation.id: return "id"
-        case \GeographicLocation.country: return "country"
-        case \GeographicLocation.city: return "city"
-        case \GeographicLocation.name: return "name"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<GeographicLocation>) -> String {
-        switch keyPath {
-        case \GeographicLocation.id: return "id"
-        case \GeographicLocation.country: return "country"
-        case \GeographicLocation.city: return "city"
-        case \GeographicLocation.name: return "name"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<GeographicLocation> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Permuted Index Context
@@ -128,11 +76,11 @@ private struct PermutedIndexContext {
     func countIndexEntries() async throws -> Int {
         try await database.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 

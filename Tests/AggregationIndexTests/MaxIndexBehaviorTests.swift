@@ -72,11 +72,11 @@ private struct MaximumIndexContext {
     func countIndexEntries() async throws -> Int {
         try await database.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 

@@ -2,8 +2,13 @@ import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
 import StorageKit
+import TestSupport
 import Testing
 @testable import RankIndex
+
+private func rankTestWallClock() throws -> FixedTestWallClock {
+    FixedTestWallClock(now: Timestamp(secondsSinceUnixEpoch: 0))
+}
 
 @Suite("Rank UInt64 index runtime")
 struct RankUInt64IndexRuntimeTests {
@@ -29,7 +34,8 @@ struct RankUInt64IndexRuntimeTests {
                 index: index,
                 subspace: indexSubspace,
                 idExpression: FieldKeyExpression(fieldName: "id"),
-                configurations: []
+                configurations: [],
+                wallClock: try rankTestWallClock()
             )
         let scoresSubspace = indexSubspace.subspace("scores")
 
@@ -71,7 +77,8 @@ struct RankUInt64IndexRuntimeTests {
                 index: index,
                 subspace: Subspace(prefix: Tuple("rank-nan-runtime").pack()),
                 idExpression: FieldKeyExpression(fieldName: "id"),
-                configurations: []
+                configurations: [],
+                wallClock: try rankTestWallClock()
             )
 
         await #expect(

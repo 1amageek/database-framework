@@ -17,10 +17,10 @@ public enum PersistableStorageCodec {
         )
     }
 
-    public static func encode(
-        _ model: some Persistable
+    public static func encode<Model: Persistable>(
+        _ model: Model
     ) throws -> ByteString {
-        try requireCompiledSchema(type(of: model))
+        try requireCompiledSchema(Model.self)
         return try encode(try PersistedModel(model))
     }
 
@@ -34,10 +34,10 @@ public enum PersistableStorageCodec {
     }
 
     /// Measures the canonical frame without allocating its final byte buffer.
-    public static func encodedByteCount(
-        _ model: some Persistable
+    public static func encodedByteCount<Model: Persistable>(
+        _ model: Model
     ) throws -> Int {
-        try requireCompiledSchema(type(of: model))
+        try requireCompiledSchema(Model.self)
         return try encodedByteCount(try PersistedModel(model))
     }
 
@@ -106,8 +106,8 @@ public enum PersistableStorageCodec {
         )
     }
 
-    private static func requireCompiledSchema(
-        _ type: any Persistable.Type
+    private static func requireCompiledSchema<Model: Persistable>(
+        _ type: Model.Type
     ) throws {
         guard !type.fieldSchemas.isEmpty else {
             throw PersistableFieldFrameError.missingCompiledSchema(
@@ -115,4 +115,5 @@ public enum PersistableStorageCodec {
             )
         }
     }
+
 }

@@ -1,6 +1,7 @@
 // SecurityError.swift
 // DatabaseEngine - Security error type
 
+import DatabaseTypes
 
 /// Security error thrown when access is denied
 ///
@@ -33,8 +34,8 @@ public struct SecurityError: Error, Sendable, CustomStringConvertible {
     /// Human-readable reason for the denial
     public let reason: String
 
-    /// The ID of the resource that was denied (if available)
-    public let resourceID: String?
+    /// The typed resource identity that was denied, when available.
+    public let resource: EntityReference?
 
     /// The user ID that attempted the operation (if available)
     public let userID: String?
@@ -43,20 +44,20 @@ public struct SecurityError: Error, Sendable, CustomStringConvertible {
         operation: Operation,
         targetType: String,
         reason: String,
-        resourceID: String? = nil,
+        resource: EntityReference? = nil,
         userID: String? = nil
     ) {
         self.operation = operation
         self.targetType = targetType
         self.reason = reason
-        self.resourceID = resourceID
+        self.resource = resource
         self.userID = userID
     }
 
     public var description: String {
         var desc = "SecurityError: \(operation.rawValue) on \(targetType)"
-        if let resourceID {
-            desc += " (resource: \(resourceID))"
+        if let resource {
+            desc += " (resource entity: \(resource.entity))"
         }
         if let userID {
             desc += " by user \(userID)"

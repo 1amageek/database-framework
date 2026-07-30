@@ -29,7 +29,7 @@ let schema = try Schema(
     version: .init(1, 0, 0)
 )
 let runtime = try DatabaseFrameworkRuntime.configuration(
-    persistableTypes: [User.self]
+    entityRuntimes: [try DatabaseFrameworkRuntime.entity(User.self)]
 )
 ~~~
 
@@ -49,6 +49,8 @@ let container = try await DBContainer.open(
     configuration: SQLiteStorageEngine.Configuration.file(
         "/var/lib/app/application.sqlite"
     ),
+    monotonicClock: applicationMonotonicClock,
+    wallClock: applicationWallClock,
     runtimeConfiguration: runtime
 )
 ~~~
@@ -68,6 +70,8 @@ let postgres = PostgreSQLConfiguration(
 let container = try await DBContainer.open(
     for: schema,
     configuration: postgres,
+    monotonicClock: applicationMonotonicClock,
+    wallClock: applicationWallClock,
     runtimeConfiguration: runtime
 )
 ~~~
@@ -77,12 +81,16 @@ FoundationDB uses the default trait:
 ~~~swift
 let container = try await DBContainer.open(
     for: schema,
+    monotonicClock: applicationMonotonicClock,
+    wallClock: applicationWallClock,
     runtimeConfiguration: runtime
 )
 ~~~
 
 See [Backend Guide](backends.md) for trait selection and deployment
-requirements.
+requirements. The clocks are explicit runtime dependencies: native
+applications may use Foundation-backed adapters, while Embedded targets inject
+their platform implementations without linking Foundation.
 
 ## 3. Change Tracking
 

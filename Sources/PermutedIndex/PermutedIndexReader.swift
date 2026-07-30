@@ -27,7 +27,7 @@ struct PermutedIndexReader: Sendable {
         let (begin, end) = prefixSubspace.range()
         var results: [[any TupleElement]] = []
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,
@@ -78,7 +78,7 @@ struct PermutedIndexReader: Sendable {
             (permutedFields: [any TupleElement], primaryKey: [any TupleElement])
         ] = []
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,

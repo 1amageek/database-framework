@@ -10,7 +10,10 @@
 /// import DatabaseEngine
 ///
 /// let database = try FDBClient.openDatabase()
-/// let repl = try await DatabaseREPL(database: database)
+/// let repl = try await DatabaseREPL(
+///     database: database,
+///     clock: applicationClock
+/// )
 /// try await repl.run()
 /// ```
 ///
@@ -32,8 +35,14 @@ public final class DatabaseREPL: Sendable {
     private let entities: [Schema.Entity]
 
     /// Initialize from a standalone storage engine.
-    public init(database: any StorageEngine) async throws {
-        let dataAccess = try await CatalogDataAccess.open(database: database)
+    public init(
+        database: any StorageEngine,
+        clock: any StorageMonotonicClock
+    ) async throws {
+        let dataAccess = try await CatalogDataAccess.open(
+            database: database,
+            clock: clock
+        )
         self.entities = dataAccess.allEntities
         self.dataAccess = dataAccess
     }
@@ -42,10 +51,14 @@ public final class DatabaseREPL: Sendable {
     ///
     /// Loads entities from the SchemaRegistry persisted by DBContainer.
     public init(container: DBContainer) async throws {
-        let registry = SchemaRegistry(database: container.engine)
+        let registry = SchemaRegistry(
+            database: container.engine,
+            clock: container.monotonicClock
+        )
         self.entities = try await registry.loadAll()
         self.dataAccess = try CatalogDataAccess(
             database: container.engine,
+            clock: container.monotonicClock,
             entities: self.entities
         )
     }

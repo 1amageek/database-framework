@@ -1,3 +1,4 @@
+import DatabaseEngine
 @_spi(DatabaseServer) import DatabaseWire
 
 public final class DatabaseServerRuntimeConfiguration: Sendable {
@@ -10,7 +11,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
     public let clock: AnyDatabaseWallClock
     private let serviceFactory: AnyDatabaseServerServiceFactory
 
-    public init<Clock: DatabaseWallClock>(
+    public init<Clock: WallClock>(
         identity: DatabaseRuntimeIdentity,
         serviceFactory: AnyDatabaseServerServiceFactory,
         admissionPolicy: AnyDatabaseOperationAdmissionPolicy,

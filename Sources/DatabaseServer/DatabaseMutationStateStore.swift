@@ -76,15 +76,18 @@ public struct DatabaseMutationStateStore: Sendable {
     ) async throws -> DatabaseIdempotencyEntry? {
         let entry = idempotencySubspace.subspace(key)
         let metadata = try await transaction.getValue(
-            for: entry.pack(Tuple("metadata"))
+            for: entry.pack(Tuple("metadata")),
+            snapshot: false
         )
         let chunks = entry.subspace("chunks")
         guard let metadata else {
             let range = chunks.range()
-            let orphanedChunks = try await transaction.collectRange(
-                begin: range.begin,
-                end: range.end,
+            let orphanedChunks = try await TransactionRangeCollection.collect(
+                using: transaction,
+                from: .firstGreaterOrEqual(range.begin),
+                to: .firstGreaterOrEqual(range.end),
                 limit: 1,
+                reverse: false,
                 snapshot: false,
                 streamingMode: .exact
             )
@@ -117,10 +120,12 @@ public struct DatabaseMutationStateStore: Sendable {
             throw DatabaseMutationError.idempotencyEntryCorrupted
         }
         let range = chunks.range()
-        let storedChunks = try await transaction.collectRange(
-            begin: range.begin,
-            end: range.end,
+        let storedChunks = try await TransactionRangeCollection.collect(
+            using: transaction,
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             limit: rangeLimit,
+            reverse: false,
             snapshot: false,
             streamingMode: .exact
         )

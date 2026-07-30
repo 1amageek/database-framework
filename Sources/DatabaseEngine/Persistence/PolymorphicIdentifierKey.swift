@@ -15,7 +15,27 @@ import StorageKit
 /// and read-side result matching cannot drift to different tuple layouts.
 public enum PolymorphicIdentifierKey {
     public static func tuple(
-        for modelType: any Persistable.Type,
+        for entity: Schema.Entity,
+        identifier: Tuple
+    ) throws(PolymorphicIdentifierKeyError) -> Tuple {
+        guard entity.polymorphicMembership != nil else {
+            throw .modelIsNotPolymorphic(typeName: entity.name)
+        }
+        do {
+            _ = try PersistableIdentifierKeyCodec.value(
+                from: identifier,
+                expectedType: entity.identifierType
+            )
+        } catch let error {
+            throw .invalidModelIdentifier(error)
+        }
+        return Tuple(
+            PolymorphicTypeCode.value(for: entity.name)
+        ).appending(identifier)
+    }
+
+    public static func tuple<Model: Persistable>(
+        for modelType: Model.Type,
         identifier: Tuple
     ) throws(PolymorphicIdentifierKeyError) -> Tuple {
         try requirePolymorphicMembership(modelType)
@@ -25,9 +45,9 @@ public enum PolymorphicIdentifierKey {
         ).appending(identifier)
     }
 
-    public static func validate(
+    public static func validate<Model: Persistable>(
         _ tuple: Tuple,
-        for modelType: any Persistable.Type
+        for modelType: Model.Type
     ) throws(PolymorphicIdentifierKeyError) {
         guard tuple.count == 2 else {
             throw .invalidElementCount(actual: tuple.count)
@@ -66,17 +86,17 @@ public enum PolymorphicIdentifierKey {
         )
     }
 
-    private static func requirePolymorphicMembership(
-        _ modelType: any Persistable.Type
+    private static func requirePolymorphicMembership<Model: Persistable>(
+        _ modelType: Model.Type
     ) throws(PolymorphicIdentifierKeyError) {
         guard modelType.polymorphicMembership != nil else {
             throw .modelIsNotPolymorphic(typeName: modelType.persistableType)
         }
     }
 
-    private static func validateModelIdentifier(
+    private static func validateModelIdentifier<Model: Persistable>(
         _ identifier: Tuple,
-        for modelType: any Persistable.Type
+        for modelType: Model.Type
     ) throws(PolymorphicIdentifierKeyError) {
         do {
             _ = try PersistableIdentifierKeyCodec.value(

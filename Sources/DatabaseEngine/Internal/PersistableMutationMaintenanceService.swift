@@ -11,12 +11,14 @@ internal struct PersistableMutationMaintenanceService: Sendable {
     }
 
     func update(
-        oldModel: (any Persistable)?,
-        newModel: (any Persistable)?,
+        identity: EntityReference,
+        oldModel: PersistedModel?,
+        newModel: PersistedModel?,
         context: borrowing PersistableMutationContext
     ) async throws {
         for maintainer in maintainers {
             try await maintainer.update(
+                identity: identity,
                 oldModel: oldModel,
                 newModel: newModel,
                 context: context
@@ -25,7 +27,7 @@ internal struct PersistableMutationMaintenanceService: Sendable {
     }
 
     func validateFinalState(
-        of models: [any Persistable],
+        of models: [PersistedModel],
         context: borrowing PersistableValidationContext
     ) async throws {
         for maintainer in maintainers {

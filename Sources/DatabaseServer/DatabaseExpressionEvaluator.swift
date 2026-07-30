@@ -103,7 +103,7 @@ struct DatabaseExpressionEvaluator: Sendable {
         case .inSubquery, .aggregate, .triple, .isTriple, .subject, .predicate,
              .object, .subquery, .exists:
             throw DatabaseExpressionEvaluationError.unsupportedExpression(
-                String(describing: expression)
+                "Expression kind is not supported in mutation evaluation"
             )
         }
     }
@@ -509,7 +509,34 @@ struct DatabaseExpressionEvaluator: Sendable {
     }
 
     private func invalidCast(_ type: DataType) -> DatabaseExpressionEvaluationError {
-        .invalidCast(String(describing: type))
+        .invalidCast(dataTypeName(type))
+    }
+
+    private func dataTypeName(_ type: DataType) -> String {
+        switch type {
+        case .boolean: return "BOOLEAN"
+        case .smallint: return "SMALLINT"
+        case .integer: return "INTEGER"
+        case .bigint: return "BIGINT"
+        case .real: return "REAL"
+        case .doublePrecision: return "DOUBLE PRECISION"
+        case .decimal: return "DECIMAL"
+        case .char: return "CHAR"
+        case .varchar: return "VARCHAR"
+        case .text: return "TEXT"
+        case .date: return "DATE"
+        case .time: return "TIME"
+        case .timestamp: return "TIMESTAMP"
+        case .interval: return "INTERVAL"
+        case .binary: return "BINARY"
+        case .varbinary: return "VARBINARY"
+        case .blob: return "BLOB"
+        case .json: return "JSON"
+        case .jsonb: return "JSONB"
+        case .uuid: return "UUID"
+        case .array(let element): return "\(dataTypeName(element)) ARRAY"
+        case .custom(let name): return name
+        }
     }
 
     private func truth(_ value: FieldValue) throws -> TruthValue {

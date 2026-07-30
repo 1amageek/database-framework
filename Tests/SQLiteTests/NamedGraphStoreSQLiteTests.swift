@@ -110,7 +110,8 @@ struct NamedGraphStoreSQLiteTests {
                     maximumRows: 10_000,
                     maximumWorkUnits: 100_000,
                     timeoutMilliseconds: 30_000
-                )
+                ),
+                monotonicClock: context.container.monotonicClock
             )
             let result = try await scanner.scan(
                 subject: nil,
@@ -166,7 +167,8 @@ struct NamedGraphStoreSQLiteTests {
                     maximumRows: 10_000,
                     maximumWorkUnits: 100_000,
                     timeoutMilliseconds: 30_000
-                )
+                ),
+                monotonicClock: context.container.monotonicClock
             )
             let graphs = try await scanner.namedGraphs(
                 limit: nil,
@@ -203,7 +205,7 @@ struct NamedGraphStoreSQLiteTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteNamedGraphStatement.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteNamedGraphStatement.self)]
             ),
             security: .disabled
         )

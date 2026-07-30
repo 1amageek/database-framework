@@ -77,7 +77,7 @@ struct BitmapIndexReader: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let range = dataSubspace.range()
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: 0,

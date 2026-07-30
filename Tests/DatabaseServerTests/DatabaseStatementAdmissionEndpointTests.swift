@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
@@ -84,11 +85,11 @@ struct DatabaseStatementAdmissionEndpointTests {
                 entities: [try DatabaseEndpointEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(
+            configuration: DBConfiguration.testing(
                 backend: .custom(InMemoryEngine())
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseEndpointEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .disabled
         )

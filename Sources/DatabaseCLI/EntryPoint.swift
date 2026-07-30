@@ -1,7 +1,8 @@
+import ArgumentParser
 #if FOUNDATION_DB
 import Foundation
-import ArgumentParser
 import StorageKit
+import StorageKitSystemClock
 import DatabaseEngine
 import DatabaseCLICore
 
@@ -25,7 +26,10 @@ struct DatabaseCLI: AsyncParsableCommand {
     /// No arguments starts interactive REPL mode.
     mutating func run() async throws {
         let (database, _) = try await ClusterConnection.openDatabase()
-        let repl = try await DatabaseREPL(database: database)
+        let repl = try await DatabaseREPL(
+            database: database,
+            clock: SystemStorageClock()
+        )
         try await repl.run()
     }
 }
@@ -98,7 +102,8 @@ extension DatabaseCLI {
             mutating func run() async throws {
                 let (database, _) = try await ClusterConnection.openDatabase()
                 let dataAccess = try await CatalogDataAccess.open(
-                    database: database
+                    database: database,
+                    clock: SystemStorageClock()
                 )
                 let output = OutputFormatter()
                 let cmd = SchemaInfoCommands(
@@ -121,7 +126,8 @@ extension DatabaseCLI {
             mutating func run() async throws {
                 let (database, _) = try await ClusterConnection.openDatabase()
                 let dataAccess = try await CatalogDataAccess.open(
-                    database: database
+                    database: database,
+                    clock: SystemStorageClock()
                 )
                 let output = OutputFormatter()
                 let cmd = SchemaInfoCommands(
@@ -157,7 +163,11 @@ extension DatabaseCLI {
             mutating func run() async throws {
                 let (database, _) = try await ClusterConnection.openDatabase()
                 let output = OutputFormatter()
-                let cmd = RawCommands(database: database, output: output)
+                let dataAccess = try await CatalogDataAccess.open(
+                    database: database,
+                    clock: SystemStorageClock()
+                )
+                let cmd = RawCommands(dataAccess: dataAccess, output: output)
                 try await cmd.execute("get", args: [key])
             }
         }
@@ -177,7 +187,11 @@ extension DatabaseCLI {
             mutating func run() async throws {
                 let (database, _) = try await ClusterConnection.openDatabase()
                 let output = OutputFormatter()
-                let cmd = RawCommands(database: database, output: output)
+                let dataAccess = try await CatalogDataAccess.open(
+                    database: database,
+                    clock: SystemStorageClock()
+                )
+                let cmd = RawCommands(dataAccess: dataAccess, output: output)
 
                 var args = [prefix]
                 if let limit = limit {

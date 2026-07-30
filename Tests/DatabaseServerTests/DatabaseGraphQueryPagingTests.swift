@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
@@ -954,9 +955,9 @@ struct DatabaseGraphQueryPagingTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(backend: .custom(engine)),
+            configuration: DBConfiguration.testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseGraphQueryStatement.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphQueryStatement.self)]
             ),
             security: .disabled
         )

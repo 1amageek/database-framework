@@ -16,7 +16,9 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseRuntimeConfiguration(
-            indexMaintainerProviders: [ScalarIndexMaintainerProvider()]
+            indexMaintainerProviderDescriptors: [
+                .init(describing: ScalarIndexMaintainerProvider())
+            ]
         )
 
         #expect(
@@ -36,9 +38,13 @@ struct DatabaseRuntimeConfigurationValidationTests {
             )
         ) {
             try DatabaseRuntimeConfiguration(
-                persistableTypes: [
-                    RuntimeConfigurationScalarEntity.self,
-                    RuntimeConfigurationScalarEntity.self,
+                entityRuntimes: [
+                    try EntityRuntimeDefinition(
+                        RuntimeConfigurationScalarEntity.self
+                    ).registration(),
+                    try EntityRuntimeDefinition(
+                        RuntimeConfigurationScalarEntity.self
+                    ).registration(),
                 ]
             )
         }
@@ -52,7 +58,11 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseRuntimeConfiguration(
-            persistableTypes: [RuntimeConfigurationScalarEntity.self]
+            entityRuntimes: [
+                try EntityRuntimeDefinition(
+                    RuntimeConfigurationScalarEntity.self
+                ).registration()
+            ]
         )
         let indexName = try RuntimeConfigurationScalarEntity
             .indexDescriptors[0].name
@@ -76,7 +86,29 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseFrameworkRuntime.configuration(
-            persistableTypes: [RuntimeConfigurationScalarEntity.self]
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationScalarEntity.self
+                )
+            ]
+        )
+
+        try configuration.validate(schema: schema)
+    }
+
+    @Test("Builtin runtime validates polymorphic member maintainers")
+    func builtinRuntimeValidatesPolymorphicMemberMaintainers() throws {
+        let schema = try Schema(
+            entities: [
+                try RuntimeConfigurationPolymorphicVectorEntity.schemaEntity
+            ]
+        )
+        let configuration = try DatabaseFrameworkRuntime.configuration(
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationPolymorphicVectorEntity.self
+                )
+            ]
         )
 
         try configuration.validate(schema: schema)
@@ -89,11 +121,15 @@ struct DatabaseRuntimeConfigurationValidationTests {
                 try Schema.Entity(from: RuntimeConfigurationVectorEntity.self)
             ]
         )
+        var entityRuntime = try EntityRuntimeDefinition(
+            RuntimeConfigurationVectorEntity.self
+        )
+        try entityRuntime.register(VectorIndexMaintainerProvider())
         let configuration = try DatabaseRuntimeConfiguration(
-            indexMaintainerProviders: [
-                VectorIndexMaintainerProvider()
+            indexMaintainerProviderDescriptors: [
+                .init(describing: VectorIndexMaintainerProvider())
             ],
-            persistableTypes: [RuntimeConfigurationVectorEntity.self]
+            entityRuntimes: [entityRuntime.registration()]
         )
         let indexName = try RuntimeConfigurationVectorEntity
             .indexDescriptors[0].name
@@ -119,7 +155,11 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseFrameworkRuntime.configuration(
-            persistableTypes: [RuntimeConfigurationUniqueVectorEntity.self]
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationUniqueVectorEntity.self
+                )
+            ]
         )
         let descriptor = try RuntimeConfigurationUniqueVectorEntity
             .indexDescriptors[0]
@@ -152,12 +192,16 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseRuntimeConfiguration(
-            indexMaintainerProviders: [
-                ScalarIndexMaintainerProvider()
+            indexMaintainerProviderDescriptors: [
+                .init(describing: ScalarIndexMaintainerProvider())
             ],
-            persistableTypes: [
-                RuntimeConfigurationRelationshipTarget.self,
-                RuntimeConfigurationRelationshipOwner.self,
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationRelationshipTarget.self
+                ),
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationRelationshipOwner.self
+                ),
             ]
         )
 
@@ -200,9 +244,13 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseFrameworkRuntime.configuration(
-            persistableTypes: [
-                RuntimeConfigurationRelationshipTarget.self,
-                RuntimeConfigurationRelationshipOwner.self,
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationRelationshipTarget.self
+                ),
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationRelationshipOwner.self
+                ),
             ]
         )
 

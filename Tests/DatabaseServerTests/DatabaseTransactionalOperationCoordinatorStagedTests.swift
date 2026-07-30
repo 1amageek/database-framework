@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseTypes
@@ -98,9 +99,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
             #expect(bodies.value == 0)
         }
 
-        let state = try await mutationContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
+        let state = try await mutationContext.container.transactionExecutor.withTransaction { transaction in
             (
                 try await mutationContext.stateStore.currentLogicalVersion(
                     transaction: transaction
@@ -146,9 +145,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
             #expect(maximum == 64)
         }
 
-        let state = try await mutationContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
+        let state = try await mutationContext.container.transactionExecutor.withTransaction { transaction in
             (
                 try await transaction.getValue(for: key),
                 try await mutationContext.stateStore.currentLogicalVersion(
@@ -192,9 +189,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
             #expect(timeoutMilliseconds == 1)
         }
 
-        let state = try await mutationContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
+        let state = try await mutationContext.container.transactionExecutor.withTransaction { transaction in
             (
                 try await transaction.getValue(for: [0xF1]),
                 try await mutationContext.stateStore.currentLogicalVersion(
@@ -246,9 +241,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
         await commitGate.release()
         _ = try await operation.value
 
-        let committedState = try await mutationContext.container.engine.withTransaction(
-            configuration: .readOnly
-        ) { transaction in
+        let committedState = try await mutationContext.container.transactionExecutor.withTransaction { transaction in
             (
                 try await mutationContext.stateStore.currentLogicalVersion(
                     transaction: transaction
@@ -313,11 +306,11 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
                     entities: [try DatabaseEndpointEntity.schemaEntity],
                     version: Schema.Version(1, 0, 0)
                 ),
-                configuration: DBConfiguration(
+                configuration: DBConfiguration.testing(
                     backend: .custom(engine)
                 ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                    persistableTypes: [DatabaseEndpointEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
                 ),
                 security: .disabled
             )

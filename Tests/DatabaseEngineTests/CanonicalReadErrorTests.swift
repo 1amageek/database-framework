@@ -85,22 +85,6 @@ struct CanonicalReadErrorTests {
         #expect(binding == nil)
     }
 
-    // MARK: - ReadExecutorRegistry
-
-    @Test("Unknown index kind returns nil executor")
-    func unknownIndexKindReturnsNilExecutor() throws {
-        let registry = try ReadExecutorRegistry()
-        let executor = registry.indexExecutor(for: "__does_not_exist__")
-        #expect(executor == nil)
-    }
-
-    @Test("Unknown fusion strategy returns nil executor")
-    func unknownFusionStrategyReturnsNilExecutor() throws {
-        let registry = try ReadExecutorRegistry()
-        let executor = registry.fusionExecutor(for: "__does_not_exist__")
-        #expect(executor == nil)
-    }
-
     // MARK: - Enum surface
 
     @Test("Error cases carry diagnostic context")

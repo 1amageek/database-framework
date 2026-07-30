@@ -1,648 +1,197 @@
 #if !os(WASI)
-#if FOUNDATION_DB
-// TupleEncoderDecoderTests.swift
-// DatabaseEngine Tests - TupleEncoder and TupleDecoder tests
-
+import DatabaseKit
 import DatabaseTypes
-import Testing
-import TestHeartbeat
-import Foundation
 import StorageKit
+import TestHeartbeat
+import Testing
 @testable import DatabaseEngine
 
-// MARK: - TupleEncoder Tests
-
-@Suite("TupleEncoder Tests", .heartbeat)
+@Suite("Tuple encoder canonical value tests", .heartbeat)
 struct TupleEncoderTests {
-
-    // MARK: - String Encoding
-
-    @Test("encodes String directly")
-    func testStringEncoding() throws {
-        let result = try TupleEncoder.encode("hello")
-        #expect((result as? String) == "hello")
-    }
-
-    @Test("encodes empty String")
-    func testEmptyStringEncoding() throws {
-        let result = try TupleEncoder.encode("")
-        #expect((result as? String) == "")
-    }
-
-    // MARK: - Integer Encoding
-
-    @Test("encodes Int to Int64")
-    func testIntEncoding() throws {
-        let result = try TupleEncoder.encode(42)
-        #expect((result as? Int64) == 42)
-    }
-
-    @Test("encodes negative Int to Int64")
-    func testNegativeIntEncoding() throws {
-        let result = try TupleEncoder.encode(-100)
-        #expect((result as? Int64) == -100)
-    }
-
-    @Test("encodes Int64 directly")
-    func testInt64Encoding() throws {
-        let value: Int64 = 9_223_372_036_854_775_807  // Int64.max
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? Int64) == Int64.max)
-    }
-
-    @Test("encodes Int32 to Int64")
-    func testInt32Encoding() throws {
-        let value: Int32 = 2_147_483_647  // Int32.max
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? Int64) == 2_147_483_647)
-    }
-
-    @Test("encodes Int16 to Int64")
-    func testInt16Encoding() throws {
-        let value: Int16 = 32_767  // Int16.max
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? Int64) == 32_767)
-    }
-
-    @Test("encodes Int8 to Int64")
-    func testInt8Encoding() throws {
-        let value: Int8 = 127  // Int8.max
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? Int64) == 127)
-    }
-
-    // MARK: - Unsigned Integer Encoding
-
-    @Test("encodes UInt within Int64 range to Int64")
-    func testUIntEncoding() throws {
-        let value: UInt = 1_000_000
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? Int64) == 1_000_000)
-    }
-
-    @Test("encodes UInt64 within Int64 range to Int64")
-    func testUInt64WithinRangeEncoding() throws {
-        let value: UInt64 = UInt64(Int64.max)
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? Int64) == Int64.max)
-    }
-
-    @Test("encodes UInt64 above Int64 max without loss")
-    func testUInt64FullWidthEncoding() throws {
-        let value: UInt64 = UInt64(Int64.max) + 1
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? UInt64) == value)
-    }
-
-    @Test("encodes UInt32 to Int64")
-    func testUInt32Encoding() throws {
-        let value: UInt32 = 4_294_967_295  // UInt32.max
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? Int64) == 4_294_967_295)
-    }
-
-    @Test("encodes UInt16 to Int64")
-    func testUInt16Encoding() throws {
-        let value: UInt16 = 65_535  // UInt16.max
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? Int64) == 65_535)
-    }
-
-    @Test("encodes UInt8 to Int64")
-    func testUInt8Encoding() throws {
-        let value: UInt8 = 255  // UInt8.max
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? Int64) == 255)
-    }
-
-    // MARK: - Floating Point Encoding
-
-    @Test("encodes Double directly")
-    func testDoubleEncoding() throws {
-        let result = try TupleEncoder.encode(3.14159)
-        #expect((result as? Double) == 3.14159)
-    }
-
-    @Test("encodes Float to Double")
-    func testFloatEncoding() throws {
-        let value: Float = 2.5
-        let result = try TupleEncoder.encode(value)
-        #expect((result as? Double) == 2.5)
-    }
-
-    @Test("encodes negative Double")
-    func testNegativeDoubleEncoding() throws {
-        let result = try TupleEncoder.encode(-273.15)
-        #expect((result as? Double) == -273.15)
-    }
-
-    // MARK: - Bool Encoding
-
-    @Test("encodes true Bool")
-    func testTrueBoolEncoding() throws {
-        let result = try TupleEncoder.encode(true)
-        #expect((result as? Bool) == true)
-    }
-
-    @Test("encodes false Bool")
-    func testFalseBoolEncoding() throws {
-        let result = try TupleEncoder.encode(false)
-        #expect((result as? Bool) == false)
-    }
-
-    // MARK: - Date Encoding
-
-    @Test("encodes Date directly")
-    func testDateEncoding() throws {
-        let date = Date(timeIntervalSince1970: 1_000_000)
-        let result = try TupleEncoder.encode(date)
-        #expect(result is Date)
-        #expect((result as? Date) == date)
-    }
-
-    // MARK: - UUID Encoding
-
-    @Test("encodes UUID directly")
-    func testUUIDEncoding() throws {
-        let uuid = Foundation.UUID()
-        let result = try TupleEncoder.encode(uuid)
-        #expect((result as? Foundation.UUID) == uuid)
-    }
-
-    // MARK: - Data/ByteString Encoding
-
-    @Test("encodes Data to ByteString")
-    func testDataEncoding() throws {
-        let data = Data([0x01, 0x02, 0x03])
-        let result = try TupleEncoder.encode(data)
-        #expect((result as? ByteString) == ByteString([0x01, 0x02, 0x03]))
-    }
-
-    @Test("encodes [UInt8] to ByteString")
-    func testBytesEncoding() throws {
-        let bytes: [UInt8] = [0xFF, 0x00, 0xAB]
-        let result = try TupleEncoder.encode(bytes)
-        #expect((result as? ByteString) == ByteString(bytes))
-    }
-
-    // MARK: - Tuple Encoding
-
-    @Test("encodes Tuple directly")
-    func testTupleEncoding() throws {
-        let tuple = Tuple(["nested", Int64(42)])
-        let result = try TupleEncoder.encode(tuple)
-        #expect((result as? Tuple) == tuple)
-    }
-
-    // MARK: - Array Encoding (encodeToArray)
-
-    @Test("encodes [Float] to [Double]")
-    func testFloatArrayEncoding() throws {
-        let floats: [Float] = [1.0, 2.5, 3.14]
-        let result = try TupleEncoder.encodeToArray(floats)
-
-        #expect(result.count == 3)
-        #expect((result[0] as? Double) == 1.0)
-        #expect((result[1] as? Double) == 2.5)
-        #expect(abs((result[2] as! Double) - 3.14) < 0.001)
-    }
-
-    @Test("encodes [Double] directly")
-    func testDoubleArrayEncoding() throws {
-        let doubles: [Double] = [1.0, 2.0, 3.0]
-        let result = try TupleEncoder.encodeToArray(doubles)
-
-        #expect(result.count == 3)
-        #expect((result[0] as? Double) == 1.0)
-        #expect((result[1] as? Double) == 2.0)
-        #expect((result[2] as? Double) == 3.0)
-    }
-
-    @Test("encodes [Int] to [Int64]")
-    func testIntArrayEncoding() throws {
-        let ints: [Int] = [1, 2, 3]
-        let result = try TupleEncoder.encodeToArray(ints)
-
-        #expect(result.count == 3)
-        #expect((result[0] as? Int64) == 1)
-        #expect((result[1] as? Int64) == 2)
-        #expect((result[2] as? Int64) == 3)
-    }
-
-    @Test("encodes [String] directly")
-    func testStringArrayEncoding() throws {
-        let strings = ["a", "b", "c"]
-        let result = try TupleEncoder.encodeToArray(strings)
-
-        #expect(result.count == 3)
-        #expect((result[0] as? String) == "a")
-        #expect((result[1] as? String) == "b")
-        #expect((result[2] as? String) == "c")
-    }
-
-    @Test("encodes [Date] directly")
-    func testDateArrayEncoding() throws {
-        let dates = [
-            Date(timeIntervalSince1970: 1_000_000),
-            Date(timeIntervalSince1970: 2_000_000)
+    @Test("supported scalar values encode through FieldValue")
+    func supportedScalarsEncodeCanonically() throws {
+        let timestamp = try Timestamp(
+            secondsSinceUnixEpoch: 1_700_000_000,
+            nanoseconds: 123_456_789
+        )
+        let date = try CivilDate(year: 2026, month: 7, day: 30)
+        let uuid = DatabaseTypes.UUID(high: 1, low: 2)
+        let cases: [(element: any TupleElement, expected: FieldValue)] = [
+            (try TupleEncoder.encode(true), .bool(true)),
+            (try TupleEncoder.encode(Int8.min), .int8(.min)),
+            (try TupleEncoder.encode(Int16.min), .int16(.min)),
+            (try TupleEncoder.encode(Int32.min), .int32(.min)),
+            (try TupleEncoder.encode(Int64.min), .int64(.min)),
+            (try TupleEncoder.encode(UInt8.max), .uint8(.max)),
+            (try TupleEncoder.encode(UInt16.max), .uint16(.max)),
+            (try TupleEncoder.encode(UInt32.max), .uint32(.max)),
+            (try TupleEncoder.encode(UInt64.max), .uint64(.max)),
+            (try TupleEncoder.encode(Float(2.5)), .float32(2.5)),
+            (try TupleEncoder.encode(Double.pi), .float64(.pi)),
+            (try TupleEncoder.encode("calendar"), .string("calendar")),
+            (try TupleEncoder.encode(ByteString([0x00, 0xFF])), .bytes([0x00, 0xFF])),
+            (try TupleEncoder.encode(timestamp), .timestamp(timestamp)),
+            (try TupleEncoder.encode(date), .date(date)),
+            (try TupleEncoder.encode(uuid), .uuid(uuid)),
         ]
-        let result = try TupleEncoder.encodeToArray(dates)
 
-        #expect(result.count == 2)
-        #expect(result[0] is Date)
-        #expect(result[1] is Date)
-    }
-
-    // MARK: - Optional Handling
-
-    @Test("throws on nil Optional")
-    func testNilOptionalThrows() throws {
-        let nilString: String? = nil
-
-        #expect(throws: TupleEncodingError.self) {
-            _ = try TupleEncoder.encode(nilString as Any)
+        for item in cases {
+            #expect(try FieldValue(tupleElement: item.element) == item.expected)
         }
     }
 
-    @Test("unwraps non-nil Optional")
-    func testNonNilOptionalUnwraps() throws {
-        let optionalString: String? = "hello"
-        let result = try TupleEncoder.encode(optionalString as Any)
-        #expect((result as? String) == "hello")
+    @Test("FieldValue and RDFTerm overloads preserve their canonical value")
+    func semanticOverloadsPreserveValue() throws {
+        let object = FieldValue.object(
+            try FieldObject([
+                (key: "title", value: .string("Event")),
+                (key: "priority", value: .int32(3)),
+            ])
+        )
+        let iri = try RDFTerm.iri(validating: "urn:calendar:event")
+
+        #expect(
+            try FieldValue(tupleElement: TupleEncoder.encode(object)) == object
+        )
+        #expect(
+            try FieldValue(tupleElement: TupleEncoder.encode(iri)) == .rdfTerm(iri)
+        )
     }
 
-    @Test("unwraps nested Optional")
-    func testNestedOptionalUnwraps() throws {
-        let nestedOptional: Int?? = 42
-        let result = try TupleEncoder.encode(nestedOptional as Any)
-        #expect((result as? Int64) == 42)
-    }
+    @Test("encodeAll preserves homogeneous values without type erasure")
+    func encodeAllPreservesValues() throws {
+        let values: [Int32] = [-1, 0, 1]
+        let elements = try TupleEncoder.encodeAll(values)
 
-    // MARK: - Error Cases
-
-    @Test("throws on unsupported type")
-    func testUnsupportedTypeThrows() throws {
-        struct CustomType {}
-        let custom = CustomType()
-
-        #expect(throws: TupleEncodingError.self) {
-            _ = try TupleEncoder.encode(custom)
+        #expect(elements.count == values.count)
+        for (element, value) in zip(elements, values) {
+            #expect(try FieldValue(tupleElement: element) == .int32(value))
         }
     }
 
-    // MARK: - encodeAll Tests
+    @Test("Tuple overload keeps an already physical tuple")
+    func tupleOverloadPreservesTuple() {
+        let tuple = Tuple(["nested", Int64(42)])
+        let encoded = TupleEncoder.encode(tuple)
 
-    @Test("encodeAll converts multiple values")
-    func testEncodeAll() throws {
-        let result = try TupleEncoder.encodeAll(["hello", 42, 3.14])
-
-        #expect(result.count == 3)
-        #expect((result[0] as? String) == "hello")
-        #expect((result[1] as? Int64) == 42)
-        #expect((result[2] as? Double) == 3.14)
+        #expect((encoded as? Tuple) == tuple)
     }
 
-    // MARK: - Tuple Packing Consistency
+    @Test("resource limits fail with the canonical typed error")
+    func resourceLimitsAreEnforced() {
+        let limits = FieldValueTupleCodecLimits(
+            maximumEncodedBytes: 4,
+            maximumCollectionCount: 1,
+            maximumDepth: 1,
+            maximumObjectCount: 1
+        )
 
-    @Test("encoded values pack correctly into Tuple")
-    func testTuplePackingConsistency() throws {
-        let stringResult = try TupleEncoder.encode("test")
-        let intResult = try TupleEncoder.encode(42)
-        let doubleResult = try TupleEncoder.encode(3.14)
-        let boolResult = try TupleEncoder.encode(true)
-        let uuidValue = Foundation.UUID()
-        let uuidResult = try TupleEncoder.encode(uuidValue)
-
-        let tuple = Tuple([stringResult, intResult, doubleResult, boolResult, uuidResult])
-        let packed = tuple.pack()
-        #expect(packed.count > 0)
-
-        let unpackedElements = try Tuple.unpack(from: packed)
-        #expect(unpackedElements.count == 5)
-        #expect((unpackedElements[0] as? String) == "test")
-        #expect((unpackedElements[1] as? Int64) == 42)
-        #expect((unpackedElements[2] as? Double) == 3.14)
-        #expect((unpackedElements[3] as? Bool) == true)
-        #expect(unpackedElements[4] is DatabaseTypes.UUID)
-        #expect(try TupleDecoder.decodeUUID(unpackedElements[4]) == uuidValue)
-    }
-
-    // MARK: - Edge Cases
-
-    @Test("encodes zero values correctly")
-    func testZeroEncoding() throws {
-        let intZero = try TupleEncoder.encode(0)
-        let doubleZero = try TupleEncoder.encode(0.0)
-
-        #expect((intZero as? Int64) == 0)
-        #expect((doubleZero as? Double) == 0.0)
-    }
-
-    @Test("encodes Int64.min correctly")
-    func testInt64MinEncoding() throws {
-        let result = try TupleEncoder.encode(Int64.min)
-        #expect((result as? Int64) == Int64.min)
+        #expect(throws: FieldValueTupleCodecError.self) {
+            _ = try TupleEncoder.encode("too large", limits: limits)
+        }
     }
 }
 
-// MARK: - TupleDecoder Tests
-
-@Suite("TupleDecoder Tests", .heartbeat)
+@Suite("Tuple decoder canonical value tests", .heartbeat)
 struct TupleDecoderTests {
+    @Test("canonical values decode to their declared primitive types")
+    func canonicalValuesDecode() throws {
+        let timestamp = try Timestamp(
+            secondsSinceUnixEpoch: -1,
+            nanoseconds: 999_999_999
+        )
+        let date = try CivilDate(year: 2000, month: 2, day: 29)
+        let uuid = DatabaseTypes.UUID(high: .max, low: 0)
+        let bytes = ByteString([0x00, 0x7F, 0xFF])
 
-    // MARK: - Integer Decoding
-
-    @Test("decodes Int64 directly")
-    func testDecodeInt64() throws {
-        let element: any TupleElement = Int64(42)
-        let result = try TupleDecoder.decodeInt64(element)
-        #expect(result == 42)
+        #expect(try TupleDecoder.decodeBool(TupleEncoder.encode(true)))
+        #expect(try TupleDecoder.decodeInt8(TupleEncoder.encode(Int8.min)) == .min)
+        #expect(try TupleDecoder.decodeInt16(TupleEncoder.encode(Int16.min)) == .min)
+        #expect(try TupleDecoder.decodeInt32(TupleEncoder.encode(Int32.min)) == .min)
+        #expect(try TupleDecoder.decodeInt64(TupleEncoder.encode(Int64.min)) == .min)
+        #expect(try TupleDecoder.decodeUInt8(TupleEncoder.encode(UInt8.max)) == .max)
+        #expect(try TupleDecoder.decodeUInt16(TupleEncoder.encode(UInt16.max)) == .max)
+        #expect(try TupleDecoder.decodeUInt32(TupleEncoder.encode(UInt32.max)) == .max)
+        #expect(try TupleDecoder.decodeUInt64(TupleEncoder.encode(UInt64.max)) == .max)
+        #expect(try TupleDecoder.decodeFloat(TupleEncoder.encode(Float(2.5))) == 2.5)
+        #expect(try TupleDecoder.decodeDouble(TupleEncoder.encode(Double.pi)) == .pi)
+        #expect(try TupleDecoder.decodeString(TupleEncoder.encode("calendar")) == "calendar")
+        #expect(try TupleDecoder.decodeBytes(TupleEncoder.encode(bytes)) == bytes)
+        #expect(try TupleDecoder.decodeTimestamp(TupleEncoder.encode(timestamp)) == timestamp)
+        #expect(try TupleDecoder.decodeCivilDate(TupleEncoder.encode(date)) == date)
+        #expect(try TupleDecoder.decodeUUID(TupleEncoder.encode(uuid)) == uuid)
     }
 
-    @Test("decodes Int64 to Int")
-    func testDecodeInt() throws {
-        let element: any TupleElement = Int64(42)
-        let result = try TupleDecoder.decodeInt(element)
-        #expect(result == 42)
+    @Test("physical tuple scalars remain decodable")
+    func physicalTupleScalarsDecode() throws {
+        #expect(try TupleDecoder.decodeInt64(Int64(42)) == 42)
+        #expect(try TupleDecoder.decodeUInt64(UInt64.max) == .max)
+        #expect(try TupleDecoder.decodeDouble(Float(2.5)) == 2.5)
+        #expect(try TupleDecoder.decodeString("event") == "event")
+        #expect(try TupleDecoder.decodeBool(true))
+        #expect(try TupleDecoder.decodeBytes(ByteString([0x01])) == [0x01])
+        #expect(
+            try TupleDecoder.decodeUUID(
+                DatabaseTypes.UUID(high: 10, low: 20)
+            ) == DatabaseTypes.UUID(high: 10, low: 20)
+        )
     }
 
-    @Test("decodes Int64 to Int32")
-    func testDecodeInt32() throws {
-        let element: any TupleElement = Int64(42)
-        let result = try TupleDecoder.decodeInt32(element)
-        #expect(result == 42)
-    }
-
-    @Test("decodes Int64 to Int16")
-    func testDecodeInt16() throws {
-        let element: any TupleElement = Int64(42)
-        let result = try TupleDecoder.decodeInt16(element)
-        #expect(result == 42)
-    }
-
-    @Test("decodes Int64 to Int8")
-    func testDecodeInt8() throws {
-        let element: any TupleElement = Int64(42)
-        let result = try TupleDecoder.decodeInt8(element)
-        #expect(result == 42)
-    }
-
-    @Test("throws on Int32 overflow")
-    func testDecodeInt32Overflow() throws {
-        let element: any TupleElement = Int64(Int32.max) + 1
-
+    @Test("integer narrowing rejects overflow and sign loss")
+    func integerNarrowingRejectsInvalidValues() {
         #expect(throws: TupleDecodingError.self) {
-            _ = try TupleDecoder.decodeInt32(element)
+            _ = try TupleDecoder.decodeInt8(Int64(Int8.max) + 1)
+        }
+        #expect(throws: TupleDecodingError.self) {
+            _ = try TupleDecoder.decodeUInt64(Int64(-1))
+        }
+        #expect(throws: TupleDecodingError.self) {
+            _ = try TupleDecoder.decodeInt64(UInt64.max)
+        }
+        #expect(throws: TupleDecodingError.self) {
+            _ = try TupleDecoder.decodeInt64(Double(1.5))
         }
     }
 
-    @Test("throws on Int16 overflow")
-    func testDecodeInt16Overflow() throws {
-        let element: any TupleElement = Int64(Int16.max) + 1
+    @Test("semantic type mismatches fail instead of coercing")
+    func semanticTypeMismatchesFail() throws {
+        let encodedInteger = try TupleEncoder.encode(Int64(1))
+        let encodedString = try TupleEncoder.encode("true")
 
         #expect(throws: TupleDecodingError.self) {
-            _ = try TupleDecoder.decodeInt16(element)
+            _ = try TupleDecoder.decodeBool(encodedInteger)
+        }
+        #expect(throws: TupleDecodingError.self) {
+            _ = try TupleDecoder.decodeInt64(encodedString)
+        }
+        #expect(throws: TupleDecodingError.self) {
+            _ = try TupleDecoder.decodeBytes(encodedString)
         }
     }
 
-    @Test("throws on Int8 overflow")
-    func testDecodeInt8Overflow() throws {
-        let element: any TupleElement = Int64(Int8.max) + 1
+    @Test("generic decode uses explicit TupleDecodable conformance")
+    func genericDecodeUsesStaticConformance() throws {
+        let encoded = try TupleEncoder.encode(UInt32.max)
+        let value = try TupleDecoder.decode(encoded, as: UInt32.self)
 
-        #expect(throws: TupleDecodingError.self) {
-            _ = try TupleDecoder.decodeInt8(element)
+        #expect(value == .max)
+    }
+
+    @Test("packing and unpacking retain canonical semantics")
+    func packedTupleRetainsSemantics() throws {
+        let values: [FieldValue] = [
+            .string("event"),
+            .int64(42),
+            .bytes([0x00, 0xFF]),
+        ]
+        let elements = try FieldValue.toTupleElements(values)
+        let packed = Tuple(elements).pack()
+        let unpacked = try Tuple.unpack(from: packed)
+
+        #expect(unpacked.count == values.count)
+        for (element, expected) in zip(unpacked, values) {
+            #expect(try FieldValue(tupleElement: element) == expected)
         }
-    }
-
-    // MARK: - Floating Point Decoding
-
-    @Test("decodes Double directly")
-    func testDecodeDouble() throws {
-        let element: any TupleElement = Double(3.14)
-        let result = try TupleDecoder.decodeDouble(element)
-        #expect(result == 3.14)
-    }
-
-    @Test("decodes Double from Int64")
-    func testDecodeDoubleFromInt() throws {
-        let element: any TupleElement = Int64(42)
-        let result = try TupleDecoder.decodeDouble(element)
-        #expect(result == 42.0)
-    }
-
-    @Test("decodes Float from Double")
-    func testDecodeFloat() throws {
-        let element: any TupleElement = Double(3.14)
-        let result = try TupleDecoder.decodeFloat(element)
-        #expect(abs(result - 3.14) < 0.001)
-    }
-
-    // MARK: - String Decoding
-
-    @Test("decodes String directly")
-    func testDecodeString() throws {
-        let element: any TupleElement = "hello"
-        let result = try TupleDecoder.decodeString(element)
-        #expect(result == "hello")
-    }
-
-    @Test("throws on String type mismatch")
-    func testDecodeStringTypeMismatch() throws {
-        let element: any TupleElement = Int64(42)
-
-        #expect(throws: TupleDecodingError.self) {
-            _ = try TupleDecoder.decodeString(element)
-        }
-    }
-
-    // MARK: - Bool Decoding
-
-    @Test("decodes Bool directly")
-    func testDecodeBool() throws {
-        let element: any TupleElement = true
-        let result = try TupleDecoder.decodeBool(element)
-        #expect(result == true)
-    }
-
-    @Test("rejects Bool encoded as Int64 zero")
-    func testDecodeBoolRejectsInt0() {
-        let element: any TupleElement = Int64(0)
-        #expect(throws: TupleDecodingError.self) {
-            _ = try TupleDecoder.decodeBool(element)
-        }
-    }
-
-    @Test("rejects Bool encoded as Int64 one")
-    func testDecodeBoolRejectsInt1() {
-        let element: any TupleElement = Int64(1)
-        #expect(throws: TupleDecodingError.self) {
-            _ = try TupleDecoder.decodeBool(element)
-        }
-    }
-
-    // MARK: - Data Decoding
-
-    @Test("decodes Data from ByteString")
-    func testDecodeData() throws {
-        let element: any TupleElement = ByteString([0x01, 0x02, 0x03])
-        let result = try TupleDecoder.decodeData(element)
-        #expect(result == Data([0x01, 0x02, 0x03]))
-    }
-
-    @Test("decodes ByteString from ByteString")
-    func testDecodeBytes() throws {
-        let element: any TupleElement = ByteString([0xFF, 0x00, 0xAB])
-        let result = try TupleDecoder.decodeBytes(element)
-        #expect(result == ByteString([0xFF, 0x00, 0xAB]))
-    }
-
-    // MARK: - UUID Decoding
-
-    @Test("decodes UUID directly")
-    func testDecodeUUID() throws {
-        let uuid = UUID()
-        let element: any TupleElement = uuid
-        let result = try TupleDecoder.decodeUUID(element)
-        #expect(result == uuid)
-    }
-
-    @Test("throws on UUID type mismatch")
-    func testDecodeUUIDTypeMismatch() throws {
-        let element: any TupleElement = "not-a-uuid"
-
-        #expect(throws: TupleDecodingError.self) {
-            _ = try TupleDecoder.decodeUUID(element)
-        }
-    }
-
-    // MARK: - Date Decoding
-
-    @Test("decodes Date directly")
-    func testDecodeDate() throws {
-        let date = Date(timeIntervalSince1970: 1_000_000)
-        let element: any TupleElement = date
-        let result = try TupleDecoder.decodeDate(element)
-        #expect(result == date)
-    }
-
-    // MARK: - Generic decode Tests
-
-    @Test("generic decode works for Int64")
-    func testGenericDecodeInt64() throws {
-        let element: any TupleElement = Int64(42)
-        let result = try TupleDecoder.decode(element, as: Int64.self)
-        #expect(result == 42)
-    }
-
-    @Test("generic decode works for Int")
-    func testGenericDecodeInt() throws {
-        let element: any TupleElement = Int64(42)
-        let result = try TupleDecoder.decode(element, as: Int.self)
-        #expect(result == 42)
-    }
-
-    @Test("generic decode works for Double")
-    func testGenericDecodeDouble() throws {
-        let element: any TupleElement = Double(3.14)
-        let result = try TupleDecoder.decode(element, as: Double.self)
-        #expect(result == 3.14)
-    }
-
-    @Test("generic decode works for String")
-    func testGenericDecodeString() throws {
-        let element: any TupleElement = "hello"
-        let result = try TupleDecoder.decode(element, as: String.self)
-        #expect(result == "hello")
-    }
-
-    @Test("generic decode works for Bool")
-    func testGenericDecodeBool() throws {
-        let element: any TupleElement = true
-        let result = try TupleDecoder.decode(element, as: Bool.self)
-        #expect(result == true)
-    }
-
-    @Test("generic decode throws on unsupported type")
-    func testGenericDecodeUnsupportedType() throws {
-        struct CustomType {}
-        let element: any TupleElement = "hello"
-
-        #expect(throws: TupleDecodingError.self) {
-            _ = try TupleDecoder.decode(element, as: CustomType.self)
-        }
-    }
-
-}
-
-// MARK: - Round-Trip Tests
-
-@Suite("TupleEncoder/Decoder Round-Trip Tests", .heartbeat)
-struct TupleEncoderDecoderRoundTripTests {
-
-    @Test("round-trip Int")
-    func testRoundTripInt() throws {
-        let original: Int = 12345
-        let encoded = try TupleEncoder.encode(original)
-        let decoded = try TupleDecoder.decodeInt(encoded)
-        #expect(decoded == original)
-    }
-
-    @Test("round-trip Int64")
-    func testRoundTripInt64() throws {
-        let original: Int64 = Int64.max
-        let encoded = try TupleEncoder.encode(original)
-        let decoded = try TupleDecoder.decodeInt64(encoded)
-        #expect(decoded == original)
-    }
-
-    @Test("round-trip Double")
-    func testRoundTripDouble() throws {
-        let original: Double = -273.15
-        let encoded = try TupleEncoder.encode(original)
-        let decoded = try TupleDecoder.decodeDouble(encoded)
-        #expect(decoded == original)
-    }
-
-    @Test("round-trip String")
-    func testRoundTripString() throws {
-        let original: String = "Hello, World!"
-        let encoded = try TupleEncoder.encode(original)
-        let decoded = try TupleDecoder.decodeString(encoded)
-        #expect(decoded == original)
-    }
-
-    @Test("round-trip Bool")
-    func testRoundTripBool() throws {
-        let original: Bool = true
-        let encoded = try TupleEncoder.encode(original)
-        let decoded = try TupleDecoder.decodeBool(encoded)
-        #expect(decoded == original)
-    }
-
-    @Test("round-trip UUID")
-    func testRoundTripUUID() throws {
-        let original = UUID()
-        let encoded = try TupleEncoder.encode(original)
-        let decoded = try TupleDecoder.decodeUUID(encoded)
-        #expect(decoded == original)
-    }
-
-    @Test("round-trip Data")
-    func testRoundTripData() throws {
-        let original = Data([0x01, 0x02, 0x03, 0x04])
-        let encoded = try TupleEncoder.encode(original)
-        let decoded = try TupleDecoder.decodeData(encoded)
-        #expect(decoded == original)
-    }
-
-    @Test("round-trip Date")
-    func testRoundTripDate() throws {
-        let original = Date(timeIntervalSince1970: 1_700_000_000)
-        let encoded = try TupleEncoder.encode(original)
-        let decoded = try TupleDecoder.decodeDate(encoded)
-        #expect(decoded == original)
     }
 }
-#endif
-
 #endif

@@ -85,8 +85,8 @@ struct GraphPropertyScannerTests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialEdge.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self)]),
             security: .disabled,
         )
 
@@ -134,10 +134,15 @@ struct GraphPropertyScannerTests {
             strategy: .tripleStore
         )
         try await container.engine.withTransaction { transaction in
-            var edges: [GraphEdgeWithProperties] = []
-            for try await edge in scanner.scanEdges(from: .identifier(alice), edge: "KNOWS", to: nil, propertyFilters: nil, transaction: transaction) {
-                edges.append(edge)
-            }
+            let edges = try await collectEdges(
+                scanner.scanEdges(
+                    from: .identifier(alice),
+                    edge: "KNOWS",
+                    to: nil,
+                    propertyFilters: nil,
+                    transaction: transaction
+                )
+            )
 
             #expect(edges.count == 2)
             let edge1 = edges.first { $0.target == .identifier(bob) }
@@ -177,10 +182,15 @@ struct GraphPropertyScannerTests {
         try await container.engine.withTransaction { transaction in
             let filters = [PropertyFilter(fieldName: "since", op: .equal, value: .int64(2020))]
 
-            var edges: [GraphEdgeWithProperties] = []
-            for try await edge in scanner.scanEdges(from: .identifier(alice), edge: "KNOWS", to: nil, propertyFilters: filters, transaction: transaction) {
-                edges.append(edge)
-            }
+            let edges = try await collectEdges(
+                scanner.scanEdges(
+                    from: .identifier(alice),
+                    edge: "KNOWS",
+                    to: nil,
+                    propertyFilters: filters,
+                    transaction: transaction
+                )
+            )
 
             #expect(edges.count == 2)
             #expect(edges.allSatisfy { $0.properties["since"] == .int64(2020) })
@@ -207,10 +217,15 @@ struct GraphPropertyScannerTests {
         try await container.engine.withTransaction { transaction in
             let filters = [PropertyFilter(fieldName: "since", op: .greaterThanOrEqual, value: .int64(2020))]
 
-            var edges: [GraphEdgeWithProperties] = []
-            for try await edge in scanner.scanEdges(from: .identifier(alice), edge: "KNOWS", to: nil, propertyFilters: filters, transaction: transaction) {
-                edges.append(edge)
-            }
+            let edges = try await collectEdges(
+                scanner.scanEdges(
+                    from: .identifier(alice),
+                    edge: "KNOWS",
+                    to: nil,
+                    propertyFilters: filters,
+                    transaction: transaction
+                )
+            )
 
             #expect(edges.count == 3)
             #expect(edges.allSatisfy {
@@ -245,29 +260,44 @@ struct GraphPropertyScannerTests {
         try await container.engine.withTransaction { transaction in
             // Test .isNil operator - should match only nil values
             let nilFilters = [PropertyFilter(fieldName: "status", op: .isNil, value: .null)]
-            var nilEdges: [GraphEdgeWithProperties] = []
-            for try await edge in scanner.scanEdges(from: .identifier(alice), edge: "KNOWS", to: nil, propertyFilters: nilFilters, transaction: transaction) {
-                nilEdges.append(edge)
-            }
+            let nilEdges = try await collectEdges(
+                scanner.scanEdges(
+                    from: .identifier(alice),
+                    edge: "KNOWS",
+                    to: nil,
+                    propertyFilters: nilFilters,
+                    transaction: transaction
+                )
+            )
 
             #expect(nilEdges.count == 1, "Should find exactly 1 edge with nil status")
             #expect(nilEdges.allSatisfy { $0.properties["status"] == .null }, "All matched edges should preserve the stored null value")
 
             // Test .isNotNil operator - should match non-nil values (including empty string)
             let notNilFilters = [PropertyFilter(fieldName: "status", op: .isNotNil, value: .null)]
-            var notNilEdges: [GraphEdgeWithProperties] = []
-            for try await edge in scanner.scanEdges(from: .identifier(alice), edge: "KNOWS", to: nil, propertyFilters: notNilFilters, transaction: transaction) {
-                notNilEdges.append(edge)
-            }
+            let notNilEdges = try await collectEdges(
+                scanner.scanEdges(
+                    from: .identifier(alice),
+                    edge: "KNOWS",
+                    to: nil,
+                    propertyFilters: notNilFilters,
+                    transaction: transaction
+                )
+            )
 
             #expect(notNilEdges.count == 2, "Should find 2 edges with non-nil status (empty string and 'active')")
 
             // Test .equal("") - should match only empty string, not nil
             let emptyFilters = [PropertyFilter(fieldName: "status", op: .equal, value: .string(""))]
-            var emptyEdges: [GraphEdgeWithProperties] = []
-            for try await edge in scanner.scanEdges(from: .identifier(alice), edge: "KNOWS", to: nil, propertyFilters: emptyFilters, transaction: transaction) {
-                emptyEdges.append(edge)
-            }
+            let emptyEdges = try await collectEdges(
+                scanner.scanEdges(
+                    from: .identifier(alice),
+                    edge: "KNOWS",
+                    to: nil,
+                    propertyFilters: emptyFilters,
+                    transaction: transaction
+                )
+            )
 
             #expect(emptyEdges.count == 1, "Should find exactly 1 edge with empty string status")
             #expect(emptyEdges.allSatisfy { $0.properties["status"] == .string("") }, "Matched edge should have empty string status")
@@ -298,54 +328,62 @@ struct GraphPropertyScannerTests {
         )
         try await container.engine.withTransaction { transaction in
             // Test: Scan with graph filter (should only return edges in "graph-social")
-            var socialEdges: [GraphEdgeWithProperties] = []
-            for try await edge in scanner.scanEdges(
-                from: .identifier(alice),
-                edge: "KNOWS",
-                to: nil,
-                scope: .named(.identifier("graph-social")),
-                propertyFilters: nil,
-                transaction: transaction
-            ) {
-                socialEdges.append(edge)
-            }
+            let socialEdges = try await collectEdges(
+                scanner.scanEdges(
+                    from: .identifier(alice),
+                    edge: "KNOWS",
+                    to: nil,
+                    scope: .named(.identifier("graph-social")),
+                    propertyFilters: nil,
+                    transaction: transaction
+                )
+            )
 
             #expect(socialEdges.count == 1, "Should find exactly 1 edge in graph-social")
             #expect(socialEdges.first?.graph == .identifier("graph-social"), "Graph field should be correctly read from adjacency index")
             #expect(socialEdges.first?.target == .identifier(bob), "Should find edge to Bob")
 
             // Test: Scan with different graph filter
-            var workEdges: [GraphEdgeWithProperties] = []
-            for try await edge in scanner.scanEdges(
-                from: .identifier(alice),
-                edge: "KNOWS",
-                to: nil,
-                scope: .named(.identifier("graph-work")),
-                propertyFilters: nil,
-                transaction: transaction
-            ) {
-                workEdges.append(edge)
-            }
+            let workEdges = try await collectEdges(
+                scanner.scanEdges(
+                    from: .identifier(alice),
+                    edge: "KNOWS",
+                    to: nil,
+                    scope: .named(.identifier("graph-work")),
+                    propertyFilters: nil,
+                    transaction: transaction
+                )
+            )
 
             #expect(workEdges.count == 1, "Should find exactly 1 edge in graph-work")
             #expect(workEdges.first?.graph == .identifier("graph-work"), "Graph field should be correctly read")
             #expect(workEdges.first?.target == .identifier(carol), "Should find edge to Carol")
 
             // Test: Scan without graph filter (should return all edges)
-            var allEdges: [GraphEdgeWithProperties] = []
-            for try await edge in scanner.scanEdges(
-                from: .identifier(alice),
-                edge: "KNOWS",
-                to: nil,
-                scope: .all,
-                propertyFilters: nil,
-                transaction: transaction
-            ) {
-                allEdges.append(edge)
-            }
+            let allEdges = try await collectEdges(
+                scanner.scanEdges(
+                    from: .identifier(alice),
+                    edge: "KNOWS",
+                    to: nil,
+                    scope: .all,
+                    propertyFilters: nil,
+                    transaction: transaction
+                )
+            )
 
             #expect(allEdges.count == 2, "Should find all 2 edges when no graph filter is specified")
         }
+    }
+
+    private func collectEdges(
+        _ scan: GraphPropertyScan
+    ) async throws -> [GraphEdgeWithProperties] {
+        var cursor = scan.makeCursor()
+        var edges: [GraphEdgeWithProperties] = []
+        while let edge = try await cursor.next() {
+            edges.append(edge)
+        }
+        return edges
     }
 }
 #endif

@@ -26,7 +26,7 @@ public struct PersistableValidationContext: ~Copyable, Sendable {
 
     public func fetch(
         _ identity: EntityReference
-    ) async throws -> (any Persistable)? {
+    ) async throws -> PersistedModel? {
         try scope.enter()
         do {
             try ensureDatabaseTaskIsActive()

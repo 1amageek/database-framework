@@ -152,9 +152,10 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
         container: DBContainer
     ) throws -> SchemaDescribeOperation.Reference? {
         guard field.type == .reference else { return nil }
-        guard let ownerType = container.runtimeConfiguration.entityRuntimes
-            .type(named: entity.name),
-              let descriptor = ownerType.relationshipDescriptors.first(where: {
+        guard container.runtimeConfiguration.entityRuntimes.registration(
+            named: entity.name
+        ) != nil,
+              let descriptor = entity.relationships.first(where: {
                   $0.propertyName == field.name
               }) else {
             throw SchemaDescriptionError.relationshipMetadataNotFound(

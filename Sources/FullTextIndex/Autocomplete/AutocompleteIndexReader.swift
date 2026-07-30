@@ -23,7 +23,7 @@ struct AutocompleteIndexReader: Sendable {
         let (begin, end) = prefixSubspace.range()
         var suggestions: [AutocompleteSuggestion] = []
 
-        let entries = try await transaction.collectRange(
+        let entries = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,
@@ -64,7 +64,7 @@ struct AutocompleteIndexReader: Sendable {
         let (begin, end) = termsSubspace.range()
         var terms: [AutocompleteSuggestion] = []
 
-        let entries = try await transaction.collectRange(
+        let entries = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,

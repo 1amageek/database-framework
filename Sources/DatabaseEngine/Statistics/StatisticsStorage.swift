@@ -83,7 +83,7 @@ public final class StatisticsStorage: Sendable {
             var results: [String: TableStatisticsData] = [:]
 
             let (begin, end) = tableSubspace.range()
-            for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
+            for (key, value) in try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
                 let keyTuple = try tableSubspace.unpack(key)
                 guard keyTuple.count == 1 else {
                     throw StatisticsStorageError.malformedKey(
@@ -133,7 +133,7 @@ public final class StatisticsStorage: Sendable {
             var results: [String: FieldStatisticsData] = [:]
 
             let (begin, end) = fieldSubspace.range()
-            for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
+            for (key, value) in try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
                 let keyTuple = try fieldSubspace.unpack(key)
                 guard keyTuple.count == 1 else {
                     throw StatisticsStorageError.malformedKey(

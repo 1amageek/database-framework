@@ -10,40 +10,43 @@ public struct RelationshipReferenceResolver: Sendable {
         self.schema = schema
     }
 
+    package func entity(named name: String) -> Schema.Entity? {
+        schema.entity(named: name)
+    }
+
     public func references(
-        from model: any Persistable,
+        from model: PersistedModel,
         descriptor: RelationshipDescriptor
     ) throws -> Set<EntityReference> {
         Set(try orderedReferences(from: model, descriptor: descriptor))
     }
 
     public func orderedReferences(
-        from model: any Persistable,
+        from model: PersistedModel,
         descriptor: RelationshipDescriptor
     ) throws -> [EntityReference] {
-        let ownerType = type(of: model)
-        guard descriptor.ownerTypeName == ownerType.persistableType else {
+        guard descriptor.ownerTypeName == model.entity else {
             throw RelationshipReferenceError.descriptorMismatch(
-                owner: ownerType.persistableType,
+                owner: model.entity,
                 field: descriptor.propertyName
             )
         }
-        guard let fieldSchema = ownerType.fieldSchemas.first(where: {
+        guard let entity = schema.entity(named: model.entity),
+              let fieldSchema = entity.fields.first(where: {
             $0.name == descriptor.propertyName
         }), fieldSchema.fieldNumber == Int(descriptor.propertyFieldNumber) else {
             throw RelationshipReferenceError.missingRelationshipField(
-                entity: ownerType.persistableType,
+                entity: model.entity,
                 field: descriptor.propertyName
             )
         }
 
-        let fields = try model.persistedFields()
-        guard let relationshipField = fields.first(where: {
+        guard let relationshipField = model.fields.first(where: {
             $0.number == descriptor.propertyFieldNumber
                 && $0.name == descriptor.propertyName
         }) else {
             throw RelationshipReferenceError.missingRelationshipField(
-                entity: ownerType.persistableType,
+                entity: model.entity,
                 field: descriptor.propertyName
             )
         }
@@ -53,7 +56,7 @@ public struct RelationshipReferenceResolver: Sendable {
         case .requiredToOne:
             guard relationshipField.value != .null else {
                 throw RelationshipReferenceError.invalidRelationshipValue(
-                    entity: ownerType.persistableType,
+                    entity: model.entity,
                     field: descriptor.propertyName
                 )
             }
@@ -65,7 +68,7 @@ public struct RelationshipReferenceResolver: Sendable {
         case .toMany:
             guard case .array(let elements) = relationshipField.value else {
                 throw RelationshipReferenceError.invalidRelationshipValue(
-                    entity: ownerType.persistableType,
+                    entity: model.entity,
                     field: descriptor.propertyName
                 )
             }

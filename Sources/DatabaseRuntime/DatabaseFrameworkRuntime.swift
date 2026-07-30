@@ -34,7 +34,7 @@ public enum DatabaseFrameworkRuntime {
         try DatabaseRuntimeConfiguration(
             indexMaintainerProviderDescriptors: maintainerProviderDescriptors(),
             polymorphicIndexReadExecutors: [
-                VectorReadExecutors.polymorphicIndexExecutor,
+                VectorReadExecutors.polymorphicIndexExecutor(),
                 FullTextReadExecutors.polymorphicIndexExecutor,
                 RankReadExecutors.polymorphicIndexExecutor,
                 BitmapReadExecutors.polymorphicIndexExecutor,

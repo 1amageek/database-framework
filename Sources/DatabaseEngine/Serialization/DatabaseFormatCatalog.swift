@@ -42,7 +42,7 @@ public struct DatabaseFormatCatalog: Sendable {
                 return stored
             }
 
-            let existing = try await transaction.collectRange(
+            let existing = try await TransactionRangeCollection.collect(using: transaction,
                 from: .firstGreaterOrEqual(ByteString()),
                 to: .firstGreaterOrEqual([0xFF]),
                 limit: 1,

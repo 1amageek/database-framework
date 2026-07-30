@@ -7,47 +7,10 @@ import StorageKit
 @testable import DatabaseEngine
 @testable import VersionIndex
 
-struct VersionIndexEntity: Persistable {
-    typealias ID = String
+@Persistable
+struct VersionIndexEntity {
     var id: String
     var title: String
-
-    static var persistableType: String { "VersionIndexEntity" }
-    static var allFields: [String] { ["id", "title"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "title": return title
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<VersionIndexEntity, Value>) -> String {
-        switch keyPath {
-        case \VersionIndexEntity.id: return "id"
-        case \VersionIndexEntity.title: return "title"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<VersionIndexEntity>) -> String {
-        switch keyPath {
-        case \VersionIndexEntity.id: return "id"
-        case \VersionIndexEntity.title: return "title"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<VersionIndexEntity> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 func versionIndexMetadata(
@@ -65,7 +28,7 @@ func versionIndexMetadata(
     case .keepForDuration(let duration):
         strategyMetadata = [
             "strategy": .string("keepForDuration"),
-            "strategyDurationSeconds": .float64(duration),
+            "strategyDuration": .timeSpan(duration),
         ]
     }
 
@@ -99,9 +62,16 @@ struct VersionIndexProviderTests {
                 index: index,
                 subspace: Subspace(),
                 idExpression: FieldKeyExpression(fieldName: "id"),
-                configurations: []
+                configurations: [],
+                wallClock: FixedVersionIndexWallClock(
+                    now: Timestamp(secondsSinceUnixEpoch: 0)
+                )
             )
         #expect(maintainer is VersionIndexMaintainer<VersionIndexEntity>)
     }
+}
+
+private struct FixedVersionIndexWallClock: WallClock {
+    let now: Timestamp
 }
 #endif

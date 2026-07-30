@@ -288,7 +288,7 @@ public struct GraphQueryExecutor: Sendable {
         let orderingSubspace = subspaceForOrdering(ordering, base: indexSubspace)
         let (beginKey, endKey) = buildScanRange(ordering: ordering, subspace: orderingSubspace)
 
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: limitCount ?? 0,

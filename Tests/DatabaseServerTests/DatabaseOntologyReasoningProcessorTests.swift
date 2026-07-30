@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseRuntime
 import DatabaseEngine
 import DatabaseServer
@@ -380,9 +381,9 @@ struct DatabaseOntologyReasoningProcessorTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseEndpointEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .disabled
         )
@@ -402,7 +403,8 @@ struct DatabaseOntologyReasoningProcessorTests {
             ontologyStore: OntologyStore(
                 subspace: OntologySubspace(base: ontologySubspace)
             ),
-            clock: AnyDatabaseWallClock(RealtimeDatabaseWallClock())
+            clock: AnyDatabaseWallClock(RealtimeDatabaseWallClock()),
+            monotonicClock: TestProcessMonotonicClock()
         )
         let stateStore = try await DatabaseMutationStateStore(
             container: container

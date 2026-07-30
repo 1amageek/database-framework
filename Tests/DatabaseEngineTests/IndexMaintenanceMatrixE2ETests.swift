@@ -249,8 +249,8 @@ struct IndexMaintenanceMatrixE2ETests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [MatrixScalarUser.self, MatrixVectorDocument.self, MatrixFullTextArticle.self, MatrixGraphEdge.self, MatrixSpatialPlace.self, MatrixRankPlayer.self, MatrixAggregationOrder.self, MatrixVersionDocument.self, MatrixBitmapItem.self, MatrixLeaderboardScore.self, MatrixPermutedLocation.self, MatrixRelationshipCustomer.self, MatrixRelationshipOrder.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(MatrixScalarUser.self), try DatabaseFrameworkRuntime.entity(MatrixVectorDocument.self), try DatabaseFrameworkRuntime.entity(MatrixFullTextArticle.self), try DatabaseFrameworkRuntime.entity(MatrixGraphEdge.self), try DatabaseFrameworkRuntime.entity(MatrixSpatialPlace.self), try DatabaseFrameworkRuntime.entity(MatrixRankPlayer.self), try DatabaseFrameworkRuntime.entity(MatrixAggregationOrder.self), try DatabaseFrameworkRuntime.entity(MatrixVersionDocument.self), try DatabaseFrameworkRuntime.entity(MatrixBitmapItem.self), try DatabaseFrameworkRuntime.entity(MatrixLeaderboardScore.self), try DatabaseFrameworkRuntime.entity(MatrixPermutedLocation.self), try DatabaseFrameworkRuntime.entity(MatrixRelationshipCustomer.self), try DatabaseFrameworkRuntime.entity(MatrixRelationshipOrder.self)]),
             security: .disabled
         )
         try await cleanup(container: container)
@@ -293,11 +293,11 @@ struct IndexMaintenanceMatrixE2ETests {
     private func countEntries(container: DBContainer, subspace: Subspace) async throws -> Int {
         try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = subspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 

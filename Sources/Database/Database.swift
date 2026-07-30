@@ -11,8 +11,6 @@
 
 // database-kit (client-safe model definitions)
 @_exported import DatabaseKit
-@_exported import DatabaseKit
-@_exported import DatabaseKit
 
 // storage-kit (storage engine abstraction)
 @_exported import StorageKit
@@ -28,6 +26,7 @@
 
 // database-framework (execution layer)
 @_exported import DatabaseEngine
+@_exported import DatabaseRuntime
 @_exported import ScalarIndex
 @_exported import VectorIndex
 @_exported import FullTextIndex
@@ -41,5 +40,4 @@
 @_exported import LeaderboardIndex
 @_exported import RelationshipIndex
 @_exported import OntologyIndex
-@_exported import DatabaseKit
 @_exported import QueryAST

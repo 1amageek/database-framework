@@ -105,8 +105,8 @@ public protocol DataStore: AnyObject, Sendable {
     ///   - deletes: Models to delete
     /// - Throws: SecurityError if any operation is not allowed, or other errors on failure
     func executeBatch(
-        inserts: [any Persistable],
-        deletes: [any Persistable]
+        inserts: [PersistedModel],
+        deletes: [PersistedModel]
     ) async throws
 
     // MARK: - Transaction Operations
@@ -127,4 +127,31 @@ public protocol DataStore: AnyObject, Sendable {
             DatabaseTransaction
         ) async throws -> T
     ) async throws -> T
+}
+
+public extension DataStore {
+    /// Executes a homogeneous typed batch without opening a Persistable
+    /// existential. Models cross into the heterogeneous transaction boundary
+    /// exactly once as canonical persisted models.
+    func executeBatch<Model: Persistable>(
+        inserts: [Model],
+        deletes: [Model]
+    ) async throws {
+        var persistedInserts: [PersistedModel] = []
+        persistedInserts.reserveCapacity(inserts.count)
+        for model in inserts {
+            persistedInserts.append(try PersistedModel(model))
+        }
+
+        var persistedDeletes: [PersistedModel] = []
+        persistedDeletes.reserveCapacity(deletes.count)
+        for model in deletes {
+            persistedDeletes.append(try PersistedModel(model))
+        }
+
+        try await executeBatch(
+            inserts: persistedInserts,
+            deletes: persistedDeletes
+        )
+    }
 }

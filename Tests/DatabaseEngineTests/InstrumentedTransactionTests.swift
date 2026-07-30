@@ -5,7 +5,8 @@
 
 import Testing
 import TestHeartbeat
-import Foundation
+import StorageKit
+import StorageKitSystemClock
 @testable import DatabaseEngine
 
 @Suite("InstrumentedTransaction Tests", .heartbeat)
@@ -47,13 +48,14 @@ struct InstrumentedTransactionTests {
         #expect(metrics.bytesWritten == 2048)
     }
 
-    @Test func metricsDurationCalculation() {
+    @Test func metricsDurationRepresentation() {
         var metrics = TransactionMetrics()
-        metrics.startTime = Date(timeIntervalSince1970: 1000)
-        metrics.endTime = Date(timeIntervalSince1970: 1001)
+        metrics.startTime = StorageInstant(durationSinceReference: .seconds(1_000))
+        metrics.endTime = metrics.startTime.advanced(by: .seconds(1))
+        metrics.durationNanos = 1_000_000_000
 
-        #expect(metrics.duration == 1.0)
         #expect(metrics.durationNanos == 1_000_000_000)
+        #expect(metrics.startTime.duration(to: metrics.endTime!) == .seconds(1))
     }
 
     @Test func metricsDescription() {
@@ -81,11 +83,9 @@ struct InstrumentedTransactionTests {
         metrics.scannedKeyValueCount = 50
         metrics.committed = true
         metrics.retryCount = 1
-        metrics.startTime = Date()
-        metrics.endTime = Date()
         metrics.commitNanos = 5_000_000
 
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: SystemStorageClock())
         metrics.export(to: timer)
 
         #expect(timer.getCount(.entitiesLoaded) == 5)
@@ -115,8 +115,7 @@ struct InstrumentedTransactionTests {
         metrics.bytesRead = 2048
         metrics.bytesWritten = 1024
         metrics.committed = true
-        metrics.startTime = Date(timeIntervalSince1970: 1000)
-        metrics.endTime = Date(timeIntervalSince1970: 1001)
+        metrics.durationNanos = 1_000_000_000
 
         aggregator.record(metrics)
 
@@ -138,9 +137,6 @@ struct InstrumentedTransactionTests {
             metrics.writeCount = i * 2
             metrics.committed = i % 2 == 0
             metrics.rolledBack = i % 2 != 0
-            metrics.startTime = Date()
-            metrics.endTime = Date()
-
             aggregator.record(metrics)
         }
 
@@ -157,16 +153,12 @@ struct InstrumentedTransactionTests {
         for _ in 0..<8 {
             var metrics = TransactionMetrics()
             metrics.committed = true
-            metrics.startTime = Date()
-            metrics.endTime = Date()
             aggregator.record(metrics)
         }
 
         for _ in 0..<2 {
             var metrics = TransactionMetrics()
             metrics.rolledBack = true
-            metrics.startTime = Date()
-            metrics.endTime = Date()
             aggregator.record(metrics)
         }
 
@@ -179,8 +171,6 @@ struct InstrumentedTransactionTests {
 
         var metrics = TransactionMetrics()
         metrics.committed = true
-        metrics.startTime = Date()
-        metrics.endTime = Date()
         aggregator.record(metrics)
 
         #expect(aggregator.summary.totalTransactions == 1)
@@ -196,8 +186,6 @@ struct InstrumentedTransactionTests {
         for i in 1...10 {
             var metrics = TransactionMetrics()
             metrics.readCount = i
-            metrics.startTime = Date()
-            metrics.endTime = Date()
             aggregator.record(metrics)
         }
 
@@ -213,8 +201,6 @@ struct InstrumentedTransactionTests {
         metrics.readCount = 10
         metrics.writeCount = 5
         metrics.committed = true
-        metrics.startTime = Date()
-        metrics.endTime = Date()
         aggregator.record(metrics)
 
         let description = aggregator.summary.description
@@ -252,8 +238,6 @@ struct InstrumentedTransactionTests {
                     var metrics = TransactionMetrics()
                     metrics.readCount = 1
                     metrics.committed = true
-                    metrics.startTime = Date()
-                    metrics.endTime = Date()
                     aggregator.record(metrics)
                 }
             }
@@ -271,14 +255,12 @@ struct InstrumentedTransactionTests {
 
         // Entity transaction with 10ms duration
         var metrics1 = TransactionMetrics()
-        metrics1.startTime = Date(timeIntervalSince1970: 1000.000)
-        metrics1.endTime = Date(timeIntervalSince1970: 1000.010)
+        metrics1.durationNanos = 10_000_000
         aggregator.record(metrics1)
 
         // Entity transaction with 20ms duration
         var metrics2 = TransactionMetrics()
-        metrics2.startTime = Date(timeIntervalSince1970: 1000.000)
-        metrics2.endTime = Date(timeIntervalSince1970: 1000.020)
+        metrics2.durationNanos = 20_000_000
         aggregator.record(metrics2)
 
         let summary = aggregator.summary

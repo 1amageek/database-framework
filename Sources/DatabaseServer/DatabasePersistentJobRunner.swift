@@ -1,6 +1,7 @@
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
+import StorageKit
 
 public actor DatabasePersistentJobRunner {
     private struct LeasedJob: Sendable {
@@ -64,7 +65,7 @@ public actor DatabasePersistentJobRunner {
 
     public func runScheduledWork() async throws {
         let dueJobs = try await store.dueJobs(
-            through: clock.now(),
+            through: clock.now,
             limit: configuration.maximumJobsPerRun
         )
         var firstProcessingError: (any Error)?
@@ -201,7 +202,7 @@ public actor DatabasePersistentJobRunner {
         return try await container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
-            let observedNow = clock.now()
+            let observedNow = clock.now
             let transaction = transactionContext.storageAccess
             guard let snapshot = try await store.load(
                 dueJob.jobID,
@@ -315,7 +316,7 @@ public actor DatabasePersistentJobRunner {
                 currentState,
                 expected: leasedState,
                 runnerID: runnerID,
-                now: clock.now()
+                now: clock.now
             )
             let current = DatabasePersistentJobSnapshot(
                 specification: snapshot.specification,
@@ -325,7 +326,7 @@ public actor DatabasePersistentJobRunner {
             )
             if currentState.cancellationRequested {
                 let cancellationRequestedAt = max(
-                    clock.now(),
+                    clock.now,
                     current.state.updatedAt
                 )
                 let committing = try current.state.schedulingUnsuccessfulOutcomeCommit(
@@ -370,7 +371,7 @@ public actor DatabasePersistentJobRunner {
                 completed: cumulativeWorkUnits
             )
             let reportedTotalWorkUnits = slice.totalWorkUnits
-            let completedAt = max(clock.now(), current.state.updatedAt)
+            let completedAt = max(clock.now, current.state.updatedAt)
             let updated: DatabasePersistentJobState
             switch slice.outcome {
             case .complete(let responsePayload):
@@ -450,7 +451,7 @@ public actor DatabasePersistentJobRunner {
                 currentState,
                 expected: leasedState,
                 runnerID: runnerID,
-                now: clock.now()
+                now: clock.now
             )
             let current = DatabasePersistentJobSnapshot(
                 specification: snapshot.specification,
@@ -470,7 +471,7 @@ public actor DatabasePersistentJobRunner {
                 completed: cumulativeWorkUnits
             )
             let reportedTotalWorkUnits = slice.totalWorkUnits
-            let completedAt = max(clock.now(), current.state.updatedAt)
+            let completedAt = max(clock.now, current.state.updatedAt)
             let updated: DatabasePersistentJobState
             switch slice.outcome {
             case .complete(let responsePayload):
@@ -519,7 +520,7 @@ public actor DatabasePersistentJobRunner {
         snapshot: DatabasePersistentJobSnapshot,
         operationContext: DatabaseOperationContext
     ) async throws {
-        let observedFailureAt = clock.now()
+        let observedFailureAt = clock.now
         let remoteError = errorMapper.remoteError(
             for: error,
             context: operationContext,
@@ -549,7 +550,7 @@ public actor DatabasePersistentJobRunner {
                 currentState,
                 expected: leasedState,
                 runnerID: runnerID,
-                now: clock.now()
+                now: clock.now
             )
             let updated: DatabasePersistentJobState
             let failedAt = max(observedFailureAt, currentState.updatedAt)
@@ -628,7 +629,7 @@ public actor DatabasePersistentJobRunner {
                     currentState,
                     expected: leasedState,
                     runnerID: runnerID,
-                    now: clock.now()
+                    now: clock.now
                 )
                 guard currentState.pendingUnsuccessfulOutcome == outcome else {
                     throw DatabaseJobRuntimeError.invalidStateTransition
@@ -649,7 +650,7 @@ public actor DatabasePersistentJobRunner {
                 )
                 try store.storeState(
                     try currentState.completingUnsuccessfulOutcomeCommit(
-                        updatedAt: max(clock.now(), currentState.updatedAt)
+                        updatedAt: max(clock.now, currentState.updatedAt)
                     ),
                     replacing: currentState,
                     transaction: transaction
@@ -676,7 +677,7 @@ public actor DatabasePersistentJobRunner {
             message: "The operation unsuccessful outcome could not be committed",
             retryability: .backoff
         )
-        let observedFailureAt = clock.now()
+        let observedFailureAt = clock.now
         let store = self.store
         let container = self.container
         let runnerID = self.runnerID

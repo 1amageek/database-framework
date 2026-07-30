@@ -1,6 +1,7 @@
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
+import StorageKit
 
 public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
     public var jobOperations: [JobOperationIdentifier] {
@@ -64,7 +65,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
         ) { transactionContext in
             let operation = try registry.resolve(request.operation)
             let jobID = identifierGenerator.generate()
-            let createdAt = clock.now()
+            let createdAt = clock.now
             let compiled = try await operation.compile(
                 requestPayload: request.requestPayload,
                 context: DatabaseResumableOperationStartContext(
@@ -274,7 +275,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
                 )
             }
             let cancellationRequestedAt = max(
-                clock.now(),
+                clock.now,
                 snapshot.state.updatedAt
             )
             let updated: DatabasePersistentJobState

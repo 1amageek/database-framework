@@ -101,8 +101,8 @@ struct IndexMaintenanceE2ETests {
 
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [E2EFullTextArticle.self, E2EGraphEdge.self, E2EScalarUser.self, E2ECountItem.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(E2EFullTextArticle.self), try DatabaseFrameworkRuntime.entity(E2EGraphEdge.self), try DatabaseFrameworkRuntime.entity(E2EScalarUser.self), try DatabaseFrameworkRuntime.entity(E2ECountItem.self)]),
             security: .disabled,
         )
     }
@@ -124,11 +124,11 @@ struct IndexMaintenanceE2ETests {
     ) async throws -> Int {
         try await database.withTransaction { transaction -> Int in
             let (begin, end) = subspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 
@@ -450,14 +450,13 @@ struct IndexMaintenanceE2ETests {
             itemTypes: Set([E2EGraphEdge.persistableType])
         )
 
-        let maintainer: any IndexMaintainer<E2EGraphEdge> = try container
-            .runtimeConfiguration
-            .indexMaintainerProviders
+        let maintainer: any IndexMaintainer<E2EGraphEdge> = try GraphIndexMaintainerProvider()
             .makeIndexMaintainer(
             index: index,
             subspace: graphIndexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            configurations: []
+            configurations: [],
+            wallClock: container.wallClock
         )
 
         // Create edge and use maintainer directly
@@ -465,11 +464,12 @@ struct IndexMaintenanceE2ETests {
         directEdge.source = "DirectAlice"
         directEdge.target = "DirectBob"
         directEdge.relation = "follows"
+        let storedDirectEdge = directEdge
 
         try await container.engine.withTransaction { transaction in
             try await maintainer.updateIndex(
                 oldItem: nil,
-                newItem: directEdge,
+                newItem: storedDirectEdge,
                 transaction: transaction
             )
         }
@@ -487,7 +487,7 @@ struct IndexMaintenanceE2ETests {
         // Clean up direct test
         try await container.engine.withTransaction { transaction in
             try await maintainer.updateIndex(
-                oldItem: directEdge,
+                oldItem: storedDirectEdge,
                 newItem: nil,
                 transaction: transaction
             )

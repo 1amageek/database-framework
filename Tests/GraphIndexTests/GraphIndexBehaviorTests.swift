@@ -82,11 +82,11 @@ private struct GraphIndexContext {
         let targetSubspace = indexSubspace.subspace(key)
         return try await database.withTransaction { transaction -> Int in
             let (begin, end) = targetSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 
@@ -335,11 +335,13 @@ struct GraphIndexTripleStoreTests {
         var totalCount = 0
         for key in [Int64(2), Int64(3), Int64(4)] {
             let subspace = ctx.indexSubspace.subspace(key)
-            try await ctx.database.withTransaction { transaction in
+            totalCount += try await ctx.database.withTransaction { transaction in
                 let (begin, end) = subspace.range()
-                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                    totalCount += 1
-                }
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
             }
         }
 
@@ -377,11 +379,13 @@ struct GraphIndexTripleStoreTests {
         var totalCount = 0
         for key in [Int64(2), Int64(3), Int64(4)] {
             let subspace = ctx.indexSubspace.subspace(key)
-            try await ctx.database.withTransaction { transaction in
+            totalCount += try await ctx.database.withTransaction { transaction in
                 let (begin, end) = subspace.range()
-                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                    totalCount += 1
-                }
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
             }
         }
 
@@ -415,11 +419,13 @@ struct GraphIndexHexastoreTests {
         var totalCount = 0
         for key in [Int64(2), Int64(3), Int64(4), Int64(5), Int64(6), Int64(7)] {
             let subspace = ctx.indexSubspace.subspace(key)
-            try await ctx.database.withTransaction { transaction in
+            totalCount += try await ctx.database.withTransaction { transaction in
                 let (begin, end) = subspace.range()
-                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                    totalCount += 1
-                }
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
             }
         }
 
@@ -457,11 +463,13 @@ struct GraphIndexHexastoreTests {
         var totalCount = 0
         for key in [Int64(2), Int64(3), Int64(4), Int64(5), Int64(6), Int64(7)] {
             let subspace = ctx.indexSubspace.subspace(key)
-            try await ctx.database.withTransaction { transaction in
+            totalCount += try await ctx.database.withTransaction { transaction in
                 let (begin, end) = subspace.range()
-                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                    totalCount += 1
-                }
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
             }
         }
 

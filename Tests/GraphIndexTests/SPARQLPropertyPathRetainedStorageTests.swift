@@ -2,6 +2,7 @@ import DatabaseEngine
 import DatabaseTypes
 import DatabaseWire
 import Testing
+import TestSupport
 @testable import GraphIndex
 
 @Suite("SPARQL property-path retained storage")
@@ -226,7 +227,8 @@ private func makePropertyPathWorkMeter(
             maximumIntermediateRows: 100,
             maximumIntermediateBytes: maximumIntermediateBytes,
             timeoutMilliseconds: 30_000
-        )
+        ),
+        monotonicClock: TestProcessMonotonicClock()
     )
 }
 

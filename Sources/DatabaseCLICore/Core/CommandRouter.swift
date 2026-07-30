@@ -26,7 +26,7 @@ enum CommandRouter {
             try cmd.execute(args)
 
         case "raw":
-            let rawCmd = RawCommands(database: dataAccess.database, output: output)
+            let rawCmd = RawCommands(dataAccess: dataAccess, output: output)
             guard let sub = args.first else {
                 throw CLIError.invalidArguments("Usage: raw <get|range> ...")
             }

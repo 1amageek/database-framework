@@ -537,7 +537,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         var results: [[any TupleElement]] = []
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,

@@ -1,5 +1,6 @@
 @testable import AggregationIndex
 import DatabaseKit
+import TestSupport
 import DatabaseTypes
 import DatabaseEngine
 import DatabaseRuntime
@@ -17,8 +18,8 @@ struct NullableAggregationIndexTests {
                     try NullableUnsignedAggregationEntity.schemaEntity
                 ]
             ),
-            configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [NullableUnsignedAggregationEntity.self]),
+            configuration: .testing(backend: .custom(InMemoryEngine())),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(NullableUnsignedAggregationEntity.self)]),
             security: .disabled
         )
         let context = container.newContext()

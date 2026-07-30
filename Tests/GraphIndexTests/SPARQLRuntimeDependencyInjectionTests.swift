@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseRuntime
 import DatabaseTypes
 import Foundation
@@ -30,7 +31,9 @@ struct SPARQLRuntimeDependencyInjectionTests {
     private struct IdentityFunction: SPARQLFunction {
         let identifier: RDFIRI
 
-        func evaluate(arguments: [FieldValue]) throws -> FieldValue {
+        func evaluate(
+            arguments: [FieldValue]
+        ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
             guard arguments.count == 1 else {
                 throw SPARQLExpressionEvaluationError.invalidFunctionArguments(
                     identifier.rawValue
@@ -51,9 +54,9 @@ struct SPARQLRuntimeDependencyInjectionTests {
                 entities: [try Statement.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .init(backend: .custom(InMemoryEngine())),
+            configuration: .testing(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [Statement.self],
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(Statement.self)],
                 sparqlFunctionRegistry: functionRegistry
             ),
             security: .disabled
@@ -107,7 +110,9 @@ struct SPARQLRuntimeDependencyInjectionTests {
             try await executor.executeInTransaction(
                 context: container.newContext(),
                 selectQuery: query,
-                options: ReadExecutionContext(),
+                options: ReadExecutionContext(
+                    monotonicClock: TestProcessMonotonicClock()
+                ),
                 partitions: FieldObject(),
                 transaction: transaction
             )

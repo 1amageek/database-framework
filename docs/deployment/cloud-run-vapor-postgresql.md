@@ -56,12 +56,12 @@ import PostgreSQLStorage
 
 func makeDatabaseContainer(
     schema: Schema,
-    persistableTypes: [any Persistable.Type]
+    entityRuntimes: [EntityRuntimeRegistration]
 ) async throws -> DBContainer {
     let postgresConfiguration = try PostgreSQLConfiguration.cloudRunProduction()
     let engine = try await PostgreSQLStorageEngine(configuration: postgresConfiguration)
     let runtime = try DatabaseFrameworkRuntime.configuration(
-        persistableTypes: persistableTypes
+        entityRuntimes: entityRuntimes
     )
 
     return try await DBContainer.open(
@@ -98,7 +98,9 @@ enum Entrypoint {
         )
         let database = try await makeDatabaseContainer(
             schema: schema,
-            persistableTypes: [User.self]
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(User.self)
+            ]
         )
         try configureRoutes(app, database: database)
 

@@ -29,7 +29,10 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         context: DatabaseOperationContext
     ) async throws -> CanonicalPreparedStatementMutation {
         let statement = validatedStatement.statement
-        let workMeter = DatabaseWorkMeter(budget: budget)
+        let workMeter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: context.container.monotonicClock
+        )
         guard case .sparqlUpdate(let request) = statement else {
             return CanonicalPreparedStatementMutation(
                 payload: .statement(statement),
@@ -274,7 +277,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     try scoped.quad.validate()
                 } catch {
                     throw SPARQLLoadSourceError.invalidDocument(
-                        String(describing: error)
+                        "Loaded RDF document is invalid"
                     )
                 }
                 triples[index] = scoped
@@ -417,13 +420,13 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 suppliedFields = try FieldObject(consume suppliedEntries)
             }
 
-            let candidate = try entity.type.decodePersistedObject(
-                suppliedFields
+            let candidate = try entity.runtime.persistedModel(
+                from: suppliedFields
             )
             let candidateFields = try DatabaseEntityProjection.fieldObject(
                 for: candidate
             )
-            let candidateIdentity = try DatabaseEntityProjection.identity(for: candidate)
+            let candidateIdentity = try entity.runtime.identity(for: candidate)
             let targetIdentity = try EntityReference(
                 entity: candidateIdentity.entity,
                 id: candidateIdentity.id,
@@ -469,13 +472,13 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     evaluationFields: evaluation,
                     entity: entity
                 )
-                let updated = try entity.type.decodePersistedObject(
-                    updatedFields
+                let updated = try entity.runtime.persistedModel(
+                    from: updatedFields
                 )
                 changes.append(
                     MutationExecuteOperation.Change(
                         kind: .update,
-                        identity: try DatabaseEntityProjection.identity(for: model),
+                        identity: try entity.runtime.identity(for: model),
                         fields: try DatabaseEntityProjection.fieldObject(
                             for: updated
                         )
@@ -544,11 +547,13 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 evaluationFields: evaluation,
                 entity: entity
             )
-            let updated = try entity.type.decodePersistedObject(updatedFields)
+            let updated = try entity.runtime.persistedModel(
+                from: updatedFields
+            )
             changes.append(
                 MutationExecuteOperation.Change(
                     kind: .update,
-                    identity: try DatabaseEntityProjection.identity(for: model),
+                    identity: try entity.runtime.identity(for: model),
                     fields: try DatabaseEntityProjection.fieldObject(
                         for: updated
                     )
@@ -614,7 +619,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             changes.append(
                 MutationExecuteOperation.Change(
                     kind: .delete,
-                    identity: try DatabaseEntityProjection.identity(for: model)
+                    identity: try entity.runtime.identity(for: model)
                 )
             )
             guard changes.count <= runtimeLimits.maximumMutations else {
@@ -644,7 +649,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         _ entity: ResolvedEntity,
         transaction: DatabaseTransaction,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [any Persistable] {
+    ) async throws -> [PersistedModel] {
         guard let maximumRows = Int(exactly: runtimeLimits.maximumRows),
               maximumRows < Int.max else {
             throw DatabaseRuntimeConfigurationError
@@ -682,7 +687,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         guard let entity = container.schema.entities.first(where: { $0.name == table.table }) else {
             throw DatabaseMutationError.unknownEntity(table.table)
         }
-        guard let type = container.runtimeConfiguration.entityRuntimes.modelType(
+        guard let runtime = container.runtimeConfiguration.entityRuntimes.registration(
             named: entity.name
         ) else {
             throw DatabaseMutationError.entityHasNoPersistableType(table.table)
@@ -701,12 +706,12 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         } catch {
             throw DatabaseMutationError.invalidPartition(
                 entity: entity.name,
-                reason: String(describing: error)
+                reason: "Partition does not match the compiled entity schema"
             )
         }
         return ResolvedEntity(
             name: entity.name,
-            type: type,
+            runtime: runtime,
             fields: entity.fields,
             partition: partition
         )
@@ -802,7 +807,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
 
     private struct ResolvedEntity: Sendable {
         let name: String
-        let type: any Persistable.Type
+        let runtime: EntityRuntimeRegistration
         let fields: [FieldSchema]
         let partition: AnyDirectoryPath?
     }

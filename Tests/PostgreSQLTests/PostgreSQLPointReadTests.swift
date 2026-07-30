@@ -75,12 +75,12 @@ struct PostgreSQLPointReadTests {
 
     private func setupStaticContainer() async throws -> DBContainer {
         let schema = try Schema(entities: [try PGPointReadItem.schemaEntity], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGPointReadItem.self])
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGPointReadItem.self)])
     }
 
     private func setupPartitionedContainer() async throws -> DBContainer {
         let schema = try Schema(entities: [try TenantOrder.schemaEntity], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [TenantOrder.self])
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, entityRuntimes: [try DatabaseFrameworkRuntime.entity(TenantOrder.self)])
     }
 
     private func setupSecuredContainer() async throws -> DBContainer {
@@ -88,13 +88,9 @@ struct PostgreSQLPointReadTests {
         let schema = try Schema(entities: [try PGSecuredPointReadItem.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    PGPointReadItem.self,
-                    PGSecuredPointReadItem.self,
-                    TenantOrder.self,
-                ],
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGPointReadItem.self), try DatabaseFrameworkRuntime.entity(PGSecuredPointReadItem.self), try DatabaseFrameworkRuntime.entity(TenantOrder.self)],
                 authorizationPolicies: [
                     AuthorizationPolicyHandler(PGSecuredPointReadItem.self)
                 ]
@@ -139,18 +135,27 @@ struct PostgreSQLPointReadTests {
             item.id = itemID
             item.name = "created"
             item.value = 1
-            try await store.executeBatch(inserts: [item], deletes: [])
+            try await store.executeBatch(
+                inserts: [try PersistedModel(item)],
+                deletes: []
+            )
 
             var updated = item
             updated.name = "updated"
             updated.value = 2
-            try await store.executeBatch(inserts: [updated], deletes: [])
+            try await store.executeBatch(
+                inserts: [try PersistedModel(updated)],
+                deletes: []
+            )
 
             let fetched = try await store.fetch(PGPointReadItem.self, id: itemID)
             #expect(fetched?.name == "updated")
             #expect(fetched?.value == 2)
 
-            try await store.executeBatch(inserts: [], deletes: [updated])
+            try await store.executeBatch(
+                inserts: [],
+                deletes: [try PersistedModel(updated)]
+            )
             let missing = try await store.fetch(PGPointReadItem.self, id: itemID)
             #expect(missing == nil)
         }

@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 import StorageKit
@@ -14,8 +15,14 @@ struct DatabaseSchemaBootstrapTests {
         try await container.migrateIfNeeded()
 
         #expect(try await container.getCurrentSchemaVersion() == Schema.Version(1, 0, 0))
-        let entities = try await SchemaRegistry(database: engine).loadAll()
-        #expect(entities.map(\.name).contains(BootstrapIndexedEntity.persistableType))
+        let entities = try await SchemaRegistry(
+            database: engine,
+            clock: TestProcessMonotonicClock()
+        ).loadAll()
+        #expect(
+            entities.map { $0.name }
+                .contains(BootstrapIndexedEntity.persistableType)
+        )
         let subspace = try await container.resolveDirectory(
             for: BootstrapIndexedEntity.self
         )
@@ -36,9 +43,9 @@ struct DatabaseSchemaBootstrapTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [BootstrapIndexedEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self)]
             ),
             security: .disabled
         )
@@ -70,12 +77,9 @@ struct DatabaseSchemaBootstrapTests {
                 version: Schema.Version(1, 0, 0)
             ),
             migrationPlan: BootstrapMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    BootstrapIndexedEntity.self,
-                    DatabaseEndpointEntity.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self), try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .disabled
         )
@@ -94,9 +98,9 @@ struct DatabaseSchemaBootstrapTests {
         try await DBContainer.open(
             for: BootstrapSchema.self,
             migrationPlan: BootstrapMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [BootstrapIndexedEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self)]
             ),
             security: .disabled
         )

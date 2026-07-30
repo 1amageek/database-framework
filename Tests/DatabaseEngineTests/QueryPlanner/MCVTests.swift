@@ -11,6 +11,7 @@ import DatabaseTypes
 import DatabaseKit
 
 typealias CV = FieldValue
+private let statisticsTimestamp = Timestamp(secondsSinceUnixEpoch: 1_700_000_000)
 
 @Suite("MCV Tests", .heartbeat)
 struct MCVTests {
@@ -27,7 +28,10 @@ struct MCVTests {
         for _ in 0..<15 { builder.add(CV.int64(3)) }  // 15%
         for _ in 0..<5  { builder.add(CV.int64(4)) }  // 5%
 
-        let mcv = builder.build(totalCount: 100)
+        let mcv = builder.build(
+            totalCount: 100,
+            timestamp: statisticsTimestamp
+        )
 
         #expect(mcv.entries.count == 4)
         #expect(mcv.entries[0].value == CV.int64(1))
@@ -47,7 +51,10 @@ struct MCVTests {
         for _ in 0..<5  { builder.add(CV.int64(4)) }  // 5% - below threshold
         for _ in 0..<10 { builder.add(CV.int64(5)) }  // 10% - at threshold
 
-        let mcv = builder.build(totalCount: 100)
+        let mcv = builder.build(
+            totalCount: 100,
+            timestamp: statisticsTimestamp
+        )
 
         // Should include values with frequency >= 10%
         #expect(mcv.entries.count == 3)
@@ -67,7 +74,10 @@ struct MCVTests {
         for _ in 0..<15 { builder.add(CV.int64(4)) }  // 15%
         for _ in 0..<10 { builder.add(CV.int64(5)) }  // 10%
 
-        let mcv = builder.build(totalCount: 100)
+        let mcv = builder.build(
+            totalCount: 100,
+            timestamp: statisticsTimestamp
+        )
 
         // Should keep only top 3 most frequent
         #expect(mcv.entries.count == 3)
@@ -92,7 +102,10 @@ struct MCVTests {
         for _ in 0..<20 { builder.add(CV.string("cherry")) }
         for _ in 0..<10 { builder.add(CV.string("date")) }
 
-        let mcv = builder.build(totalCount: 100)
+        let mcv = builder.build(
+            totalCount: 100,
+            timestamp: statisticsTimestamp
+        )
 
         #expect(mcv.entries[0].value == CV.string("apple"))
         #expect(mcv.entries[1].value == CV.string("banana"))
@@ -107,7 +120,10 @@ struct MCVTests {
             MostCommonValues.Entry(value: CV.int64(2), frequency: 0.20, count: 2000),
             MostCommonValues.Entry(value: CV.int64(3), frequency: 0.10, count: 1000)
         ]
-        let mcv = MostCommonValues(entries: entries)
+        let mcv = MostCommonValues(
+            entries: entries,
+            timestamp: statisticsTimestamp
+        )
 
         #expect(mcv.selectivity(for: CV.int64(1)) == 0.30)
         #expect(mcv.selectivity(for: CV.int64(2)) == 0.20)
@@ -121,7 +137,10 @@ struct MCVTests {
             MostCommonValues.Entry(value: CV.int64(1), frequency: 0.30, count: 3000),
             MostCommonValues.Entry(value: CV.int64(2), frequency: 0.20, count: 2000)
         ]
-        let mcv = MostCommonValues(entries: entries)
+        let mcv = MostCommonValues(
+            entries: entries,
+            timestamp: statisticsTimestamp
+        )
 
         // Total frequency = 0.50, so histogram fraction = 0.50
         #expect(abs(mcv.histogramFraction - 0.50) < 0.001)
@@ -135,7 +154,10 @@ struct MCVTests {
             MostCommonValues.Entry(value: CV.int64(2), frequency: 0.20, count: 2000),
             MostCommonValues.Entry(value: CV.int64(3), frequency: 0.10, count: 1000)
         ]
-        let mcv = MostCommonValues(entries: entries)
+        let mcv = MostCommonValues(
+            entries: entries,
+            timestamp: statisticsTimestamp
+        )
 
         // IN (1, 2) should return 0.30 + 0.20 = 0.50
         let sel = mcv.selectivity(forIn: [CV.int64(1), CV.int64(2)])
@@ -154,7 +176,10 @@ struct MCVTests {
             MostCommonValues.Entry(value: CV.int64(30), frequency: 0.10, count: 1000),
             MostCommonValues.Entry(value: CV.int64(40), frequency: 0.05, count: 500)
         ]
-        let mcv = MostCommonValues(entries: entries)
+        let mcv = MostCommonValues(
+            entries: entries,
+            timestamp: statisticsTimestamp
+        )
 
         // Range [15, 35] should include 20 and 30 = 0.15 + 0.10 = 0.25
         let sel = mcv.rangeSelectivity(
@@ -175,14 +200,23 @@ struct MCVTests {
             MostCommonValues.Entry(value: CV.int64(100), frequency: 0.30, count: 3000),
             MostCommonValues.Entry(value: CV.int64(200), frequency: 0.20, count: 2000)
         ]
-        let mcv = MostCommonValues(entries: mcvEntries)
+        let mcv = MostCommonValues(
+            entries: mcvEntries,
+            timestamp: statisticsTimestamp
+        )
 
         // Create histogram (excluding MCV values)
         let buckets = [
             Histogram.Bucket(lowerBound: CV.int64(1), upperBound: CV.int64(50), count: 2500, distinctCount: 50),
             Histogram.Bucket(lowerBound: CV.int64(51), upperBound: CV.int64(99), count: 2500, distinctCount: 49)
         ]
-        let histogram = Histogram(buckets: buckets, totalCount: 5000, nullCount: 0, distinctCount: 99)
+        let histogram = Histogram(
+            buckets: buckets,
+            totalCount: 5000,
+            nullCount: 0,
+            distinctCount: 99,
+            timestamp: statisticsTimestamp
+        )
 
         let estimator = CombinedSelectivityEstimator(mcv: mcv, histogram: histogram)
 
@@ -196,12 +230,21 @@ struct MCVTests {
         let mcvEntries = [
             MostCommonValues.Entry(value: CV.int64(100), frequency: 0.30, count: 3000)
         ]
-        let mcv = MostCommonValues(entries: mcvEntries)
+        let mcv = MostCommonValues(
+            entries: mcvEntries,
+            timestamp: statisticsTimestamp
+        )
 
         let buckets = [
             Histogram.Bucket(lowerBound: CV.int64(1), upperBound: CV.int64(50), count: 3500, distinctCount: 50)
         ]
-        let histogram = Histogram(buckets: buckets, totalCount: 7000, nullCount: 0, distinctCount: 50)
+        let histogram = Histogram(
+            buckets: buckets,
+            totalCount: 7000,
+            nullCount: 0,
+            distinctCount: 50,
+            timestamp: statisticsTimestamp
+        )
 
         let estimator = CombinedSelectivityEstimator(mcv: mcv, histogram: histogram)
 
@@ -220,7 +263,10 @@ struct MCVTests {
             MostCommonValues.Entry(value: CV.int64(100), frequency: 0.25, count: 2500),
             MostCommonValues.Entry(value: CV.int64(200), frequency: 0.15, count: 1500)
         ]
-        let mcv = MostCommonValues(entries: mcvEntries)
+        let mcv = MostCommonValues(
+            entries: mcvEntries,
+            timestamp: statisticsTimestamp
+        )
 
         // Histogram: covers 1-300 excluding MCV values
         let buckets = [
@@ -228,7 +274,13 @@ struct MCVTests {
             Histogram.Bucket(lowerBound: CV.int64(101), upperBound: CV.int64(200), count: 2000, distinctCount: 100),
             Histogram.Bucket(lowerBound: CV.int64(201), upperBound: CV.int64(300), count: 2000, distinctCount: 100)
         ]
-        let histogram = Histogram(buckets: buckets, totalCount: 6000, nullCount: 0, distinctCount: 300)
+        let histogram = Histogram(
+            buckets: buckets,
+            totalCount: 6000,
+            nullCount: 0,
+            distinctCount: 300,
+            timestamp: statisticsTimestamp
+        )
 
         let estimator = CombinedSelectivityEstimator(mcv: mcv, histogram: histogram)
 
@@ -249,7 +301,10 @@ struct MCVTests {
 
     @Test("Empty MCV should return nil selectivity")
     func testEmptyMCV() {
-        let mcv = MostCommonValues.empty
+        let mcv = MostCommonValues(
+            entries: [],
+            timestamp: statisticsTimestamp
+        )
 
         #expect(mcv.entries.isEmpty)
         #expect(mcv.selectivity(for: CV.int64(1)) == nil)
@@ -259,7 +314,10 @@ struct MCVTests {
     @Test("MCVBuilder with no samples should return empty MCV")
     func testMCVBuilderNoSamples() {
         let builder = MCVBuilder(maxSize: 100, minFrequency: 0.01)
-        let mcv = builder.build(totalCount: 0)
+        let mcv = builder.build(
+            totalCount: 0,
+            timestamp: statisticsTimestamp
+        )
 
         #expect(mcv.entries.isEmpty)
     }
@@ -270,7 +328,10 @@ struct MCVTests {
 
         for _ in 0..<100 { builder.add(CV.string("only")) }
 
-        let mcv = builder.build(totalCount: 100)
+        let mcv = builder.build(
+            totalCount: 100,
+            timestamp: statisticsTimestamp
+        )
 
         #expect(mcv.entries.count == 1)
         #expect(abs(mcv.entries[0].frequency - 1.0) < 0.001)

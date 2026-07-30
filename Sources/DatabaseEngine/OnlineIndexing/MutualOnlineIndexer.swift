@@ -422,7 +422,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
             let sampleLimit = 1000  // Sample check limit
 
             // Use limit to control server-side prefetch instead of break
-            let sequence = try await transaction.collectRange(
+            let sequence = try await TransactionRangeCollection.collect(using: transaction,
                 from: .firstGreaterOrEqual(forwardRange.begin),
                 to: .firstGreaterOrEqual(forwardRange.end),
                 limit: sampleLimit,
@@ -619,7 +619,7 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         let range1 = prefixSubspace.range()
 
         // Use .wantAll for read-only queries that need all results
-        let seq1 = try await transaction.collectRange(
+        let seq1 = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(range1.begin),
             to: .firstGreaterOrEqual(range1.end),
             limit: 0,
@@ -639,7 +639,7 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         // Query 2: Scan for entity in second position (more expensive)
         // In a real implementation, we might maintain a secondary index
         let fullRange = indexSpace.range()
-        let seq2 = try await transaction.collectRange(
+        let seq2 = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(fullRange.begin),
             to: .firstGreaterOrEqual(fullRange.end),
             limit: 0,

@@ -221,7 +221,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
         )
         let rows = try entities.map { entity in
             try IndexReadRow.materializing(
-                any: entity.item,
+                entity.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(entity.typeName),
                     PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)

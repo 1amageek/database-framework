@@ -14,7 +14,7 @@ import DatabaseRuntime
 ///
 /// **Coverage**:
 /// - resolveDirectory<T: Persistable>(for type:) - Static path resolution
-/// - resolveDirectory(for type: any Persistable.Type) - Type-erased resolution
+/// - resolveDirectory(for entity: Schema.Entity) - Runtime schema resolution
 /// - Directory caching behavior
 /// - Multiple types with independent directories
 @Suite("Resolve Directory Tests", .foundationDBScenario, .serialized, .heartbeat)
@@ -65,8 +65,8 @@ struct ResolveDirectoryTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryUser.self, DirectoryProduct.self, NestedDirectoryItem.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]),
             security: .disabled
             )
     }
@@ -138,25 +138,25 @@ struct ResolveDirectoryTests {
         }
     }
 
-    // MARK: - Type-Erased Resolution Tests
+    // MARK: - Runtime Schema Resolution Tests
 
-    @Test("resolveDirectory works with type-erased Persistable type")
-    func resolveDirectoryTypeErased() async throws {
+    @Test("resolveDirectory works with a runtime schema entity")
+    func resolveDirectoryFromSchemaEntity() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
             try await cleanup(container: container)
 
-            let persistableType: any Persistable.Type = DirectoryUser.self
-
-            let subspace = try await container.resolveDirectory(for: persistableType)
+            let subspace = try await container.resolveDirectory(
+                for: DirectoryUser.schemaEntity
+            )
 
             #expect(subspace.prefix.count > 0)
         }
     }
 
-    @Test("Type-erased resolution returns same subspace as generic resolution")
-    func typeErasedResolutionMatchesGeneric() async throws {
+    @Test("Schema resolution returns same subspace as generic resolution")
+    func schemaResolutionMatchesGeneric() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             // Clean up at START of test
@@ -164,10 +164,11 @@ struct ResolveDirectoryTests {
 
             let genericSubspace = try await container.resolveDirectory(for: DirectoryUser.self)
 
-            let persistableType: any Persistable.Type = DirectoryUser.self
-            let typeErasedSubspace = try await container.resolveDirectory(for: persistableType)
+            let schemaSubspace = try await container.resolveDirectory(
+                for: DirectoryUser.schemaEntity
+            )
 
-            #expect(genericSubspace.prefix == typeErasedSubspace.prefix)
+            #expect(genericSubspace.prefix == schemaSubspace.prefix)
         }
     }
 
@@ -231,7 +232,7 @@ struct ResolveDirectoryTests {
             let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
 
             // Clean up first
-            
+
             try await ensureDirectoryRemoved(
                 from: database,
                 path: ["test", "resolve"]
@@ -239,8 +240,8 @@ struct ResolveDirectoryTests {
 
             let schema = try Schema(entities: [try DirectoryUser.schemaEntity], version: Schema.Version(1, 0, 0))
 
-            let container1 = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryUser.self, DirectoryProduct.self, NestedDirectoryItem.self]), security: .disabled)
-            let container2 = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryUser.self, DirectoryProduct.self, NestedDirectoryItem.self]), security: .disabled)
+            let container1 = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]), security: .disabled)
+            let container2 = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]), security: .disabled)
 
             let subspace1 = try await container1.resolveDirectory(for: DirectoryUser.self)
             let subspace2 = try await container2.resolveDirectory(for: DirectoryUser.self)

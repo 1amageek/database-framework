@@ -906,7 +906,7 @@ public struct MigrationContext: Sendable {
                 var lastKeyInBatch: ByteString? = nil
 
                 // Use limit and wantAll mode to reduce round-trips for counting
-                let sequence = try await transaction.collectRange(
+                let sequence = try await TransactionRangeCollection.collect(using: transaction,
                     from: .firstGreaterOrEqual(rangeBegin),
                     to: .firstGreaterOrEqual(endKey),
                     limit: batchSize,

@@ -17,9 +17,9 @@ enum IndexRuntimeConfigurationValidator {
         }
         for group in schema.polymorphicGroups {
             for memberTypeName in group.memberTypeNames {
-                guard let memberType = entityRuntimes.modelType(
+                guard entityRuntimes.registration(
                     named: memberTypeName
-                ) else {
+                ) != nil else {
                     throw .invalidConfiguration(
                         indexName: group.identifier,
                         reason: "compiled polymorphic member '\(memberTypeName)' is unavailable"
@@ -27,7 +27,7 @@ enum IndexRuntimeConfigurationValidator {
                 }
                 for descriptor in schema.polymorphicIndexDescriptors(
                     identifier: group.identifier,
-                    memberTypeName: memberType.persistableType
+                    memberTypeName: memberTypeName
                 ) {
                     descriptorsByName[
                         descriptor.name,

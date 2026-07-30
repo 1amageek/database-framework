@@ -375,22 +375,11 @@ enum CanonicalAggregationReducer {
             var values = Set<FieldValue>()
             for item in items {
                 let value = try fieldValue(item: item, field: field)
-                if !value.isNull {
-                    do {
-                        values.insert(
-                            try DistinctValueIdentity.canonicalize(value).value
-                        )
-                    } catch DistinctValueIdentityError.nonFiniteNumericValue {
-                        throw AggregationQueryError.nonFiniteNumericValue(
-                            field: field.name
-                        )
-                    } catch DistinctValueIdentityError.invalidObject {
-                        throw AggregationQueryError.resultNotRepresentable(
-                            operation: "distinct",
-                            field: field.name
-                        )
-                    }
-                }
+                try insertDistinctValue(
+                    value,
+                    into: &values,
+                    field: field.name
+                )
             }
             guard let count = Int64(exactly: values.count) else {
                 throw AggregationQueryError.numericOverflow(
@@ -420,6 +409,41 @@ enum CanonicalAggregationReducer {
                 values: &values,
                 percentile: percentile,
                 field: field.name
+            )
+        }
+    }
+
+    static func distinct<Values: Sequence>(
+        values source: Values,
+        field: String
+    ) throws -> FieldValue where Values.Element == FieldValue {
+        var values = Set<FieldValue>()
+        for value in source {
+            try insertDistinctValue(value, into: &values, field: field)
+        }
+        guard let count = Int64(exactly: values.count) else {
+            throw AggregationQueryError.numericOverflow(
+                operation: "distinct",
+                field: field
+            )
+        }
+        return .int64(count)
+    }
+
+    private static func insertDistinctValue(
+        _ value: FieldValue,
+        into values: inout Set<FieldValue>,
+        field: String
+    ) throws {
+        guard !value.isNull else { return }
+        do {
+            values.insert(try DistinctValueIdentity.canonicalize(value).value)
+        } catch DistinctValueIdentityError.nonFiniteNumericValue {
+            throw AggregationQueryError.nonFiniteNumericValue(field: field)
+        } catch DistinctValueIdentityError.invalidObject {
+            throw AggregationQueryError.resultNotRepresentable(
+                operation: "distinct",
+                field: field
             )
         }
     }

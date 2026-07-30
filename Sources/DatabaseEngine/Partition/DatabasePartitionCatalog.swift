@@ -118,7 +118,7 @@ package struct DatabasePartitionCatalog: Sendable {
             configuration: .batch,
             clock: clock
         ) { transaction in
-            let rows = try await transaction.collectRange(
+            let rows = try await TransactionRangeCollection.collect(using: transaction,
                 from: begin,
                 to: .firstGreaterOrEqual(range.end),
                 limit: limit + 1,

@@ -92,14 +92,15 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
     }
 
     public func update(
-        oldModel: (any Persistable)?,
-        newModel: (any Persistable)?,
+        identity: EntityReference,
+        oldModel: PersistedModel?,
+        newModel: PersistedModel?,
         context: borrowing PersistableMutationContext
     ) async throws {
         if let oldModel, let newModel {
-            guard type(of: oldModel).persistableType == type(of: newModel).persistableType else {
+            guard oldModel.entity == newModel.entity else {
                 throw RelationshipReferenceError.invalidOwnerIdentity(
-                    entity: type(of: newModel).persistableType
+                    entity: newModel.entity
                 )
             }
         }
@@ -109,21 +110,25 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
                 schema: context.schema
             ).enforceDeleteRules(
                 for: oldModel,
+                identity: identity,
                 context: context
             )
         }
 
         let resolver = RelationshipReferenceResolver(schema: context.schema)
         if let oldModel {
-            let owner = try EntityReferenceEncoder.encode(oldModel)
-            for descriptor in type(of: oldModel).relationshipDescriptors {
+            let descriptors = try relationships(
+                for: oldModel,
+                schema: context.schema
+            )
+            for descriptor in descriptors {
                 for target in try resolver.references(
                     from: oldModel,
                     descriptor: descriptor
                 ) {
                     try RelationshipReferenceCatalog.clear(
                         target: target,
-                        owner: owner,
+                        owner: identity,
                         descriptor: descriptor,
                         transaction: context.storageAccess
                     )
@@ -132,15 +137,18 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
         }
 
         if let newModel {
-            let owner = try EntityReferenceEncoder.encode(newModel)
-            for descriptor in type(of: newModel).relationshipDescriptors {
+            let descriptors = try relationships(
+                for: newModel,
+                schema: context.schema
+            )
+            for descriptor in descriptors {
                 for target in try resolver.references(
                     from: newModel,
                     descriptor: descriptor
                 ) {
                     try RelationshipReferenceCatalog.set(
                         target: target,
-                        owner: owner,
+                        owner: identity,
                         descriptor: descriptor,
                         transaction: context.storageAccess
                     )
@@ -150,14 +158,17 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
     }
 
     public func validateFinalState(
-        of models: [any Persistable],
+        of models: [PersistedModel],
         context: borrowing PersistableValidationContext
     ) async throws {
         let resolver = RelationshipReferenceResolver(schema: context.schema)
         var validated = Set<EntityReference>()
 
         for model in models {
-            for descriptor in type(of: model).relationshipDescriptors {
+            for descriptor in try relationships(
+                for: model,
+                schema: context.schema
+            ) {
                 for target in try resolver.references(
                     from: model,
                     descriptor: descriptor
@@ -168,5 +179,17 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
                 }
             }
         }
+    }
+
+    private func relationships(
+        for model: PersistedModel,
+        schema: Schema
+    ) throws -> [RelationshipDescriptor] {
+        guard let entity = schema.entity(named: model.entity) else {
+            throw RelationshipReferenceError.invalidOwnerIdentity(
+                entity: model.entity
+            )
+        }
+        return entity.relationships
     }
 }

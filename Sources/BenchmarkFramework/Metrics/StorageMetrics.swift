@@ -15,17 +15,23 @@ public struct StorageMetrics: Codable, Sendable, Hashable {
     /// - Parameters:
     ///   - database: The database connection
     ///   - subspace: The subspace to measure
+    ///   - clock: The monotonic clock used for transaction deadlines and retry delays
     /// - Returns: Storage metrics
     public static func measure(
         database: any StorageEngine,
-        subspace: Subspace
+        subspace: Subspace,
+        clock: any StorageMonotonicClock
     ) async throws -> StorageMetrics {
         let range = subspace.range()
+        let transactionExecutor = StorageTransactionExecutor(engine: database)
 
-        let totalBytes = try await database.withTransaction(configuration: .default) { transaction in
+        let totalBytes = try await transactionExecutor.withTransaction(
+            configuration: .default,
+            clock: clock
+        ) { transaction in
             var bytes = 0
 
-            let kvs = try await transaction.collectRange(from: .firstGreaterOrEqual(range.begin), to: .firstGreaterOrEqual(range.end))
+            let kvs = try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(range.begin), to: .firstGreaterOrEqual(range.end))
             for (key, value) in kvs {
                 bytes += key.count + value.count
             }

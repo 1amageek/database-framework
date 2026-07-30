@@ -266,7 +266,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         let rangeStart = windowSubspace.pack(Tuple(prefixElements))
         let rangeEnd = windowSubspace.pack(Tuple(prefixElements + [Int64.max]))
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
             limit: k,

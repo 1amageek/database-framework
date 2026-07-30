@@ -437,7 +437,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             switch scanRange {
             case .exactMatch(let begin, let end, let valueSubspace):
                 // Apply limit pushdown to reduce server-side work
-                let sequence = try await transaction.collectRange(
+                let sequence = try await TransactionRangeCollection.collect(using: transaction,
                     from: KeySelector.firstGreaterOrEqual(begin),
                     to: KeySelector.firstGreaterOrEqual(end),
                     limit: limit ?? 0,  // 0 = unlimited in FDB
@@ -456,7 +456,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
             case .range(let begin, let end, let baseSubspace, let keyPathsCount):
                 // Apply limit pushdown to reduce server-side work
-                let sequence = try await transaction.collectRange(
+                let sequence = try await TransactionRangeCollection.collect(using: transaction,
                     from: KeySelector.firstGreaterOrEqual(begin),
                     to: KeySelector.firstGreaterOrEqual(end),
                     limit: limit ?? 0,  // 0 = unlimited in FDB
@@ -1107,7 +1107,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         switch scanRange {
         case .exactMatch(let begin, let end, let valueSubspace):
-            let sequence = try await transaction.collectRange(
+            let sequence = try await TransactionRangeCollection.collect(using: transaction,
                 from: KeySelector.firstGreaterOrEqual(begin),
                 to: KeySelector.firstGreaterOrEqual(end),
                 limit: storageLimit ?? 0,
@@ -1126,7 +1126,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             }
 
         case .range(let begin, let end, let baseSubspace, let keyPathsCount):
-            let sequence = try await transaction.collectRange(
+            let sequence = try await TransactionRangeCollection.collect(using: transaction,
                 from: KeySelector.firstGreaterOrEqual(begin),
                 to: KeySelector.firstGreaterOrEqual(end),
                 limit: storageLimit ?? 0,
@@ -1380,7 +1380,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let (begin, end) = typeSubspace.range()
 
         var count = 0
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: KeySelector.firstGreaterOrEqual(begin),
             to: KeySelector.firstGreaterOrEqual(end),
             limit: 0,
@@ -1442,7 +1442,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
 
         var count = 0
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: KeySelector.firstGreaterOrEqual(beginKey),
             to: KeySelector.firstGreaterOrEqual(endKey),
             limit: 0,
@@ -1513,7 +1513,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         return try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
-            let sequence = try await transaction.collectRange(
+            let sequence = try await TransactionRangeCollection.collect(using: transaction,
                 from: KeySelector.firstGreaterOrEqual(beginKey),
                 to: KeySelector.firstGreaterOrEqual(endKey),
                 limit: 0,
@@ -1536,7 +1536,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         return try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
-            let sequence = try await transaction.collectRange(
+            let sequence = try await TransactionRangeCollection.collect(using: transaction,
                 from: KeySelector.firstGreaterOrEqual(begin),
                 to: KeySelector.firstGreaterOrEqual(end),
                 limit: 0,
@@ -1614,9 +1614,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let startTime = container.monotonicClock.now
 
         do {
-            let mutations = models.map {
+            let mutations = try models.map {
                 PersistableMutation.save(
-                    model: $0,
+                    identity: try EntityReferenceEncoder.encode($0),
+                    model: try PersistedModel($0),
                     precondition: .none
                 )
             }
@@ -1652,9 +1653,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let startTime = container.monotonicClock.now
 
         do {
-            let mutations = models.map {
+            let mutations = try models.map {
                 PersistableMutation.delete(
-                    model: $0,
+                    identity: try EntityReferenceEncoder.encode($0),
+                    model: try PersistedModel($0),
                     precondition: .exists
                 )
             }
@@ -1692,8 +1694,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     /// Execute a batch of saves and deletes in a single transaction
     package func executeBatch(
-        inserts: [any Persistable],
-        deletes: [any Persistable]
+        inserts: [PersistedModel],
+        deletes: [PersistedModel]
     ) async throws {
         let startTime = container.monotonicClock.now
 
@@ -1701,13 +1703,23 @@ package final class DatabaseDataStore: DataStore, Sendable {
             var mutations: [PersistableMutation] = []
             mutations.reserveCapacity(inserts.count + deletes.count)
             for model in inserts {
+                let runtime = try runtime(for: model.entity)
                 mutations.append(
-                    .save(model: model, precondition: .none)
+                    .save(
+                        identity: try runtime.identity(for: model),
+                        model: model,
+                        precondition: .none
+                    )
                 )
             }
             for model in deletes {
+                let runtime = try runtime(for: model.entity)
                 mutations.append(
-                    .delete(model: model, precondition: .exists)
+                    .delete(
+                        identity: try runtime.identity(for: model),
+                        model: model,
+                        precondition: .exists
+                    )
                 )
             }
             let capturedMutations = mutations
@@ -1738,19 +1750,18 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Saves one persisted model through the complete security and maintenance
     /// pipeline of the caller's logical transaction.
     func save(
-        _ model: any Persistable,
+        _ model: PersistedModel,
+        identity: EntityReference,
         precondition: WritePrecondition,
         transaction: any TransactionAccess
     ) async throws -> PersistableWriteResult {
-        let modelType = type(of: model)
-        let persistableType = modelType.persistableType
-        guard let runtime = container.runtimeConfiguration.entityRuntimes
-            .registration(named: persistableType) else {
-            throw DatabaseRuntimeConfigurationError.missingCompiledEntityType(
-                entityName: persistableType
-            )
-        }
-        let idTuple = try PersistableIdentifierKeyCodec.tuple(for: model)
+        let persistableType = model.entity
+        let runtime = try runtime(for: persistableType)
+        let canonicalModel = try runtime.canonicalized(model)
+        let idTuple = try PersistableIdentifierKeyCodec.tuple(
+            for: identity,
+            expectedType: runtime.entity.identifierType
+        )
 
         let key = itemKey(for: persistableType, id: idTuple)
 
@@ -1760,13 +1771,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             blobsSubspace: self.blobsSubspace
         )
 
-        let canonicalModel = try PersistedModel(
-            entity: persistableType,
-            fields: model.persistedFields()
-        )
-
         // Load the persisted value for security evaluation and index maintenance.
-        var oldModel: (any Persistable)?
         var oldCanonicalModel: PersistedModel?
         let existingRowPresent: Bool
 
@@ -1775,9 +1780,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 oldData,
                 expectedEntity: persistableType
             )
-            let persistedModel = try runtime.decode(previousCanonicalModel)
-            oldCanonicalModel = previousCanonicalModel
-            oldModel = persistedModel
+            oldCanonicalModel = try runtime.canonicalized(previousCanonicalModel)
             try securityDelegate?.evaluateUpdate(
                 previousCanonicalModel,
                 newResource: canonicalModel
@@ -1793,9 +1796,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         try Self.evaluateWritePrecondition(
             precondition,
             existingRowPresent: existingRowPresent,
-            currentVersion: existingRowPresent ? oldModel.map(Self.entityVersionDigest) : nil,
-            typeName: persistableType,
-            idDescription: DatabaseTextFormatting.lowercaseHex(idTuple.pack())
+            currentVersion: try oldCanonicalModel.map(Self.entityVersionDigest),
+            identity: identity
         )
 
         let data = try PersistableStorageCodec.encode(canonicalModel)
@@ -1811,8 +1813,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
             transaction: transaction
         )
         return PersistableWriteResult(
-            model: model,
-            previousModel: oldModel,
             canonicalModel: canonicalModel,
             previousCanonicalModel: oldCanonicalModel,
             encodedValue: data,
@@ -1832,8 +1832,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         _ precondition: WritePrecondition,
         existingRowPresent: Bool,
         currentVersion: ByteString?,
-        typeName: String,
-        idDescription: String
+        identity: EntityReference
     ) throws {
         switch precondition {
         case .none:
@@ -1841,8 +1840,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         case .notExists:
             if existingRowPresent {
                 throw DatabaseContextError.preconditionFailed(
-                    typeName: typeName,
-                    idDescription: idDescription,
+                    identity: identity,
                     precondition: precondition,
                     reason: "row already exists"
                 )
@@ -1850,8 +1848,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         case .exists:
             if !existingRowPresent {
                 throw DatabaseContextError.preconditionFailed(
-                    typeName: typeName,
-                    idDescription: idDescription,
+                    identity: identity,
                     precondition: precondition,
                     reason: "row not found"
                 )
@@ -1859,16 +1856,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
         case .matchesStored(let version):
             guard let currentVersion else {
                 throw DatabaseContextError.preconditionFailed(
-                    typeName: typeName,
-                    idDescription: idDescription,
+                    identity: identity,
                     precondition: precondition,
                     reason: "row not found"
                 )
             }
             if currentVersion != version {
                 throw DatabaseContextError.preconditionFailed(
-                    typeName: typeName,
-                    idDescription: idDescription,
+                    identity: identity,
                     precondition: precondition,
                     reason: "entity version changed"
                 )
@@ -1877,8 +1872,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             guard let currentVersion else { return }
             if currentVersion != version {
                 throw DatabaseContextError.preconditionFailed(
-                    typeName: typeName,
-                    idDescription: idDescription,
+                    identity: identity,
                     precondition: precondition,
                     reason: "entity version changed"
                 )
@@ -1887,27 +1881,25 @@ package final class DatabaseDataStore: DataStore, Sendable {
     }
 
     private static func entityVersionDigest(
-        for model: any Persistable
+        for model: PersistedModel
     ) throws -> ByteString {
-        let fields = try model.persistedFields()
-        return try PersistableVersionTokenCodec.digest(fields: fields)
+        try PersistableVersionTokenCodec.digest(fields: model.fields)
     }
 
     /// Deletes the currently persisted value and its physical indexes.
     /// A missing value produces no mutation.
     func delete(
-        _ model: any Persistable,
+        _ model: PersistedModel,
+        identity: EntityReference,
         precondition: WritePrecondition,
         transaction: any TransactionAccess
-    ) async throws -> (any Persistable)? {
-        let persistableType = type(of: model).persistableType
-        guard let runtime = container.runtimeConfiguration.entityRuntimes
-            .registration(named: persistableType) else {
-            throw DatabaseRuntimeConfigurationError.missingCompiledEntityType(
-                entityName: persistableType
-            )
-        }
-        let idTuple = try PersistableIdentifierKeyCodec.tuple(for: model)
+    ) async throws -> PersistedModel? {
+        let persistableType = model.entity
+        let runtime = try runtime(for: persistableType)
+        let idTuple = try PersistableIdentifierKeyCodec.tuple(
+            for: identity,
+            expectedType: runtime.entity.identifierType
+        )
         let key = itemKey(for: persistableType, id: idTuple)
         let storage = container.itemStorageFactory.make(
             transaction: transaction,
@@ -1918,10 +1910,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 precondition,
                 existingRowPresent: false,
                 currentVersion: nil,
-                typeName: persistableType,
-                idDescription: DatabaseTextFormatting.lowercaseHex(
-                    idTuple.pack()
-                )
+                identity: identity
             )
             return nil
         }
@@ -1929,13 +1918,12 @@ package final class DatabaseDataStore: DataStore, Sendable {
             existingData,
             expectedEntity: persistableType
         )
-        let persistedModel = try runtime.decode(canonicalModel)
+        let persistedModel = try runtime.canonicalized(canonicalModel)
         try Self.evaluateWritePrecondition(
             precondition,
             existingRowPresent: true,
             currentVersion: try Self.entityVersionDigest(for: persistedModel),
-            typeName: persistableType,
-            idDescription: DatabaseTextFormatting.lowercaseHex(idTuple.pack())
+            identity: identity
         )
         try securityDelegate?.evaluateDelete(canonicalModel)
         try await indexMaintenanceService.updateIndexesUntyped(
@@ -1947,6 +1935,18 @@ package final class DatabaseDataStore: DataStore, Sendable {
         )
         try await storage.delete(for: key)
         return persistedModel
+    }
+
+    private func runtime(
+        for entity: String
+    ) throws -> EntityRuntimeRegistration {
+        guard let runtime = container.runtimeConfiguration.entityRuntimes
+            .registration(named: entity) else {
+            throw DatabaseRuntimeConfigurationError.missingCompiledEntityType(
+                entityName: entity
+            )
+        }
+        return runtime
     }
 
     // MARK: - Predicate Evaluation

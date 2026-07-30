@@ -4,12 +4,12 @@ public struct DatabaseWriteCommandRegistry: Sendable {
     private let commands: [AnyDatabaseWriteCommand]
 
     public init(commands: [AnyDatabaseWriteCommand]) throws {
-        try Self.validate(commands.map(\.identifier))
+        try Self.validate(commands.map { $0.identifier })
         self.commands = commands.sorted { $0.identifier < $1.identifier }
     }
 
     public var identifiers: [CommandIdentifier] {
-        commands.map(\.identifier)
+        commands.map { $0.identifier }
     }
 
     public func merging(

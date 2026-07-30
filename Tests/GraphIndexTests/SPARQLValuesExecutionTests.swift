@@ -5,6 +5,7 @@ import GraphIndex
 import DatabaseKit
 import StorageKit
 import Testing
+import TestSupport
 
 @Suite("SPARQL VALUES execution")
 struct SPARQLValuesExecutionTests {
@@ -22,13 +23,15 @@ struct SPARQLValuesExecutionTests {
         )
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
             pattern: pattern,
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: ExecutionBudget()
+                budget: ExecutionBudget(),
+                monotonicClock: TestProcessMonotonicClock()
             )
         )
 
@@ -52,13 +55,15 @@ struct SPARQLValuesExecutionTests {
         )
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
             pattern: pattern,
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: ExecutionBudget()
+                budget: ExecutionBudget(),
+                monotonicClock: TestProcessMonotonicClock()
             )
         )
 
@@ -81,9 +86,10 @@ struct SPARQLValuesExecutionTests {
         )
         let executor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             sources: []
         )
-        let meter = DatabaseWorkMeter(budget: ExecutionBudget())
+        let meter = DatabaseWorkMeter(budget: ExecutionBudget(), monotonicClock: TestProcessMonotonicClock())
 
         let (present, _) = try await executor.execute(
             pattern: .filter(
@@ -102,7 +108,8 @@ struct SPARQLValuesExecutionTests {
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: ExecutionBudget()
+                budget: ExecutionBudget(),
+                monotonicClock: TestProcessMonotonicClock()
             )
         )
 
@@ -121,13 +128,15 @@ struct SPARQLValuesExecutionTests {
 
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
             pattern: pattern,
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: ExecutionBudget()
+                budget: ExecutionBudget(),
+                monotonicClock: TestProcessMonotonicClock()
             )
         )
 
@@ -146,13 +155,15 @@ struct SPARQLValuesExecutionTests {
 
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
             pattern: pattern,
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: ExecutionBudget()
+                budget: ExecutionBudget(),
+                monotonicClock: TestProcessMonotonicClock()
             )
         )
 
@@ -173,13 +184,15 @@ struct SPARQLValuesExecutionTests {
 
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
             pattern: pattern,
             limit: nil,
             offset: 0,
             workMeter: DatabaseWorkMeter(
-                budget: ExecutionBudget()
+                budget: ExecutionBudget(),
+                monotonicClock: TestProcessMonotonicClock()
             )
         )
 
@@ -207,6 +220,7 @@ struct SPARQLValuesExecutionTests {
 
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
             pattern: pattern,
@@ -217,7 +231,8 @@ struct SPARQLValuesExecutionTests {
                     maximumRows: UInt32(rowCount),
                     maximumWorkUnits: 100_000,
                     timeoutMilliseconds: 30_000
-                )
+                ),
+                monotonicClock: TestProcessMonotonicClock()
             )
         )
 

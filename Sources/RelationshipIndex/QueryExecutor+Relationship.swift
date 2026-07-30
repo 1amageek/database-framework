@@ -105,18 +105,15 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
             relatedType: Related.self,
             cardinality: .toMany
         ) { models in
-            var typed: [Related] = []
-            typed.reserveCapacity(models.count)
             for model in models {
-                guard let related = model as? Related else {
+                guard model.entity == Related.persistableType else {
                     throw RelationshipReferenceError.loadedTypeMismatch(
                         expected: Related.persistableType,
-                        actual: type(of: model).persistableType
+                        actual: model.entity
                     )
                 }
-                typed.append(related)
             }
-            return .toMany(typed)
+            return .toMany(models)
         }
     }
 
@@ -137,11 +134,12 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
             var seenIdentities = Set<EntityReference>()
 
             for model in models {
+                let persistedModel = try PersistedModel(model)
                 var modelReferences: [[EntityReference]] = []
                 modelReferences.reserveCapacity(joins.count)
                 for join in joins {
                     let references = try resolver.orderedReferences(
-                        from: model,
+                        from: persistedModel,
                         descriptor: join.descriptor
                     )
                     modelReferences.append(references)
@@ -152,7 +150,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
                 referencesByModel.append(modelReferences)
             }
 
-            var loadedByIdentity: [EntityReference: any Persistable] = [:]
+            var loadedByIdentity: [EntityReference: PersistedModel] = [:]
             loadedByIdentity.reserveCapacity(orderedIdentities.count)
             for identity in orderedIdentities {
                 if let loaded = try await transaction.fetchPersistedModel(
@@ -196,7 +194,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
         fieldName: String,
         relatedType: Related.Type,
         cardinality: RelationshipCardinality,
-        assemble: @escaping @Sendable ([any Persistable]) throws -> LoadedRelationship
+        assemble: @escaping @Sendable ([PersistedModel]) throws -> LoadedRelationship
     ) throws -> RelationshipQueryExecutor<Model> {
         let matching = Model.relationshipDescriptors.filter {
             $0.propertyName == fieldName
@@ -228,23 +226,23 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
 
 private struct RelationshipJoin<Model: Persistable>: Sendable {
     let descriptor: RelationshipDescriptor
-    let assemble: @Sendable ([any Persistable]) throws -> LoadedRelationship
+    let assemble: @Sendable ([PersistedModel]) throws -> LoadedRelationship
 }
 
 private func castToOne<Related: Persistable>(
-    _ models: [any Persistable],
+    _ models: [PersistedModel],
     as relatedType: Related.Type
-) throws -> Related? {
+) throws -> PersistedModel? {
     guard let first = models.first else {
         return nil
     }
-    guard models.count == 1, let related = first as? Related else {
+    guard models.count == 1, first.entity == Related.persistableType else {
         throw RelationshipReferenceError.loadedTypeMismatch(
             expected: Related.persistableType,
-            actual: type(of: first).persistableType
+            actual: first.entity
         )
     }
-    return related
+    return first
 }
 
 extension QueryExecutor {

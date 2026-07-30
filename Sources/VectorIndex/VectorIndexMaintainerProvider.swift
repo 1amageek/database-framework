@@ -14,11 +14,16 @@ public struct VectorIndexMaintainerProvider: IndexMaintainerProvider {
     }
 
     private let graphCache: HNSWGraphCache
+    private let graphResourceLimits: HNSWGraphResourceLimits
 
-    public init(maximumGraphCacheCost: Int = 64 * 1024 * 1024) {
+    public init(
+        maximumGraphCacheCost: Int = 64 * 1024 * 1024,
+        graphResourceLimits: HNSWGraphResourceLimits = .default
+    ) {
         self.graphCache = HNSWGraphCache(
             maximumCost: maximumGraphCacheCost
         )
+        self.graphResourceLimits = graphResourceLimits
     }
 
     public func makeIndexMaintainer<Item: Persistable>(
@@ -34,7 +39,8 @@ public struct VectorIndexMaintainerProvider: IndexMaintainerProvider {
             subspace: subspace,
             idExpression: idExpression,
             configurations: configurations,
-            graphCache: graphCache
+            graphCache: graphCache,
+            graphResourceLimits: graphResourceLimits
         )
     }
 }

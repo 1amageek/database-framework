@@ -93,22 +93,19 @@ struct IndexRebuildConsistencyTests {
 
     // MARK: - Setup
 
-    private func setupContainer(_ types: [any Persistable.Type]) async throws -> DBContainer {
+    private func setupContainer<Model: Persistable>(
+        _ type: Model.Type
+    ) async throws -> DBContainer {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        var entities: [Schema.Entity] = []
-        entities.reserveCapacity(types.count)
-        for type in types {
-            entities.append(try type.schemaEntity)
-        }
         let schema = try Schema(
-            entities: entities,
+            entities: [try Model.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
         return try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [RebuildScalarUser.self, RebuildTripleStatement.self, RebuildEdge.self, RebuildArticle.self, RebuildCountItem.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(RebuildScalarUser.self), try DatabaseFrameworkRuntime.entity(RebuildTripleStatement.self), try DatabaseFrameworkRuntime.entity(RebuildEdge.self), try DatabaseFrameworkRuntime.entity(RebuildArticle.self), try DatabaseFrameworkRuntime.entity(RebuildCountItem.self)]),
             security: .disabled
             )
     }
@@ -156,7 +153,7 @@ struct IndexRebuildConsistencyTests {
     @Test("ScalarIndex: rebuild produces same subspace layout as save-time")
     func scalarSubspaceLayout() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildScalarUser.self])
+            let container = try await setupContainer(RebuildScalarUser.self)
             try await cleanup(container: container, path: ["test", "rebuild", "scalar"])
 
 
@@ -188,7 +185,7 @@ struct IndexRebuildConsistencyTests {
     @Test("GraphIndex tripleStore: rebuild produces same subspace layout as save-time")
     func graphTripleStoreSubspaceLayout() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildTripleStatement.self])
+            let container = try await setupContainer(RebuildTripleStatement.self)
             try await cleanup(container: container, path: ["test", "rebuild", "triple"])
 
 
@@ -219,7 +216,7 @@ struct IndexRebuildConsistencyTests {
     @Test("GraphIndex adjacency: rebuild produces same subspace layout as save-time")
     func graphAdjacencySubspaceLayout() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildEdge.self])
+            let container = try await setupContainer(RebuildEdge.self)
             try await cleanup(container: container, path: ["test", "rebuild", "edge"])
 
 
@@ -250,7 +247,7 @@ struct IndexRebuildConsistencyTests {
     @Test("FullTextIndex: rebuild produces same subspace layout as save-time")
     func fullTextSubspaceLayout() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildArticle.self])
+            let container = try await setupContainer(RebuildArticle.self)
             try await cleanup(container: container, path: ["test", "rebuild", "fulltext"])
 
 
@@ -281,7 +278,7 @@ struct IndexRebuildConsistencyTests {
     @Test("CountIndex: rebuild produces same subspace layout as save-time")
     func countSubspaceLayout() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildCountItem.self])
+            let container = try await setupContainer(RebuildCountItem.self)
             try await cleanup(container: container, path: ["test", "rebuild", "count"])
 
 
@@ -315,7 +312,7 @@ struct IndexRebuildConsistencyTests {
     @Test("ScalarIndex: rebuild entries are queryable")
     func scalarRoundTrip() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildScalarUser.self])
+            let container = try await setupContainer(RebuildScalarUser.self)
             try await cleanup(container: container, path: ["test", "rebuild", "scalar"])
 
 
@@ -341,7 +338,7 @@ struct IndexRebuildConsistencyTests {
     @Test("GraphIndex tripleStore: rebuild entries are queryable")
     func graphTripleStoreRoundTrip() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildTripleStatement.self])
+            let container = try await setupContainer(RebuildTripleStatement.self)
             try await cleanup(container: container, path: ["test", "rebuild", "triple"])
 
 
@@ -390,7 +387,7 @@ struct IndexRebuildConsistencyTests {
     @Test("GraphIndex adjacency: rebuild entries are queryable via graph builder")
     func graphAdjacencyRoundTrip() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildEdge.self])
+            let container = try await setupContainer(RebuildEdge.self)
             try await cleanup(container: container, path: ["test", "rebuild", "edge"])
 
 
@@ -424,7 +421,7 @@ struct IndexRebuildConsistencyTests {
     @Test("FullTextIndex: rebuild entries are searchable")
     func fullTextRoundTrip() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildArticle.self])
+            let container = try await setupContainer(RebuildArticle.self)
             try await cleanup(container: container, path: ["test", "rebuild", "fulltext"])
 
 
@@ -463,7 +460,7 @@ struct IndexRebuildConsistencyTests {
     @Test("CountIndex: rebuild entries are queryable")
     func countRoundTrip() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildCountItem.self])
+            let container = try await setupContainer(RebuildCountItem.self)
             try await cleanup(container: container, path: ["test", "rebuild", "count"])
 
 
@@ -491,7 +488,7 @@ struct IndexRebuildConsistencyTests {
     @Test("AdminContext state changes visible to IndexLifecycleStore")
     func adminContextStateVisibleToFDBDataStore() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildScalarUser.self])
+            let container = try await setupContainer(RebuildScalarUser.self)
             try await cleanup(container: container, path: ["test", "rebuild", "scalar"])
 
 
@@ -521,7 +518,7 @@ struct IndexRebuildConsistencyTests {
     @Test("Insert after rebuild correctly maintains index")
     func insertAfterRebuildMaintainsIndex() async throws {
         try await FoundationDBScenarioEnvironment.shared.withSerializedAccess {
-            let container = try await setupContainer([RebuildTripleStatement.self])
+            let container = try await setupContainer(RebuildTripleStatement.self)
             try await cleanup(container: container, path: ["test", "rebuild", "triple"])
 
 

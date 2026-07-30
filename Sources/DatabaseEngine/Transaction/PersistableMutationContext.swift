@@ -31,7 +31,7 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
 
     public func fetch(
         _ identity: EntityReference
-    ) async throws -> (any Persistable)? {
+    ) async throws -> PersistedModel? {
         try await perform {
             try await transaction.fetchPersistedModel(
                 identifiedBy: identity,
@@ -40,22 +40,6 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
         }
     }
 
-    public func save(
-        _ model: any Persistable,
-        precondition: WritePrecondition = .none
-    ) async throws {
-        try await perform {
-            try await transaction.savePersistedModel(
-                model,
-                precondition: precondition,
-                within: operationID
-            )
-        }
-    }
-
-    /// Saves a heterogeneous canonical model through its statically registered
-    /// entity runtime. Relationship and graph maintainers use this boundary to
-    /// avoid reopening an existential metatype inside Embedded Swift.
     public func save(
         _ model: PersistedModel,
         precondition: WritePrecondition = .none
@@ -69,8 +53,20 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
         }
     }
 
+    /// Saves a statically typed model through the same canonical transaction
+    /// boundary used by heterogeneous mutation maintainers.
+    public func save<Model: Persistable>(
+        _ model: Model,
+        precondition: WritePrecondition = .none
+    ) async throws {
+        try await save(
+            PersistedModel(model),
+            precondition: precondition
+        )
+    }
+
     public func delete(
-        _ model: any Persistable,
+        _ model: PersistedModel,
         precondition: WritePrecondition = .exists
     ) async throws {
         try await perform {
@@ -80,6 +76,18 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
                 within: operationID
             )
         }
+    }
+
+    /// Deletes a statically typed model through the same canonical transaction
+    /// boundary used by heterogeneous mutation maintainers.
+    public func delete<Model: Persistable>(
+        _ model: Model,
+        precondition: WritePrecondition = .exists
+    ) async throws {
+        try await delete(
+            PersistedModel(model),
+            precondition: precondition
+        )
     }
 
     public func isDeletionScheduled(

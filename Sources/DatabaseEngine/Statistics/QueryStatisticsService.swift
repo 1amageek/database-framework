@@ -563,7 +563,7 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
 
             let (beginKey, endKey) = indexSubspace.range()
 
-            for (key, _) in try await transaction.collectRange(from: .firstGreaterOrEqual(beginKey), to: .firstGreaterOrEqual(endKey), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
+            for (key, _) in try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(beginKey), to: .firstGreaterOrEqual(endKey), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
                 let (nextCount, overflow) = entryCount.addingReportingOverflow(1)
                 guard !overflow else {
                     throw StatisticsCollectionError.entryCountOverflow(

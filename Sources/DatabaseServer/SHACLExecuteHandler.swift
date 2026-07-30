@@ -1,3 +1,4 @@
+import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 

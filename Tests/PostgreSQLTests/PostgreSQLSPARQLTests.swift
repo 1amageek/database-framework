@@ -5,6 +5,7 @@
 // Validates graph index + SPARQL query execution with StaticDirectoryService.
 
 import Testing
+import DatabaseRuntime
 import Foundation
 import StorageKit
 import PostgreSQLStorage
@@ -44,7 +45,7 @@ struct PostgreSQLSPARQLTests {
 
     private func setupContainer() async throws -> DBContainer {
         let schema = try Schema(entities: [try PGStatement.schemaEntity], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGStatement.self])
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStatement.self)])
     }
 
     private func makeScenario() async throws -> (DBContainer, DatabaseContext) {

@@ -2,6 +2,7 @@ import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 import DatabaseKit
+import StorageKit
 
 public struct QueryExecuteHandler: DatabaseOperationHandler {
     public typealias Operation = QueryExecuteOperation
@@ -24,7 +25,10 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             milliseconds: request.budget.timeoutMilliseconds,
             clock: context.container.monotonicClock
         ) {
-            let workMeter = DatabaseWorkMeter(budget: request.budget)
+            let workMeter = DatabaseWorkMeter(
+                budget: request.budget,
+                monotonicClock: context.container.monotonicClock
+            )
             let admittedStatement = try DatabaseStatementAdmission(
                 structuralLimits: runtimeLimits.queryStructuralLimits
             ).admit(
@@ -108,7 +112,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             execution: try readExecution(
                 for: request,
                 workMeter: workMeter,
-                structuralLimits: structuralLimits
+                structuralLimits: structuralLimits,
+                monotonicClock: context.container.monotonicClock
             ),
             graphPartitions: request.graphPartitions
         )
@@ -141,14 +146,16 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 "SPARQL source executor is not registered"
             )
         }
-        let response = try await context.container.engine.withTransaction(
-            configuration: .default
+        let response = try await context.container.transactionExecutor.withTransaction(
+            configuration: .default,
+            clock: context.container.monotonicClock
         ) { transaction in
             try await executor.executeAskInTransaction(
                 context: context.container.newContext(),
                 askQuery: query,
                 options: ReadExecutionContext(
                     options: ReadExecutionOptions(budget: request.budget),
+                    monotonicClock: context.container.monotonicClock,
                     workMeter: workMeter,
                     queryStructuralLimits: structuralLimits
                 ),
@@ -163,7 +170,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
     private static func readExecution(
         for request: QueryExecuteOperation.Request,
         workMeter: DatabaseWorkMeter,
-        structuralLimits: QueryStructuralLimits
+        structuralLimits: QueryStructuralLimits,
+        monotonicClock: any StorageMonotonicClock
     ) throws -> ReadExecutionContext {
         let continuation: QueryContinuation?
         if let bytes = request.page.continuation {
@@ -190,6 +198,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 budget: request.budget,
                 continuationScope: try continuationScope(for: request)
             ),
+            monotonicClock: monotonicClock,
             workMeter: workMeter,
             queryStructuralLimits: structuralLimits
         )
@@ -231,7 +240,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     columnNames: columnNames
                 )
             },
-            continuation: response.continuation.map(\.bytes),
+            continuation: response.continuation.map { $0.bytes },
             snapshotVersion: snapshotVersion
         )
     }

@@ -64,8 +64,8 @@ struct PropertyPathTests {
         )
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [EdgeForPropertyPath.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForPropertyPath.self)]),
             security: .disabled,
         )
     }

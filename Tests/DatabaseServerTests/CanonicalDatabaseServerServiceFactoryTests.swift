@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
@@ -16,9 +17,9 @@ struct CanonicalDatabaseServerServiceFactoryTests {
                 entities: [try DatabaseGraphSourceEdge.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseGraphSourceEdge.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphSourceEdge.self)]
             ),
             security: .disabled
         )

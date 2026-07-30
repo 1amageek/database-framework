@@ -118,7 +118,7 @@ public final class RequestSecurityPolicyDelegate:
         let handler = try registeredHandler(
             operation: .get,
             entity: entity,
-            resourceID: nil
+            resource: nil
         )
         let decision = try handler.permitsRead(resource, context: context)
         guard decision.isPermitted else {
@@ -126,7 +126,7 @@ public final class RequestSecurityPolicyDelegate:
                 operation: .get,
                 entity: entity,
                 reason: "The registered policy denied the read",
-                resourceID: decision.resourceID
+                resource: decision.resource
             )
         }
     }
@@ -141,7 +141,7 @@ public final class RequestSecurityPolicyDelegate:
         let handler = try registeredHandler(
             operation: .create,
             entity: entity,
-            resourceID: nil
+            resource: nil
         )
         let decision = try handler.permitsCreate(resource, context: context)
         guard decision.isPermitted else {
@@ -149,7 +149,7 @@ public final class RequestSecurityPolicyDelegate:
                 operation: .create,
                 entity: entity,
                 reason: "The registered policy denied the create",
-                resourceID: decision.resourceID
+                resource: decision.resource
             )
         }
     }
@@ -165,7 +165,7 @@ public final class RequestSecurityPolicyDelegate:
         let handler = try registeredHandler(
             operation: .update,
             entity: entity,
-            resourceID: nil
+            resource: nil
         )
         let decision = try handler.permitsUpdate(
             from: resource,
@@ -177,7 +177,7 @@ public final class RequestSecurityPolicyDelegate:
                 operation: .update,
                 entity: entity,
                 reason: "The registered policy denied the update",
-                resourceID: decision.resourceID
+                resource: decision.resource
             )
         }
     }
@@ -192,7 +192,7 @@ public final class RequestSecurityPolicyDelegate:
         let handler = try registeredHandler(
             operation: .delete,
             entity: entity,
-            resourceID: nil
+            resource: nil
         )
         let decision = try handler.permitsDelete(resource, context: context)
         guard decision.isPermitted else {
@@ -200,7 +200,7 @@ public final class RequestSecurityPolicyDelegate:
                 operation: .delete,
                 entity: entity,
                 reason: "The registered policy denied the delete",
-                resourceID: decision.resourceID
+                resource: decision.resource
             )
         }
     }
@@ -221,14 +221,14 @@ public final class RequestSecurityPolicyDelegate:
     private func registeredHandler(
         operation: SecurityError.Operation,
         entity: String,
-        resourceID: String? = nil
+        resource: EntityReference? = nil
     ) throws -> AuthorizationPolicyHandler {
         guard let handler = policies.handler(for: entity) else {
             throw denial(
                 operation: operation,
                 entity: entity,
                 reason: "No authorization policy is registered for the entity",
-                resourceID: resourceID
+                resource: resource
             )
         }
         return handler
@@ -238,13 +238,13 @@ public final class RequestSecurityPolicyDelegate:
         operation: SecurityError.Operation,
         entity: String,
         reason: String,
-        resourceID: String? = nil
+        resource: EntityReference? = nil
     ) -> SecurityError {
         SecurityError(
             operation: operation,
             targetType: entity,
             reason: reason,
-            resourceID: resourceID,
+            resource: resource,
             userID: userID
         )
     }

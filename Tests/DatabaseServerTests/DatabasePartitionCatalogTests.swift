@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
 import DatabaseTypes
@@ -109,9 +110,9 @@ struct DatabasePartitionCatalogTests {
                 entities: [try CatalogPartitionedEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [CatalogPartitionedEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .disabled
         )

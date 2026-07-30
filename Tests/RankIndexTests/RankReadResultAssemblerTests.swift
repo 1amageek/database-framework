@@ -53,14 +53,16 @@ struct RankReadResultAssemblerTests {
         )
         let entities = [
             PolymorphicEntity(
-                item: second,
+                item: try PersistedModel(second),
                 typeName: RankReadEntity.persistableType,
-                typeCode: typeCode
+                typeCode: typeCode,
+                polymorphicIdentifier: Tuple(typeCode, second.id)
             ),
             PolymorphicEntity(
-                item: first,
+                item: try PersistedModel(first),
                 typeName: RankReadEntity.persistableType,
-                typeCode: typeCode
+                typeCode: typeCode,
+                polymorphicIdentifier: Tuple(typeCode, first.id)
             )
         ]
 
@@ -72,9 +74,11 @@ struct RankReadResultAssemblerTests {
             entities: entities
         )
 
-        let identifiers = results.map { $0.entity.item.id as? String }
+        let identifiers = try results.map {
+            try $0.entity.item.decode(as: RankReadEntity.self).id
+        }
         #expect(identifiers == ["first", "second"])
-        #expect(results.map(\.rank) == [0, 1])
+        #expect(results.map { $0.rank } == [0, 1])
     }
 }
 

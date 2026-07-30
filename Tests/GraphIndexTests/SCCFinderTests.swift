@@ -54,9 +54,9 @@ struct SCCFinderTests {
         )
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
+            configuration: .testing(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [EdgeForSCC.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForSCC.self)]
             ),
             security: .disabled
         )
@@ -416,9 +416,9 @@ struct GraphEdgeScannerBatchTests {
         )
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
+            configuration: .testing(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [EdgeForSCC.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForSCC.self)]
             ),
             security: .disabled
         )
@@ -449,11 +449,12 @@ struct GraphEdgeScannerBatchTests {
         for source in Set(sources) {
             grouped[source] = []
         }
-        for try await edge in scanner.batchScanOutgoing(
+        var cursor = scanner.batchScanOutgoing(
             from: sources,
             edgeLabel: edgeLabel,
             transaction: transaction
-        ) {
+        ).makeCursor()
+        while let edge = try await cursor.next() {
             grouped[edge.source, default: []].append(edge)
         }
         return grouped
@@ -469,11 +470,12 @@ struct GraphEdgeScannerBatchTests {
         for target in Set(targets) {
             grouped[target] = []
         }
-        for try await edge in scanner.batchScanIncoming(
+        var cursor = scanner.batchScanIncoming(
             to: targets,
             edgeLabel: edgeLabel,
             transaction: transaction
-        ) {
+        ).makeCursor()
+        while let edge = try await cursor.next() {
             grouped[edge.target, default: []].append(edge)
         }
         return grouped
@@ -516,7 +518,10 @@ struct GraphEdgeScannerBatchTests {
         )
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let grouped = try await database.withTransaction(configuration: .default) { transaction in
+        let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             try await collectOutgoingEdges(
                 scanner: scanner,
                 sources: [a, b, c].map(GraphIdentity.identifier),
@@ -576,7 +581,10 @@ struct GraphEdgeScannerBatchTests {
         )
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let grouped = try await database.withTransaction(configuration: .default) { transaction in
+        let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             try await collectIncomingEdges(
                 scanner: scanner,
                 targets: [a, c, d].map(GraphIdentity.identifier),
@@ -628,7 +636,10 @@ struct GraphEdgeScannerBatchTests {
         )
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let grouped = try await database.withTransaction(configuration: .default) { transaction in
+        let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             try await collectOutgoingEdges(
                 scanner: scanner,
                 sources: [],  // Empty sources
@@ -669,7 +680,10 @@ struct GraphEdgeScannerBatchTests {
         )
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let grouped = try await database.withTransaction(configuration: .default) { transaction in
+        let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             try await collectIncomingEdges(
                 scanner: scanner,
                 targets: [],  // Empty targets
@@ -715,7 +729,10 @@ struct GraphEdgeScannerBatchTests {
         )
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let grouped = try await database.withTransaction(configuration: .default) { transaction in
+        let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             try await collectOutgoingEdges(
                 scanner: scanner,
                 sources: [.identifier(a)],
@@ -763,7 +780,10 @@ struct GraphEdgeScannerBatchTests {
         )
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let grouped = try await database.withTransaction(configuration: .default) { transaction in
+        let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             try await collectOutgoingEdges(
                 scanner: scanner,
                 sources: [.identifier(a)],  // Single node
@@ -808,7 +828,10 @@ struct GraphEdgeScannerBatchTests {
         )
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let grouped = try await database.withTransaction(configuration: .default) { transaction in
+        let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             try await collectOutgoingEdges(
                 scanner: scanner,
                 sources: [a, c].map(GraphIdentity.identifier),  // Include node with no edges

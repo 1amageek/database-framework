@@ -191,7 +191,10 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     func load(_ jobID: DatabaseTypes.UUID) async throws -> DatabasePersistentJobSnapshot? {
-        try await container.engine.withTransaction(configuration: .readOnly) {
+        try await container.transactionExecutor.withTransaction(
+            configuration: .readOnly,
+            clock: container.monotonicClock
+        ) {
             transaction in
             try await load(jobID, transaction: transaction, snapshot: true)
         }
@@ -329,7 +332,10 @@ struct DatabasePersistentJobStore: Sendable {
     func loadResultManifest(
         for snapshot: DatabasePersistentJobSnapshot
     ) async throws -> DatabasePersistentJobResultManifest {
-        try await container.engine.withTransaction(configuration: .readOnly) {
+        try await container.transactionExecutor.withTransaction(
+            configuration: .readOnly,
+            clock: container.monotonicClock
+        ) {
             transaction in
             guard let value = try await transaction.getValue(
                 for: resultManifestKey(snapshot.specification.jobID),
@@ -373,8 +379,9 @@ struct DatabasePersistentJobStore: Sendable {
               Int(index) < manifest.chunkDigests.count else {
             throw DatabaseJobRuntimeError.invalidResultContinuation
         }
-        return try await container.engine.withTransaction(
-            configuration: .readOnly
+        return try await container.transactionExecutor.withTransaction(
+            configuration: .readOnly,
+            clock: container.monotonicClock
         ) { transaction in
             guard let value = try await transaction.getValue(
                 for: resultChunkKey(manifest.jobID, index: index),
@@ -407,14 +414,17 @@ struct DatabasePersistentJobStore: Sendable {
         limit: Int
     ) async throws -> [DatabasePersistentJobDueEntry] {
         guard limit > 0 else { return [] }
-        return try await container.engine.withTransaction(
-            configuration: .readOnly
+        return try await container.transactionExecutor.withTransaction(
+            configuration: .readOnly,
+            clock: container.monotonicClock
         ) { transaction in
             let range = due.range()
-            let entries = try await transaction.collectRange(
-                begin: range.begin,
-                end: range.end,
+            let entries = try await TransactionRangeCollection.collect(
+                using: transaction,
+                from: .firstGreaterOrEqual(range.begin),
+                to: .firstGreaterOrEqual(range.end),
                 limit: limit,
+                reverse: false,
                 snapshot: true,
                 streamingMode: .iterator
             )
@@ -430,13 +440,18 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     func earliestScheduledAt() async throws -> Timestamp? {
-        try await container.engine.withTransaction(configuration: .readOnly) {
+        try await container.transactionExecutor.withTransaction(
+            configuration: .readOnly,
+            clock: container.monotonicClock
+        ) {
             transaction in
             let range = due.range()
-            let entries = try await transaction.collectRange(
-                begin: range.begin,
-                end: range.end,
+            let entries = try await TransactionRangeCollection.collect(
+                using: transaction,
+                from: .firstGreaterOrEqual(range.begin),
+                to: .firstGreaterOrEqual(range.end),
                 limit: 1,
+                reverse: false,
                 snapshot: true,
                 streamingMode: .exact
             )

@@ -274,11 +274,11 @@ struct GraphIndexPerformanceTests {
 
             return try await ctx.database.withTransaction { transaction in
                 let (begin, end) = prefixSubspace.range()
-                var count = 0
-                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                    count += 1
-                }
-                return count
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
             }
         }
 
@@ -326,11 +326,11 @@ struct GraphIndexPerformanceTests {
 
             return try await ctx.database.withTransaction { transaction in
                 let (begin, end) = prefixSubspace.range()
-                var count = 0
-                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                    count += 1
-                }
-                return count
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
             }
         }
 
@@ -501,21 +501,25 @@ struct GraphIndexPerformanceTests {
             }
         }
 
-        var neighborCount = 0
-        let (_, durationMs) = try await measure {
-            neighborCount = 0
+        let (neighborCount, durationMs) = try await measure {
             try await ctx.database.withTransaction { transaction in
                 let traverser = try GraphTraverser(
-                    snapshot: GraphReadSnapshot(transaction: transaction),
+                    snapshot: GraphReadSnapshot(
+                        transaction: transaction,
+                        monotonicClock: TestProcessMonotonicClock()
+                    ),
                     subspace: ctx.indexSubspace
                 )
-                for try await _ in traverser.neighbors(
+                var count = 0
+                var cursor = traverser.neighbors(
                     from: .identifier("user0"),
                     edgeLabel: .identifier("follows"),
                     direction: .outgoing
-                ) {
-                    neighborCount += 1
+                ).makeCursor()
+                while try await cursor.next() != nil {
+                    count += 1
                 }
+                return count
             }
         }
 
@@ -532,14 +536,17 @@ struct GraphIndexPerformanceTests {
         let ctx = try await BenchmarkContext(strategy: .adjacency)
 
         // Create chain: user0 → user1 → user2 → ... → user9
-        var edges: [BenchmarkEdge] = []
-        for i in 0..<9 {
-            edges.append(BenchmarkEdge(source: "user\(i)", target: "user\(i + 1)", label: "follows"))
-        }
-        // Add some branches
-        edges.append(BenchmarkEdge(source: "user1", target: "user10", label: "follows"))
-        edges.append(BenchmarkEdge(source: "user2", target: "user11", label: "follows"))
-        edges.append(BenchmarkEdge(source: "user2", target: "user12", label: "follows"))
+        let edges = (0..<9).map { i in
+            BenchmarkEdge(
+                source: "user\(i)",
+                target: "user\(i + 1)",
+                label: "follows"
+            )
+        } + [
+            BenchmarkEdge(source: "user1", target: "user10", label: "follows"),
+            BenchmarkEdge(source: "user2", target: "user11", label: "follows"),
+            BenchmarkEdge(source: "user2", target: "user12", label: "follows"),
+        ]
 
         try await ctx.database.withTransaction { transaction in
             for edge in edges {
@@ -551,24 +558,28 @@ struct GraphIndexPerformanceTests {
             }
         }
 
-        var nodeCount = 0
-        let (_, durationMs) = try await measure {
-            nodeCount = 0
+        let (nodeCount, durationMs) = try await measure {
             try await ctx.database.withTransaction { transaction in
                 let traverser = try GraphTraverser(
-                    snapshot: GraphReadSnapshot(transaction: transaction),
+                    snapshot: GraphReadSnapshot(
+                        transaction: transaction,
+                        monotonicClock: TestProcessMonotonicClock()
+                    ),
                     subspace: ctx.indexSubspace,
                     configuration: GraphTraverserConfiguration(
                         maximumDepth: 3,
                         maximumNodes: 10_000
                     )
                 )
-                for try await _ in traverser.traverse(
+                var count = 0
+                var cursor = traverser.traverse(
                     from: .identifier("user0"),
                     edgeLabel: .identifier("follows")
-                ) {
-                    nodeCount += 1
+                ).makeCursor()
+                while try await cursor.next() != nil {
+                    count += 1
                 }
+                return count
             }
         }
 
@@ -617,11 +628,11 @@ struct GraphIndexPerformanceTests {
 
             return try await ctx.database.withTransaction { transaction in
                 let (begin, end) = prefixSubspace.range()
-                var count = 0
-                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                    count += 1
-                }
-                return count
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
             }
         }
 

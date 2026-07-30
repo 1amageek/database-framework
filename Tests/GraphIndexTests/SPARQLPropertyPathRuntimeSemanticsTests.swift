@@ -688,8 +688,8 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         )
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [RuntimeSemanticPathEdge.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(RuntimeSemanticPathEdge.self)]),
             security: .disabled
         )
     }
@@ -717,6 +717,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         )
         return SPARQLQueryExecutor(
             database: container.engine,
+            wallClock: FixedTestWallClock(),
             sources: [source],
             ontologyContext: ontologyContext,
             propertyPathConfiguration: configuration
@@ -733,7 +734,8 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         workMeter: DatabaseWorkMeter
     ) {
         let workMeter = DatabaseWorkMeter(
-            budget: ExecutionBudget()
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
         )
         let result = try await executor.execute(
             pattern: pattern,

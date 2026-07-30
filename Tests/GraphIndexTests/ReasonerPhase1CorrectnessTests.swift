@@ -8,6 +8,7 @@
 
 import Testing
 import TestHeartbeat
+import TestSupport
 import Foundation
 import DatabaseKit
 import StorageKit
@@ -304,7 +305,10 @@ struct PropertyChainReachabilityTests {
             object: "ex:Charlie"
         ))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(
+            ontology: ontology,
+            clock: TestProcessMonotonicClock()
+        )
         let reachable = reasoner.reachableIndividuals(
             from: "ex:Alice",
             via: "ex:hasUncle",
@@ -332,7 +336,10 @@ struct PropertyChainReachabilityTests {
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:B", property: "ex:hasSibling", object: "ex:C"))
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:C", property: "ex:hasChild", object: "ex:D"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(
+            ontology: ontology,
+            clock: TestProcessMonotonicClock()
+        )
         let reachable = reasoner.reachableIndividuals(from: "ex:A", via: "ex:hasCousin", includeInferred: true)
 
         #expect(reachable.contains("ex:D"))
@@ -354,7 +361,10 @@ struct PropertyChainReachabilityTests {
         // Alice hasParent Bob, but Bob has no hasBrother
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:Alice", property: "ex:hasParent", object: "ex:Bob"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(
+            ontology: ontology,
+            clock: TestProcessMonotonicClock()
+        )
         let reachable = reasoner.reachableIndividuals(from: "ex:Alice", via: "ex:hasUncle", includeInferred: true)
 
         #expect(reachable.isEmpty)
@@ -379,7 +389,10 @@ struct PropertyChainReachabilityTests {
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:Alice", property: "ex:hasFather", object: "ex:Bob"))
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:Bob", property: "ex:hasBrother", object: "ex:Charlie"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(
+            ontology: ontology,
+            clock: TestProcessMonotonicClock()
+        )
         let reachable = reasoner.reachableIndividuals(from: "ex:Alice", via: "ex:hasUncle", includeInferred: true)
 
         // hasFather is a subProperty of hasParent, so the chain should work
@@ -402,7 +415,10 @@ struct PropertyChainReachabilityTests {
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:Alice", property: "ex:hasParent", object: "ex:Bob"))
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:Bob", property: "ex:hasBrother", object: "ex:Charlie"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(
+            ontology: ontology,
+            clock: TestProcessMonotonicClock()
+        )
         let reachable = reasoner.reachableIndividuals(from: "ex:Alice", via: "ex:hasUncle", includeInferred: false)
 
         // No direct hasUncle assertions

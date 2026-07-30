@@ -15,13 +15,13 @@ public enum PersistableIdentifierKeyCodec {
         )
     }
 
-    public static func tuple(
-        for model: any Persistable,
+    public static func tuple<Model: Persistable>(
+        for model: Model,
         limits: PersistableIdentifierKeyLimits = .default
     ) throws(PersistableIdentifierKeyError) -> Tuple {
         try tuple(
             for: model.persistableIdentifierValue,
-            expectedType: type(of: model).persistableIdentifierType,
+            expectedType: Model.persistableIdentifierType,
             limits: limits
         )
     }

@@ -7,13 +7,13 @@ public enum PolymorphicRowAnnotation {
 }
 
 public struct PolymorphicEntity: Sendable {
-    public let item: any Persistable
+    public let item: PersistedModel
     public let typeName: String
     public let typeCode: Int64
     public let polymorphicIdentifier: Tuple
 
     public init(
-        item: any Persistable,
+        item: PersistedModel,
         typeName: String,
         typeCode: Int64,
         polymorphicIdentifier: Tuple
@@ -81,7 +81,7 @@ extension DatabaseContext {
                     data,
                     expectedEntity: runtime.entity.name
                 )
-                let item = try runtime.decode(persistedModel)
+                let item = try runtime.canonicalized(persistedModel)
                 try self.container.securityDelegate?.evaluateGet(persistedModel)
                 entities.append(
                     PolymorphicEntity(
@@ -130,7 +130,7 @@ extension DatabaseContext {
                     data,
                     expectedEntity: runtime.entity.name
                 )
-                let item = try runtime.decode(persistedModel)
+                let item = try runtime.canonicalized(persistedModel)
                 try self.container.securityDelegate?.evaluateGet(persistedModel)
                 items.append(
                     PolymorphicEntity(

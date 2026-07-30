@@ -34,21 +34,24 @@ struct TransactionMutationJournalTests {
         let insertedIdentity = try EntityReferenceEncoder.encode(initial)
         let deletedIdentity = try EntityReferenceEncoder.encode(deleted)
         let cancelledIdentity = try EntityReferenceEncoder.encode(cancelled)
+        let initialModel = try PersistedModel(initial)
+        let updatedModel = try PersistedModel(updated)
+        let deletedModel = try PersistedModel(deleted)
         var journal = TransactionMutationJournal()
 
         journal.record(
             identity: insertedIdentity,
             previousModel: nil,
-            currentModel: initial
+            currentModel: initialModel
         )
         journal.record(
             identity: insertedIdentity,
-            previousModel: initial,
-            currentModel: updated
+            previousModel: initialModel,
+            currentModel: updatedModel
         )
         journal.record(
             identity: deletedIdentity,
-            previousModel: deleted,
+            previousModel: deletedModel,
             currentModel: nil
         )
         journal.record(
@@ -62,8 +65,9 @@ struct TransactionMutationJournalTests {
         #expect(effects[0].kind == .insert)
         #expect(effects[0].identity == insertedIdentity)
         #expect(
-            (effects[0].model as? TransactionMutationJournalModel)?.revision
-                == 2
+            try effects[0].model?.decode(
+                as: TransactionMutationJournalModel.self
+            ).revision == 2
         )
         #expect(effects[1].kind == .delete)
         #expect(effects[1].identity == deletedIdentity)
@@ -72,8 +76,9 @@ struct TransactionMutationJournalTests {
         let currentModels = journal.currentModels()
         #expect(currentModels.count == 1)
         #expect(
-            (currentModels[0] as? TransactionMutationJournalModel)?.revision
-                == 2
+            try currentModels[0].decode(
+                as: TransactionMutationJournalModel.self
+            ).revision == 2
         )
     }
 }

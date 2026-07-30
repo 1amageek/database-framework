@@ -67,7 +67,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
             for: schema,
             configuration: SQLiteStorageEngine.Configuration.inMemory,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteFacadeUserV1.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV1.self)]
             ),
             security: .disabled
         )
@@ -100,7 +100,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV1.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteFacadeUserV1.self]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV1.self)]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -114,14 +114,14 @@ struct DatabaseContainerConfigurationSQLiteTests {
             for: SQLiteFacadeSchemaV2.self,
             migrationPlan: SQLiteFacadeMigrationPlan.self,
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteFacadeUserV2.self])
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)])
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV2.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteFacadeUserV2.self]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)]),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()

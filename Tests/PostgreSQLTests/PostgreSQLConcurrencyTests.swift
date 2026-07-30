@@ -10,6 +10,7 @@
 // - Empty BYTEA handling
 
 import DatabaseTypes
+import DatabaseRuntime
 import Testing
 import Foundation
 import StorageKit
@@ -34,10 +35,12 @@ private func collectRange(
     limit: Int = 0,
     reverse: Bool = false
 ) async throws -> [(key: ByteString, value: ByteString)] {
-    let seq = tx.getRange(begin: begin, end: end, limit: limit, reverse: reverse)
-    var result: [(key: ByteString, value: ByteString)] = []
-    for try await (key, value) in seq { result.append((key: key, value: value)) }
-    return result
+    try await tx.collectRange(
+        begin: begin,
+        end: end,
+        limit: limit,
+        reverse: reverse
+    )
 }
 
 @Suite("PostgreSQL Concurrency Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
@@ -49,7 +52,7 @@ struct PostgreSQLConcurrencyTests {
 
     private func setupContainer() async throws -> DBContainer {
         let schema = try Schema(entities: [try PGCounter.schemaEntity], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGCounter.self])
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGCounter.self)])
     }
 
     // MARK: - Concurrent Write Isolation

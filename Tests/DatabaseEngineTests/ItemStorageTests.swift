@@ -182,11 +182,11 @@ struct ItemStorageTests {
         // Verify blobs were created
         let blobCountBefore = try await database.withTransaction { transaction in
             let (begin, end) = blobsSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: false) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: false
+            ).count
         }
         #expect(blobCountBefore > 0, "Blobs should be created for large data")
 
@@ -205,11 +205,11 @@ struct ItemStorageTests {
         // Verify blobs were cleaned up
         let blobCountAfter = try await database.withTransaction { transaction in
             let (begin, end) = blobsSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: false) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: false
+            ).count
         }
         #expect(blobCountAfter == 0, "Blobs should be cleaned up after delete")
 
@@ -402,11 +402,11 @@ struct ItemStorageTests {
         // Verify blobs were created
         let blobCountAfterFirst = try await database.withTransaction { transaction in
             let (begin, end) = blobsSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: false) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: false
+            ).count
         }
         #expect(blobCountAfterFirst > 0, "First write should create blobs")
 
@@ -428,11 +428,11 @@ struct ItemStorageTests {
         // Verify old blobs were cleaned up
         let blobCountAfterSecond = try await database.withTransaction { transaction in
             let (begin, end) = blobsSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: false) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: false
+            ).count
         }
         #expect(blobCountAfterSecond == 0, "Old blobs should be cleaned up on overwrite")
 

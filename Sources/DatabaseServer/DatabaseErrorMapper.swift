@@ -79,7 +79,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_WIRE_PAYLOAD",
-                message: String(describing: error),
+                message: "DatabaseWire payload is invalid",
                 retryability: .never
             )
         }
@@ -87,7 +87,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_ENTITY",
-                message: String(describing: error),
+                message: "Persisted entity payload is invalid",
                 retryability: .never
             )
         }
@@ -150,19 +150,19 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 retryability: .never
             )
         }
-        if let conversionError = error as? GraphPatternConversionError {
+        if error is GraphPatternConversionError {
             return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_GRAPH_PATTERN",
-                message: String(describing: conversionError),
+                message: "Graph pattern is invalid",
                 retryability: .never
             )
         }
-        if let planError = error as? SPARQLSelectPlanCompilationError {
+        if error is SPARQLSelectPlanCompilationError {
             return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_SPARQL_SELECT_PLAN",
-                message: String(describing: planError),
+                message: "SPARQL select plan is invalid",
                 retryability: .never
             )
         }
@@ -193,11 +193,11 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let sparqlError = error as? SPARQLQueryError {
             return Self.map(sparqlError)
         }
-        if let scannerError = error as? RDFDatasetScannerError {
+        if error is RDFDatasetScannerError {
             return RemoteOperationError(
                 category: .internalFailure,
                 code: "CORRUPTED_RDF_INDEX",
-                message: String(describing: scannerError),
+                message: "RDF index data is corrupted",
                 retryability: .never
             )
         }
@@ -256,7 +256,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_QUERY_SYNTAX",
-                message: String(describing: error),
+                message: "Query syntax is invalid",
                 retryability: .never
             )
         }
@@ -337,7 +337,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return RemoteOperationError(
                 category: .authorization,
                 code: "ACCESS_DENIED",
-                message: String(describing: error),
+                message: "Access was denied",
                 retryability: .never
             )
         }
@@ -400,7 +400,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         return RemoteOperationError(
             category: .internalFailure,
             code: "SERVER_FAILURE",
-            message: String(describing: error),
+            message: "Database server failed",
             retryability: .never
         )
     }
@@ -674,7 +674,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         return RemoteOperationError(
             category: category,
             code: code,
-            message: String(describing: error),
+            message: code,
             retryability: .never
         )
     }
@@ -723,7 +723,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         return RemoteOperationError(
             category: category,
             code: code,
-            message: String(describing: error),
+            message: code,
             retryability: .never
         )
     }
@@ -921,7 +921,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         return RemoteOperationError(
             category: category,
             code: code,
-            message: String(describing: error),
+            message: code,
             retryability: .never
         )
     }
@@ -932,6 +932,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         let category: OperationErrorCategory
         let code: String
         let retryability: OperationRetryability
+        var details = FieldObject()
         switch error {
         case .concurrentSaveNotAllowed:
             category = .internalFailure
@@ -953,16 +954,20 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "CONTEXT_SAVE_STATE_INVALID"
             retryability = .never
-        case .preconditionFailed:
+        case .preconditionFailed(let identity, _, _):
             category = .conflict
             code = "PRECONDITION_FAILED"
             retryability = .never
+            details = Self.errorDetails([
+                (key: "identity", value: .reference(identity)),
+            ])
         }
         return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
-            retryability: retryability
+            retryability: retryability,
+            details: details
         )
     }
 
@@ -974,14 +979,14 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return RemoteOperationError(
                 category: .internalFailure,
                 code: "PERSISTABLE_SCHEMA_INVALID",
-                message: String(describing: error),
+                message: "Persistable schema is invalid",
                 retryability: .never
             )
         case .identifierNotRepresentable:
             return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_PERSISTED_IDENTITY",
-                message: String(describing: error),
+                message: "Persisted entity identity is invalid",
                 retryability: .never
             )
         }
@@ -1000,7 +1005,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         return RemoteOperationError(
             category: .internalFailure,
             code: code,
-            message: String(describing: error),
+            message: code,
             retryability: .never
         )
     }
@@ -1090,7 +1095,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         return RemoteOperationError(
             category: category,
             code: code,
-            message: String(describing: error),
+            message: code,
             retryability: .never
         )
     }
@@ -1156,7 +1161,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         return RemoteOperationError(
             category: category,
             code: code,
-            message: String(describing: error),
+            message: code,
             retryability: .never
         )
     }
@@ -1189,7 +1194,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         return RemoteOperationError(
             category: category,
             code: code,
-            message: String(describing: error),
+            message: code,
             retryability: .never
         )
     }
@@ -1211,7 +1216,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         return RemoteOperationError(
             category: category,
             code: code,
-            message: String(describing: error),
+            message: code,
             retryability: .never
         )
     }
@@ -1252,7 +1257,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         return RemoteOperationError(
             category: category,
             code: code,
-            message: String(describing: error),
+            message: code,
             retryability: retryability
         )
     }
@@ -1525,7 +1530,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return RemoteOperationError(
                 category: .internalFailure,
                 code: "QUERY_FAILURE",
-                message: String(describing: error),
+                message: "Query execution failed",
                 retryability: .never
             )
         }

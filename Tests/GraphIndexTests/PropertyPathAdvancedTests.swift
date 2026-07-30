@@ -70,8 +70,8 @@ struct PropertyPathAdvancedTests {
         )
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [AdvancedPathEdge.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AdvancedPathEdge.self)]),
             security: .disabled,
         )
     }
@@ -132,6 +132,7 @@ struct PropertyPathAdvancedTests {
         )
         return SPARQLQueryExecutor(
             database: container.engine,
+            wallClock: FixedTestWallClock(),
             sources: [source],
             propertyPathConfiguration: configuration
         )
@@ -457,7 +458,7 @@ struct PropertyPathAdvancedTests {
                 pattern: pattern,
                 limit: nil,
                 offset: 0,
-                workMeter: DatabaseWorkMeter(budget: .init())
+                workMeter: DatabaseWorkMeter(budget: .init(), monotonicClock: TestProcessMonotonicClock())
             )
             Issue.record("Expected the expression depth limit to reject the query")
         } catch let error as SPARQLQueryError {
@@ -507,7 +508,7 @@ struct PropertyPathAdvancedTests {
                 pattern: pattern,
                 limit: nil,
                 offset: 0,
-                workMeter: DatabaseWorkMeter(budget: .init())
+                workMeter: DatabaseWorkMeter(budget: .init(), monotonicClock: TestProcessMonotonicClock())
             )
             Issue.record("Expected the traversal depth limit to reject the query")
         } catch let error as SPARQLQueryError {
@@ -557,7 +558,7 @@ struct PropertyPathAdvancedTests {
                 pattern: pattern,
                 limit: nil,
                 offset: 0,
-                workMeter: DatabaseWorkMeter(budget: .init())
+                workMeter: DatabaseWorkMeter(budget: .init(), monotonicClock: TestProcessMonotonicClock())
             )
             Issue.record("Expected the result limit to reject the query")
         } catch let error as SPARQLQueryError {

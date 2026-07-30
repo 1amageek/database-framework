@@ -112,13 +112,9 @@ private struct IndexedBenchmarkContext: Sendable {
         )
         self.container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    PlainBenchmarkEntity.self,
-                    SingleIndexBenchmarkEntity.self,
-                    TripleIndexBenchmarkEntity.self,
-                ]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PlainBenchmarkEntity.self), try DatabaseFrameworkRuntime.entity(SingleIndexBenchmarkEntity.self), try DatabaseFrameworkRuntime.entity(TripleIndexBenchmarkEntity.self)]
             ),
             security: .disabled
         )
@@ -180,17 +176,26 @@ private struct IndexedBenchmarkContext: Sendable {
 
     func insertPlain(_ entity: PlainBenchmarkEntity) async throws {
         let store = try await container.store(for: PlainBenchmarkEntity.self)
-        try await store.executeBatch(inserts: [entity], deletes: [])
+        try await store.executeBatch(
+            inserts: [try PersistedModel(entity)],
+            deletes: []
+        )
     }
 
     func insertSingle(_ entity: SingleIndexBenchmarkEntity) async throws {
         let store = try await container.store(for: SingleIndexBenchmarkEntity.self)
-        try await store.executeBatch(inserts: [entity], deletes: [])
+        try await store.executeBatch(
+            inserts: [try PersistedModel(entity)],
+            deletes: []
+        )
     }
 
     func insertTriple(_ entity: TripleIndexBenchmarkEntity) async throws {
         let store = try await container.store(for: TripleIndexBenchmarkEntity.self)
-        try await store.executeBatch(inserts: [entity], deletes: [])
+        try await store.executeBatch(
+            inserts: [try PersistedModel(entity)],
+            deletes: []
+        )
     }
 
     func indexedLookup(category: String) async throws -> [SingleIndexBenchmarkEntity] {

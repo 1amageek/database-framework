@@ -168,7 +168,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 beginSelector = .firstGreaterOrEqual(begin)
             }
 
-            var entries = try await storageAccess.collectRange(
+            var entries = try await TransactionRangeCollection.collect(
+                using: storageAccess,
                 from: beginSelector,
                 to: .firstGreaterOrEqual(end),
                 limit: limit + 1,
@@ -225,7 +226,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     ) async throws {
         try await performOperation { operationID in
             try await persist(
-                model,
+                identity: try EntityReferenceEncoder.encode(model),
+                PersistedModel(model),
                 precondition: precondition,
                 operationID: operationID,
                 source: .requested
@@ -239,7 +241,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     ) async throws {
         try await performOperation { operationID in
             try await remove(
-                model,
+                identity: try EntityReferenceEncoder.encode(model),
+                PersistedModel(model),
                 precondition: precondition,
                 operationID: operationID,
                 source: .requested
@@ -268,7 +271,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 )
             }
             try await remove(
-                model,
+                identity: identity,
+                PersistedModel(model),
                 precondition: .exists,
                 operationID: operationID,
                 source: .requested
@@ -302,7 +306,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 )
             }
             try await remove(
-                model,
+                identity: identity,
+                PersistedModel(model),
                 precondition: .exists,
                 operationID: operationID,
                 source: .requested
@@ -316,7 +321,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         entity: String,
         id: Tuple,
         partition: AnyDirectoryPath?
-    ) async throws -> (any Persistable)? {
+    ) async throws -> PersistedModel? {
         try await performOperation { _ in
             try await loadPersistedModelUnchecked(
                 entity: entity,
@@ -328,7 +333,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
 
     package func fetchPersistedModel(
         identifiedBy identity: EntityReference
-    ) async throws -> (any Persistable)? {
+    ) async throws -> PersistedModel? {
         try await performOperation { _ in
             let resolved = try resolve(identity)
             return try await loadPersistedModelUnchecked(
@@ -343,7 +348,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         entity: String,
         partition: AnyDirectoryPath?,
         limit: Int
-    ) async throws -> [any Persistable] {
+    ) async throws -> [PersistedModel] {
         try await performOperation { _ in
             try await scanPersistedModelsUnchecked(
                 entity: entity,
@@ -354,11 +359,14 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func savePersistedModel(
-        _ model: any Persistable,
+        _ model: PersistedModel,
         precondition: WritePrecondition
     ) async throws {
         try await performOperation { operationID in
             try await persist(
+                identity: try entityRuntime(named: model.entity).identity(
+                    for: model
+                ),
                 model,
                 precondition: precondition,
                 operationID: operationID,
@@ -368,11 +376,14 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func deletePersistedModel(
-        _ model: any Persistable,
+        _ model: PersistedModel,
         precondition: WritePrecondition
     ) async throws {
         try await performOperation { operationID in
             try await remove(
+                identity: try entityRuntime(named: model.entity).identity(
+                    for: model
+                ),
                 model,
                 precondition: precondition,
                 operationID: operationID,
@@ -403,7 +414,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     package func fetchPersistedModel(
         identifiedBy identity: EntityReference,
         within operationID: UInt64
-    ) async throws -> (any Persistable)? {
+    ) async throws -> PersistedModel? {
         do {
             try ensureActive(operationID, permitsMutation: false)
             let resolved = try resolve(identity)
@@ -419,13 +430,16 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func savePersistedModel(
-        _ model: any Persistable,
+        _ model: PersistedModel,
         precondition: WritePrecondition,
         within operationID: UInt64
     ) async throws {
         do {
             try ensureActive(operationID, permitsMutation: true)
             try await persist(
+                identity: try entityRuntime(named: model.entity).identity(
+                    for: model
+                ),
                 model,
                 precondition: precondition,
                 operationID: operationID,
@@ -437,35 +451,17 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         }
     }
 
-    package func savePersistedModel(
+    package func deletePersistedModel(
         _ model: PersistedModel,
         precondition: WritePrecondition,
         within operationID: UInt64
     ) async throws {
         do {
             try ensureActive(operationID, permitsMutation: true)
-            let runtime = try entityRuntime(named: model.entity)
-            let decoded = try runtime.decode(model)
-            try await persist(
-                decoded,
-                precondition: precondition,
-                operationID: operationID,
-                source: .derived
-            )
-        } catch {
-            state = .closed
-            throw error
-        }
-    }
-
-    package func deletePersistedModel(
-        _ model: any Persistable,
-        precondition: WritePrecondition,
-        within operationID: UInt64
-    ) async throws {
-        do {
-            try ensureActive(operationID, permitsMutation: true)
             try await remove(
+                identity: try entityRuntime(named: model.entity).identity(
+                    for: model
+                ),
                 model,
                 precondition: precondition,
                 operationID: operationID,
@@ -536,9 +532,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         )
 
         for mutation in mutations {
-            let identity = try EntityReferenceEncoder.encode(
-                mutation.model
-            )
+            let identity = mutation.identity
             guard identities.insert(identity) else {
                 throw DatabaseTransactionError.duplicateMutation(identity)
             }
@@ -554,10 +548,11 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         // inverse-reference catalog. This gives delete enforcement the complete
         // batch overlay without a second relationship planner.
         for mutation in mutations {
-            guard case .save(let model, let precondition) = mutation else {
+            guard case .save(let identity, let model, let precondition) = mutation else {
                 continue
             }
             try await persist(
+                identity: identity,
                 model,
                 precondition: precondition,
                 operationID: operationID,
@@ -565,10 +560,11 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             )
         }
         for mutation in mutations {
-            guard case .delete(let model, let precondition) = mutation else {
+            guard case .delete(let identity, let model, let precondition) = mutation else {
                 continue
             }
             try await remove(
+                identity: identity,
                 model,
                 precondition: precondition,
                 operationID: operationID,
@@ -578,12 +574,12 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     private func persist(
-        _ model: any Persistable,
+        identity: EntityReference,
+        _ model: PersistedModel,
         precondition: WritePrecondition,
         operationID: UInt64,
         source: MutationSource
     ) async throws {
-        let identity = try EntityReferenceEncoder.encode(model)
         if source == .derived,
            scheduledDeletions.contains(identity) {
             throw DatabaseTransactionError.conflictingDerivedMutation(identity)
@@ -597,15 +593,15 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         defer {
             activeMutationIdentities.remove(identity)
         }
-        let modelType = type(of: model)
-        let partition = try partition(for: model)
+        let resolved = try resolve(identity)
         let store = try await container.store(
-            for: modelType,
-            path: partition,
+            for: resolved.entity,
+            path: resolved.partition,
             transaction: storageAccess
         )
         let write = try await store.save(
             model,
+            identity: identity,
             precondition: precondition,
             transaction: storageAccess
         )
@@ -618,8 +614,9 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let mutationContext = makeMutationContext(operationID: operationID)
         do {
             try await mutationMaintenanceService.update(
-                oldModel: write.previousModel,
-                newModel: model,
+                identity: identity,
+                oldModel: write.previousCanonicalModel,
+                newModel: write.canonicalModel,
                 context: mutationContext
             )
             await mutationContext.closeAndWait()
@@ -630,18 +627,18 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         try ensureActive(operationID, permitsMutation: true)
         updateMutationJournal(
             identity: identity,
-            previousModel: write.previousModel,
-            currentModel: model
+            previousModel: write.previousCanonicalModel,
+            currentModel: write.canonicalModel
         )
     }
 
     private func remove(
-        _ model: any Persistable,
+        identity: EntityReference,
+        _ model: PersistedModel,
         precondition: WritePrecondition,
         operationID: UInt64,
         source: MutationSource
     ) async throws {
-        let identity = try EntityReferenceEncoder.encode(model)
         if source == .derived,
            scheduledWrites.contains(identity),
            !scheduledDeletions.contains(identity) {
@@ -656,15 +653,15 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         defer {
             activeMutationIdentities.remove(identity)
         }
-        let modelType = type(of: model)
-        let partition = try partition(for: model)
+        let resolved = try resolve(identity)
         let store = try await container.store(
-            for: modelType,
-            path: partition,
+            for: resolved.entity,
+            path: resolved.partition,
             transaction: storageAccess
         )
         guard let persistedModel = try await store.delete(
             model,
+            identity: identity,
             precondition: precondition,
             transaction: storageAccess
         ) else {
@@ -674,11 +671,18 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             container: container
         ).remove(
             persistedModel,
+            identifier: try PersistableIdentifierKeyCodec.tuple(
+                for: identity,
+                expectedType: try entityRuntime(
+                    named: identity.entity
+                ).entity.identifierType
+            ),
             transaction: storageAccess
         )
         let mutationContext = makeMutationContext(operationID: operationID)
         do {
             try await mutationMaintenanceService.update(
+                identity: identity,
                 oldModel: persistedModel,
                 newModel: nil,
                 context: mutationContext
@@ -698,8 +702,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
 
     private func updateMutationJournal(
         identity: EntityReference,
-        previousModel: (any Persistable)?,
-        currentModel: (any Persistable)?
+        previousModel: PersistedModel?,
+        currentModel: PersistedModel?
     ) {
         mutationJournal.record(
             identity: identity,
@@ -712,7 +716,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         entity: String,
         id: Tuple,
         partition: AnyDirectoryPath?
-    ) async throws -> (any Persistable)? {
+    ) async throws -> PersistedModel? {
         let runtime = try entityRuntime(named: entity)
         if runtime.entity.hasDynamicDirectory, partition == nil {
             throw DirectoryPathError.dynamicFieldsRequired(
@@ -738,7 +742,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             data,
             expectedEntity: entity
         )
-        let model = try runtime.decode(persistedModel)
+        let model = try runtime.canonicalized(persistedModel)
         try container.securityDelegate?.evaluateGet(persistedModel)
         return model
     }
@@ -747,7 +751,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         entity: String,
         partition: AnyDirectoryPath?,
         limit: Int
-    ) async throws -> [any Persistable] {
+    ) async throws -> [PersistedModel] {
         guard limit > 0 else {
             throw DatabaseTransactionError.invalidLimit(limit)
         }
@@ -775,7 +779,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             transaction: storageAccess,
             blobsSubspace: subspaces.blobs
         )
-        var models: [any Persistable] = []
+        var models: [PersistedModel] = []
         models.reserveCapacity(limit)
         var iterator = storage.scan(
             begin: begin,
@@ -788,7 +792,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 data,
                 expectedEntity: entity
             )
-            let model = try runtime.decode(persistedModel)
+            let model = try runtime.canonicalized(persistedModel)
             try container.securityDelegate?.evaluateGet(persistedModel)
             models.append(model)
         }
@@ -988,7 +992,11 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
 
     private func resolve(
         _ identity: EntityReference
-    ) throws -> (id: Tuple, partition: AnyDirectoryPath?) {
+    ) throws -> (
+        entity: Schema.Entity,
+        id: Tuple,
+        partition: AnyDirectoryPath?
+    ) {
         let runtime = try entityRuntime(named: identity.entity)
         guard let entity = container.schema.entity(named: identity.entity) else {
             throw DatabaseTransactionError.invalidIdentity(
@@ -1005,40 +1013,13 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 for: entity,
                 partitions: identity.partitions
             )
-            return (id, partition)
+            return (entity, id, partition)
         } catch {
             throw DatabaseTransactionError.invalidIdentity(
                 entity: identity.entity,
                 reason: "identity resolution failed"
             )
         }
-    }
-
-    private func partition(
-        for model: any Persistable
-    ) throws -> AnyDirectoryPath? {
-        let entityName = type(of: model).persistableType
-        guard let entity = container.schema.entity(named: entityName) else {
-            throw DatabaseTransactionError.unknownEntity(entityName)
-        }
-        guard entity.hasDynamicDirectory else {
-            return nil
-        }
-        let persisted = try model.persistedFields()
-        var partitions: [(key: String, value: FieldValue)] = []
-        partitions.reserveCapacity(entity.dynamicFieldNames.count)
-        for name in entity.dynamicFieldNames {
-            guard let value = persisted.first(where: {
-                $0.name == name
-            })?.value else {
-                throw DirectoryPathError.missingFields([name])
-            }
-            partitions.append((key: name, value: value))
-        }
-        return try AnyDirectoryPath(
-            entity: entity,
-            partitions: FieldObject(partitions)
-        )
     }
 
     private func validate(

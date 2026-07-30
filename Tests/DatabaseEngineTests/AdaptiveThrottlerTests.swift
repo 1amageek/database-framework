@@ -6,6 +6,7 @@
 import Testing
 import TestHeartbeat
 import Foundation
+import StorageKitSystemClock
 @testable import DatabaseEngine
 
 @Suite("AdaptiveThrottler Tests", .heartbeat)
@@ -87,7 +88,7 @@ struct AdaptiveThrottlerTests {
     // MARK: - Initial State Tests
 
     @Test func initialState() {
-        let throttler = AdaptiveThrottler()
+        let throttler = AdaptiveThrottler(clock: SystemStorageClock())
 
         #expect(throttler.currentBatchSize == 100)
         #expect(throttler.currentDelayMs == 0)
@@ -103,7 +104,7 @@ struct AdaptiveThrottlerTests {
         let config = ThrottleConfiguration(
             batch: .init(initial: 50, min: 5, max: 500)
         )
-        let throttler = AdaptiveThrottler(configuration: config)
+        let throttler = AdaptiveThrottler(configuration: config, clock: SystemStorageClock())
 
         #expect(throttler.currentBatchSize == 50)
     }
@@ -111,7 +112,7 @@ struct AdaptiveThrottlerTests {
     // MARK: - Success Recording Tests
 
     @Test func recordSuccessIncrementsCounter() {
-        let throttler = AdaptiveThrottler()
+        let throttler = AdaptiveThrottler(clock: SystemStorageClock())
 
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
 
@@ -126,7 +127,7 @@ struct AdaptiveThrottlerTests {
             batch: .init(initial: 100, min: 10, max: 1000, increaseRatio: 1.5),
             successesBeforeIncrease: 3
         )
-        let throttler = AdaptiveThrottler(configuration: config)
+        let throttler = AdaptiveThrottler(configuration: config, clock: SystemStorageClock())
 
         // Entity 3 successes
         for _ in 0..<3 {
@@ -142,7 +143,7 @@ struct AdaptiveThrottlerTests {
             batch: .init(initial: 900, min: 10, max: 1000, increaseRatio: 1.5),
             successesBeforeIncrease: 1
         )
-        let throttler = AdaptiveThrottler(configuration: config)
+        let throttler = AdaptiveThrottler(configuration: config, clock: SystemStorageClock())
 
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
 
@@ -156,9 +157,9 @@ struct AdaptiveThrottlerTests {
         let config = ThrottleConfiguration(
             batch: .init(initial: 100, min: 10, max: 1000, decreaseRatio: 0.5)
         )
-        let throttler = AdaptiveThrottler(configuration: config)
+        let throttler = AdaptiveThrottler(configuration: config, clock: SystemStorageClock())
 
-        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
+        throttler.recordFailure()
 
         #expect(throttler.currentBatchSize == 50)
 
@@ -171,33 +172,33 @@ struct AdaptiveThrottlerTests {
         let config = ThrottleConfiguration(
             batch: .init(initial: 15, min: 10, max: 1000, decreaseRatio: 0.5)
         )
-        let throttler = AdaptiveThrottler(configuration: config)
+        let throttler = AdaptiveThrottler(configuration: config, clock: SystemStorageClock())
 
-        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
+        throttler.recordFailure()
 
         // Should be clamped to minBatchSize (15 * 0.5 = 7.5 -> 10)
         #expect(throttler.currentBatchSize == 10)
     }
 
     @Test func failureResetsConsecutiveSuccesses() {
-        let throttler = AdaptiveThrottler()
+        let throttler = AdaptiveThrottler(clock: SystemStorageClock())
 
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
 
         #expect(throttler.statistics.consecutiveSuccesses == 2)
 
-        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
+        throttler.recordFailure()
 
         #expect(throttler.statistics.consecutiveSuccesses == 0)
         #expect(throttler.statistics.consecutiveFailures == 1)
     }
 
     @Test func successResetsConsecutiveFailures() {
-        let throttler = AdaptiveThrottler()
+        let throttler = AdaptiveThrottler(clock: SystemStorageClock())
 
-        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
-        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
+        throttler.recordFailure()
+        throttler.recordFailure()
 
         #expect(throttler.statistics.consecutiveFailures == 2)
 
@@ -213,9 +214,9 @@ struct AdaptiveThrottlerTests {
         let config = ThrottleConfiguration(
             delay: .init(min: 0, max: 1000, initial: 10, increaseRatio: 2.0)
         )
-        let throttler = AdaptiveThrottler(configuration: config)
+        let throttler = AdaptiveThrottler(configuration: config, clock: SystemStorageClock())
 
-        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
+        throttler.recordFailure()
 
         #expect(throttler.currentDelayMs == 20)
     }
@@ -224,32 +225,22 @@ struct AdaptiveThrottlerTests {
         let config = ThrottleConfiguration(
             delay: .init(min: 0, max: 1000, initial: 100, decreaseRatio: 0.5)
         )
-        let throttler = AdaptiveThrottler(configuration: config)
+        let throttler = AdaptiveThrottler(configuration: config, clock: SystemStorageClock())
 
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
 
         #expect(throttler.currentDelayMs == 50)
     }
 
-    // MARK: - Retryable Error Tests
-
-    @Test func isRetryableDetectsFDBRetryableErrors() {
-        let throttler = AdaptiveThrottler()
-
-        // Generic non-FDB errors are not retryable
-        #expect(!throttler.isRetryable(ThrottlerInjectedFailure.generic))
-        #expect(!throttler.isRetryable(ThrottlerInjectedFailure.permanent))
-    }
-
     // MARK: - Reset Tests
 
     @Test func resetRestoresInitialState() {
         let config = ThrottleConfiguration(batch: .init(initial: 100))
-        let throttler = AdaptiveThrottler(configuration: config)
+        let throttler = AdaptiveThrottler(configuration: config, clock: SystemStorageClock())
 
         // Modify state
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
-        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
+        throttler.recordFailure()
 
         // Reset
         throttler.reset()
@@ -264,19 +255,19 @@ struct AdaptiveThrottlerTests {
     // MARK: - Statistics Tests
 
     @Test func statisticsSuccessRate() {
-        let throttler = AdaptiveThrottler()
+        let throttler = AdaptiveThrottler(clock: SystemStorageClock())
 
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
-        throttler.recordFailure(error: ThrottlerInjectedFailure.generic)
+        throttler.recordFailure()
 
         let stats = throttler.statistics
         #expect(stats.successRate == 0.75)
     }
 
     @Test func statisticsAvgItemsPerSecond() {
-        let throttler = AdaptiveThrottler()
+        let throttler = AdaptiveThrottler(clock: SystemStorageClock())
 
         // 100 items in 100ms = 1000 items/second
         throttler.recordSuccess(itemCount: 100, durationNs: 100_000_000)
@@ -307,19 +298,6 @@ struct AdaptiveThrottlerTests {
     }
 }
 
-// MARK: - Test Errors
-
-private enum ThrottlerInjectedFailure: Error, CustomStringConvertible {
-    case generic
-    case permanent
-
-    var description: String {
-        switch self {
-        case .generic: return "Generic error"
-        case .permanent: return "Permanent error"
-        }
-    }
-}
 #endif
 
 #endif

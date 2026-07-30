@@ -1,4 +1,5 @@
 import StorageKit
+import StorageKitSystemClock
 import Testing
 @testable import DatabaseEngine
 
@@ -7,7 +8,10 @@ struct DatabaseFormatCatalogTests {
     @Test("Empty database installs v1 and exact reopen succeeds")
     func installsAndReopens() async throws {
         let engine = InMemoryEngine()
-        let catalog = DatabaseFormatCatalog(database: engine)
+        let catalog = DatabaseFormatCatalog(
+            database: engine,
+            clock: SystemStorageClock()
+        )
         let expected = DatabaseFormatDescriptor.v1(itemStorage: .v1)
 
         let installed = try await catalog.installIfEmptyOrValidate(expected)
@@ -25,7 +29,10 @@ struct DatabaseFormatCatalogTests {
         try await engine.withTransaction { transaction in
             try transaction.setValue([0x01], for: [0x10])
         }
-        let catalog = DatabaseFormatCatalog(database: engine)
+        let catalog = DatabaseFormatCatalog(
+            database: engine,
+            clock: SystemStorageClock()
+        )
 
         await #expect(
             throws: DatabaseFormatCatalogError
@@ -43,7 +50,10 @@ struct DatabaseFormatCatalogTests {
     @Test("A different physical configuration is rejected")
     func rejectsConfigurationMismatch() async throws {
         let engine = InMemoryEngine()
-        let catalog = DatabaseFormatCatalog(database: engine)
+        let catalog = DatabaseFormatCatalog(
+            database: engine,
+            clock: SystemStorageClock()
+        )
         let stored = DatabaseFormatDescriptor.v1(itemStorage: .v1)
         _ = try await catalog.installIfEmptyOrValidate(stored)
         let differentConfiguration = try ItemStorageConfiguration(
@@ -77,7 +87,10 @@ struct DatabaseFormatCatalogTests {
         try await engine.withTransaction { transaction in
             try transaction.setValue([0x00], for: descriptorKey)
         }
-        let catalog = DatabaseFormatCatalog(database: engine)
+        let catalog = DatabaseFormatCatalog(
+            database: engine,
+            clock: SystemStorageClock()
+        )
 
         await #expect(throws: DatabaseFormatDescriptorError.self) {
             _ = try await catalog.installIfEmptyOrValidate(

@@ -11,13 +11,54 @@
 
 import Testing
 import TestHeartbeat
-import Foundation
+import DatabaseTypes
 import StorageKit
 import FDBStorage
 import Synchronization
 import TestSupport
 @testable import DatabaseEngine
 @testable import DatabaseKit
+
+private let testTimestamp = Timestamp(secondsSinceUnixEpoch: 0)
+
+private struct TestProcessMonotonicClock: StorageMonotonicClock {
+    private static let clock = ContinuousClock()
+    private static let origin = clock.now
+
+    var now: StorageInstant {
+        StorageInstant(
+            durationSinceReference: Self.origin.duration(to: Self.clock.now)
+        )
+    }
+
+    func sleep(
+        until deadline: StorageInstant
+    ) async throws(StorageClockError) {
+        let remaining = now.duration(to: deadline)
+        guard remaining > .zero else { return }
+        do {
+            try await Self.clock.sleep(for: remaining)
+        } catch {
+            throw .cancelled
+        }
+    }
+}
+
+private struct TestWallClock: WallClock {
+    let now = testTimestamp
+}
+
+private func makeTransactionLifecycleTracker(
+    id: String?,
+    registry: TransactionListenerRegistry?
+) -> TransactionLifecycleTracker {
+    TransactionLifecycleTracker(
+        id: id,
+        registry: registry,
+        monotonicClock: TestProcessMonotonicClock(),
+        wallClock: TestWallClock()
+    )
+}
 
 // MARK: - Thread-safe Test Helpers
 
@@ -124,13 +165,13 @@ struct PostCommitTests {
 
     @Test("PostCommitRegistry starts empty")
     func registryStartsEmpty() {
-        let registry = PostCommitRegistry()
+        let registry = PostCommitRegistry(monotonicClock: TestProcessMonotonicClock())
         #expect(registry.count == 0)
     }
 
     @Test("PostCommitRegistry.add increases count")
     func addIncreasesCount() {
-        let registry = PostCommitRegistry()
+        let registry = PostCommitRegistry(monotonicClock: TestProcessMonotonicClock())
         registry.add(NoOpPostCommit(), name: "test1")
         #expect(registry.count == 1)
 
@@ -140,7 +181,7 @@ struct PostCommitTests {
 
     @Test("PostCommitRegistry.clear removes all hooks")
     func clearRemovesAllHooks() {
-        let registry = PostCommitRegistry()
+        let registry = PostCommitRegistry(monotonicClock: TestProcessMonotonicClock())
         registry.add(NoOpPostCommit(), name: "test1")
         registry.add(NoOpPostCommit(), name: "test2")
         #expect(registry.count == 2)
@@ -153,7 +194,7 @@ struct PostCommitTests {
 
     @Test("PostCommitRegistry.executeAll runs hooks in priority order")
     func executeAllRunsInPriorityOrder() async {
-        let registry = PostCommitRegistry()
+        let registry = PostCommitRegistry(monotonicClock: TestProcessMonotonicClock())
         let executionOrder = AtomicArray<String>()
 
         registry.add(name: "hook1", priority: 100, runConcurrently: false) {
@@ -176,7 +217,7 @@ struct PostCommitTests {
 
     @Test("PostCommitRegistry.executeAll returns results with duration")
     func executeAllReturnsDuration() async {
-        let registry = PostCommitRegistry()
+        let registry = PostCommitRegistry(monotonicClock: TestProcessMonotonicClock())
 
         registry.add(name: "slow-hook", priority: 100) {
             try await Task.sleep(nanoseconds: 50_000_000) // 50ms
@@ -186,12 +227,12 @@ struct PostCommitTests {
 
         #expect(results.count == 1)
         #expect(results[0].success == true)
-        #expect(results[0].duration >= 0.05) // At least 50ms
+        #expect(results[0].duration >= .milliseconds(50))
     }
 
     @Test("PostCommitRegistry.executeAll captures failures")
     func executeAllCapturesFailures() async {
-        let registry = PostCommitRegistry()
+        let registry = PostCommitRegistry(monotonicClock: TestProcessMonotonicClock())
 
         registry.add(name: "failing-hook") {
             throw PostCommitFailure.intentionalFailure
@@ -212,7 +253,7 @@ struct PostCommitTests {
 
     @Test("PostCommitRegistry runs concurrent hooks in parallel")
     func concurrentHooksRunInParallel() async {
-        let registry = PostCommitRegistry()
+        let registry = PostCommitRegistry(monotonicClock: TestProcessMonotonicClock())
         let tracker = ConcurrentExecutionTracker()
 
         for i in 0..<3 {
@@ -239,7 +280,12 @@ struct PostCommitTests {
         let attempts = AtomicCounter(0)
 
         let inner = CountingPostCommit(counter: attempts, failUntil: 3)
-        let retrying = RetryingPostCommit(inner, maxAttempts: 5, backoffMs: 10)
+        let retrying = RetryingPostCommit(
+            inner,
+            maxAttempts: 5,
+            backoffMs: 10,
+            clock: TestProcessMonotonicClock()
+        )
 
         try await retrying.run()
 
@@ -251,7 +297,12 @@ struct PostCommitTests {
         let attempts = AtomicCounter(0)
 
         let inner = AlwaysFailingPostCommit(counter: attempts)
-        let retrying = RetryingPostCommit(inner, maxAttempts: 3, backoffMs: 5)
+        let retrying = RetryingPostCommit(
+            inner,
+            maxAttempts: 3,
+            backoffMs: 5,
+            clock: TestProcessMonotonicClock()
+        )
 
         do {
             try await retrying.run()
@@ -267,25 +318,19 @@ struct PostCommitTests {
     func delayedPostCommitWaits() async throws {
         let executed = AtomicBool(false)
         let inner = SettingPostCommit(flag: executed)
-        let delayed = DelayedPostCommit(inner, delay: .milliseconds(50))
+        let clock = TestProcessMonotonicClock()
+        let delayed = DelayedPostCommit(
+            inner,
+            delay: .milliseconds(50),
+            clock: clock
+        )
 
-        let startTime = Date()
+        let startTime = clock.now
         try await delayed.run()
-        let duration = Date().timeIntervalSince(startTime)
+        let duration = startTime.duration(to: clock.now)
 
         #expect(executed.current == true)
-        #expect(duration >= 0.05)
-    }
-
-    // MARK: - FireAndForgetPostCommit Tests
-
-    @Test("FireAndForgetPostCommit ignores errors")
-    func fireAndForgetIgnoresErrors() async throws {
-        let failing = AlwaysFailingPostCommit(counter: AtomicCounter())
-        let fireAndForget = FireAndForgetPostCommit(failing)
-
-        // Should not throw
-        try await fireAndForget.run()
+        #expect(duration >= .milliseconds(50))
     }
 
     // MARK: - CompositePostCommit Tests
@@ -366,7 +411,7 @@ struct TransactionListenerTests {
             events.append(event)
         }
 
-        registry.notify(.created(id: "test-123", timestamp: Date()))
+        registry.notify(.created(id: "test-123", timestamp: testTimestamp))
 
         #expect(events.count == 1)
         if case .created(let id, _) = events.current[0] {
@@ -381,12 +426,12 @@ struct TransactionListenerTests {
     @Test("TransactionEvent.transactionID returns correct ID")
     func eventTransactionIdReturnsCorrectId() {
         let events: [TransactionEvent] = [
-            .created(id: "id1", timestamp: Date()),
-            .committing(id: "id2", timestamp: Date()),
-            .committed(id: "id3", timestamp: Date(), duration: 0.1, version: 123),
-            .failed(id: "id4", timestamp: Date(), duration: 0.1, error: TransactionFailure.injected),
-            .cancelled(id: "id5", timestamp: Date(), duration: 0.1),
-            .closed(id: "id6", timestamp: Date(), totalDuration: 0.1)
+            .created(id: "id1", timestamp: testTimestamp),
+            .committing(id: "id2", timestamp: testTimestamp),
+            .committed(id: "id3", timestamp: testTimestamp, duration: .milliseconds(100), version: 123),
+            .failed(id: "id4", timestamp: testTimestamp, duration: .milliseconds(100), error: TransactionFailure.injected),
+            .cancelled(id: "id5", timestamp: testTimestamp, duration: .milliseconds(100)),
+            .closed(id: "id6", timestamp: testTimestamp, totalDuration: .milliseconds(100))
         ]
 
         let expectedIds = ["id1", "id2", "id3", "id4", "id5", "id6"]
@@ -398,7 +443,7 @@ struct TransactionListenerTests {
 
     @Test("TransactionEvent.timestamp returns correct timestamp")
     func eventTimestampReturnsCorrectTimestamp() {
-        let now = Date()
+        let now = testTimestamp
         let event = TransactionEvent.created(id: "test", timestamp: now)
         #expect(event.timestamp == now)
     }
@@ -407,8 +452,8 @@ struct TransactionListenerTests {
     func eventDescriptionContainsId() {
         let event = TransactionEvent.committed(
             id: "tx-12345",
-            timestamp: Date(),
-            duration: 0.123,
+            timestamp: testTimestamp,
+            duration: .milliseconds(123),
             version: 456
         )
         #expect(event.description.contains("tx-12345"))
@@ -426,7 +471,7 @@ struct TransactionListenerTests {
             events.append(event)
         }
 
-        _ = TransactionLifecycleTracker(id: "test-tx", registry: registry)
+        _ = makeTransactionLifecycleTracker(id: "test-tx", registry: registry)
 
         #expect(events.count == 1)
         if case .created(let id, _) = events.current[0] {
@@ -445,7 +490,7 @@ struct TransactionListenerTests {
             events.append(event)
         }
 
-        let tracker = TransactionLifecycleTracker(id: "test-tx", registry: registry)
+        let tracker = makeTransactionLifecycleTracker(id: "test-tx", registry: registry)
         tracker.markCommitting()
 
         #expect(events.count == 2)
@@ -465,7 +510,7 @@ struct TransactionListenerTests {
             events.append(event)
         }
 
-        let tracker = TransactionLifecycleTracker(id: "test-tx", registry: registry)
+        let tracker = makeTransactionLifecycleTracker(id: "test-tx", registry: registry)
         tracker.markCommitted(version: 12345)
 
         #expect(events.count == 2)
@@ -486,7 +531,7 @@ struct TransactionListenerTests {
             events.append(event)
         }
 
-        let tracker = TransactionLifecycleTracker(id: "test-tx", registry: registry)
+        let tracker = makeTransactionLifecycleTracker(id: "test-tx", registry: registry)
 
         // First commit
         tracker.markCommitted(version: 123)
@@ -509,7 +554,7 @@ struct TransactionListenerTests {
             events.append(event)
         }
 
-        let tracker = TransactionLifecycleTracker(id: "test-tx", registry: registry)
+        let tracker = makeTransactionLifecycleTracker(id: "test-tx", registry: registry)
         tracker.markCommitted(version: 123)
         tracker.markClosed()
 
@@ -523,10 +568,10 @@ struct TransactionListenerTests {
 
     @Test("TransactionLifecycleTracker.elapsed returns positive duration")
     func trackerElapsedReturnsPositive() async throws {
-        let tracker = TransactionLifecycleTracker(id: "test", registry: nil)
+        let tracker = makeTransactionLifecycleTracker(id: "test", registry: nil)
         try await Task.sleep(nanoseconds: 10_000_000) // 10ms
 
-        #expect(tracker.elapsed >= 0.01)
+        #expect(tracker.elapsed >= .milliseconds(10))
     }
 
     // MARK: - MetricsTransactionListener Tests
@@ -535,9 +580,9 @@ struct TransactionListenerTests {
     func metricsTracksTotal() {
         let listener = MetricsTransactionListener()
 
-        listener.onEvent(.created(id: "tx1", timestamp: Date()))
-        listener.onEvent(.created(id: "tx2", timestamp: Date()))
-        listener.onEvent(.created(id: "tx3", timestamp: Date()))
+        listener.onEvent(.created(id: "tx1", timestamp: testTimestamp))
+        listener.onEvent(.created(id: "tx2", timestamp: testTimestamp))
+        listener.onEvent(.created(id: "tx3", timestamp: testTimestamp))
 
         #expect(listener.metrics.totalTransactions == 3)
     }
@@ -546,11 +591,11 @@ struct TransactionListenerTests {
     func metricsTracksCommitted() {
         let listener = MetricsTransactionListener()
 
-        listener.onEvent(.created(id: "tx1", timestamp: Date()))
-        listener.onEvent(.committed(id: "tx1", timestamp: Date(), duration: 0.05, version: 123))
+        listener.onEvent(.created(id: "tx1", timestamp: testTimestamp))
+        listener.onEvent(.committed(id: "tx1", timestamp: testTimestamp, duration: .milliseconds(50), version: 123))
 
-        listener.onEvent(.created(id: "tx2", timestamp: Date()))
-        listener.onEvent(.committed(id: "tx2", timestamp: Date(), duration: 0.1, version: 456))
+        listener.onEvent(.created(id: "tx2", timestamp: testTimestamp))
+        listener.onEvent(.committed(id: "tx2", timestamp: testTimestamp, duration: .milliseconds(100), version: 456))
 
         #expect(listener.metrics.committedTransactions == 2)
         #expect(listener.metrics.avgDurationMs >= 75) // Average of 50ms and 100ms
@@ -560,8 +605,8 @@ struct TransactionListenerTests {
     func metricsTracksFailed() {
         let listener = MetricsTransactionListener()
 
-        listener.onEvent(.created(id: "tx1", timestamp: Date()))
-        listener.onEvent(.failed(id: "tx1", timestamp: Date(), duration: 0.1, error: TransactionFailure.injected))
+        listener.onEvent(.created(id: "tx1", timestamp: testTimestamp))
+        listener.onEvent(.failed(id: "tx1", timestamp: testTimestamp, duration: .milliseconds(100), error: TransactionFailure.injected))
 
         #expect(listener.metrics.failedTransactions == 1)
     }
@@ -570,8 +615,8 @@ struct TransactionListenerTests {
     func metricsTracksCancelled() {
         let listener = MetricsTransactionListener()
 
-        listener.onEvent(.created(id: "tx1", timestamp: Date()))
-        listener.onEvent(.cancelled(id: "tx1", timestamp: Date(), duration: 0.1))
+        listener.onEvent(.created(id: "tx1", timestamp: testTimestamp))
+        listener.onEvent(.cancelled(id: "tx1", timestamp: testTimestamp, duration: .milliseconds(100)))
 
         #expect(listener.metrics.cancelledTransactions == 1)
     }
@@ -581,14 +626,14 @@ struct TransactionListenerTests {
         let listener = MetricsTransactionListener()
 
         // 2 committed, 1 failed, 1 cancelled = 50% success
-        listener.onEvent(.created(id: nil, timestamp: Date()))
-        listener.onEvent(.committed(id: nil, timestamp: Date(), duration: 0.1, version: nil))
-        listener.onEvent(.created(id: nil, timestamp: Date()))
-        listener.onEvent(.committed(id: nil, timestamp: Date(), duration: 0.1, version: nil))
-        listener.onEvent(.created(id: nil, timestamp: Date()))
-        listener.onEvent(.failed(id: nil, timestamp: Date(), duration: 0.1, error: TransactionFailure.injected))
-        listener.onEvent(.created(id: nil, timestamp: Date()))
-        listener.onEvent(.cancelled(id: nil, timestamp: Date(), duration: 0.1))
+        listener.onEvent(.created(id: nil, timestamp: testTimestamp))
+        listener.onEvent(.committed(id: nil, timestamp: testTimestamp, duration: .milliseconds(100), version: nil))
+        listener.onEvent(.created(id: nil, timestamp: testTimestamp))
+        listener.onEvent(.committed(id: nil, timestamp: testTimestamp, duration: .milliseconds(100), version: nil))
+        listener.onEvent(.created(id: nil, timestamp: testTimestamp))
+        listener.onEvent(.failed(id: nil, timestamp: testTimestamp, duration: .milliseconds(100), error: TransactionFailure.injected))
+        listener.onEvent(.created(id: nil, timestamp: testTimestamp))
+        listener.onEvent(.cancelled(id: nil, timestamp: testTimestamp, duration: .milliseconds(100)))
 
         #expect(listener.metrics.totalTransactions == 4)
         #expect(listener.metrics.successRate == 0.5)
@@ -598,8 +643,8 @@ struct TransactionListenerTests {
     func metricsReset() {
         let listener = MetricsTransactionListener()
 
-        listener.onEvent(.created(id: nil, timestamp: Date()))
-        listener.onEvent(.committed(id: nil, timestamp: Date(), duration: 0.1, version: nil))
+        listener.onEvent(.created(id: nil, timestamp: testTimestamp))
+        listener.onEvent(.committed(id: nil, timestamp: testTimestamp, duration: .milliseconds(100), version: nil))
 
         #expect(listener.metrics.totalTransactions == 1)
 
@@ -624,10 +669,10 @@ struct TransactionListenerTests {
             return false
         }
 
-        filtering.onEvent(.created(id: nil, timestamp: Date()))
-        filtering.onEvent(.committed(id: nil, timestamp: Date(), duration: 0.1, version: nil))
-        filtering.onEvent(.failed(id: nil, timestamp: Date(), duration: 0.1, error: TransactionFailure.injected))
-        filtering.onEvent(.committed(id: nil, timestamp: Date(), duration: 0.2, version: nil))
+        filtering.onEvent(.created(id: nil, timestamp: testTimestamp))
+        filtering.onEvent(.committed(id: nil, timestamp: testTimestamp, duration: .milliseconds(100), version: nil))
+        filtering.onEvent(.failed(id: nil, timestamp: testTimestamp, duration: .milliseconds(100), error: TransactionFailure.injected))
+        filtering.onEvent(.committed(id: nil, timestamp: testTimestamp, duration: .milliseconds(200), version: nil))
 
         #expect(events.count == 2)
     }
@@ -639,7 +684,7 @@ struct TransactionListenerTests {
         let recordingLogger = RecordingLogger()
         let listener = LoggingTransactionListener(logger: recordingLogger, level: .info)
 
-        listener.onEvent(.created(id: "test", timestamp: Date()))
+        listener.onEvent(.created(id: "test", timestamp: testTimestamp))
 
         #expect(recordingLogger.infoMessages.count == 1)
         #expect(recordingLogger.infoMessages.current[0].contains("test"))
@@ -787,7 +832,7 @@ struct TransactionConfigurationExtendedTests {
             priority: .batch,
             readPriority: .low,
             disableReadCache: true,
-            cachePolicy: .stale(30),
+            cachePolicy: .stale(.seconds(30)),
             tracing: .init(transactionID: "test")
         )
 
@@ -797,7 +842,7 @@ struct TransactionConfigurationExtendedTests {
         #expect(config.priority == .batch)
         #expect(config.readPriority == .low)
         #expect(config.disableReadCache == true)
-        #expect(config.cachePolicy == .stale(30))
+        #expect(config.cachePolicy == .stale(.seconds(30)))
         #expect(config.transactionID == "test")
     }
 }

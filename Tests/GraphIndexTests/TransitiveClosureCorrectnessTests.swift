@@ -7,6 +7,7 @@
 // graph topologies.
 
 import Testing
+import TestSupport
 import TestHeartbeat
 import DatabaseKit
 import DatabaseTypes
@@ -1015,7 +1016,7 @@ struct TransitiveClosureCorrectnessTests {
             ]
         )
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ∃hasChild.A ⊓ ∃hasChild.B — generates 2 fillers for inherited-functional role
         let expr = OWLClassExpression.intersection([

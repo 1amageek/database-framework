@@ -5,6 +5,7 @@ import DatabaseWire
 import Synchronization
 import TestHeartbeat
 import Testing
+import TestSupport
 @testable import GraphIndex
 
 @Suite("SPARQL ORDER BY decoration", .heartbeat)
@@ -37,10 +38,12 @@ struct BindingSorterDecorationTests {
         ]
         let binding = VariableBinding(fields)
         let directMeter = DatabaseWorkMeter(
-            budget: ExecutionBudget()
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
         )
         let canonicalMeter = DatabaseWorkMeter(
-            budget: ExecutionBudget()
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
         )
 
         let direct = try binding.canonicalFingerprint(workMeter: directMeter)
@@ -70,10 +73,10 @@ struct BindingSorterDecorationTests {
         descending["?a"] = .int64(1)
 
         let first = try VariableBinding(ascending).canonicalFingerprint(
-            workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
+            workMeter: DatabaseWorkMeter(budget: ExecutionBudget(), monotonicClock: TestProcessMonotonicClock())
         )
         let second = try VariableBinding(descending).canonicalFingerprint(
-            workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
+            workMeter: DatabaseWorkMeter(budget: ExecutionBudget(), monotonicClock: TestProcessMonotonicClock())
         )
 
         #expect(first == second)
@@ -84,7 +87,8 @@ struct BindingSorterDecorationTests {
         func fingerprint(_ value: FieldValue) throws -> ByteString {
             try VariableBinding(["?value": value]).canonicalFingerprint(
                 workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget()
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
                 )
             )
         }
@@ -111,7 +115,7 @@ struct BindingSorterDecorationTests {
         ])
 
         let fingerprint = try binding.canonicalFingerprint(
-            workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
+            workMeter: DatabaseWorkMeter(budget: ExecutionBudget(), monotonicClock: TestProcessMonotonicClock())
         )
 
         #expect(fingerprint.count == 32)
@@ -134,7 +138,7 @@ struct BindingSorterDecorationTests {
         let sorted = try BindingSorter.sort(
             bindings,
             by: [key],
-            workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
+            workMeter: DatabaseWorkMeter(budget: ExecutionBudget(), monotonicClock: TestProcessMonotonicClock())
         )
 
         #expect(evaluationCount.withLock { $0 } == bindings.count)
@@ -152,7 +156,8 @@ struct BindingSorterDecorationTests {
             budget: ExecutionBudget(
                 maximumIntermediateRows: 3,
                 maximumIntermediateBytes: 4_096
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
 
         let sorted = try BindingSorter.sort(
@@ -184,7 +189,8 @@ struct BindingSorterDecorationTests {
             budget: ExecutionBudget(
                 maximumIntermediateRows: 2,
                 maximumIntermediateBytes: 1
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
 
         do {
@@ -230,7 +236,8 @@ struct BindingSorterDecorationTests {
             budget: ExecutionBudget(
                 maximumIntermediateRows: 3,
                 maximumIntermediateBytes: 4_096
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
 
         let sorted = try await BindingSorter.sort(
@@ -270,7 +277,8 @@ struct BindingSorterDecorationTests {
             budget: ExecutionBudget(
                 maximumIntermediateRows: 2,
                 maximumIntermediateBytes: 1
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
 
         do {
@@ -312,7 +320,7 @@ struct BindingSorterDecorationTests {
         let sorted = try BindingSorter.sort(
             [VariableBinding(), VariableBinding(["?other": .string("value")])],
             by: [key],
-            workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
+            workMeter: DatabaseWorkMeter(budget: ExecutionBudget(), monotonicClock: TestProcessMonotonicClock())
         )
 
         #expect(sorted.count == 2)
@@ -332,7 +340,7 @@ struct BindingSorterDecorationTests {
             try BindingSorter.sort(
                 [VariableBinding(), VariableBinding()],
                 by: [key],
-                workMeter: DatabaseWorkMeter(budget: ExecutionBudget())
+                workMeter: DatabaseWorkMeter(budget: ExecutionBudget(), monotonicClock: TestProcessMonotonicClock())
             )
         }
     }

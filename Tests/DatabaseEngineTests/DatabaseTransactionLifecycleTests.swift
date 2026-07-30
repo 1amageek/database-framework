@@ -1,4 +1,6 @@
 import DatabaseKit
+import DatabaseRuntime
+import TestSupport
 import DatabaseTypes
 @testable import DatabaseEngine
 import StorageKit
@@ -46,7 +48,10 @@ struct DatabaseTransactionLifecycleTests {
             transaction in
             let page = try await transaction.scan(
                 TransactionLifecycleParent.self,
-                limit: 2
+                in: DirectoryPath<TransactionLifecycleParent>(),
+                after: nil,
+                limit: 2,
+                consistency: .serializable
             )
             let identifiers = page.items.map(\.id)
             let continuation = page.continuation
@@ -63,8 +68,10 @@ struct DatabaseTransactionLifecycleTests {
         try await context.withTransaction { transaction in
             let page = try await transaction.scan(
                 TransactionLifecycleParent.self,
+                in: DirectoryPath<TransactionLifecycleParent>(),
                 after: nestedContinuation,
-                limit: 2
+                limit: 2,
+                consistency: .serializable
             )
             let identifiers = page.items.map(\.id)
             let continuation = page.continuation
@@ -111,7 +118,7 @@ struct DatabaseTransactionLifecycleTests {
         ) {
             try await activeTransaction.fetch(
                 TransactionLifecycleParent.self,
-                identifiedBy: model.id
+                identifiedBy: [model.id]
             )
         }
 
@@ -120,7 +127,7 @@ struct DatabaseTransactionLifecycleTests {
         await #expect(throws: DatabaseTransactionError.closed) {
             try await escapedTransaction.fetch(
                 TransactionLifecycleParent.self,
-                identifiedBy: model.id
+                identifiedBy: [model.id]
             )
         }
 
@@ -178,7 +185,7 @@ struct DatabaseTransactionLifecycleTests {
             do {
                 _ = try await transaction.fetch(
                     TransactionLifecycleParent.self,
-                    identifiedBy: model.id
+                    identifiedBy: [model.id]
                 )
             } catch DatabaseTransactionError.closed {
                 observedClosedAdmission = true
@@ -255,7 +262,7 @@ struct DatabaseTransactionLifecycleTests {
             await #expect(throws: DatabaseTransactionError.closed) {
                 try await transaction.fetch(
                     TransactionLifecycleParent.self,
-                    identifiedBy: parent.id
+                    identifiedBy: [parent.id]
                 )
             }
         }
@@ -454,15 +461,12 @@ struct DatabaseTransactionLifecycleTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(
+            configuration: DBConfiguration.testing(
                 backend: .custom(engine)
             ),
             runtimeConfiguration: try DatabaseRuntimeConfiguration(
                 persistableMutationMaintainers: maintainers,
-                persistableTypes: [
-                    TransactionLifecycleParent.self,
-                    TransactionLifecycleChild.self,
-                ]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(TransactionLifecycleParent.self), try DatabaseFrameworkRuntime.entity(TransactionLifecycleChild.self)]
             ),
             security: .disabled
         )
@@ -477,18 +481,19 @@ private struct SuspendingPersistableMaintainer:
     func validate(schema: Schema) throws {}
 
     func update(
-        oldModel: (any Persistable)?,
-        newModel: (any Persistable)?,
+        identity: EntityReference,
+        oldModel: PersistedModel?,
+        newModel: PersistedModel?,
         context: borrowing PersistableMutationContext
     ) async throws {
-        guard newModel is TransactionLifecycleParent else {
+        guard newModel?.entity == TransactionLifecycleParent.persistableType else {
             return
         }
         await suspension.suspendUntilReleased()
     }
 
     func validateFinalState(
-        of models: [any Persistable],
+        of models: [PersistedModel],
         context: borrowing PersistableValidationContext
     ) async throws {}
 }
@@ -499,13 +504,16 @@ private struct DerivedChildMaintainer: PersistableMutationMaintainer {
     func validate(schema: Schema) throws {}
 
     func update(
-        oldModel: (any Persistable)?,
-        newModel: (any Persistable)?,
+        identity: EntityReference,
+        oldModel: PersistedModel?,
+        newModel: PersistedModel?,
         context: borrowing PersistableMutationContext
     ) async throws {
-        guard let parent = newModel as? TransactionLifecycleParent else {
+        guard let newModel,
+              newModel.entity == TransactionLifecycleParent.persistableType else {
             return
         }
+        let parent = try newModel.decode(as: TransactionLifecycleParent.self)
         try await context.save(
             TransactionLifecycleChild(
                 id: parent.id,
@@ -516,7 +524,7 @@ private struct DerivedChildMaintainer: PersistableMutationMaintainer {
     }
 
     func validateFinalState(
-        of models: [any Persistable],
+        of models: [PersistedModel],
         context: borrowing PersistableValidationContext
     ) async throws {}
 }
@@ -536,11 +544,12 @@ private final class FailingOncePersistableMaintainer:
     func validate(schema: Schema) throws {}
 
     func update(
-        oldModel: (any Persistable)?,
-        newModel: (any Persistable)?,
+        identity: EntityReference,
+        oldModel: PersistedModel?,
+        newModel: PersistedModel?,
         context: borrowing PersistableMutationContext
     ) async throws {
-        guard newModel is TransactionLifecycleParent else {
+        guard newModel?.entity == TransactionLifecycleParent.persistableType else {
             return
         }
         let shouldFail = failurePending.withLock { pending in
@@ -558,7 +567,7 @@ private final class FailingOncePersistableMaintainer:
     }
 
     func validateFinalState(
-        of models: [any Persistable],
+        of models: [PersistedModel],
         context: borrowing PersistableValidationContext
     ) async throws {}
 }

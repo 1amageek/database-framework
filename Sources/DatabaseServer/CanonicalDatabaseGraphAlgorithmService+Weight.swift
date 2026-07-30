@@ -42,14 +42,15 @@ actor DatabaseIndexedWeightedGraphNeighborSource: WeightedGraphNeighborSource {
         }
 
         var allNeighbors: [GraphIdentity: [WeightedGraphNeighbor]] = [:]
-        for try await candidate in scanner.scanEdges(
+        var cursor = scanner.scanEdges(
             from: nil,
             edge: edgeLabel,
             to: nil,
             scope: scope,
             propertyFilters: nil,
             transaction: snapshot.transaction
-        ) {
+        ).makeCursor()
+        while let candidate = try await cursor.next() {
             guard try workBudget.consume() else { return [] }
             guard let value = candidate.properties[property] else {
                 throw DatabaseGraphAlgorithmError.edgeWeightMissing(

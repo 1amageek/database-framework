@@ -112,11 +112,13 @@ private struct NamedGraphKeyContext {
         var total = 0
         for key in keys {
             let targetSubspace = indexSubspace.subspace(key)
-            try await database.withTransaction { transaction in
+            total += try await database.withTransaction { transaction in
                 let (begin, end) = targetSubspace.range()
-                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                    total += 1
-                }
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
             }
         }
         return total

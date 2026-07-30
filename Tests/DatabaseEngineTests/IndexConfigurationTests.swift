@@ -35,14 +35,12 @@ struct IndexConfigurationTests {
 
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
         let idExpression = FieldKeyExpression(fieldName: "id")
-        let registry = try IndexMaintainerProviderRegistry(
-            providers: [DimensionConfiguredIndexMaintainerProvider()]
-        )
-        let maintainer: any IndexMaintainer<IndexConfigurationEntity> = try registry.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<IndexConfigurationEntity> = try DimensionConfiguredIndexMaintainerProvider().makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            configurations: [configuration]
+            configurations: [configuration],
+            wallClock: IndexConfigurationWallClock()
         )
 
         if let recordingMaintainer = maintainer as? ConfigurationRecordingIndexMaintainer<IndexConfigurationEntity> {
@@ -71,14 +69,12 @@ struct IndexConfigurationTests {
 
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
         let idExpression = FieldKeyExpression(fieldName: "id")
-        let registry = try IndexMaintainerProviderRegistry(
-            providers: [LanguageConfiguredIndexMaintainerProvider()]
-        )
-        let maintainer: any IndexMaintainer<IndexConfigurationEntity> = try registry.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<IndexConfigurationEntity> = try LanguageConfiguredIndexMaintainerProvider().makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            configurations: configs
+            configurations: configs,
+            wallClock: IndexConfigurationWallClock()
         )
 
         if let recordingMaintainer = maintainer as? LanguageRecordingIndexMaintainer<IndexConfigurationEntity> {
@@ -108,14 +104,12 @@ struct IndexConfigurationTests {
 
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
         let idExpression = FieldKeyExpression(fieldName: "id")
-        let registry = try IndexMaintainerProviderRegistry(
-            providers: [DimensionConfiguredIndexMaintainerProvider()]
-        )
-        let maintainer: any IndexMaintainer<IndexConfigurationEntity> = try registry.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<IndexConfigurationEntity> = try DimensionConfiguredIndexMaintainerProvider().makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            configurations: [configuration]
+            configurations: [configuration],
+            wallClock: IndexConfigurationWallClock()
         )
 
         if let recordingMaintainer = maintainer as? ConfigurationRecordingIndexMaintainer<IndexConfigurationEntity> {
@@ -146,6 +140,10 @@ struct IndexConfigurationTests {
         #expect(DimensionIndexConfiguration.kindIdentifier == "dimension-configured")
         #expect(LanguageIndexConfiguration.kindIdentifier == "language-configured")
     }
+}
+
+private struct IndexConfigurationWallClock: WallClock {
+    let now = Timestamp(secondsSinceUnixEpoch: 0)
 }
 
 // MARK: - Configuration Entity
@@ -234,8 +232,10 @@ struct DimensionConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration]
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
+        _ = wallClock
         let dimensions = try index.kind.requireInt("dimensions")
         let configuration = configurations.first(where: {
             $0.indexName == index.name
@@ -279,8 +279,10 @@ struct LanguageConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration]
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
+        _ = wallClock
         let languages = Set(
             configurations
                 .filter { $0.indexName == index.name }

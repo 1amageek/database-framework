@@ -86,22 +86,6 @@ private struct VersionReadExecutor: IndexReadExecutor {
 
 }
 
-private struct PolymorphicVersionPlaceholder: Persistable {
-    typealias ID = String
-
-    var id: String = ""
-
-    static var persistableType: String { "_PolymorphicVersionPlaceholder" }
-    static var allFields: [String] { ["id"] }
-
-    static func fieldNumber(for fieldName: String) -> Int? {
-        fieldName == "id" ? 1 : nil
-    }
-
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-}
-
 private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "version"
 
@@ -155,34 +139,16 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
         let rawResults = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction in
-            let maintainer = VersionIndexMaintainer<PolymorphicVersionPlaceholder>(
-                index: Index(
-                    name: indexName,
-                    kind: IndexKindMetadata(
-                        identifier: "version",
-                        subspaceStructure: .hierarchical,
-                        fields: [
-                            IndexFieldMetadata(
-                                identity: FieldIdentity(name: "id", number: 1)
-                            )
-                        ],
-                        metadata: ["strategy": .string("keepAll")]
-                    ),
-                    rootExpression: EmptyKeyExpression()
-                ),
-                strategy: .keepAll,
-                subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id"),
-                wallClock: context.container.wallClock
-            )
-            return try await maintainer.getVersionHistory(
+            return try await VersionIndexReader(
+                subspace: indexSubspace
+            ).history(
                 primaryKey: primaryKey,
                 limit: limit,
                 transaction: transaction
             )
         }
 
-        var results: [(version: Version, item: any Persistable)] = []
+        var results: [(version: Version, item: PersistedModel)] = []
         results.reserveCapacity(rawResults.count)
         for result in rawResults {
             guard !result.data.isEmpty else { continue }
@@ -190,14 +156,14 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
                 result.data,
                 expectedEntity: runtime.entity.name
             )
-            let item = try runtime.decode(persistedModel)
+            let item = try runtime.canonicalized(persistedModel)
             try context.container.securityDelegate?.evaluateGet(persistedModel)
             results.append((result.version, item))
         }
 
         let rows = try results.map { result in
             try IndexReadRow.materializing(
-                any: result.item,
+                result.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(runtime.entity.name),
                     PolymorphicRowAnnotation.typeCode: .int64(typeCode),

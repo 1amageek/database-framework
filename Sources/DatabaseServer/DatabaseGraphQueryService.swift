@@ -38,7 +38,8 @@ struct DatabaseGraphQueryService: Sendable {
                 ),
                 options: readExecution(
                     for: request,
-                    workMeter: workMeter
+                    workMeter: workMeter,
+                    context: context
                 ),
                 partitions: request.graphPartitions,
                 transaction: transaction
@@ -65,7 +66,8 @@ struct DatabaseGraphQueryService: Sendable {
                 describeQuery: query,
                 options: readExecution(
                     for: request,
-                    workMeter: workMeter
+                    workMeter: workMeter,
+                    context: context
                 ),
                 partitions: request.graphPartitions,
                 transaction: transaction
@@ -106,8 +108,9 @@ struct DatabaseGraphQueryService: Sendable {
         }
 
         do {
-            return try await context.container.engine.withTransaction(
-                configuration: .default
+            return try await context.container.transactionExecutor.withTransaction(
+                configuration: .default,
+                clock: context.container.monotonicClock
             ) { transaction in
                 if let cursor {
                     do {
@@ -266,10 +269,12 @@ struct DatabaseGraphQueryService: Sendable {
 
     private func readExecution(
         for request: QueryExecuteOperation.Request,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        context: DatabaseOperationContext
     ) -> ReadExecutionContext {
         ReadExecutionContext(
             options: ReadExecutionOptions(budget: request.budget),
+            monotonicClock: context.container.monotonicClock,
             workMeter: workMeter,
             queryStructuralLimits: queryStructuralLimits
         )

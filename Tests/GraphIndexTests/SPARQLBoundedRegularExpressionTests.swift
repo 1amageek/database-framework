@@ -403,13 +403,17 @@ struct SPARQLBoundedRegularExpressionTests {
             }
         )
 
-        #expect(
-            try await SPARQLRuntimeExpressionEvaluator.evaluate(
-                plan,
-                binding: VariableBinding(),
-                resolver: resolver
-            ) == rdfBoolean(true)
-        )
+        switch try await SPARQLRuntimeExpressionEvaluator.evaluate(
+            plan,
+            binding: VariableBinding(),
+            resolver: resolver
+        ) {
+        case .value(let value):
+            let expected = try rdfBoolean(true)
+            #expect(value == expected)
+        case .expressionError(let error):
+            Issue.record("REGEX evaluation failed: \(error)")
+        }
     }
 
     private func rdfString(_ lexicalForm: String) throws -> FieldValue {

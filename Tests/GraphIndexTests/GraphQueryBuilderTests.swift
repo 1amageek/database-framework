@@ -55,7 +55,7 @@ struct GraphQueryBuilderTests {
             ],
             version: Schema.Version(1, 0, 0)
         )
-        return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [GraphQueryEdge.self]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(GraphQueryEdge.self)]), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {

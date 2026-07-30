@@ -384,7 +384,8 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
         var scannedSummaryGroups = 0
         var scannedBytes = 0
 
-        try await transaction.forEachInRange(
+        try await TransactionRangeIteration.forEach(
+            in: transaction,
             from: .firstGreaterOrEqual(membershipMetadataRange.begin),
             to: .firstGreaterOrEqual(membershipMetadataRange.end),
             limit: maximumGroupsPerQuery + 1,
@@ -438,7 +439,8 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
             }
         }
 
-        try await transaction.forEachInRange(
+        try await TransactionRangeIteration.forEach(
+            in: transaction,
             from: .firstGreaterOrEqual(summaryRange.begin),
             to: .firstGreaterOrEqual(summaryRange.end),
             limit: maximumGroupsPerQuery + 1,
@@ -718,7 +720,8 @@ public struct PercentileIndexMaintainer<Item: Persistable>:
             snapshot: false
         )
 
-        try await transaction.forEachInRange(
+        try await TransactionRangeIteration.forEach(
+            in: transaction,
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: maximumMembersPerGroup + 1,

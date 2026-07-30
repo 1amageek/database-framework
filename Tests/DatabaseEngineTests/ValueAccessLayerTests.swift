@@ -91,7 +91,7 @@ struct PersistedFieldAccessTests {
             embedding: [1, 0.5, 0]
         )
 
-        let row = try QueryRowCodec.encodeAny(entity)
+        let row = try QueryRowCodec.encode(entity)
         let decoded = try QueryRowCodec.decode(
             row,
             as: ValueAccessEntity.self

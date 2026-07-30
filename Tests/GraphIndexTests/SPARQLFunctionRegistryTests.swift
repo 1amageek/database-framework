@@ -6,10 +6,6 @@ import Testing
 
 @Suite("SPARQL function registry", .heartbeat)
 struct SPARQLFunctionRegistryTests {
-    private enum SPARQLFunctionEvaluationFailure: Error {
-        case expected
-    }
-
     private struct ConfiguredSPARQLFunction: SPARQLFunction {
         enum Behavior: Sendable {
             case returnValue(FieldValue)
@@ -19,12 +15,14 @@ struct SPARQLFunctionRegistryTests {
         let identifier: RDFIRI
         let behavior: Behavior
 
-        func evaluate(arguments: [FieldValue]) throws -> FieldValue {
+        func evaluate(
+            arguments: [FieldValue]
+        ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
             switch behavior {
             case .returnValue(let value):
                 return value
             case .fail:
-                throw SPARQLFunctionEvaluationFailure.expected
+                throw .runtimeInvariant("configured function failure")
             }
         }
     }
@@ -108,7 +106,7 @@ struct SPARQLFunctionRegistryTests {
                 arguments: []
             )
             Issue.record("Expected the extension function to fail")
-        } catch let error as SPARQLFunctionRegistryError {
+        } catch let error {
             guard case .functionFailed(let failedIdentifier, _) = error else {
                 Issue.record("Expected a functionFailed error, received \(error)")
                 return

@@ -89,7 +89,7 @@ public final class SpatialCellScanner: Sendable {
             let (begin, end) = cellSubspace.range()
 
             let readLimit = SpatialScanBudget.rangeReadLimit(totalLimit: limit, emittedCount: results.count)
-            let sequence = try await transaction.collectRange(
+            let sequence = try await TransactionRangeCollection.collect(using: transaction,
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 limit: readLimit,
@@ -168,7 +168,7 @@ public final class SpatialCellScanner: Sendable {
         let rangeEnd = try strinc(maxKey)
 
         let readLimit = SpatialScanBudget.rangeReadLimit(totalLimit: limit, emittedCount: results.count)
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
             limit: readLimit,
@@ -244,7 +244,7 @@ public final class SpatialCellScanner: Sendable {
             let (begin, end) = cellSubspace.range()
 
             let readLimit = SpatialScanBudget.rangeReadLimit(totalLimit: limit, emittedCount: results.count)
-            let sequence = try await transaction.collectRange(
+            let sequence = try await TransactionRangeCollection.collect(using: transaction,
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 limit: readLimit,
@@ -307,7 +307,7 @@ public final class SpatialCellScanner: Sendable {
 
         var results: [Tuple] = []
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,

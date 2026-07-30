@@ -169,7 +169,8 @@ public struct DatabaseRDFDocumentStore: Sendable {
         transaction: any TransactionAccess
     ) async throws -> Metadata? {
         guard let bytes = try await transaction.getValue(
-            for: metadataKey(identifier)
+            for: metadataKey(identifier),
+            snapshot: false
         ) else {
             return nil
         }
@@ -203,10 +204,14 @@ public struct DatabaseRDFDocumentStore: Sendable {
         let range = documentSubspace(identifier).subspace("auxiliary").range()
         var values: [String] = []
         values.reserveCapacity(count)
-        let rows = try await transaction.collectRange(
-            begin: range.begin,
-            end: range.end,
-            limit: count
+        let rows = try await TransactionRangeCollection.collect(
+            using: transaction,
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
+            limit: count,
+            reverse: false,
+            snapshot: false,
+            streamingMode: .wantAll
         )
         for (_, bytes) in rows {
             guard let value = String(validating: bytes, as: UTF8.self) else {
@@ -241,10 +246,14 @@ public struct DatabaseRDFDocumentStore: Sendable {
         let end = quads.range().end
         var values: [RDFQuad] = []
         values.reserveCapacity(min(limit, totalCount - offset))
-        let rows = try await transaction.collectRange(
-            begin: quads.pack(Tuple(encodedOffset)),
-            end: end,
-            limit: min(limit, totalCount - offset)
+        let rows = try await TransactionRangeCollection.collect(
+            using: transaction,
+            from: .firstGreaterOrEqual(quads.pack(Tuple(encodedOffset))),
+            to: .firstGreaterOrEqual(end),
+            limit: min(limit, totalCount - offset),
+            reverse: false,
+            snapshot: false,
+            streamingMode: .wantAll
         )
         for (_, bytes) in rows {
             values.append(

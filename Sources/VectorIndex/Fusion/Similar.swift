@@ -257,7 +257,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         transaction: any TransactionAccess
     ) async throws -> [(pk: Tuple, distance: Double)] {
         let (begin, end) = indexSubspace.range()
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,

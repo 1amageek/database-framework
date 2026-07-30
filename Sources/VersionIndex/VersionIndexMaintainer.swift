@@ -132,73 +132,11 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         limit: Int? = nil,
         transaction: any TransactionAccess
     ) async throws -> [(version: Version, data: ByteString)] {
-        let pkTuple = Tuple(primaryKey)
-        let beginKey = subspace.pack(pkTuple)
-        let endKey = beginKey.appending(0xFF)
-
-        var versions: [(version: Version, data: ByteString)] = []
-
-        if let limit = limit {
-            // Reverse scan: fetch newest N versions directly.
-            // FDB stores versionstamps in ascending order (oldest first).
-            // Reverse scan returns newest first, so limit correctly returns newest N.
-            let rangeEntries = try await transaction.collectRange(
-                from: KeySelector.firstGreaterOrEqual(beginKey),
-                to: KeySelector.firstGreaterOrEqual(endKey),
-                limit: limit,
-                reverse: true,
-                snapshot: true,
-                streamingMode: .wantAll
-            )
-
-            for (key, value) in rangeEntries {
-                guard key.count >= 10 else { continue }
-                let versionBytes = key[(key.count - 10)..<key.count]
-                let version = Version(bytes: versionBytes)
-
-                let data: ByteString
-                if value.count > VersionValueLayout.timestampByteCount {
-                    data = value[
-                        VersionValueLayout.timestampByteCount..<value.count
-                    ]
-                } else {
-                    data = []
-                }
-
-                versions.append((version, data))
-            }
-            // Already in descending order (newest first) from reverse scan
-        } else {
-            // No limit: forward scan all versions, then reverse
-            let sequence = try await transaction.collectRange(
-                from: .firstGreaterOrEqual(beginKey),
-                to: .firstGreaterOrEqual(endKey),
-                limit: 0,
-                reverse: false,
-                snapshot: true,
-                streamingMode: .wantAll
-            )
-
-            for (key, value) in sequence {
-                guard key.count >= 10 else { continue }
-                let versionBytes = key[(key.count - 10)..<key.count]
-                let version = Version(bytes: versionBytes)
-
-                let data: ByteString
-                if value.count > VersionValueLayout.timestampByteCount {
-                    data = value[
-                        VersionValueLayout.timestampByteCount..<value.count
-                    ]
-                } else {
-                    data = []
-                }
-
-                versions.append((version, data))
-            }
-            versions.reverse()
-        }
-
-        return versions
+        try await VersionIndexReader(subspace: subspace).history(
+            primaryKey: primaryKey,
+            limit: limit,
+            transaction: transaction
+        )
     }
 
     /// Get latest version of an item
@@ -206,32 +144,10 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         primaryKey: [any TupleElement],
         transaction: any TransactionAccess
     ) async throws -> ByteString? {
-        let pkTuple = Tuple(primaryKey)
-        let beginKey = subspace.pack(pkTuple)
-        let endKey = beginKey.appending(0xFF)
-
-        // Use lastLessThan to get the most recent version efficiently
-        let lastSelector = KeySelector.lastLessThan(endKey)
-
-        guard let lastKey = try await transaction.getKey(selector: lastSelector, snapshot: true) else {
-            return nil
-        }
-
-        // Verify the key is in our range
-        guard lastKey.starts(with: beginKey) else {
-            return nil
-        }
-
-        // Get the value
-        guard let value = try await transaction.getValue(for: lastKey, snapshot: true) else {
-            return nil
-        }
-
-        // Return item data after the canonical timestamp prefix.
-        if value.count > VersionValueLayout.timestampByteCount {
-            return value[VersionValueLayout.timestampByteCount..<value.count]
-        }
-        return []
+        try await VersionIndexReader(subspace: subspace).latest(
+            primaryKey: primaryKey,
+            transaction: transaction
+        )
     }
 
     // MARK: - Private Methods
@@ -395,7 +311,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
         var versionKeys: [ByteString] = []
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
@@ -430,7 +346,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         var versionsToDelete: [ByteString] = []
         var totalCount = 0
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,

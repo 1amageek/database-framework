@@ -1,3 +1,4 @@
+import DatabaseEngine
 @_spi(DatabaseServer) import DatabaseWire
 
 public struct GraphAlgorithmHandler: DatabaseOperationHandler {

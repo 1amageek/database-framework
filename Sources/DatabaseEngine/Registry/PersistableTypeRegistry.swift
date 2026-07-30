@@ -27,9 +27,4 @@ public struct EntityRuntimeRegistry: Sendable {
         registrationsByEntityName[entityName]
     }
 
-    func modelType(
-        named entityName: String
-    ) -> (any Persistable.Type)? {
-        registrationsByEntityName[entityName]?.modelType
-    }
 }

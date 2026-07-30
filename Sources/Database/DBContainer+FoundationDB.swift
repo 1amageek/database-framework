@@ -2,11 +2,14 @@
 #if FOUNDATION_DB
 import DatabaseEngine
 import FDBStorage
+import StorageKit
 
 extension DBContainer {
     /// Opens a container backed by the default FoundationDB configuration.
     public static func open(
         for schema: Schema,
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexRuntimeConfiguration] = []
@@ -14,6 +17,8 @@ extension DBContainer {
         try await open(
             for: schema,
             configuration: FDBStorageEngine.Configuration(),
+            monotonicClock: monotonicClock,
+            wallClock: wallClock,
             runtimeConfiguration: runtimeConfiguration,
             security: security,
             indexConfigurations: indexConfigurations
@@ -27,6 +32,8 @@ extension DBContainer {
     >(
         for schema: S.Type,
         migrationPlan: P.Type,
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexRuntimeConfiguration] = []
@@ -35,6 +42,8 @@ extension DBContainer {
             for: schema,
             migrationPlan: migrationPlan,
             configuration: FDBStorageEngine.Configuration(),
+            monotonicClock: monotonicClock,
+            wallClock: wallClock,
             runtimeConfiguration: runtimeConfiguration,
             security: security,
             indexConfigurations: indexConfigurations

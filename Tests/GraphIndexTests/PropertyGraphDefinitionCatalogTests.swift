@@ -5,6 +5,7 @@ import DatabaseWire
 import StorageKit
 import TestHeartbeat
 import Testing
+import TestSupport
 @testable import GraphIndex
 
 @Suite("Property graph definition catalog", .heartbeat)
@@ -22,7 +23,7 @@ struct PropertyGraphDefinitionCatalogTests {
             ifNotExists: true
         )
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             let creation = try await catalog.create(
                 requested,
                 transaction: transaction,
@@ -67,8 +68,11 @@ struct PropertyGraphDefinitionCatalogTests {
                 original.graphName
             )
         ) {
-            try await engine.withTransaction(
-                configuration: .batch
+            try await StorageTransactionExecutor(
+                engine: engine
+            ).withTransaction(
+                configuration: .batch,
+                clock: TestProcessMonotonicClock()
             ) { transaction in
                 _ = try await catalog.create(
                     replacement,
@@ -104,8 +108,11 @@ struct PropertyGraphDefinitionCatalogTests {
             using: engine
         )
 
-        let creation = try await engine.withTransaction(
-            configuration: .batch
+        let creation = try await StorageTransactionExecutor(
+            engine: engine
+        ).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await catalog.create(
                 conditionalReplacement,
@@ -144,8 +151,11 @@ struct PropertyGraphDefinitionCatalogTests {
                 violation: .containsCreationCondition
             )
         ) {
-            try await engine.withTransaction(
-                configuration: .batch
+            try await StorageTransactionExecutor(
+                engine: engine
+            ).withTransaction(
+                configuration: .batch,
+                clock: TestProcessMonotonicClock()
             ) { transaction in
                 _ = try await catalog.create(
                     definition,
@@ -167,7 +177,7 @@ struct PropertyGraphDefinitionCatalogTests {
             in: catalog,
             using: engine
         )
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             try await catalog.dropDefinition(
                 named: definition.graphName,
                 transaction: transaction,
@@ -186,8 +196,11 @@ struct PropertyGraphDefinitionCatalogTests {
                 definition.graphName
             )
         ) {
-            try await engine.withTransaction(
-                configuration: .batch
+            try await StorageTransactionExecutor(
+                engine: engine
+            ).withTransaction(
+                configuration: .batch,
+                clock: TestProcessMonotonicClock()
             ) { transaction in
                 try await catalog.dropDefinition(
                     named: definition.graphName,
@@ -206,7 +219,7 @@ struct PropertyGraphDefinitionCatalogTests {
         let storage = makeStorage()
         let key = try storage.key(for: graphName)
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             try transaction.setValue([255], for: key)
         }
 
@@ -272,7 +285,7 @@ struct PropertyGraphDefinitionCatalogTests {
         )
         let key = try makeStorage().key(for: graphName)
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             try transaction.setValue(encoded, for: key)
         }
 
@@ -302,8 +315,11 @@ struct PropertyGraphDefinitionCatalogTests {
         let definition = makeDefinition(named: "calendar")
 
         await #expect(throws: ExpectedFailure.self) {
-            try await engine.withTransaction(
-                configuration: .batch
+            try await StorageTransactionExecutor(
+                engine: engine
+            ).withTransaction(
+                configuration: .batch,
+                clock: TestProcessMonotonicClock()
             ) { transaction in
                 _ = try await catalog.create(
                     definition,
@@ -331,7 +347,7 @@ struct PropertyGraphDefinitionCatalogTests {
         let definition = makeDefinition(named: sharedName)
         let rdfGraph = try RDFGraphName(iri: sharedName)
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             _ = try await catalog.create(
                 definition,
                 transaction: transaction,
@@ -369,7 +385,7 @@ struct PropertyGraphDefinitionCatalogTests {
         in catalog: CanonicalPropertyGraphDefinitionCatalog,
         using engine: InMemoryEngine
     ) async throws {
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             _ = try await catalog.create(
                 definition,
                 transaction: transaction,
@@ -383,7 +399,7 @@ struct PropertyGraphDefinitionCatalogTests {
         from catalog: CanonicalPropertyGraphDefinitionCatalog,
         using engine: InMemoryEngine
     ) async throws -> CreateGraphStatement? {
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             try await catalog.definition(
                 named: graphName,
                 transaction: transaction,
@@ -401,7 +417,7 @@ struct PropertyGraphDefinitionCatalogTests {
             definition
         )
         let key = try makeStorage().key(for: graphName)
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             try transaction.setValue(encoded, for: key)
         }
     }
@@ -477,7 +493,8 @@ struct PropertyGraphDefinitionCatalogTests {
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
     }
 }

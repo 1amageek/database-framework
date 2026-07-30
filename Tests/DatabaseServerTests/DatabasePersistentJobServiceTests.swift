@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 @testable import DatabaseServer
@@ -868,7 +869,7 @@ struct DatabasePersistentJobServiceTests {
             wireLimits: .default,
             storageLimits: persistentJobTestStorageLimits
         )
-        let expiredAt = jobContext.clock.now()
+        let expiredAt = jobContext.clock.now
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
@@ -929,7 +930,7 @@ struct DatabasePersistentJobServiceTests {
             wireLimits: .default,
             storageLimits: persistentJobTestStorageLimits
         )
-        let expiredAt = jobContext.clock.now()
+        let expiredAt = jobContext.clock.now
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
@@ -1386,8 +1387,12 @@ struct DatabasePersistentJobServiceTests {
         #expect(prepared.completedWorkUnits == 1)
         #expect(prepared.executionCount == 1)
         #expect(executionCounter.count == 1)
-        let checkpoint = try await jobContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
+        let checkpoint = try await StorageTransactionExecutor(
+            engine: jobContext.container.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
                 try await transaction.getValue(
                     for: CheckpointedCancellationOperation.checkpointKey,
                     snapshot: true
@@ -1465,7 +1470,7 @@ struct DatabasePersistentJobServiceTests {
             wireLimits: .default,
             storageLimits: persistentJobTestStorageLimits
         )
-        let expiredAt = jobContext.clock.now()
+        let expiredAt = jobContext.clock.now
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
@@ -1561,7 +1566,7 @@ struct DatabasePersistentJobServiceTests {
             wireLimits: .default,
             storageLimits: persistentJobTestStorageLimits
         )
-        let expiredAt = jobContext.clock.now()
+        let expiredAt = jobContext.clock.now
         try await jobContext.container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
@@ -1824,9 +1829,9 @@ struct DatabasePersistentJobServiceTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .init(backend: .custom(InMemoryEngine())),
+            configuration: .testing(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseEndpointEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .disabled
         )
@@ -1837,7 +1842,7 @@ struct DatabasePersistentJobServiceTests {
             stateStore: stateStore
         )
         let clock = FixedDatabaseWallClock(
-            initial: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            initial: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
         let scheduler = RecordingDatabaseJobScheduler()
         let identifiers = SequentialDatabaseUUIDGenerator()
@@ -1896,7 +1901,8 @@ struct DatabasePersistentJobServiceTests {
         ) { transaction in
             guard let marker = try await transaction.fetch(
                 DatabaseEndpointEntity.self,
-                identifiedBy: id
+                identifiedBy: id,
+                consistency: .snapshot
             ) else {
                 return nil
             }
@@ -1937,7 +1943,7 @@ struct DatabasePersistentJobServiceTests {
         component: String,
         jobID: DatabaseTypes.UUID,
         as type: Value.Type,
-        transform: (Value) throws -> Value
+        transform: @escaping @Sendable (Value) throws -> Value
     ) async throws {
         let key = try await persistentJobKey(
             container: container,
@@ -2079,7 +2085,7 @@ struct DatabasePersistentJobServiceTests {
         static func save(
             _ value: UInt8,
             identifiedBy id: String,
-            using transaction: any DatabaseTransactionWriting
+            using transaction: DatabaseTransaction
         ) async throws {
             var marker = DatabaseEndpointEntity()
             marker.id = id
@@ -2476,10 +2482,14 @@ struct DatabasePersistentJobServiceTests {
             }
             await executionGate.waitForRelease()
             executionCounter.recordExecution()
-            try await context.operationContext.container.engine
-                .withTransaction(configuration: .batch) { transaction in
+            try await StorageTransactionExecutor(
+                engine: context.operationContext.container.engine
+            ).withTransaction(
+                configuration: .batch,
+                clock: TestProcessMonotonicClock()
+            ) { transaction in
                     try transaction.setValue([1], for: Self.checkpointKey)
-                }
+            }
             return .incomplete(
                 completedWorkUnits: 1,
                 totalWorkUnits: 2,
@@ -2986,16 +2996,14 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    private final class FixedDatabaseWallClock: DatabaseWallClock, Sendable {
+    private final class FixedDatabaseWallClock: WallClock, Sendable {
         private let timestamp: Mutex<Timestamp>
 
         init(initial: Timestamp) {
             self.timestamp = Mutex(initial)
         }
 
-        func now() -> Timestamp {
-            timestamp.withLock { $0 }
-        }
+        var now: Timestamp { timestamp.withLock { $0 } }
 
         func advance(milliseconds: UInt32) throws {
             try timestamp.withLock { timestamp in

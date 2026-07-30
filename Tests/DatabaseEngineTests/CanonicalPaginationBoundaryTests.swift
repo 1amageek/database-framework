@@ -2,6 +2,7 @@
 import DatabaseTypes
 import DatabaseWire
 import DatabaseKit
+import StorageKitSystemClock
 import Testing
 @testable import DatabaseEngine
 
@@ -153,13 +154,18 @@ struct CanonicalPaginationBoundaryTests {
             maximumWorkUnits: UInt64.max,
             timeoutMilliseconds: 30_000
         )
+        let clock = SystemStorageClock()
         return ReadExecutionContext(
             options: ReadExecutionOptions(
                 pageSize: pageSize,
                 continuation: continuation,
                 budget: budget
             ),
-            workMeter: DatabaseWorkMeter(budget: budget)
+            monotonicClock: clock,
+            workMeter: DatabaseWorkMeter(
+                budget: budget,
+                monotonicClock: clock
+            )
         )
     }
 }

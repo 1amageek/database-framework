@@ -46,7 +46,7 @@ struct RelationshipSnapshotTests {
 
     @Test("A loaded absent optional relationship remains distinguishable")
     func loadedAbsentToOneReturnsNil() throws {
-        let snapshot = RelationshipSnapshot(
+        let snapshot = try RelationshipSnapshot(
             item: SnapshotOwner(optionalTarget: nil, targets: [])
         ).with(SnapshotOwner.fields.optionalTarget, loadedAs: nil)
 
@@ -55,33 +55,28 @@ struct RelationshipSnapshotTests {
         )
     }
 
-    @Test("A loaded to-many relationship preserves its array storage")
-    func loadedToManyPreservesArrayStorage() throws {
+    @Test("A loaded to-many relationship preserves its values")
+    func loadedToManyPreservesValues() throws {
         let related = [
             SnapshotTarget(name: "first"),
             SnapshotTarget(name: "second"),
         ]
-        let snapshot = RelationshipSnapshot(
+        let snapshot = try RelationshipSnapshot(
             item: SnapshotOwner(optionalTarget: nil, targets: [])
         ).with(SnapshotOwner.fields.targets, loadedAs: related)
 
         let loaded = try snapshot.refs(SnapshotOwner.fields.targets)
         #expect(loaded.map(\.name) == ["first", "second"])
-
-        let sharesStorage = related.withUnsafeBufferPointer { originalBuffer in
-            loaded.withUnsafeBufferPointer { loadedBuffer in
-                originalBuffer.baseAddress == loadedBuffer.baseAddress
-            }
-        }
-        #expect(sharesStorage)
     }
 
     @Test("A mismatched loaded entity type fails explicitly")
-    func mismatchedLoadedTypeFailsExplicitly() {
+    func mismatchedLoadedTypeFailsExplicitly() throws {
         let snapshot = RelationshipSnapshot(
             item: SnapshotOwner(optionalTarget: nil, targets: []),
             loadedRelationships: [
-                "optionalTarget": .toOne(OtherSnapshotTarget(name: "wrong"))
+                "optionalTarget": .toOne(
+                    try PersistedModel(OtherSnapshotTarget(name: "wrong"))
+                )
             ]
         )
 

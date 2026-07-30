@@ -4,6 +4,7 @@ import DatabaseWire
 import DatabaseKit
 import StorageKit
 import TestHeartbeat
+import TestSupport
 import Testing
 @testable import GraphIndex
 
@@ -111,6 +112,9 @@ struct RDFDatasetScanReservationTests {
         let meter = makeMeter()
         let executor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 0)
+            ),
             datasetScanner: ReservedResultScanner(quad: quad)
         )
         let pattern = ExecutionPattern.basic([
@@ -388,7 +392,10 @@ struct RDFDatasetScanReservationTests {
         database: InMemoryEngine,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
-        try await database.withTransaction(configuration: .default) {
+        try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) {
             transaction in
             try await scanner.scan(
                 subject: nil,
@@ -409,7 +416,10 @@ struct RDFDatasetScanReservationTests {
         database: InMemoryEngine
     ) async throws {
         let workMeter = makeMeter()
-        try await database.withTransaction(configuration: .batch) {
+        try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
+        ) {
             transaction in
             for quad in quads {
                 _ = try await store.insert(
@@ -432,7 +442,8 @@ struct RDFDatasetScanReservationTests {
                 maximumIntermediateRows: maximumIntermediateRows,
                 maximumIntermediateBytes: maximumIntermediateBytes,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
     }
 

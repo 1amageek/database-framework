@@ -185,7 +185,7 @@ public struct RankIndexMaintainer<
             scoresSubspace.pack(Tuple(scoreElement))
         )
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(scorePrefixEnd),
             to: .firstGreaterOrEqual(rangeEnd),
             limit: 0,

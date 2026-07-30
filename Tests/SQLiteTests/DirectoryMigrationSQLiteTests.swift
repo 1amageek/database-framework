@@ -1,5 +1,6 @@
 #if SQLITE
 import Testing
+import TestSupport
 import Foundation
 import Database
 import TestHeartbeat
@@ -85,8 +86,8 @@ struct DirectoryMigrationSQLiteTests {
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV1.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteDirectoryMigrationUserV1.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV1.self)]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -99,15 +100,15 @@ struct DirectoryMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV2.self,
             migrationPlan: SQLiteDirectoryMigrationCopyPlan.self,
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteDirectoryMigrationUserV2.self])
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)])
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV2.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLiteDirectoryMigrationUserV2.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)]),
             security: .disabled
         )
         let rows = try await verificationContainer.newContext()

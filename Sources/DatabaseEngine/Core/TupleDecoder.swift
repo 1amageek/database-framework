@@ -383,6 +383,15 @@ public struct TupleDecoder: Sendable {
     /// - Returns: Owned byte value
     /// - Throws: TupleDecodingError on type mismatch
     public static func decodeBytes(_ element: any TupleElement) throws -> ByteString {
+        if let value = try canonicalFieldValue(element) {
+            guard case .bytes(let bytes) = value else {
+                throw canonicalTypeMismatch(
+                    expected: "ByteString",
+                    value: value
+                )
+            }
+            return bytes
+        }
         if case .bytes(let value) = element.tupleValue {
             return value
         }

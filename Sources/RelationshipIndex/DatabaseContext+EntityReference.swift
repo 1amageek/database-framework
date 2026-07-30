@@ -46,13 +46,13 @@ extension DatabaseContext {
         ) else {
             return nil
         }
-        guard let target = model as? Target else {
+        guard model.entity == Target.persistableType else {
             throw RelationshipReferenceError.loadedTypeMismatch(
                 expected: Target.persistableType,
-                actual: type(of: model).persistableType
+                actual: model.entity
             )
         }
-        return target
+        return try model.decode(as: Target.self)
     }
 
     package func load<Target: Persistable>(

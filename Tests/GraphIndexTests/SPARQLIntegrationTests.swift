@@ -51,7 +51,7 @@ struct SPARQLIntegrationTests {
             entities: [try SPARQLQueryStatement.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SPARQLQueryStatement.self]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLQueryStatement.self)]), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {

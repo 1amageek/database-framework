@@ -7,11 +7,11 @@ public struct RawCommands {
     private static let defaultRangeLimit = 100
     private static let maximumRangeLimit = 10_000
 
-    private let database: any StorageEngine
+    private let dataAccess: CatalogDataAccess
     private let output: OutputFormatter
 
-    public init(database: any StorageEngine, output: OutputFormatter) {
-        self.database = database
+    public init(dataAccess: CatalogDataAccess, output: OutputFormatter) {
+        self.dataAccess = dataAccess
         self.output = output
     }
 
@@ -41,7 +41,7 @@ public struct RawCommands {
         }
         let key = try encodeKey(keyString)
 
-        let value = try await database.withTransaction(configuration: .default) { transaction in
+        let value = try await dataAccess.withTransaction { transaction in
             try await transaction.getValue(for: key, snapshot: false)
         }
 
@@ -85,8 +85,8 @@ public struct RawCommands {
         let subspace = Subspace(prefix: prefix)
         let (begin, end) = subspace.range()
 
-        let results: [(key: ByteString, value: ByteString)] = try await database.withTransaction(configuration: .default) { transaction in
-            try await transaction.collectRange(
+        let results: [(key: ByteString, value: ByteString)] = try await dataAccess.withTransaction { transaction in
+            try await TransactionRangeCollection.collect(using: transaction,
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 limit: limit,

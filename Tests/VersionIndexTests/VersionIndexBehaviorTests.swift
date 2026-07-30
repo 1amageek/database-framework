@@ -49,7 +49,10 @@ private struct VersionIndexContext {
             index: index,
             strategy: strategy,
             subspace: indexSubspace,
-            idExpression: FieldKeyExpression(fieldName: "id")
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            wallClock: FixedVersionIndexBehaviorWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 1_700_000_000)
+            )
         )
     }
 
@@ -63,11 +66,11 @@ private struct VersionIndexContext {
     func countIndexEntries() async throws -> Int {
         try await database.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 
@@ -89,6 +92,10 @@ private struct VersionIndexContext {
             )
         }
     }
+}
+
+private struct FixedVersionIndexBehaviorWallClock: WallClock {
+    let now: Timestamp
 }
 
 // MARK: - Behavior Tests

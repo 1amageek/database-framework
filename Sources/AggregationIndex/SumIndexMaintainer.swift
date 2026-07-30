@@ -191,7 +191,8 @@ public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: N
         var scannedEntries = 0
         var scannedBytes = 0
 
-        try await transaction.forEachInRange(
+        try await TransactionRangeIteration.forEach(
+            in: transaction,
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: (maxScanGroups * 2) + 1,

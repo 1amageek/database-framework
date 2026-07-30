@@ -10,6 +10,7 @@
 // - Statistics tracking
 
 import Testing
+import TestSupport
 import Foundation
 import StorageKit
 import FDBStorage
@@ -41,9 +42,9 @@ struct QueryCursorTests {
         let schema = try Schema(entities: [try PaginatedUser.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
+            configuration: .testing(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [PaginatedUser.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(PaginatedUser.self)]
             ),
             security: .disabled
         )

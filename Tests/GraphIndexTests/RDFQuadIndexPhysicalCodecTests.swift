@@ -1,6 +1,7 @@
 import DatabaseTypes
 import DatabaseKit
 import StorageKit
+import TestSupport
 import Testing
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -171,7 +172,10 @@ struct RDFQuadIndexPhysicalCodecTests {
         let defaultQuad = try defaultQuad()
         let namedQuad = try namedQuad()
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             for quad in [defaultQuad, namedQuad] {
                 try RDFQuadIndexWritePlan(quad: quad).forEachEntry { entry in
                     try transaction.setValue([], for: codec.encode(entry))
@@ -432,7 +436,10 @@ struct RDFQuadIndexPhysicalCodecTests {
                 limit: nil,
                 readMode: .snapshot,
                 transaction: transaction,
-                workMeter: DatabaseWorkMeter(budget: .init())
+                workMeter: DatabaseWorkMeter(
+                    budget: .init(),
+                    monotonicClock: TestProcessMonotonicClock()
+                )
             )
             #expect(result.count == 1)
             #expect(result.first?.quad == expected)

@@ -6,6 +6,7 @@
 // with PostgreSQL backend (FDB uses FDBDirectoryService with HCA prefix allocation).
 
 import Testing
+import DatabaseRuntime
 import Foundation
 import StorageKit
 import PostgreSQLStorage
@@ -71,7 +72,7 @@ struct PostgreSQLPartitionTests {
             ],
             version: Schema.Version(1, 0, 0)
         )
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [Player.self, TenantOrder.self])
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self), try DatabaseFrameworkRuntime.entity(TenantOrder.self)])
     }
 
     // MARK: - Save Tests

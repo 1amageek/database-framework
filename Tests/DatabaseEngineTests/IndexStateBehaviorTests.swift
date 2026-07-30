@@ -48,8 +48,8 @@ private struct IndexStateContext {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [IndexedUser.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexedUser.self)]),
             security: .disabled
         )
         let dataStore = try await container.store(for: IndexedUser.self)
@@ -73,11 +73,11 @@ private struct IndexStateContext {
         let indexSubspace = subspace.subspace("I").subspace(indexName)
         return try await database.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 }

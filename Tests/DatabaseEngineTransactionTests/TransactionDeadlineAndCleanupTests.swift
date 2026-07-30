@@ -1,5 +1,6 @@
 import DatabaseTypes
 import StorageKit
+import StorageKitSystemClock
 import Synchronization
 import Testing
 @testable import DatabaseEngine
@@ -9,7 +10,7 @@ struct TransactionDeadlineAndCleanupTests {
     @Test("Portable deadline cancels once before commit")
     func portableDeadlineCancelsOnce() async throws {
         let engine = DeadlineControlledEngine()
-        let runner = TransactionRunner(database: engine)
+        let runner = makeTransactionRunner(engine: engine)
 
         do {
             let _: Void = try await runner.run(
@@ -35,7 +36,7 @@ struct TransactionDeadlineAndCleanupTests {
     func equalErrorsRemainCleanupFailure() async throws {
         let failure = StorageError.transactionConflict
         let engine = DeadlineControlledEngine(cancellationError: failure)
-        let runner = TransactionRunner(database: engine)
+        let runner = makeTransactionRunner(engine: engine)
 
         do {
             let _: Void = try await runner.run(
@@ -62,7 +63,7 @@ struct TransactionDeadlineAndCleanupTests {
         let engine = DeadlineControlledEngine(
             cancellationError: DeadlineCancellationError.rejected
         )
-        let runner = TransactionRunner(database: engine)
+        let runner = makeTransactionRunner(engine: engine)
 
         do {
             let _: Void = try await runner.run(
@@ -86,7 +87,7 @@ struct TransactionDeadlineAndCleanupTests {
         let engine = DeadlineControlledEngine(
             cancellationError: DeadlineCancellationError.rejected
         )
-        let runner = TransactionRunner(database: engine)
+        let runner = makeTransactionRunner(engine: engine)
 
         do {
             let _: Void = try await runner.run(
@@ -121,7 +122,7 @@ struct TransactionDeadlineAndCleanupTests {
         let clock = FixedStorageClock(
             now: StorageInstant(durationSinceReference: .milliseconds(1))
         )
-        let runner = TransactionRunner(database: engine, clock: clock)
+        let runner = makeTransactionRunner(engine: engine, clock: clock)
         let deadline = TransactionExecutionDeadline(
             instant: StorageInstant(durationSinceReference: .zero),
             timeoutMilliseconds: .max
@@ -142,10 +143,22 @@ struct TransactionDeadlineAndCleanupTests {
     }
 }
 
+private func makeTransactionRunner(
+    engine: DeadlineControlledEngine,
+    clock: any StorageMonotonicClock = SystemStorageClock()
+) -> TransactionRunner {
+    TransactionRunner(
+        transactionExecutor: StorageTransactionExecutor(engine: engine),
+        clock: clock
+    )
+}
+
 private struct FixedStorageClock: StorageMonotonicClock {
     let now: StorageInstant
 
-    func sleep(until deadline: StorageInstant) async throws {}
+    func sleep(
+        until deadline: StorageInstant
+    ) async throws(StorageClockError) {}
 }
 
 private enum DeadlineCancellationError: Error, Sendable {
@@ -220,13 +233,13 @@ private final class DeadlineControlledEngine: StorageEngine, Sendable {
 }
 
 private final class DeadlineControlledTransaction: Transaction, Sendable {
-    typealias RangeResult = KeyValueRangeResult
-
     private let underlying: InMemoryTransaction
     private let state: DeadlineObservationState
     private let cancellationError: (any Error)?
 
     var capabilities: TransactionCapabilities { underlying.capabilities }
+    var compaction: StorageCompactionAccess? { underlying.compaction }
+    var storageFailure: StorageError? { underlying.storageFailure }
     var mutationByteLimit: Int? { underlying.mutationByteLimit }
     var transactionDomain: StorageTransactionDomain {
         underlying.transactionDomain
@@ -250,21 +263,84 @@ private final class DeadlineControlledTransaction: Transaction, Sendable {
         try await underlying.getValue(for: key, snapshot: snapshot)
     }
 
-    func getRange(
+    func getValue(for key: ByteString) async throws -> ByteString? {
+        try await underlying.getValue(for: key)
+    }
+
+    func getKey(
+        selector: KeySelector,
+        snapshot: Bool
+    ) async throws -> ByteString? {
+        try await underlying.getKey(selector: selector, snapshot: snapshot)
+    }
+
+    func rangeCursor(
         from begin: KeySelector,
         to end: KeySelector,
         limit: Int,
         reverse: Bool,
         snapshot: Bool,
         streamingMode: StreamingMode
-    ) -> KeyValueRangeResult {
-        underlying.getRange(
+    ) -> KeyValueCursor {
+        underlying.rangeCursor(
             from: begin,
             to: end,
             limit: limit,
             reverse: reverse,
             snapshot: snapshot,
             streamingMode: streamingMode
+        )
+    }
+
+    func setOption(forOption option: TransactionOption) throws {
+        try underlying.setOption(forOption: option)
+    }
+
+    func setOption(
+        to value: ByteString?,
+        forOption option: TransactionOption
+    ) throws {
+        try underlying.setOption(to: value, forOption: option)
+    }
+
+    func setOption(
+        to value: Int,
+        forOption option: TransactionOption
+    ) throws {
+        try underlying.setOption(to: value, forOption: option)
+    }
+
+    func addConflictRange(
+        beginKey: ByteString,
+        endKey: ByteString,
+        type: ConflictRangeType
+    ) throws {
+        try underlying.addConflictRange(
+            beginKey: beginKey,
+            endKey: endKey,
+            type: type
+        )
+    }
+
+    func getEstimatedRangeSizeBytes(
+        beginKey: ByteString,
+        endKey: ByteString
+    ) async throws -> Int {
+        try await underlying.getEstimatedRangeSizeBytes(
+            beginKey: beginKey,
+            endKey: endKey
+        )
+    }
+
+    func getRangeSplitPoints(
+        beginKey: ByteString,
+        endKey: ByteString,
+        chunkSize: Int
+    ) async throws -> [ByteString] {
+        try await underlying.getRangeSplitPoints(
+            beginKey: beginKey,
+            endKey: endKey,
+            chunkSize: chunkSize
         )
     }
 

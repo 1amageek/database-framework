@@ -1,12 +1,13 @@
 import DatabaseServer
+import DatabaseEngine
 import DatabaseTypes
 import DatabaseTypesFoundation
 import Foundation
 
-public struct RealtimeDatabaseWallClock: DatabaseWallClock {
+public struct RealtimeDatabaseWallClock: WallClock {
     public init() {}
 
-    public func now() -> Timestamp {
+    public var now: Timestamp {
         do {
             return try Timestamp(Foundation.Date())
         } catch {

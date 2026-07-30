@@ -80,8 +80,8 @@ private func findEntries(
     containing term: RDFTerm
 ) async throws -> [ByteString] {
     let needle = try RDFTermStorageFormat.encode(term).copyBytes()
-    var matched: [ByteString] = []
-    try await engine.withTransaction { transaction in
+    return try await engine.withTransaction { transaction in
+        var matched: [ByteString] = []
         for (key, _) in try await transaction.collectRange(
             from: .firstGreaterOrEqual([0x00]),
             to: .firstGreaterOrEqual([0xFF]),
@@ -90,8 +90,8 @@ private func findEntries(
         ) where containsSubsequence(key, needle) {
             matched.append(key)
         }
+        return matched
     }
-    return matched
 }
 
 @Suite("OWLClass RDF Descriptor Tests", .heartbeat)
@@ -216,11 +216,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         return try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    OntoPerson.self,
-                    OntoOrganization.self,
-                    PlainItem.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntoPerson.self), try DatabaseFrameworkRuntime.entity(OntoOrganization.self), try DatabaseFrameworkRuntime.entity(PlainItem.self)]
             ),
             security: .disabled
         )

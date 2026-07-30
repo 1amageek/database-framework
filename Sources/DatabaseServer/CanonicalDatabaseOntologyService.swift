@@ -230,8 +230,9 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
         context: DatabaseOperationContext,
         body: @Sendable @escaping (any TransactionAccess) async throws -> Value
     ) async throws -> Value {
-        try await context.container.engine.withTransaction(
+        try await context.container.transactionExecutor.withTransaction(
             configuration: .readOnly,
+            clock: context.container.monotonicClock,
             body
         )
     }

@@ -1,4 +1,5 @@
 import DatabaseTypes
+import TestSupport
 import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
@@ -87,9 +88,9 @@ struct IndexStateInitializationTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseEndpointEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .disabled
         )

@@ -3,6 +3,7 @@ import DatabaseTypes
 import DatabaseKit
 import StorageKit
 import Synchronization
+import TestSupport
 import Testing
 @testable import GraphIndex
 
@@ -21,6 +22,7 @@ struct GraphPhysicalReadBudgetTests {
             let budget = GraphAlgorithmWorkBudget(maximumWorkUnits: 0)
             let snapshot = GraphReadSnapshot(
                 transaction: recording,
+                monotonicClock: TestProcessMonotonicClock(),
                 workBudget: budget
             )
             let scanner = GraphEdgeScanner(
@@ -31,10 +33,11 @@ struct GraphPhysicalReadBudgetTests {
             )
 
             var count = 0
-            for try await _ in scanner.scanAllEdges(
+            var cursor = scanner.scanAllEdges(
                 edgeLabel: nil,
                 transaction: recording
-            ) {
+            ).makeCursor()
+            while try await cursor.next() != nil {
                 count += 1
             }
 
@@ -59,6 +62,7 @@ struct GraphPhysicalReadBudgetTests {
             let budget = GraphAlgorithmWorkBudget(maximumWorkUnits: 3)
             let snapshot = GraphReadSnapshot(
                 transaction: recording,
+                monotonicClock: TestProcessMonotonicClock(),
                 workBudget: budget
             )
             let scanner = GraphEdgeScanner(
@@ -69,10 +73,11 @@ struct GraphPhysicalReadBudgetTests {
             )
 
             var count = 0
-            for try await _ in scanner.scanAllEdges(
+            var cursor = scanner.scanAllEdges(
                 edgeLabel: nil,
                 transaction: recording
-            ) {
+            ).makeCursor()
+            while try await cursor.next() != nil {
                 count += 1
             }
 
@@ -97,6 +102,7 @@ struct GraphPhysicalReadBudgetTests {
             let budget = GraphAlgorithmWorkBudget(maximumWorkUnits: 5)
             let snapshot = GraphReadSnapshot(
                 transaction: recording,
+                monotonicClock: TestProcessMonotonicClock(),
                 workBudget: budget
             )
             let scanner = GraphEdgeScanner(
@@ -172,7 +178,7 @@ struct GraphPhysicalReadBudgetTests {
             )
             var edges: [EdgeInfo] = []
 
-            for try await edge in scanner.batchScanOutgoing(
+            var cursor = scanner.batchScanOutgoing(
                 from: [
                     .identifier("source-1"),
                     .identifier("source-0"),
@@ -180,7 +186,8 @@ struct GraphPhysicalReadBudgetTests {
                 ],
                 edgeLabel: .identifier("edge"),
                 transaction: recording
-            ) {
+            ).makeCursor()
+            while let edge = try await cursor.next() {
                 edges.append(edge)
             }
 
@@ -209,7 +216,10 @@ struct GraphPhysicalReadBudgetTests {
                 metrics: metrics
             )
             let traverser = try GraphTraverser(
-                snapshot: GraphReadSnapshot(transaction: recording),
+                snapshot: GraphReadSnapshot(
+                    transaction: recording,
+                    monotonicClock: TestProcessMonotonicClock()
+                ),
                 subspace: seededIndex.subspace
             )
             var iterator = traverser.neighbors(
@@ -243,7 +253,10 @@ struct GraphPhysicalReadBudgetTests {
                 metrics: metrics
             )
             let traverser = try GraphTraverser(
-                snapshot: GraphReadSnapshot(transaction: recording),
+                snapshot: GraphReadSnapshot(
+                    transaction: recording,
+                    monotonicClock: TestProcessMonotonicClock()
+                ),
                 subspace: seededIndex.subspace,
                 configuration: GraphTraverserConfiguration(
                     maximumDepth: 2,
@@ -252,10 +265,11 @@ struct GraphPhysicalReadBudgetTests {
             )
             var steps: [GraphTraversalStep] = []
 
-            for try await step in traverser.traverse(
+            var cursor = traverser.traverse(
                 from: .identifier("A"),
                 edgeLabel: .identifier("edge")
-            ) {
+            ).makeCursor()
+            while let step = try await cursor.next() {
                 steps.append(step)
             }
 
@@ -280,7 +294,10 @@ struct GraphPhysicalReadBudgetTests {
 
         try await seededIndex.engine.withTransaction { transaction in
             let traverser = try GraphTraverser(
-                snapshot: GraphReadSnapshot(transaction: transaction),
+                snapshot: GraphReadSnapshot(
+                    transaction: transaction,
+                    monotonicClock: TestProcessMonotonicClock()
+                ),
                 subspace: seededIndex.subspace,
                 configuration: GraphTraverserConfiguration(
                     maximumDepth: 1,
@@ -317,6 +334,7 @@ struct GraphPhysicalReadBudgetTests {
             let traverser = try GraphTraverser(
                 snapshot: GraphReadSnapshot(
                     transaction: transaction,
+                    monotonicClock: TestProcessMonotonicClock(),
                     workBudget: budget
                 ),
                 subspace: seededIndex.subspace
@@ -355,7 +373,10 @@ struct GraphPhysicalReadBudgetTests {
                 metrics: metrics
             )
             let finder = ShortestPathFinder(
-                snapshot: GraphReadSnapshot(transaction: recording),
+                snapshot: GraphReadSnapshot(
+                    transaction: recording,
+                    monotonicClock: TestProcessMonotonicClock()
+                ),
                 subspace: seededIndex.subspace,
                 configuration: ShortestPathConfiguration(
                     maxDepth: 1,
@@ -392,6 +413,7 @@ struct GraphPhysicalReadBudgetTests {
             let finder = ShortestPathFinder(
                 snapshot: GraphReadSnapshot(
                     transaction: transaction,
+                    monotonicClock: TestProcessMonotonicClock(),
                     workBudget: budget
                 ),
                 subspace: seededIndex.subspace,
@@ -589,8 +611,6 @@ struct GraphPhysicalReadBudgetTests {
 
     private final class RecordingTransaction: TransactionAccess, Sendable {
         struct RangeResult: TransactionRangeResult {
-            typealias Element = (ByteString, ByteString)
-
             let underlying: any TransactionAccess
             let begin: KeySelector
             let end: KeySelector
@@ -600,8 +620,8 @@ struct GraphPhysicalReadBudgetTests {
             let streamingMode: StreamingMode
             let metrics: RangeMetrics
 
-            func makeAsyncIterator() -> AsyncIterator {
-                AsyncIterator(
+            func makeCursor() -> Cursor {
+                Cursor(
                     cursor: underlying.rangeCursor(
                         from: begin,
                         to: end,
@@ -614,11 +634,11 @@ struct GraphPhysicalReadBudgetTests {
                 )
             }
 
-            struct AsyncIterator: TransactionRangeIterator {
+            struct Cursor: TransactionRangeCursor {
                 var cursor: KeyValueCursor
                 let metrics: RangeMetrics
 
-                mutating func next() async throws -> Element? {
+                mutating func next() async throws -> (ByteString, ByteString)? {
                     guard let element = try await cursor.next() else {
                         return nil
                     }
@@ -653,20 +673,24 @@ struct GraphPhysicalReadBudgetTests {
             try await underlying.getValue(for: key, snapshot: snapshot)
         }
 
+        func getValue(for key: ByteString) async throws -> ByteString? {
+            try await underlying.getValue(for: key)
+        }
+
         func getKey(selector: KeySelector, snapshot: Bool) async throws -> ByteString? {
             try await underlying.getKey(selector: selector, snapshot: snapshot)
         }
 
-        func getRange(
+        func rangeCursor(
             from begin: KeySelector,
             to end: KeySelector,
             limit: Int,
             reverse: Bool,
             snapshot: Bool,
             streamingMode: StreamingMode
-        ) -> RangeResult {
+        ) -> KeyValueCursor {
             metrics.recordCall(limit: limit)
-            return RangeResult(
+            return KeyValueCursor(consuming: RangeResult(
                 underlying: underlying,
                 begin: begin,
                 end: end,
@@ -675,7 +699,7 @@ struct GraphPhysicalReadBudgetTests {
                 snapshot: snapshot,
                 streamingMode: streamingMode,
                 metrics: metrics
-            )
+            ))
         }
 
         func setValue(_ value: ByteString, for key: ByteString) throws {

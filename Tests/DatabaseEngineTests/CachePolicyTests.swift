@@ -4,6 +4,7 @@ import Testing
 import TestHeartbeat
 import Foundation
 import StorageKit
+import StorageKitSystemClock
 import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
@@ -25,7 +26,7 @@ struct CachePolicyTests {
 
     @Test("CachePolicy.server returns nil from cache")
     func serverPolicyReturnsNilFromCache() {
-        let cache = ReadVersionCache()
+        let cache = ReadVersionCache(monotonicClock: SystemStorageClock())
         cache.updateFromCommit(version: 12345)
 
         // .server should not use cache
@@ -35,7 +36,7 @@ struct CachePolicyTests {
 
     @Test("CachePolicy.cached returns cached version (no time limit)")
     func cachedPolicyReturnsCachedVersion() {
-        let cache = ReadVersionCache()
+        let cache = ReadVersionCache(monotonicClock: SystemStorageClock())
         cache.updateFromCommit(version: 12345)
 
         // .cached should return cached version regardless of age
@@ -45,21 +46,21 @@ struct CachePolicyTests {
 
     @Test("CachePolicy.stale(N) returns version if fresh enough")
     func stalePolicyReturnsVersionIfFresh() {
-        let cache = ReadVersionCache()
+        let cache = ReadVersionCache(monotonicClock: SystemStorageClock())
         cache.updateFromCommit(version: 12345)
 
-        // .stale(30) should return cached version (just created, age < 30s)
-        let result = cache.getCachedVersion(policy: .stale(30))
+        // .stale(.seconds(30)) should return cached version (just created, age < 30s)
+        let result = cache.getCachedVersion(policy: .stale(.seconds(30)))
         #expect(result == 12345)
     }
 
-    @Test("CachePolicy.stale(0) returns nil immediately")
+    @Test("CachePolicy.stale(.zero) returns nil immediately")
     func staleZeroPolicyReturnsNil() {
-        let cache = ReadVersionCache()
+        let cache = ReadVersionCache(monotonicClock: SystemStorageClock())
         cache.updateFromCommit(version: 12345)
 
-        // .stale(0) should return nil (cache is already older than 0 seconds)
-        let result = cache.getCachedVersion(policy: .stale(0))
+        // .stale(.zero) should return nil (cache is already older than 0 seconds)
+        let result = cache.getCachedVersion(policy: .stale(.zero))
         #expect(result == nil)
     }
 
@@ -69,8 +70,8 @@ struct CachePolicyTests {
     func policyDescriptions() {
         #expect(CachePolicy.server.description == "CachePolicy.server")
         #expect(CachePolicy.cached.description == "CachePolicy.cached")
-        #expect(CachePolicy.stale(30).description == "CachePolicy.stale(30s)")
-        #expect(CachePolicy.stale(60).description == "CachePolicy.stale(60s)")
+        #expect(CachePolicy.stale(.seconds(30)).description == "CachePolicy.stale(30s)")
+        #expect(CachePolicy.stale(.seconds(60)).description == "CachePolicy.stale(60s)")
     }
 
     // MARK: - CachePolicy Equatable Tests
@@ -79,9 +80,9 @@ struct CachePolicyTests {
     func policyEquatable() {
         #expect(CachePolicy.server == CachePolicy.server)
         #expect(CachePolicy.cached == CachePolicy.cached)
-        #expect(CachePolicy.stale(30) == CachePolicy.stale(30))
+        #expect(CachePolicy.stale(.seconds(30)) == CachePolicy.stale(.seconds(30)))
         #expect(CachePolicy.server != CachePolicy.cached)
-        #expect(CachePolicy.stale(30) != CachePolicy.stale(60))
+        #expect(CachePolicy.stale(.seconds(30)) != CachePolicy.stale(.seconds(60)))
     }
 
     // MARK: - CachePolicy Hashable Tests
@@ -91,8 +92,8 @@ struct CachePolicyTests {
         var set = Set<CachePolicy>()
         set.insert(.server)
         set.insert(.cached)
-        set.insert(.stale(30))
-        set.insert(.stale(30))  // Duplicate
+        set.insert(.stale(.seconds(30)))
+        set.insert(.stale(.seconds(30)))  // Duplicate
         #expect(set.count == 3)
     }
 
@@ -111,8 +112,8 @@ struct CachePolicyTests {
         #expect(query.cachePolicy == .server)
 
         let query2 = Query<CachePolicyEntity>()
-            .cachePolicy(.stale(60))
-        #expect(query2.cachePolicy == .stale(60))
+            .cachePolicy(.stale(.seconds(60)))
+        #expect(query2.cachePolicy == .stale(.seconds(60)))
     }
 
     @Test("Query.cachePolicy() can be chained with other methods")
@@ -137,7 +138,7 @@ struct CachePolicyTests {
             entities: [try CachePolicyEntity.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .disabled)
         let context = container.newContext()
 
         // Create executor with cache policy
@@ -157,17 +158,17 @@ struct CachePolicyTests {
             entities: [try CachePolicyEntity.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .disabled)
         let context = container.newContext()
 
         // Chain cache policy with other query methods
         let executor = context.fetch(CachePolicyEntity.self)
             .where(CachePolicyEntity.fields.value > Int64(10))
-            .cachePolicy(.stale(30))
+            .cachePolicy(.stale(.seconds(30)))
             .orderBy(CachePolicyEntity.fields.value)
             .limit(5)
 
-        #expect(executor.query.cachePolicy == .stale(30))
+        #expect(executor.query.cachePolicy == .stale(.seconds(30)))
         #expect(executor.query.fetchLimit == 5)
     }
 
@@ -182,7 +183,7 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -220,7 +221,7 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -253,7 +254,7 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -288,7 +289,7 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -311,9 +312,9 @@ struct CachePolicyTests {
                 .execute()
             #expect(cachedResults.count == 1)
 
-            // Test .stale(60)
+            // Test .stale(.seconds(60))
             let staleResults = try await context.fetch(CachePolicyEntity.self)
-                .cachePolicy(.stale(60))
+                .cachePolicy(.stale(.seconds(60)))
                 .where(CachePolicyEntity.fields.id == testId)
                 .execute()
             #expect(staleResults.count == 1)
@@ -331,7 +332,7 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -356,7 +357,7 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -397,7 +398,7 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .disabled)
             let context = container.newContext()
 
             // Insert test data
@@ -406,11 +407,11 @@ struct CachePolicyTests {
             try context.insert(model)
             try await context.save()
 
-            // Fetch with .stale(60) - should work within 60 second window
+            // Fetch with .stale(.seconds(60)) - should work within 60 second window
             let result = try await context.model(
                 for: testId,
                 as: CachePolicyEntity.self,
-                cachePolicy: .stale(60)
+                cachePolicy: .stale(.seconds(60))
             )
             #expect(result != nil)
             #expect(result?.value == 700)
@@ -426,7 +427,7 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [CachePolicyEntity.self]), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .disabled)
             let context = container.newContext()
 
             // Try to fetch non-existent ID with various cache policies

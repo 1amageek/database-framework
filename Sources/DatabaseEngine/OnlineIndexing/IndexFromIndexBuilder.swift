@@ -289,7 +289,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     var lastProcessedKey: ByteString? = nil
 
                     // Use .iterator for adaptive batching that respects transaction limits
-                    let sequence = try await transaction.collectRange(
+                    let sequence = try await TransactionRangeCollection.collect(using: transaction,
                         from: .firstGreaterOrEqual(bounds.begin),
                         to: .firstGreaterOrEqual(bounds.end),
                         limit: 0,
@@ -399,7 +399,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     var dataFetches = 0
 
                     // Use .iterator for adaptive batching that respects transaction limits
-                    let sequence = try await transaction.collectRange(
+                    let sequence = try await TransactionRangeCollection.collect(using: transaction,
                         from: .firstGreaterOrEqual(bounds.begin),
                         to: .firstGreaterOrEqual(bounds.end),
                         limit: 0,
@@ -608,7 +608,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
             var reservoir: [(key: ByteString, value: ByteString)] = []
             var itemsSeen = 0
 
-            let sequence = try await transaction.collectRange(
+            let sequence = try await TransactionRangeCollection.collect(using: transaction,
                 from: KeySelector.firstGreaterOrEqual(sourceRange.begin),
                 to: KeySelector.firstGreaterOrEqual(sourceRange.end),
                 limit: 0,

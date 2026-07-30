@@ -137,53 +137,15 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
         k: Int,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
-        guard queryVector.count == dimensions else {
-            throw VectorIndexError.dimensionMismatch(
-                expected: dimensions,
-                actual: queryVector.count
-            )
-        }
-
-        guard k > 0 else {
-            throw VectorIndexError.invalidArgument("k must be positive")
-        }
-
-        // Scan all vectors
-        let (begin, end) = subspace.range()
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            limit: 0,
-            reverse: false,
-            snapshot: true,
-            streamingMode: .wantAll
+        try await FlatVectorIndexReader(
+            subspace: subspace,
+            dimensions: dimensions,
+            metric: metric
+        ).search(
+            queryVector: queryVector,
+            k: k,
+            transaction: transaction
         )
-
-        var heap = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
-            maxSize: k,
-            heapType: .max,
-            comparator: { $0.distance > $1.distance }
-        )
-
-        for (key, value) in sequence {
-            let primaryKeyTuple: Tuple
-            do {
-                primaryKeyTuple = try subspace.unpack(key)
-            } catch {
-                throw VectorIndexError.invalidStructure("Invalid Flat vector primary key")
-            }
-            let primaryKey = try primaryKeyTuple.elements()
-
-            let vector = try VectorConversion.decodeFloatArray(value, expectedCount: dimensions)
-
-            // Calculate distance
-            let distance = calculateDistance(queryVector, vector)
-
-            // Insert into heap
-            heap.insert((primaryKey: primaryKey, distance: distance))
-        }
-
-        return heap.sorted()
     }
 
     // MARK: - Private Methods
@@ -229,17 +191,6 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
         return VectorConversion.floatArrayToBytes(floatArray)
     }
 
-    /// Calculate distance between two vectors using VectorConversion
-    private func calculateDistance(_ v1: [Float], _ v2: [Float]) -> Double {
-        switch metric {
-        case .cosine:
-            return VectorConversion.cosineDistance(v1, v2)
-        case .euclidean:
-            return VectorConversion.euclideanDistance(v1, v2)
-        case .dotProduct:
-            return VectorConversion.dotProductDistance(v1, v2)
-        }
-    }
 }
 
 // MARK: - Vector Index Errors

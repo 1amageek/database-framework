@@ -289,7 +289,7 @@ public final class UniquenessViolationTracker: Sendable {
         var violations: [UniquenessViolation] = []
         var count = 0
 
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
+        let sequence = try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
 
         for (_, value) in sequence {
             if let maxLimit = limit, count >= maxLimit {
@@ -325,7 +325,7 @@ public final class UniquenessViolationTracker: Sendable {
 
         var result: [String: [UniquenessViolation]] = [:]
 
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
+        let sequence = try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
 
         for (_, value) in sequence {
             let violation = try UniquenessViolationCodec.decode(value)
@@ -361,7 +361,7 @@ public final class UniquenessViolationTracker: Sendable {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
 
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
+        let sequence = try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
 
         for _ in sequence {
             return true
@@ -389,7 +389,7 @@ public final class UniquenessViolationTracker: Sendable {
         let (begin, end) = subspace.range()
 
         var count = 0
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
+        let sequence = try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
 
         for _ in sequence {
             count += 1
@@ -448,7 +448,7 @@ public final class UniquenessViolationTracker: Sendable {
         let (begin, end) = valueSubspace.range()
 
         var foundPrimaryKeys: [ByteString] = []
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
+        let sequence = try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
 
         for (key, _) in sequence {
             // Extract primary key from index key

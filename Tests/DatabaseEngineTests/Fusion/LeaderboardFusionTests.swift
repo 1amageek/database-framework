@@ -214,7 +214,7 @@ struct LeaderboardIntegrationTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try LeaderboardFusionScore.schemaEntity])
-        return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [LeaderboardFusionScore.self]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(LeaderboardFusionScore.self)]), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {

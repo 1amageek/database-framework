@@ -264,8 +264,8 @@ struct PolymorphicVectorMigrationFDBTests {
 
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV1.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicVectorPersonV1.self, FDBPolymorphicVectorOrganizationV1.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV1.self)]),
                 security: .disabled
             )
             let initialContext = initialContainer.newContext()
@@ -300,12 +300,9 @@ struct PolymorphicVectorMigrationFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV2.self,
                 migrationPlan: FDBPolymorphicVectorAddMigrationPlan.self,
-                configuration: .init(backend: .custom(engine)),
+                configuration: .testing(backend: .custom(engine)),
                 runtimeConfiguration: try Self.vectorRuntimeConfiguration(
-                    persistableTypes: [
-                        FDBPolymorphicVectorPersonV2.self,
-                        FDBPolymorphicVectorOrganizationV2.self,
-                    ]
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV2.self)]
                 ),
                 security: .disabled
             )
@@ -319,7 +316,7 @@ struct PolymorphicVectorMigrationFDBTests {
                 .query([1, 0, 0], k: 2)
                 .metric(.cosine)
                 .executePage()
-            let ids = Set(page.results.compactMap(Self.resultIDV2))
+            let ids = try Set(page.results.compactMap(Self.resultIDV2))
 
             #expect(ids == Set([anchor.id, organization.id]))
 
@@ -332,7 +329,7 @@ struct PolymorphicVectorMigrationFDBTests {
                 .query([1, 0, 0], k: 2)
                 .metric(.cosine)
                 .executePage()
-            let organizationStartedIDs = Set(organizationStartedPage.results.compactMap(Self.resultIDV2))
+            let organizationStartedIDs = try Set(organizationStartedPage.results.compactMap(Self.resultIDV2))
 
             #expect(organizationStartedIDs == Set([anchor.id, organization.id]))
         }
@@ -346,8 +343,8 @@ struct PolymorphicVectorMigrationFDBTests {
 
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV2.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [FDBPolymorphicVectorPersonV2.self, FDBPolymorphicVectorOrganizationV2.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV2.self)]),
                 security: .disabled
             )
             let context = initialContainer.newContext()
@@ -374,12 +371,9 @@ struct PolymorphicVectorMigrationFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV3.self,
                 migrationPlan: FDBPolymorphicVectorRebuildMigrationPlan.self,
-                configuration: .init(backend: .custom(engine)),
+                configuration: .testing(backend: .custom(engine)),
                 runtimeConfiguration: try Self.vectorRuntimeConfiguration(
-                    persistableTypes: [
-                        FDBPolymorphicVectorPersonV3.self,
-                        FDBPolymorphicVectorOrganizationV3.self,
-                    ]
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV3.self)]
                 ),
                 security: .disabled
             )
@@ -391,7 +385,7 @@ struct PolymorphicVectorMigrationFDBTests {
                 .query([1, 0, 0], k: 2)
                 .metric(.cosine)
                 .executePage()
-            let ids = Set(page.results.compactMap(Self.resultIDV3))
+            let ids = try Set(page.results.compactMap(Self.resultIDV3))
 
             #expect(ids == Set([person.id, organization.id]))
 
@@ -404,7 +398,7 @@ struct PolymorphicVectorMigrationFDBTests {
                 .query([1, 0, 0], k: 2)
                 .metric(.cosine)
                 .executePage()
-            let organizationStartedIDs = Set(organizationStartedPage.results.compactMap(Self.resultIDV3))
+            let organizationStartedIDs = try Set(organizationStartedPage.results.compactMap(Self.resultIDV3))
 
             #expect(organizationStartedIDs == Set([person.id, organization.id]))
             #expect(try await Self.countEntityVectorIndexEntries(container: migratedContainer) == 2)
@@ -413,15 +407,14 @@ struct PolymorphicVectorMigrationFDBTests {
     }
 
     private static func vectorRuntimeConfiguration(
-        persistableTypes: [any Persistable.Type]
+        entityRuntimes: [EntityRuntimeRegistration]
     ) throws -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
-            indexMaintainerProviders: [
-                VectorIndexMaintainerProvider()
+            indexMaintainerProviderDescriptors: [
+                .init(describing: VectorIndexMaintainerProvider())
             ],
-            indexReadExecutors: [VectorReadExecutors.indexExecutor],
-            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor],
-            persistableTypes: persistableTypes
+            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor()],
+            entityRuntimes: entityRuntimes
         )
     }
 
@@ -452,21 +445,21 @@ struct PolymorphicVectorMigrationFDBTests {
         }
     }
 
-    private static func resultIDV2(_ result: PolymorphicQueryResult) -> String? {
-        if let person = result.item(as: FDBPolymorphicVectorPersonV2.self) {
+    private static func resultIDV2(_ result: PolymorphicQueryResult) throws -> String? {
+        if let person = try result.decodedModel(as: FDBPolymorphicVectorPersonV2.self) {
             return person.id
         }
-        if let organization = result.item(as: FDBPolymorphicVectorOrganizationV2.self) {
+        if let organization = try result.decodedModel(as: FDBPolymorphicVectorOrganizationV2.self) {
             return organization.id
         }
         return nil
     }
 
-    private static func resultIDV3(_ result: PolymorphicQueryResult) -> String? {
-        if let person = result.item(as: FDBPolymorphicVectorPersonV3.self) {
+    private static func resultIDV3(_ result: PolymorphicQueryResult) throws -> String? {
+        if let person = try result.decodedModel(as: FDBPolymorphicVectorPersonV3.self) {
             return person.id
         }
-        if let organization = result.item(as: FDBPolymorphicVectorOrganizationV3.self) {
+        if let organization = try result.decodedModel(as: FDBPolymorphicVectorOrganizationV3.self) {
             return organization.id
         }
         return nil
@@ -477,11 +470,11 @@ struct PolymorphicVectorMigrationFDBTests {
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 

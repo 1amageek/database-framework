@@ -14,64 +14,12 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct GameScore: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct GameScore {
+    var id: String = UUID().uuidString
     var playerId: String
     var score: Int64
-    var region: String
-
-    init(id: String = UUID().uuidString, playerId: String, score: Int64, region: String = "global") {
-        self.id = id
-        self.playerId = playerId
-        self.score = score
-        self.region = region
-    }
-
-    static var persistableType: String { "GameScore" }
-    static var allFields: [String] { ["id", "playerId", "score", "region"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "playerId": return playerId
-        case "score": return score
-        case "region": return region
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<GameScore, Value>) -> String {
-        switch keyPath {
-        case \GameScore.id: return "id"
-        case \GameScore.playerId: return "playerId"
-        case \GameScore.score: return "score"
-        case \GameScore.region: return "region"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<GameScore>) -> String {
-        switch keyPath {
-        case \GameScore.id: return "id"
-        case \GameScore.playerId: return "playerId"
-        case \GameScore.score: return "score"
-        case \GameScore.region: return "region"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<GameScore> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var region: String = "global"
 }
 
 // MARK: - Leaderboard Index Context
@@ -113,7 +61,10 @@ private struct LeaderboardIndexContext {
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
             window: window,
-            windowCount: windowCount
+            windowCount: windowCount,
+            wallClock: FixedTestWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 0)
+            )
         )
     }
 

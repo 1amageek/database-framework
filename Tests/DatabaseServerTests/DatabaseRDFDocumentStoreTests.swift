@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseRuntime
 import DatabaseEngine
 import DatabaseServer
@@ -18,8 +19,9 @@ struct DatabaseRDFDocumentStoreTests {
         let later = try quad(subject: "urn:z")
         let earlier = try quad(subject: "urn:a")
 
-        let firstPage = try await container.engine.withTransaction(
-            configuration: .batch
+        let firstPage = try await StorageTransactionExecutor(engine: container.engine).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             let revision = try await store.replace(
                 identifier: "urn:calendar",
@@ -43,8 +45,9 @@ struct DatabaseRDFDocumentStoreTests {
         #expect(firstPage?.quads.count == 1)
         #expect(firstPage?.nextOffset == 1)
 
-        let secondPage = try await container.engine.withTransaction(
-            configuration: .readOnly
+        let secondPage = try await StorageTransactionExecutor(engine: container.engine).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await store.page(
                 identifier: "urn:calendar",
@@ -65,7 +68,10 @@ struct DatabaseRDFDocumentStoreTests {
             container: container,
             namespace: "shacl"
         )
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: container.engine).withTransaction(
+                configuration: .batch,
+                clock: TestProcessMonotonicClock()
+            ) { transaction in
             _ = try await store.replace(
                 identifier: "urn:shapes",
                 auxiliaryIdentifiers: [],
@@ -76,7 +82,10 @@ struct DatabaseRDFDocumentStoreTests {
         }
 
         await #expect(throws: DatabaseRDFDocumentStoreError.self) {
-            try await container.engine.withTransaction(configuration: .batch) { transaction in
+            try await StorageTransactionExecutor(engine: container.engine).withTransaction(
+                configuration: .batch,
+                clock: TestProcessMonotonicClock()
+            ) { transaction in
                 _ = try await store.replace(
                     identifier: "urn:shapes",
                     auxiliaryIdentifiers: [],
@@ -87,8 +96,9 @@ struct DatabaseRDFDocumentStoreTests {
             }
         }
 
-        let deletedRevision = try await container.engine.withTransaction(
-            configuration: .batch
+        let deletedRevision = try await StorageTransactionExecutor(engine: container.engine).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await store.delete(
                 identifier: "urn:shapes",
@@ -98,8 +108,9 @@ struct DatabaseRDFDocumentStoreTests {
         }
         #expect(deletedRevision == 2)
 
-        let page = try await container.engine.withTransaction(
-            configuration: .readOnly
+        let page = try await StorageTransactionExecutor(engine: container.engine).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await store.page(
                 identifier: "urn:shapes",
@@ -110,8 +121,9 @@ struct DatabaseRDFDocumentStoreTests {
         }
         #expect(page == nil)
 
-        let recreatedRevision = try await container.engine.withTransaction(
-            configuration: .batch
+        let recreatedRevision = try await StorageTransactionExecutor(engine: container.engine).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await store.replace(
                 identifier: "urn:shapes",
@@ -130,9 +142,9 @@ struct DatabaseRDFDocumentStoreTests {
                 entities: [try DatabaseEndpointEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseEndpointEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .disabled
         )

@@ -105,9 +105,9 @@ struct MinMaxAggregationQueryTests {
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [MinimumOrder.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(MinimumOrder.self)]
             ),
             security: .disabled
         )
@@ -163,9 +163,9 @@ struct MinMaxAggregationQueryTests {
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [MaximumOrder.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(MaximumOrder.self)]
             ),
             security: .disabled
         )
@@ -221,9 +221,9 @@ struct MinMaxAggregationQueryTests {
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [MixedAggregationOrder.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(MixedAggregationOrder.self)]
             ),
             security: .disabled
         )
@@ -308,9 +308,9 @@ struct MinMaxAggregationQueryTests {
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [Int64AggregationOrder.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(Int64AggregationOrder.self)]
             ),
             security: .disabled
         )

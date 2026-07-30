@@ -47,7 +47,10 @@ extension DatabaseContext {
         as type: T.Type,
         budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> [T] {
-        let workMeter = DatabaseWorkMeter(budget: budget)
+        let workMeter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: container.monotonicClock
+        )
         // 1. Parse SQL string
         let parser = SQLParser()
         let statement = try parser.parse(sql)
@@ -68,6 +71,7 @@ extension DatabaseContext {
             rewrittenQuery,
             execution: ReadExecutionContext(
                 options: ReadExecutionOptions(budget: budget),
+                monotonicClock: container.monotonicClock,
                 workMeter: workMeter
             )
         )

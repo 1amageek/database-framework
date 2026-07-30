@@ -91,64 +91,12 @@ private func benchmarkPermutedIndexMetadata(
 
 // MARK: - Benchmark Model
 
-private struct BenchmarkLocation: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+private struct BenchmarkLocation {
+    var id: String = UUID().uuidString
     var country: String
     var city: String
     var name: String
-
-    init(id: String = UUID().uuidString, country: String, city: String, name: String) {
-        self.id = id
-        self.country = country
-        self.city = city
-        self.name = name
-    }
-
-    static var persistableType: String { "BenchmarkLocation" }
-    static var allFields: [String] { ["id", "country", "city", "name"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "country": return country
-        case "city": return city
-        case "name": return name
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BenchmarkLocation, Value>) -> String {
-        switch keyPath {
-        case \BenchmarkLocation.id: return "id"
-        case \BenchmarkLocation.country: return "country"
-        case \BenchmarkLocation.city: return "city"
-        case \BenchmarkLocation.name: return "name"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BenchmarkLocation>) -> String {
-        switch keyPath {
-        case \BenchmarkLocation.id: return "id"
-        case \BenchmarkLocation.country: return "country"
-        case \BenchmarkLocation.city: return "city"
-        case \BenchmarkLocation.name: return "name"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BenchmarkLocation> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 // MARK: - Test Data

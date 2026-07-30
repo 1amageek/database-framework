@@ -209,7 +209,7 @@ public struct RangeSet: Sendable {
     /// Get bounds for the next batch to process
     ///
     /// Returns the start/end keys for the next batch. The caller should use
-    /// `getRange(begin:end:limit:)` to actually limit the batch size.
+    /// `rangeCursor(from:to:limit:)` to actually limit the batch size.
     ///
     /// - Returns: Batch bounds with range index, or nil if all complete
     public func nextBatchBounds() -> BatchBounds? {

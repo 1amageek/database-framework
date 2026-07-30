@@ -26,7 +26,21 @@ public struct PolymorphicQueryResult: Sendable {
     public func decode<Concrete: Persistable>(
         as type: Concrete.Type
     ) throws -> Concrete {
-        try model.decode(as: type)
+        guard typeName == Concrete.persistableType else {
+            throw PolymorphicQueryError.unexpectedType(
+                expected: Concrete.persistableType,
+                actual: typeName
+            )
+        }
+        return try model.decode(as: type)
+    }
+
+    /// Decodes this result only when its concrete persisted type matches.
+    public func decodedModel<Concrete: Persistable>(
+        as type: Concrete.Type
+    ) throws -> Concrete? {
+        guard typeName == Concrete.persistableType else { return nil }
+        return try model.decode(as: type)
     }
 }
 
@@ -50,6 +64,7 @@ public struct PolymorphicQueryPage: Sendable {
 public enum PolymorphicQueryError: Error, Sendable, CustomStringConvertible {
     case missingTypeName
     case unknownType(String)
+    case unexpectedType(expected: String, actual: String)
 
     public var description: String {
         switch self {
@@ -57,6 +72,8 @@ public enum PolymorphicQueryError: Error, Sendable, CustomStringConvertible {
             return "Polymorphic query row is missing the _typeName annotation."
         case .unknownType(let typeName):
             return "Polymorphic query row references unknown schema type '\(typeName)'."
+        case .unexpectedType(let expected, let actual):
+            return "Expected polymorphic type '\(expected)' but received '\(actual)'."
         }
     }
 }

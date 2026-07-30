@@ -2,6 +2,7 @@ import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
+import StorageKit
 
 struct DatabaseEntityMutationExecutor: Sendable {
     private let container: DBContainer
@@ -41,7 +42,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
         result.reserveCapacity(changes.count)
         for change in changes {
             try workMeter.consume(at: .validation)
-            let model: (any Persistable)?
+            let model: PersistedModel?
             switch change.kind {
             case .delete:
                 guard change.fields.isEmpty else {
@@ -57,11 +58,11 @@ struct DatabaseEntityMutationExecutor: Sendable {
                 }) else {
                     throw DatabaseMutationError.unknownEntity(change.identity.entity)
                 }
-                guard let type = container.runtimeConfiguration
-                    .entityRuntimes.modelType(named: entity.name) else {
+                guard let runtime = container.runtimeConfiguration
+                    .entityRuntimes.registration(named: entity.name) else {
                     throw DatabaseMutationError.entityHasNoPersistableType(change.identity.entity)
                 }
-                model = try type.decodePersistedObject(change.fields)
+                model = try runtime.persistedModel(from: change.fields)
             }
             let resolved = try ResolvedEntityReference.resolve(
                 change.identity,
@@ -180,6 +181,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
                 }
                 mutations.append(
                     .save(
+                        identity: prepared.change.identity,
                         model: model,
                         precondition: writePrecondition(
                             for: prepared.change,
@@ -197,6 +199,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
                 }
                 mutations.append(
                     .delete(
+                        identity: prepared.change.identity,
                         model: model,
                         precondition: writePrecondition(
                             for: prepared.change,
@@ -376,16 +379,15 @@ struct DatabaseEntityMutationExecutor: Sendable {
     }
 
     private func entityVersion(
-        _ model: any Persistable
+        _ model: PersistedModel
     ) throws -> ByteString {
-        let fields = try DatabaseEntityProjection.persistedFields(for: model)
-        return try PersistableVersionTokenCodec.digest(fields: fields)
+        try PersistableVersionTokenCodec.digest(fields: model.fields)
     }
 
     struct PreparedChange: Sendable {
         let change: MutationExecuteOperation.Change
         let resolved: ResolvedEntityReference
-        let model: (any Persistable)?
+        let model: PersistedModel?
 
         var key: ResolvedEntityReference.Key {
             ResolvedEntityReference.Key(

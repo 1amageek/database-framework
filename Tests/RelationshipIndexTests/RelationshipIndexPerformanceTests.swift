@@ -91,8 +91,8 @@ struct RelationshipIndexPerformanceTests {
 
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PerfCustomer.self, PerfOrder.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PerfCustomer.self), try DatabaseFrameworkRuntime.entity(PerfOrder.self)]),
             security: .disabled
             )
 

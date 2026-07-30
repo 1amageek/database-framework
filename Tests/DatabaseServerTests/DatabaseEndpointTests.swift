@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseRuntime
 import DatabaseEngine
 import DatabaseServer
@@ -291,9 +292,9 @@ struct DatabaseEndpointTests {
         )
         return try await DBContainer.open(
             for: schema,
-            configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseEndpointEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .disabled
         )

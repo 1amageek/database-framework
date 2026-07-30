@@ -19,23 +19,26 @@ public final class RelationshipMaintainer: Sendable {
     }
 
     public func enforceDeleteRules(
-        for item: any Persistable,
+        for item: PersistedModel,
+        identity: EntityReference,
         context: borrowing PersistableMutationContext
     ) async throws {
         var state = EnforcementState(maximumWorkUnits: maximumWorkUnits)
         try await enforceDeleteRules(
             for: item,
+            identity: identity,
             context: context,
             state: &state
         )
     }
 
     private func enforceDeleteRules(
-        for item: any Persistable,
+        for item: PersistedModel,
+        identity: EntityReference,
         context: borrowing PersistableMutationContext,
         state: inout EnforcementState
     ) async throws {
-        let target = try EntityReferenceEncoder.encode(item)
+        let target = identity
         guard !state.visited.contains(target),
               try await !RelationshipDeleteMarker.isMarked(
                 target,
@@ -60,7 +63,7 @@ public final class RelationshipMaintainer: Sendable {
                     context: context,
                     state: &state
                 )
-                var active: [(EntityReference, any Persistable)] = []
+                var active: [(EntityReference, PersistedModel)] = []
                 let resolver = RelationshipReferenceResolver(schema: schema)
                 for identity in owners {
                     if try await context.isDeletionScheduled(for: identity) {
@@ -100,6 +103,7 @@ public final class RelationshipMaintainer: Sendable {
                     case .cascade:
                         try await enforceDeleteRules(
                             for: owner,
+                            identity: identity,
                             context: context,
                             state: &state
                         )

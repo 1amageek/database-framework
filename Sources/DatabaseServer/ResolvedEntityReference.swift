@@ -5,7 +5,6 @@ import StorageKit
 
 struct ResolvedEntityReference: Sendable {
     let identity: EntityReference
-    let persistableType: any Persistable.Type
     let id: Tuple
     let partition: AnyDirectoryPath?
     let partitionPath: [String]
@@ -13,29 +12,29 @@ struct ResolvedEntityReference: Sendable {
     static func resolve(
         _ identity: EntityReference,
         container: DBContainer,
-        model: (any Persistable)? = nil
+        model: PersistedModel? = nil
     ) throws -> Self {
         guard let entity = container.schema.entities.first(where: { $0.name == identity.entity }) else {
             throw DatabaseMutationError.unknownEntity(identity.entity)
         }
-        guard let persistableType = container.runtimeConfiguration
-            .entityRuntimes.modelType(named: entity.name) else {
+        guard let runtime = container.runtimeConfiguration
+            .entityRuntimes.registration(named: entity.name) else {
             throw DatabaseMutationError.entityHasNoPersistableType(identity.entity)
         }
         let id: Tuple
         do {
             id = try PersistableIdentifierKeyCodec.tuple(
                 for: identity,
-                expectedType: persistableType.persistableIdentifierType
+                expectedType: entity.identifierType
             )
         } catch {
             throw DatabaseMutationError.invalidPersistableIdentifier(
                 entity: identity.entity,
-                reason: String(describing: error)
+                reason: "Identifier does not match the compiled entity schema"
             )
         }
         if let model {
-            let modelType = type(of: model).persistableType
+            let modelType = model.entity
             guard modelType == identity.entity else {
                 throw DatabaseMutationError.entityTypeMismatch(
                     expected: identity.entity,
@@ -44,7 +43,7 @@ struct ResolvedEntityReference: Sendable {
             }
             let encodedIdentity: EntityReference
             do {
-                encodedIdentity = try EntityReferenceEncoder.encode(model)
+                encodedIdentity = try runtime.identity(for: model)
             } catch {
                 throw DatabaseMutationError.persistableIdentityMismatch(
                     identity
@@ -69,14 +68,13 @@ struct ResolvedEntityReference: Sendable {
         } catch {
             throw DatabaseMutationError.invalidPartition(
                 entity: identity.entity,
-                reason: String(describing: error)
+                reason: "Partition does not match the compiled entity schema"
             )
         }
 
         let partitionPath = partition?.resolve() ?? []
         return Self(
             identity: identity,
-            persistableType: persistableType,
             id: id,
             partition: partition,
             partitionPath: partitionPath

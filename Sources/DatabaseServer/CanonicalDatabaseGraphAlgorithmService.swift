@@ -2,6 +2,7 @@ import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 import DatabaseEngine
 import GraphIndex
+import StorageKit
 
 public struct CanonicalDatabaseGraphAlgorithmService: DatabaseGraphAlgorithmService {
     let sourceResolver: any DatabaseGraphSourceResolving

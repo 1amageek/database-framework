@@ -14,7 +14,10 @@ struct TransactionRunnerRetryTests {
         let key: ByteString = [0xA0]
         let value: ByteString = [0x01]
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .batch,
+            clock: SystemStorageClock()
+        ) { transaction in
             try transaction.setValue(value, for: key)
         }
 
@@ -45,7 +48,7 @@ struct TransactionRunnerRetryTests {
     @Test("Portable timeout cancels once and never dispatches commit")
     func portableTimeoutCancelsOnceWithoutCommit() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .success)
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
 
         do {
             let _: Void = try await runner.run(
@@ -75,7 +78,7 @@ struct TransactionRunnerRetryTests {
             commitBehavior: .success,
             cancellationError: failure
         )
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
 
         do {
             let _: Void = try await runner.run(
@@ -101,7 +104,7 @@ struct TransactionRunnerRetryTests {
             commitBehavior: .success,
             cancellationError: RecordingCancellationFailure.rejected
         )
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
 
         do {
             let _: Void = try await runner.run(
@@ -125,7 +128,7 @@ struct TransactionRunnerRetryTests {
             commitBehavior: .success,
             cancellationError: RecordingCancellationFailure.rejected
         )
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
 
         do {
             let _: Void = try await runner.run(
@@ -163,7 +166,7 @@ struct TransactionRunnerRetryTests {
         let engine = RecordingTransactionEngine(
             commitBehavior: .storageFailure(unknown)
         )
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let bodyAttempts = AttemptCounter()
 
         do {
@@ -187,7 +190,7 @@ struct TransactionRunnerRetryTests {
     @Test("Bare commit cancellation is normalized to an unknown result")
     func bareCommitCancellationBecomesCommitUnknown() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .cancellation)
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
 
         do {
             let _: Void = try await runner.run(
@@ -209,7 +212,7 @@ struct TransactionRunnerRetryTests {
         let engine = RecordingTransactionEngine(
             commitBehavior: .delayedSuccess(.milliseconds(30))
         )
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let task = Task {
             try await runner.run(configuration: .default) { _ in "committed" }
         }
@@ -229,7 +232,7 @@ struct TransactionRunnerRetryTests {
         let engine = RecordingTransactionEngine(
             commitBehavior: .delayedSuccess(.milliseconds(30))
         )
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
 
         let result = try await runner.run(
             configuration: TransactionConfiguration(
@@ -249,7 +252,7 @@ struct TransactionRunnerRetryTests {
     func inheritedDeadlineBoundsUnconfiguredTimeout() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .success)
         let clock = SystemStorageClock()
-        let runner = TransactionRunner(database: engine, clock: clock)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: clock)
         let deadline = TransactionExecutionDeadline(
             instant: clock.now.advanced(by: .milliseconds(10)),
             timeoutMilliseconds: 10
@@ -277,7 +280,7 @@ struct TransactionRunnerRetryTests {
     func expiredInheritedDeadlinePrecedesTransactionCreation() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .success)
         let clock = SystemStorageClock()
-        let runner = TransactionRunner(database: engine, clock: clock)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: clock)
         let deadline = TransactionExecutionDeadline(
             instant: clock.now.advanced(by: .milliseconds(-1)),
             timeoutMilliseconds: .max
@@ -301,7 +304,7 @@ struct TransactionRunnerRetryTests {
     func inheritedDeadlineSpansRetries() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .success)
         let clock = SystemStorageClock()
-        let runner = TransactionRunner(database: engine, clock: clock)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: clock)
         let attempts = AttemptCounter()
         let deadline = TransactionExecutionDeadline(
             instant: clock.now.advanced(by: .milliseconds(100)),
@@ -333,7 +336,7 @@ struct TransactionRunnerRetryTests {
 
     @Test("Portable deadline is shared by every retry attempt")
     func portableDeadlineSpansRetries() async throws {
-        let runner = TransactionRunner(database: InMemoryEngine())
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: InMemoryEngine()), clock: SystemStorageClock())
         let attempts = AttemptCounter()
 
         do {
@@ -362,7 +365,7 @@ struct TransactionRunnerRetryTests {
     @Test("Mutation aggregate overflow cancels without publishing writes")
     func mutationAggregateOverflowRollsBack() async throws {
         let engine = InMemoryEngine()
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let key: ByteString = [0xA0]
 
         do {
@@ -389,7 +392,7 @@ struct TransactionRunnerRetryTests {
     @Test("Mutation aggregate meter is fresh for every retry attempt")
     func mutationAggregateMeterIsAttemptScoped() async throws {
         let engine = InMemoryEngine()
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let attempts = AttemptCounter()
         let key: ByteString = [0xA1]
 
@@ -416,7 +419,7 @@ struct TransactionRunnerRetryTests {
     @Test("Mutation admission remains attached across detached tasks")
     func detachedTaskCannotBypassMutationAdmission() async throws {
         let engine = InMemoryEngine()
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let key: ByteString = [0xA2]
 
         do {
@@ -443,8 +446,8 @@ struct TransactionRunnerRetryTests {
     @Test("Nested transaction runners fail before creating a child attempt")
     func nestedTransactionRunnerIsRejected() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .success)
-        let outer = TransactionRunner(database: engine)
-        let inner = TransactionRunner(database: engine)
+        let outer = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
+        let inner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
 
         try await outer.run(configuration: .default) { _ in
             do {
@@ -462,7 +465,7 @@ struct TransactionRunnerRetryTests {
     @Test("Invalid execution policy fails before transaction creation")
     func invalidPolicyFailsBeforeCreatingTransaction() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .success)
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
 
         do {
             let _: Void = try await runner.run(
@@ -478,8 +481,8 @@ struct TransactionRunnerRetryTests {
     @Test("Read versions are captured before commit and version zero is valid")
     func readVersionCachePublishesZeroAfterCommit() async throws {
         let engine = RecordingTransactionEngine(commitBehavior: .success)
-        let runner = TransactionRunner(database: engine)
-        let cache = ReadVersionCache()
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
+        let cache = ReadVersionCache(monotonicClock: SystemStorageClock())
         cache.updateFromCommit(version: 999)
 
         let result = try await runner.run(
@@ -498,7 +501,7 @@ struct TransactionRunnerRetryTests {
     @Test("Retries retryable storage errors and then succeeds")
     func retriesRetryableStorageErrorsAndSucceeds() async throws {
         let engine = InMemoryEngine()
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let attempts = AttemptCounter()
 
         let result = try await runner.run(
@@ -519,7 +522,7 @@ struct TransactionRunnerRetryTests {
     @Test("Retries retryable createTransaction errors and then succeeds")
     func retriesRetryableCreateTransactionErrorsAndSucceeds() async throws {
         let engine = FlakyCreateTransactionEngine(failuresBeforeSuccess: 2)
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let bodyAttempts = AttemptCounter()
 
         let result = try await runner.run(
@@ -539,7 +542,7 @@ struct TransactionRunnerRetryTests {
     @Test("Preserves the last storage error after the attempt limit")
     func preservesLastStorageErrorAfterAttemptLimit() async throws {
         let engine = InMemoryEngine()
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let attempts = AttemptCounter()
 
         do {
@@ -561,7 +564,7 @@ struct TransactionRunnerRetryTests {
     @Test("Cancellation during backoff is not retried")
     func cancellationDuringBackoffIsNotRetried() async throws {
         let engine = InMemoryEngine()
-        let runner = TransactionRunner(database: engine)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let attempts = AttemptCounter()
 
         let task = Task {
@@ -591,9 +594,14 @@ struct TransactionRunnerRetryTests {
     func instrumentedTransactionsUseSharedRunnerRetryPolicy() async throws {
         let engine = InMemoryEngine()
         let attempts = AttemptCounter()
-        let timer = StoreTimer(emitMetrics: false)
+        let clock = SystemStorageClock()
+        let timer = StoreTimer(monotonicClock: clock)
+        let executor = StorageTransactionExecutor(engine: engine)
 
-        let (result, metrics) = try await engine.withInstrumentedTransaction(timer: timer) { tx in
+        let (result, metrics) = try await executor.withInstrumentedTransaction(
+            timer: timer,
+            clock: clock
+        ) { tx in
             let attempt = attempts.increment()
             if attempt == 1 {
                 throw StorageError.transactionConflict
@@ -804,6 +812,7 @@ private final class RecordingTransaction: Transaction, Sendable {
     private let cancellationError: (any Error)?
 
     var capabilities: TransactionCapabilities { underlying.capabilities }
+    var storageFailure: StorageError? { underlying.storageFailure }
     var mutationByteLimit: Int? { underlying.mutationByteLimit }
     var transactionDomain: StorageTransactionDomain {
         underlying.transactionDomain
@@ -829,15 +838,26 @@ private final class RecordingTransaction: Transaction, Sendable {
         try await underlying.getValue(for: key, snapshot: snapshot)
     }
 
-    func getRange(
+    func getValue(for key: ByteString) async throws -> ByteString? {
+        try await underlying.getValue(for: key)
+    }
+
+    func getKey(
+        selector: KeySelector,
+        snapshot: Bool
+    ) async throws -> ByteString? {
+        try await underlying.getKey(selector: selector, snapshot: snapshot)
+    }
+
+    func rangeCursor(
         from begin: KeySelector,
         to end: KeySelector,
         limit: Int,
         reverse: Bool,
         snapshot: Bool,
         streamingMode: StreamingMode
-    ) -> KeyValueRangeResult {
-        underlying.getRange(
+    ) -> KeyValueCursor {
+        underlying.rangeCursor(
             from: begin,
             to: end,
             limit: limit,

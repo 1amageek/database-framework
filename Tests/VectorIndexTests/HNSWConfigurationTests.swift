@@ -7,8 +7,13 @@ import Foundation
 import StorageKit
 import DatabaseKit
 import DatabaseTypes
+import TestSupport
 @testable import DatabaseEngine
 @testable import VectorIndex
+
+private func vectorTestWallClock() throws -> FixedTestWallClock {
+    FixedTestWallClock(now: Timestamp(secondsSinceUnixEpoch: 0))
+}
 
 // MARK: - Test Model
 
@@ -43,7 +48,8 @@ struct VectorIndexConfigurationSelectionTests {
             index: index,
             subspace: subspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            configurations: []
+            configurations: [],
+            wallClock: try vectorTestWallClock()
         )
 
         // Verify type via string description
@@ -75,7 +81,8 @@ struct VectorIndexConfigurationSelectionTests {
             index: index,
             subspace: subspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            configurations: [config]
+            configurations: [config],
+            wallClock: try vectorTestWallClock()
         )
 
         // Verify type via string description
@@ -107,7 +114,8 @@ struct VectorIndexConfigurationSelectionTests {
             index: index,
             subspace: subspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            configurations: [config]
+            configurations: [config],
+            wallClock: try vectorTestWallClock()
         )
 
         let typeString = String(describing: type(of: maintainer))
@@ -139,7 +147,8 @@ struct VectorIndexConfigurationSelectionTests {
             index: otherIndex,
             subspace: subspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            configurations: [config]
+            configurations: [config],
+            wallClock: try vectorTestWallClock()
         )
 
         let typeString = String(describing: type(of: maintainer))
@@ -606,6 +615,68 @@ struct HNSWBasicBehaviorTests {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
             try transaction.clearRange(beginKey: begin, endKey: end)
+        }
+    }
+
+    @Test("HNSW rejects an oversized persisted graph before loading chunks")
+    func testHNSWRejectsOversizedPersistedGraph() async throws {
+        let database = InMemoryEngine()
+        let testId = UUID().uuidString.prefix(8)
+        let subspace = Subspace(
+            prefix: Tuple("test", "hnsw", "oversizedMetadata", String(testId)).pack()
+        )
+        let indexSubspace = subspace
+            .subspace("I")
+            .subspace("HNSWDocument_embedding")
+        let specification = try VectorIndexSpecification(
+            vectorIndexMetadata(dimensions: 4, metric: .cosine)
+        )
+        let index = Index(
+            name: "HNSWDocument_embedding",
+            kind: specification.metadata,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            subspaceKey: "HNSWDocument_embedding",
+            itemTypes: Set(["HNSWDocument"])
+        )
+        let maintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: index,
+            dimensions: specification.dimensions,
+            metric: specification.metric,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: HNSWParameters(m: 16, efConstruction: 200),
+            resourceLimits: HNSWGraphResourceLimits(
+                maximumSnapshotByteCount: 1_024
+            )
+        )
+        let metadataKey = indexSubspace.pack(Tuple("_graphMetadata"))
+        let oversizedMetadata = Tuple(
+            Int64(1),
+            Int64(1_025),
+            Int64(80 * 1_024),
+            Int64(1),
+            Int64(1)
+        ).pack()
+
+        try await database.withTransaction { transaction in
+            try transaction.setValue(oversizedMetadata, for: metadataKey)
+        }
+
+        do {
+            _ = try await database.withTransaction { transaction in
+                try await maintainer.search(
+                    queryVector: [1.0, 0.0, 0.0, 0.0],
+                    k: 1,
+                    transaction: transaction
+                )
+            }
+            Issue.record("Expected the oversized graph metadata to be rejected")
+        } catch let error as VectorIndexError {
+            guard case .invalidStructure(let message) = error else {
+                Issue.record("Expected an invalid HNSW graph structure")
+                return
+            }
+            #expect(message.contains("configured byte limit"))
         }
     }
 

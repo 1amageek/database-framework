@@ -9,10 +9,6 @@ public final class DatabaseMaintenanceOperationServiceFactory:
         self.identifierGenerator = AnyDatabaseUUIDGenerator(identifierGenerator)
     }
 
-    public convenience init() {
-        self.init(identifierGenerator: RandomDatabaseUUIDGenerator())
-    }
-
     public func makeMaintenanceService(
         context: DatabaseServerServiceContext
     ) async throws -> AnyDatabaseMaintenanceService {

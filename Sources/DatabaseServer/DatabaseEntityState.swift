@@ -2,9 +2,9 @@ import DatabaseKit
 
 enum DatabaseEntityState: Sendable {
     case missing
-    case present(any Persistable)
+    case present(PersistedModel)
 
-    var model: (any Persistable)? {
+    var model: PersistedModel? {
         switch self {
         case .missing:
             return nil

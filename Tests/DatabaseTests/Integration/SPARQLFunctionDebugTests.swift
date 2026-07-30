@@ -69,8 +69,8 @@ struct SPARQLFunctionDebugTests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SPARQLDebugUser.self, SPARQLDebugTriple.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLDebugUser.self), try DatabaseFrameworkRuntime.entity(SPARQLDebugTriple.self)]),
             security: .disabled,
         )
         try await container.ensureIndexesReady()

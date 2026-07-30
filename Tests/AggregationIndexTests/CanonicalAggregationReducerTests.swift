@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseTypes
 import DatabaseEngine
 import DatabaseRuntime
@@ -80,8 +81,8 @@ struct CanonicalAggregationReducerTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [EmptyGlobalAggregationEntity.self, IndexedGlobalSketchEntity.self]),
+            configuration: .testing(backend: .custom(InMemoryEngine())),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self)]),
             security: .disabled
         )
         let context = container.newContext()
@@ -372,33 +373,19 @@ struct CanonicalAggregationReducerTests {
         }
     }
 
-    @Test("unsupported dynamic values produce a typed conversion error")
-    func unsupportedValueFailsConversion() {
-        #expect(throws: AggregationQueryError.self) {
-            try CanonicalAggregationReducer.fieldValue(
-                UnsupportedAggregationValue(),
-                field: "value"
-            )
-        }
-    }
-
     @Test("distinct ignores null and uses canonical numeric identity")
     func distinctUsesCanonicalIdentity() throws {
-        let entities = [
-            AggregationReducerEntity(id: "1", group: nil, value: .int64(1)),
-            AggregationReducerEntity(id: "2", group: nil, value: .uint64(1)),
-            AggregationReducerEntity(id: "3", group: nil, value: .float64(1)),
-            AggregationReducerEntity(id: "4", group: nil, value: nil),
-        ]
-
-        let result = try CanonicalAggregationReducer.aggregate(
-            items: entities,
-            aggregation: .distinct(
-                field: FieldIdentity(name: "value", number: 3)
-            )
+        let result = try CanonicalAggregationReducer.distinct(
+            values: [.int64(1), .uint64(1), .float64(1), .null],
+            field: "value"
+        )
+        let entity = AggregationReducerEntity(
+            id: "1",
+            group: nil,
+            value: nil
         )
         let identity = try CanonicalAggregationReducer.groupIdentity(
-            item: entities[0],
+            item: entity,
             fields: [FieldIdentity(name: "group", number: 2)]
         )
 
@@ -1046,8 +1033,8 @@ struct CanonicalAggregationReducerTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [EmptyGlobalAggregationEntity.self, IndexedGlobalSketchEntity.self]),
+            configuration: .testing(backend: .custom(InMemoryEngine())),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self)]),
             security: .disabled
         )
         return container.newContext()
@@ -1061,8 +1048,8 @@ struct CanonicalAggregationReducerTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [EmptyGlobalAggregationEntity.self, IndexedGlobalSketchEntity.self]),
+            configuration: .testing(backend: .custom(InMemoryEngine())),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self)]),
             security: .disabled
         )
         return container.newContext()
@@ -1309,6 +1296,28 @@ private struct AggregationValueEntity<
         )
     }
 
+    static func decodePersistedFields<Input: PersistedFieldInput>(
+        from input: inout Input
+    ) throws(PersistableDecodingFailure<Input.Failure>) -> Self {
+        let id = try input.decode(
+            String.self,
+            for: FieldIdentity(name: "id", number: 1),
+            entity: persistableType
+        )
+        let group = try input.decode(
+            String.self,
+            for: FieldIdentity(name: "group", number: 2),
+            entity: persistableType
+        )
+        let value = try input.decode(
+            Value.self,
+            for: FieldIdentity(name: "value", number: 3),
+            entity: persistableType
+        )
+        try input.finish(entity: persistableType)
+        return Self(id: id, group: group, value: value)
+    }
+
     subscript(dynamicMember member: String) -> (any Sendable)? {
         switch member {
         case "id":
@@ -1366,8 +1375,6 @@ private struct AggregationValueEntity<
     }
 }
 
-private struct UnsupportedAggregationValue: Sendable {}
-
 @Persistable
 private struct EmptyGlobalAggregationEntity {
     #Directory<EmptyGlobalAggregationEntity>("tests", "empty-global-aggregate")
@@ -1417,160 +1424,16 @@ private struct IndexedGlobalSketchEntity {
     )
 }
 
-private struct AggregationReducerEntity: Persistable {
-    typealias ID = String
-
+@Persistable
+private struct AggregationReducerEntity {
     let id: String
-    let group: FieldValue?
-    let value: FieldValue?
-
-    static let persistableType = "AggregationReducerEntity"
-    static let allFields = ["id", "group", "value"]
-    static let indexDescriptors: [IndexDescriptor] = []
-    static let fieldSchemas = [
-        FieldSchema(name: "id", fieldNumber: 1, type: .string),
-        FieldSchema(name: "group", fieldNumber: 2, type: .string, isOptional: true),
-        FieldSchema(name: "value", fieldNumber: 3, type: .float64, isOptional: true),
-    ]
-
-    static func fieldNumber(for fieldName: String) -> Int? {
-        switch fieldName {
-        case "id": 1
-        case "group": 2
-        case "value": 3
-        default: nil
-        }
-    }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    func persistedFieldValue(
-        for field: FieldIdentity
-    ) throws(PersistableEncodingError) -> FieldValue? {
-        switch (field.name, field.number) {
-        case ("id", 1): .string(id)
-        case ("group", 2): group ?? .null
-        case ("value", 3): value ?? .null
-        default: nil
-        }
-    }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id":
-            return id
-        case "group":
-            return group
-        case "value":
-            return value
-        default:
-            return nil
-        }
-    }
-
-    static func fieldName<Value>(
-        for keyPath: KeyPath<AggregationReducerEntity, Value>
-    ) -> String {
-        fieldName(for: keyPath as PartialKeyPath<AggregationReducerEntity>)
-    }
-
-    static func fieldName(
-        for keyPath: PartialKeyPath<AggregationReducerEntity>
-    ) -> String {
-        switch keyPath {
-        case \AggregationReducerEntity.id:
-            return "id"
-        case \AggregationReducerEntity.group:
-            return "group"
-        case \AggregationReducerEntity.value:
-            return "value"
-        default:
-            preconditionFailure("Unsupported aggregation reducer key path")
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<AggregationReducerEntity> else {
-            preconditionFailure("Unsupported aggregation reducer key path type")
-        }
-        return fieldName(for: keyPath)
-    }
+    let group: String?
+    let value: Double?
 }
 
-private struct AggregationTupleEntity: Persistable {
-    typealias ID = String
-
+@Persistable
+private struct AggregationTupleEntity {
     let id: String
     let group: String
     let number: Int64
-
-    static let persistableType = "AggregationTupleEntity"
-    static let allFields = ["id", "group", "number"]
-    static let indexDescriptors: [IndexDescriptor] = []
-    static let fieldSchemas = [
-        FieldSchema(name: "id", fieldNumber: 1, type: .string),
-        FieldSchema(name: "group", fieldNumber: 2, type: .string),
-        FieldSchema(name: "number", fieldNumber: 3, type: .int64),
-    ]
-
-    static func fieldNumber(for fieldName: String) -> Int? {
-        switch fieldName {
-        case "id": 1
-        case "group": 2
-        case "number": 3
-        default: nil
-        }
-    }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    func persistedFieldValue(
-        for field: FieldIdentity
-    ) throws(PersistableEncodingError) -> FieldValue? {
-        switch (field.name, field.number) {
-        case ("id", 1): .string(id)
-        case ("group", 2): .string(group)
-        case ("number", 3): .int64(number)
-        default: nil
-        }
-    }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id":
-            return id
-        case "group":
-            return group
-        case "number":
-            return number
-        default:
-            return nil
-        }
-    }
-
-    static func fieldName<Value>(
-        for keyPath: KeyPath<AggregationTupleEntity, Value>
-    ) -> String {
-        fieldName(for: keyPath as PartialKeyPath<AggregationTupleEntity>)
-    }
-
-    static func fieldName(
-        for keyPath: PartialKeyPath<AggregationTupleEntity>
-    ) -> String {
-        switch keyPath {
-        case \AggregationTupleEntity.id:
-            return "id"
-        case \AggregationTupleEntity.group:
-            return "group"
-        case \AggregationTupleEntity.number:
-            return "number"
-        default:
-            preconditionFailure("Unsupported aggregation tuple key path")
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<AggregationTupleEntity> else {
-            preconditionFailure("Unsupported aggregation tuple key path type")
-        }
-        return fieldName(for: keyPath)
-    }
 }

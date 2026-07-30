@@ -60,8 +60,8 @@ struct OntologyPersistenceTests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [OntologyPersistenceEntity.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntologyPersistenceEntity.self)]),
             security: .disabled,
         )
         return container.newContext()
@@ -92,7 +92,7 @@ struct OntologyPersistenceTests {
         // Save
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Load
@@ -141,7 +141,7 @@ struct OntologyPersistenceTests {
         // Save
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Load
@@ -191,7 +191,7 @@ struct OntologyPersistenceTests {
         // Save
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Load
@@ -229,7 +229,7 @@ struct OntologyPersistenceTests {
         // Save then load (simulates FDB persistence cycle)
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
         var reasoningOntology = try #require(loaded)
@@ -242,7 +242,7 @@ struct OntologyPersistenceTests {
         _ = reasoningOntology.addIndividual(OWLNamedIndividual(iri: "ex:Google"))
 
         // Reason
-        let reasoner = OWLReasoner(ontology: reasoningOntology)
+        let reasoner = OWLReasoner(ontology: reasoningOntology, clock: TestProcessMonotonicClock())
         let inferredTypes = reasoner.types(of: "ex:Google")
 
         // ex:Google should be inferred as instance of Company AND Organization
@@ -278,7 +278,7 @@ struct OntologyPersistenceTests {
         // Save then load
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
         var reasoningOntology = try #require(loaded)
@@ -296,7 +296,7 @@ struct OntologyPersistenceTests {
         _ = reasoningOntology.addIndividual(OWLNamedIndividual(iri: "ex:Toyota"))
 
         // Reason
-        let reasoner = OWLReasoner(ontology: reasoningOntology)
+        let reasoner = OWLReasoner(ontology: reasoningOntology, clock: TestProcessMonotonicClock())
         let inferredTypes = reasoner.types(of: "ex:Toyota")
 
         // ex:Toyota should be classified as GlobalCorp via Defined Class
@@ -317,7 +317,7 @@ struct OntologyPersistenceTests {
 
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
         let loadedOntology = try #require(loaded)
@@ -343,7 +343,7 @@ struct OntologyPersistenceTests {
         ]
         try await context.ontology.load(
             ontology1,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Second save: different axiom
@@ -354,7 +354,7 @@ struct OntologyPersistenceTests {
         ]
         try await context.ontology.load(
             ontology2,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Load: should have only the second save's data
@@ -392,7 +392,7 @@ struct OntologyPersistenceTests {
 
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
         let loaded = try await context.ontology.get(iri: Self.testOntologyIRI)
         let loadedOntology = try #require(loaded)
@@ -437,6 +437,7 @@ struct OntologyPersistenceTests {
 
         let tableaux = TableauxReasoner(
             ontology: ontology,
+            clock: TestProcessMonotonicClock(),
             configuration: .init(checkRegularity: false, abortOnRegularityViolations: false)
         )
 
@@ -487,7 +488,7 @@ struct OntologyPersistenceTests {
         ]
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Step 2: ClassifyTool loads ontology from FDB
@@ -517,7 +518,7 @@ struct OntologyPersistenceTests {
             _ = reasoningOntology.addIndividual(OWLNamedIndividual(iri: entityIRI))
         }
 
-        let reasoner = OWLReasoner(ontology: reasoningOntology)
+        let reasoner = OWLReasoner(ontology: reasoningOntology, clock: TestProcessMonotonicClock())
 
         // Verify inference: OpenAI (AICompany) -> TechCompany -> Company -> Organization
         let openAITypes = reasoner.types(of: "ex:OpenAI")

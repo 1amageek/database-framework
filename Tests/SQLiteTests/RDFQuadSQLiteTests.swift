@@ -129,7 +129,7 @@ struct RDFQuadSQLiteTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [SQLiteRDFQuadStatement.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteRDFQuadStatement.self)]
             ),
             security: .disabled
         )

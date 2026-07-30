@@ -2,90 +2,117 @@ import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
-private struct EntityIndexProvider<Model: Persistable>: Sendable {
-    let kindIdentifier: String
-    let runtimeRequirements: IndexRuntimeRequirements
-    let physicalEntryCapabilities: IndexPhysicalEntryCapabilities?
-    let supportsUniquenessConstraints: Bool
-    let makeMaintainer: @Sendable (
-        Index,
-        Subspace,
-        KeyExpression,
-        [any IndexRuntimeConfiguration],
-        any WallClock
-    ) throws -> any IndexMaintainer<Model>
-    let makeUniquenessMaintainer: @Sendable (
-        Index,
-        Subspace,
-        KeyExpression,
-        [any IndexRuntimeConfiguration]
-    ) throws -> any IndexUniquenessMaintainer<Model>
+private protocol EntityIndexProvider<Model>: Sendable {
+    associatedtype Model: Persistable
 
-    init<Provider: IndexMaintainerProvider>(_ provider: Provider) {
-        self.kindIdentifier = provider.kindIdentifier
-        self.runtimeRequirements = provider.runtimeRequirements
-        self.physicalEntryCapabilities = provider.physicalEntryCapabilities
-        self.supportsUniquenessConstraints = provider.supportsUniquenessConstraints
-        self.makeMaintainer = {
-            index,
-            subspace,
-            idExpression,
-            configurations,
-            wallClock in
-            try provider.makeIndexMaintainer(
-                index: index,
-                subspace: subspace,
-                idExpression: idExpression,
-                configurations: configurations,
-                wallClock: wallClock
-            )
-        }
-        self.makeUniquenessMaintainer = {
-            index,
-            subspace,
-            idExpression,
-            configurations in
-            try provider.makeIndexUniquenessMaintainer(
-                index: index,
-                subspace: subspace,
-                idExpression: idExpression,
-                configurations: configurations
-            )
-        }
+    var kindIdentifier: String { get }
+    var runtimeRequirements: IndexRuntimeRequirements { get }
+    var supportsUniquenessConstraints: Bool { get }
+
+    func makeMaintainer(
+        index: Index,
+        subspace: Subspace,
+        idExpression: any KeyExpression,
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
+    ) throws -> any IndexMaintainer<Model>
+
+    func makeUniquenessMaintainer(
+        index: Index,
+        subspace: Subspace,
+        idExpression: any KeyExpression,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> any IndexUniquenessMaintainer<Model>
+}
+
+private struct ModelIndependentEntityIndexProvider<
+    Model: Persistable,
+    Provider: IndexMaintainerProvider
+>: EntityIndexProvider {
+    let provider: Provider
+
+    var kindIdentifier: String { provider.kindIdentifier }
+    var runtimeRequirements: IndexRuntimeRequirements {
+        provider.runtimeRequirements
+    }
+    var supportsUniquenessConstraints: Bool {
+        provider.supportsUniquenessConstraints
     }
 
-    init<Provider: EntityIndexMaintainerProvider>(_ provider: Provider)
-    where Provider.Model == Model {
-        self.kindIdentifier = provider.kindIdentifier
-        self.runtimeRequirements = provider.runtimeRequirements
-        self.physicalEntryCapabilities = provider.physicalEntryCapabilities
-        self.supportsUniquenessConstraints = provider.supportsUniquenessConstraints
-        self.makeMaintainer = {
-            index,
-            subspace,
-            idExpression,
-            configurations,
-            wallClock in
-            try provider.makeIndexMaintainer(
-                index: index,
-                subspace: subspace,
-                idExpression: idExpression,
-                configurations: configurations,
-                wallClock: wallClock
-            )
-        }
-        self.makeUniquenessMaintainer = {
-            index,
-            subspace,
-            idExpression,
-            configurations in
-            try provider.makeIndexUniquenessMaintainer(
-                index: index,
-                subspace: subspace,
-                idExpression: idExpression,
-                configurations: configurations
-            )
-        }
+    func makeMaintainer(
+        index: Index,
+        subspace: Subspace,
+        idExpression: any KeyExpression,
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
+    ) throws -> any IndexMaintainer<Model> {
+        try provider.makeIndexMaintainer(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression,
+            configurations: configurations,
+            wallClock: wallClock
+        )
+    }
+
+    func makeUniquenessMaintainer(
+        index: Index,
+        subspace: Subspace,
+        idExpression: any KeyExpression,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> any IndexUniquenessMaintainer<Model> {
+        try provider.makeIndexUniquenessMaintainer(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression,
+            configurations: configurations
+        )
+    }
+}
+
+private struct ModelSpecificEntityIndexProvider<
+    Provider: EntityIndexMaintainerProvider
+>: EntityIndexProvider {
+    typealias Model = Provider.Model
+
+    let provider: Provider
+
+    var kindIdentifier: String { provider.kindIdentifier }
+    var runtimeRequirements: IndexRuntimeRequirements {
+        provider.runtimeRequirements
+    }
+    var supportsUniquenessConstraints: Bool {
+        provider.supportsUniquenessConstraints
+    }
+
+    func makeMaintainer(
+        index: Index,
+        subspace: Subspace,
+        idExpression: any KeyExpression,
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
+    ) throws -> any IndexMaintainer<Model> {
+        try provider.makeIndexMaintainer(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression,
+            configurations: configurations,
+            wallClock: wallClock
+        )
+    }
+
+    func makeUniquenessMaintainer(
+        index: Index,
+        subspace: Subspace,
+        idExpression: any KeyExpression,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> any IndexUniquenessMaintainer<Model> {
+        try provider.makeIndexUniquenessMaintainer(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression,
+            configurations: configurations
+        )
     }
 }
 
@@ -93,7 +120,7 @@ private struct EntityIndexProviderDescriptor: Sendable {
     let runtimeRequirements: IndexRuntimeRequirements
     let supportsUniquenessConstraints: Bool
 
-    init<Model: Persistable>(_ provider: EntityIndexProvider<Model>) {
+    init<Model: Persistable>(_ provider: any EntityIndexProvider<Model>) {
         self.runtimeRequirements = provider.runtimeRequirements
         self.supportsUniquenessConstraints = provider.supportsUniquenessConstraints
     }
@@ -117,7 +144,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
     public let entity: Schema.Entity
 
     private var indexReaders: [String: IndexReader]
-    private var indexProviders: [String: EntityIndexProvider<Model>]
+    private var indexProviders: [String: any EntityIndexProvider<Model>]
 
     fileprivate typealias IndexReader = @Sendable (
         _ context: DatabaseContext,
@@ -162,7 +189,10 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
         guard indexProviders[provider.kindIdentifier] == nil else {
             throw .duplicateIndexMaintainerProvider(provider.kindIdentifier)
         }
-        indexProviders[provider.kindIdentifier] = EntityIndexProvider(provider)
+        indexProviders[provider.kindIdentifier] =
+            ModelIndependentEntityIndexProvider<Model, Provider>(
+                provider: provider
+            )
     }
 
     public mutating func register<Provider: EntityIndexMaintainerProvider>(
@@ -172,16 +202,24 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
         guard indexProviders[provider.kindIdentifier] == nil else {
             throw .duplicateIndexMaintainerProvider(provider.kindIdentifier)
         }
-        indexProviders[provider.kindIdentifier] = EntityIndexProvider(provider)
+        indexProviders[provider.kindIdentifier] =
+            ModelSpecificEntityIndexProvider(provider: provider)
     }
 
     public consuming func registration() -> EntityRuntimeRegistration {
         EntityRuntimeRegistration(
             entity: entity,
-            modelType: Model.self,
             indexReaders: indexReaders,
             indexProviders: indexProviders,
-            decodeModel: { try $0.decode(as: Model.self) },
+            canonicalizeModel: {
+                try PersistedModel($0.decode(as: Model.self))
+            },
+            makePersistedModel: {
+                try PersistedModel(Model.decodePersistedObject($0))
+            },
+            resolveIdentity: {
+                try EntityReferenceEncoder.encode($0.decode(as: Model.self))
+            },
             fetchTableRows: {
                 context,
                 sourceName,
@@ -226,7 +264,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
 
     private static func makeUpdateIndexesOperation(
         entity: Schema.Entity,
-        providers: [String: EntityIndexProvider<Model>]
+        providers: [String: any EntityIndexProvider<Model>]
     ) -> EntityRuntimeRegistration.UpdateIndexes {
         {
             lifecycleStore,
@@ -265,18 +303,18 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                 let subspace = indexSubspace.subspace(descriptor.name)
                 let idExpression = TupleKeyExpression(value: id)
                 let maintainer = try provider.makeMaintainer(
-                    index,
-                    subspace,
-                    idExpression,
-                    configurations,
-                    wallClock
+                    index: index,
+                    subspace: subspace,
+                    idExpression: idExpression,
+                    configurations: configurations,
+                    wallClock: wallClock
                 )
                 if descriptor.isUnique, let typedNew {
                     let uniquenessMaintainer = try provider.makeUniquenessMaintainer(
-                        index,
-                        subspace,
-                        idExpression,
-                        configurations
+                        index: index,
+                        subspace: subspace,
+                        idExpression: idExpression,
+                        configurations: configurations
                     )
                     try await IndexUniquenessConstraint.enforce(
                         index: index,
@@ -298,7 +336,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
     }
 
     private static func makeBuildIndexOperation(
-        providers: [String: EntityIndexProvider<Model>]
+        providers: [String: any EntityIndexProvider<Model>]
     ) -> EntityRuntimeRegistration.BuildIndex {
         {
             container,
@@ -318,19 +356,19 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                 .subspace(index.subspaceKey)
             let idExpression = FieldKeyExpression(fieldName: "id")
             let maintainer = try provider.makeMaintainer(
-                index,
-                subspace,
-                idExpression,
-                configurations,
-                container.wallClock
+                index: index,
+                subspace: subspace,
+                idExpression: idExpression,
+                configurations: configurations,
+                wallClock: container.wallClock
             )
             let uniquenessMaintainer: (any IndexUniquenessMaintainer<Model>)?
             if index.isUnique {
                 uniquenessMaintainer = try provider.makeUniquenessMaintainer(
-                    index,
-                    subspace,
-                    idExpression,
-                    configurations
+                    index: index,
+                    subspace: subspace,
+                    idExpression: idExpression,
+                    configurations: configurations
                 )
             } else {
                 uniquenessMaintainer = nil
@@ -350,7 +388,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
     }
 
     private static func makeIndexSliceOperation(
-        providers: [String: EntityIndexProvider<Model>]
+        providers: [String: any EntityIndexProvider<Model>]
     ) -> EntityRuntimeRegistration.RunIndexSlice {
         {
             container,
@@ -371,19 +409,19 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             let idExpression = FieldKeyExpression(fieldName: "id")
             let configurations = container.indexConfigurations[index.name] ?? []
             let maintainer = try provider.makeMaintainer(
-                index,
-                subspace,
-                idExpression,
-                configurations,
-                container.wallClock
+                index: index,
+                subspace: subspace,
+                idExpression: idExpression,
+                configurations: configurations,
+                wallClock: container.wallClock
             )
             let uniquenessMaintainer: (any IndexUniquenessMaintainer<Model>)?
             if index.isUnique {
                 uniquenessMaintainer = try provider.makeUniquenessMaintainer(
-                    index,
-                    subspace,
-                    idExpression,
-                    configurations
+                    index: index,
+                    subspace: subspace,
+                    idExpression: idExpression,
+                    configurations: configurations
                 )
             } else {
                 uniquenessMaintainer = nil
@@ -456,12 +494,13 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
 
 public struct EntityRuntimeRegistration: Sendable {
     public let entity: Schema.Entity
-    let modelType: any Persistable.Type
     private let indexProviders: [String: EntityIndexProviderDescriptor]
 
     private let indexReaders: [String: IndexReader]
     private let fetchTableRowsOperation: FetchTableRows
-    private let decodeModelOperation: DecodeModel
+    private let canonicalizeModelOperation: CanonicalizeModel
+    private let makePersistedModelOperation: MakePersistedModel
+    private let resolveIdentityOperation: ResolveIdentity
     private let updateIndexesOperation: UpdateIndexes
     private let buildIndexOperation: BuildIndex
     private let runIndexSliceOperation: RunIndexSlice
@@ -481,9 +520,17 @@ public struct EntityRuntimeRegistration: Sendable {
         _ options: ReadExecutionContext
     ) async throws -> EntityTableRows
 
-    fileprivate typealias DecodeModel = @Sendable (
+    fileprivate typealias CanonicalizeModel = @Sendable (
         PersistedModel
-    ) throws -> any Persistable
+    ) throws -> PersistedModel
+
+    fileprivate typealias MakePersistedModel = @Sendable (
+        FieldObject
+    ) throws -> PersistedModel
+
+    fileprivate typealias ResolveIdentity = @Sendable (
+        PersistedModel
+    ) throws -> EntityReference
 
     fileprivate typealias UpdateIndexes = @Sendable (
         IndexLifecycleStore,
@@ -519,22 +566,24 @@ public struct EntityRuntimeRegistration: Sendable {
 
     fileprivate init<Model: Persistable>(
         entity: Schema.Entity,
-        modelType: any Persistable.Type,
         indexReaders: [String: IndexReader],
-        indexProviders: [String: EntityIndexProvider<Model>],
-        decodeModel: @escaping DecodeModel,
+        indexProviders: [String: any EntityIndexProvider<Model>],
+        canonicalizeModel: @escaping CanonicalizeModel,
+        makePersistedModel: @escaping MakePersistedModel,
+        resolveIdentity: @escaping ResolveIdentity,
         fetchTableRows: @escaping FetchTableRows,
         updateIndexes: @escaping UpdateIndexes,
         buildIndex: @escaping BuildIndex,
         runIndexSlice: @escaping RunIndexSlice
     ) {
         self.entity = entity
-        self.modelType = modelType
         self.indexReaders = indexReaders
         self.indexProviders = indexProviders.mapValues {
             EntityIndexProviderDescriptor($0)
         }
-        self.decodeModelOperation = decodeModel
+        self.canonicalizeModelOperation = canonicalizeModel
+        self.makePersistedModelOperation = makePersistedModel
+        self.resolveIdentityOperation = resolveIdentity
         self.fetchTableRowsOperation = fetchTableRows
         self.updateIndexesOperation = updateIndexes
         self.buildIndexOperation = buildIndex
@@ -581,10 +630,24 @@ public struct EntityRuntimeRegistration: Sendable {
         indexProviders[kindIdentifier]?.supportsUniquenessConstraints
     }
 
-    package func decode(
+    package func canonicalized(
         _ model: PersistedModel
-    ) throws -> any Persistable {
-        try decodeModelOperation(model)
+    ) throws -> PersistedModel {
+        try canonicalizeModelOperation(model)
+    }
+
+    /// Constructs the registered persisted model through its compiled field
+    /// adaptation without retaining a concrete model instance.
+    public func persistedModel(
+        from object: FieldObject
+    ) throws -> PersistedModel {
+        try makePersistedModelOperation(object)
+    }
+
+    package func identity(
+        for model: PersistedModel
+    ) throws -> EntityReference {
+        try resolveIdentityOperation(model)
     }
 
     func fetchTableRows(

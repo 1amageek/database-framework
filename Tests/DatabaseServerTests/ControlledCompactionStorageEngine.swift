@@ -58,6 +58,7 @@ final class ControlledCompactionStorageEngine: StorageEngine, Sendable {
         var transactionDomain: StorageTransactionDomain {
             underlying.transactionDomain
         }
+        var storageFailure: StorageError? { underlying.storageFailure }
 
         private let underlying: InMemoryTransaction
         private let behavior: Behavior
@@ -81,6 +82,10 @@ final class ControlledCompactionStorageEngine: StorageEngine, Sendable {
             try await underlying.getValue(for: key, snapshot: snapshot)
         }
 
+        func getValue(for key: ByteString) async throws -> ByteString? {
+            try await underlying.getValue(for: key)
+        }
+
         func getKey(
             selector: KeySelector,
             snapshot: Bool
@@ -88,15 +93,15 @@ final class ControlledCompactionStorageEngine: StorageEngine, Sendable {
             try await underlying.getKey(selector: selector, snapshot: snapshot)
         }
 
-        func getRange(
+        func rangeCursor(
             from begin: KeySelector,
             to end: KeySelector,
             limit: Int,
             reverse: Bool,
             snapshot: Bool,
             streamingMode: StreamingMode
-        ) -> KeyValueRangeResult {
-            underlying.getRange(
+        ) -> KeyValueCursor {
+            underlying.rangeCursor(
                 from: begin,
                 to: end,
                 limit: limit,

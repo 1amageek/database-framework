@@ -57,8 +57,8 @@ struct DatabaseTransactionTests {
 
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [TransactionUser.self, TransactionProduct.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(TransactionUser.self), try DatabaseFrameworkRuntime.entity(TransactionProduct.self)]),
             security: .disabled,
         )
     }
@@ -151,8 +151,12 @@ struct DatabaseTransactionTests {
 
         // Write and read within transaction
         try await context.withTransaction { tx in
-            try await tx.save(user)
-            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
+            try await tx.save(user, precondition: .notExists)
+            let fetched = try await tx.fetch(
+                TransactionUser.self,
+                identifiedBy: user.id,
+                consistency: .serializable
+            )
             #expect(fetched != nil)
             #expect(fetched?.name == "Alice")
             #expect(fetched?.balance == 100)
@@ -160,7 +164,11 @@ struct DatabaseTransactionTests {
 
         // Verify persisted after transaction commits
         try await context.withTransaction { tx in
-            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
+            let fetched = try await tx.fetch(
+                TransactionUser.self,
+                identifiedBy: user.id,
+                consistency: .serializable
+            )
             #expect(fetched != nil)
             #expect(fetched?.name == "Alice")
         }
@@ -176,12 +184,16 @@ struct DatabaseTransactionTests {
 
         // Insert
         try await context.withTransaction { tx in
-            try await tx.save(user)
+            try await tx.save(user, precondition: .notExists)
         }
 
         // Verify exists
         try await context.withTransaction { tx in
-            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
+            let fetched = try await tx.fetch(
+                TransactionUser.self,
+                identifiedBy: user.id,
+                consistency: .serializable
+            )
             #expect(fetched != nil)
         }
 
@@ -192,7 +204,11 @@ struct DatabaseTransactionTests {
 
         // Verify deleted
         try await context.withTransaction { tx in
-            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
+            let fetched = try await tx.fetch(
+                TransactionUser.self,
+                identifiedBy: user.id,
+                consistency: .serializable
+            )
             #expect(fetched == nil)
         }
     }
@@ -209,9 +225,9 @@ struct DatabaseTransactionTests {
 
         // Insert
         try await context.withTransaction { tx in
-            try await tx.save(user1)
-            try await tx.save(user2)
-            try await tx.save(user3)
+            try await tx.save(user1, precondition: .notExists)
+            try await tx.save(user2, precondition: .notExists)
+            try await tx.save(user3, precondition: .notExists)
         }
 
         // Batch fetch
@@ -245,7 +261,7 @@ struct DatabaseTransactionTests {
 
         // Insert
         try await context.withTransaction { tx in
-            try await tx.save(user)
+            try await tx.save(user, precondition: .notExists)
         }
 
         // Snapshot read should work
@@ -283,21 +299,29 @@ struct DatabaseTransactionTests {
 
         // Insert initial value
         try await context.withTransaction { tx in
-            try await tx.save(user)
+            try await tx.save(user, precondition: .notExists)
         }
 
         // Read-modify-write
         try await context.withTransaction { tx in
-            guard var fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id) else {
+            guard var fetched = try await tx.fetch(
+                TransactionUser.self,
+                identifiedBy: user.id,
+                consistency: .serializable
+            ) else {
                 throw DatabaseTransactionTestFailure.userNotFound
             }
             fetched.balance -= 100
-            try await tx.save(fetched)
+            try await tx.save(fetched, precondition: .exists)
         }
 
         // Verify modification
         try await context.withTransaction { tx in
-            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
+            let fetched = try await tx.fetch(
+                TransactionUser.self,
+                identifiedBy: user.id,
+                consistency: .serializable
+            )
             #expect(fetched?.balance == 900)
         }
     }
@@ -314,12 +338,16 @@ struct DatabaseTransactionTests {
 
         // Use batch configuration
         try await context.withTransaction(configuration: .batch) { tx in
-            try await tx.save(user)
+            try await tx.save(user, precondition: .notExists)
         }
 
         // Verify
         try await context.withTransaction { tx in
-            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
+            let fetched = try await tx.fetch(
+                TransactionUser.self,
+                identifiedBy: user.id,
+                consistency: .serializable
+            )
             #expect(fetched != nil)
         }
     }
@@ -334,12 +362,16 @@ struct DatabaseTransactionTests {
 
         // Use interactive configuration
         try await context.withTransaction(configuration: .interactive) { tx in
-            try await tx.save(user)
+            try await tx.save(user, precondition: .notExists)
         }
 
         // Verify
         try await context.withTransaction { tx in
-            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
+            let fetched = try await tx.fetch(
+                TransactionUser.self,
+                identifiedBy: user.id,
+                consistency: .serializable
+            )
             #expect(fetched != nil)
         }
     }
@@ -355,12 +387,16 @@ struct DatabaseTransactionTests {
         let user = TransactionUser(name: "ReturnTest", balance: 777)
 
         try await context.withTransaction { tx in
-            try await tx.save(user)
+            try await tx.save(user, precondition: .notExists)
         }
 
         // Transaction returns a value
         let balance: Int64 = try await context.withTransaction { tx in
-            let fetched = try await tx.fetch(TransactionUser.self, identifiedBy: user.id)
+            let fetched = try await tx.fetch(
+                TransactionUser.self,
+                identifiedBy: user.id,
+                consistency: .serializable
+            )
             return fetched?.balance ?? 0
         }
 

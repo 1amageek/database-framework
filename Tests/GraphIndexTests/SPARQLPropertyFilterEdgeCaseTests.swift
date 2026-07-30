@@ -83,8 +83,8 @@ struct SPARQLPropertyFilterEdgeCaseTests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [EdgeCaseConnection.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeCaseConnection.self)]),
             security: .disabled,
         )
 

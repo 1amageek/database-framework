@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
@@ -118,13 +119,9 @@ struct SchemaDatabaseGraphSourceResolverTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    DatabaseGraphSourceEdge.self,
-                    DatabaseSHACLStatement.self,
-                    DefaultGraphSourceStatement.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphSourceEdge.self), try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self), try DatabaseFrameworkRuntime.entity(DefaultGraphSourceStatement.self)]
             ),
             security: .disabled
         )

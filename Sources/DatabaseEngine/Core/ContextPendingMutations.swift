@@ -61,10 +61,10 @@ struct ContextPendingMutations: Sendable {
     }
 
     func forEach(
-        _ body: (DatabaseContext.PendingMutation) throws -> Void
+        _ body: (EntityReference, DatabaseContext.PendingMutation) throws -> Void
     ) rethrows {
         for entry in entries {
-            try body(entry.mutation)
+            try body(entry.identity, entry.mutation)
         }
     }
 

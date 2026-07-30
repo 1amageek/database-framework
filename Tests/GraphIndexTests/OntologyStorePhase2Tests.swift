@@ -53,8 +53,8 @@ struct OntologyStorePhase2Tests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [OntologyPhase2Dummy.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntologyPhase2Dummy.self)]),
             security: .disabled,
         )
         return container.newContext()
@@ -84,7 +84,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology1,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Second load: only 1 axiom (fewer than before)
@@ -95,7 +95,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology2,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Verify: only the 1 axiom from second load survives
@@ -128,7 +128,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology1,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Verify first hierarchy
@@ -144,7 +144,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology2,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Verify: old hierarchy (A ⊑ B ⊑ C) is gone
@@ -172,7 +172,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology1,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let chains1 = try await context.ontology.getPropertyChains(for: "ex:hasUncle", in: Self.testOntologyIRI)
@@ -185,7 +185,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology2,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // Old chains should be gone
@@ -210,7 +210,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // A's superclasses should be {B}, NOT {A, B}
@@ -238,7 +238,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let supersA = try await context.ontology.getSuperClasses(of: "ex:A", in: Self.testOntologyIRI)
@@ -270,7 +270,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // A: direct super B, transitive C (but not A itself)
@@ -303,7 +303,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let supers = try await context.ontology.getSuperProperties(of: "ex:hasFather", in: Self.testOntologyIRI)
@@ -331,7 +331,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         // hasFather should transitively reach hasAncestor
@@ -360,7 +360,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let supers = try await context.ontology.getSuperProperties(of: "ex:firstName", in: Self.testOntologyIRI)
@@ -385,7 +385,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let supers1 = try await context.ontology.getSuperProperties(of: "ex:familyName", in: Self.testOntologyIRI)
@@ -409,7 +409,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let supers = try await context.ontology.getSuperProperties(of: "ex:givenName", in: Self.testOntologyIRI)
@@ -436,7 +436,7 @@ struct OntologyStorePhase2Tests {
         ]
         try await context.ontology.load(
             ontology,
-            at: try Timestamp(secondsSinceUnixEpoch: 1_000)
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let supers = try await context.ontology.getSuperProperties(of: "ex:firstName", in: Self.testOntologyIRI)

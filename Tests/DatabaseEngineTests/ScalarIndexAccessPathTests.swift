@@ -89,8 +89,8 @@ struct ScalarIndexAccessPathTests {
         )
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [ScalarAccessPathEntity.self, AggregationOnlyAccessPathEntity.self, CompoundOnlyAccessPathEntity.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(ScalarAccessPathEntity.self), try DatabaseFrameworkRuntime.entity(AggregationOnlyAccessPathEntity.self), try DatabaseFrameworkRuntime.entity(CompoundOnlyAccessPathEntity.self)]),
             security: .disabled
         )
     }

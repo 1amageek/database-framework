@@ -361,8 +361,8 @@ struct DirectoryMigrationTests {
             // 1. Insert V1 data into the source-schema directory.
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV1.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryMigrationUserV1.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV1.self)]),
                 security: .disabled,
             )
             let initialContext = initialContainer.newContext()
@@ -392,16 +392,16 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer.open(
                 for: DirectoryMigrationSchemaV2.self,
                 migrationPlan: DirectoryMigrationCopyPlan.self,
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryMigrationUserV2.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
             )
             try await migratedContainer.migrateIfNeeded()
 
             // 3. Data must be readable via the V2 schema (new directory).
             let verificationContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV2.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryMigrationUserV2.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
                 security: .disabled,
             )
             let verificationContext = verificationContainer.newContext()
@@ -458,8 +458,8 @@ struct DirectoryMigrationTests {
 
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV1.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryMigrationUserV1.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV1.self)]),
                 security: .disabled,
             )
             let initialContext = initialContainer.newContext()
@@ -473,8 +473,8 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer.open(
                 for: DirectoryMigrationSchemaV2.self,
                 migrationPlan: DirectoryMigrationCopyPlan.self,
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryMigrationUserV2.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -483,8 +483,8 @@ struct DirectoryMigrationTests {
 
             let verificationContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV2.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryMigrationUserV2.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
                 security: .disabled,
             )
             let rows = try await verificationContainer.newContext()
@@ -514,8 +514,8 @@ struct DirectoryMigrationTests {
 
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryIndexedSchemaV1.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryIndexedUserV1.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryIndexedUserV1.self)]),
                 security: .disabled,
             )
             let initialContext = initialContainer.newContext()
@@ -544,8 +544,8 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer.open(
                 for: DirectoryIndexedSchemaV2.self,
                 migrationPlan: DirectoryIndexedCopyPlan.self,
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryIndexedUserV2.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryIndexedUserV2.self)]),
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -601,8 +601,8 @@ struct DirectoryMigrationTests {
 
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryAddIdxSchemaV1.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryAddIdxUserV1.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryAddIdxUserV1.self)]),
                 security: .disabled,
             )
             let initialContext = initialContainer.newContext()
@@ -615,8 +615,8 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer.open(
                 for: DirectoryAddIdxSchemaV2.self,
                 migrationPlan: DirectoryAddIdxPlan.self,
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryAddIdxUserV2.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryAddIdxUserV2.self)]),
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -661,8 +661,8 @@ struct DirectoryMigrationTests {
 
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryRemIdxSchemaV1.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryRemIdxUserV1.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV1.self)]),
                 security: .disabled,
             )
             let initialContext = initialContainer.newContext()
@@ -691,8 +691,8 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer.open(
                 for: DirectoryRemIdxSchemaV2.self,
                 migrationPlan: DirectoryRemIdxPlan.self,
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryRemIdxUserV2.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV2.self)]),
             )
             try await migratedContainer.migrateIfNeeded()
 
@@ -714,8 +714,8 @@ struct DirectoryMigrationTests {
             // V2 data must exist in the current directory.
             let verificationContainer = try await DBContainer.open(
                 testing: DirectoryRemIdxSchemaV2.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryRemIdxUserV2.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV2.self)]),
                 security: .disabled,
             )
             let rows = try await verificationContainer.newContext()
@@ -744,8 +744,8 @@ struct DirectoryMigrationTests {
 
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryLightweightSchemaV1.makeSchema(),
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryLightweightUserV1.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryLightweightUserV1.self)]),
                 security: .disabled,
             )
             try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
@@ -753,8 +753,8 @@ struct DirectoryMigrationTests {
             let migratedContainer = try await DBContainer.open(
                 for: DirectoryLightweightSchemaV2.self,
                 migrationPlan: DirectoryLightweightPlan.self,
-                configuration: .init(backend: .custom(engine)),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DirectoryLightweightUserV2.self]),
+                configuration: .testing(backend: .custom(engine)),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryLightweightUserV2.self)]),
             )
 
             await #expect(throws: MigrationPlanError.self) {

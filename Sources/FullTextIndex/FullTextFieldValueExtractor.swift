@@ -25,11 +25,11 @@ enum FullTextFieldValueExtractor {
     }
 
     static func strings(
-        from item: any Persistable,
+        from item: PersistedModel,
         entity: String,
         field: FieldIdentity
     ) throws -> [String] {
-        guard let value = try item.persistedFieldValue(for: field) else {
+        guard let value = item.value(for: field) else {
             throw FullTextFieldValueError.missingField(
                 entity: entity,
                 field: field

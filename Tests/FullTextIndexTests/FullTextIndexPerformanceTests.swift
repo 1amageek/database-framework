@@ -143,8 +143,9 @@ struct FullTextIndexPerformanceTests {
 
         let startTime = DispatchTime.now()
 
+        let initialArticles = articles
         try await ctx.database.withTransaction { transaction in
-            for article in articles {
+            for article in initialArticles {
                 try await ctx.maintainer.updateIndex(
                     oldItem: nil,
                     newItem: article,
@@ -385,9 +386,7 @@ struct FullTextIndexPerformanceTests {
 
         // Setup: Insert documents with known phrases
         let documentCount = 100
-        var articles: [BenchmarkArticle] = []
-
-        for i in 0..<documentCount {
+        let articles = (0..<documentCount).map { i in
             let content: String
             if i % 5 == 0 {
                 // Some documents contain the target phrase
@@ -396,15 +395,16 @@ struct FullTextIndexPerformanceTests {
                 content = generateContent(wordCount: 50)
             }
 
-            articles.append(BenchmarkArticle(
+            return BenchmarkArticle(
                 id: "\(uniqueID("art"))-\(i)",
                 title: "Article \(i)",
                 content: content
-            ))
+            )
         }
 
+        let initialArticles = articles
         try await ctx.database.withTransaction { transaction in
-            for article in articles {
+            for article in initialArticles {
                 try await ctx.maintainer.updateIndex(
                     oldItem: nil,
                     newItem: article,
@@ -553,8 +553,9 @@ struct FullTextIndexPerformanceTests {
             )
         }
 
+        let initialArticles = articles
         try await ctx.database.withTransaction { transaction in
-            for article in articles {
+            for article in initialArticles {
                 try await ctx.maintainer.updateIndex(
                     oldItem: nil,
                     newItem: article,

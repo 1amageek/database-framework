@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
@@ -378,12 +379,9 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(backend: .custom(engine)),
+            configuration: DBConfiguration.testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    DatabaseEndpointEntity.self,
-                    CanonicalPropertyGraphEdge.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self), try DatabaseFrameworkRuntime.entity(CanonicalPropertyGraphEdge.self)]
             ),
             security: .disabled
         )
@@ -481,8 +479,11 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
         _ edge: CanonicalPropertyGraphEdge,
         graphContext: PropertyGraphAlgorithmContext
     ) async throws {
-        try await graphContext.container.engine.withTransaction(
-            configuration: .batch
+        try await StorageTransactionExecutor(
+            engine: graphContext.container.engine
+        ).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await graphContext.maintainer.updateIndex(
                 oldItem: nil,

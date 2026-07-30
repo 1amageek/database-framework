@@ -61,8 +61,8 @@ struct UniquenessEnforcementTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [UniquenessConstrainedUser.self, UnconstrainedProduct.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(UniquenessConstrainedUser.self), try DatabaseFrameworkRuntime.entity(UnconstrainedProduct.self)]),
             security: .disabled
             )
     }
@@ -87,7 +87,7 @@ struct UniquenessEnforcementTests {
             persistableType: "UniquenessConstrainedUser",
             valueKey: valueKey,
             primaryKeys: [pk1, pk2],
-            detectedAt: Date()
+            detectedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         #expect(violation.indexName == "UniqueTestUser_email")
@@ -106,7 +106,8 @@ struct UniquenessEnforcementTests {
             indexName: "test_idx",
             persistableType: "TestType",
             valueKey: valueKey,
-            primaryKeys: [pk1, pk2]
+            primaryKeys: [pk1, pk2],
+            detectedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let unpackedValue = try violation.unpackedValue()
@@ -125,7 +126,8 @@ struct UniquenessEnforcementTests {
             indexName: "test_idx",
             persistableType: "TestType",
             valueKey: valueKey,
-            primaryKeys: []
+            primaryKeys: [],
+            detectedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let description = violation.valueDescription
@@ -143,7 +145,7 @@ struct UniquenessEnforcementTests {
             persistableType: "Type",
             valueKey: valueKey,
             primaryKeys: [pk],
-            detectedAt: Date()
+            detectedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let data = try UniquenessViolationCodec.encode(violation)
@@ -164,7 +166,8 @@ struct UniquenessEnforcementTests {
             indexName: "email_idx",
             persistableType: "User",
             valueKey: valueKey,
-            primaryKeys: [pk]
+            primaryKeys: [pk],
+            detectedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
         let description = violation.description

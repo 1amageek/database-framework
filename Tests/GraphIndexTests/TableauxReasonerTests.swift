@@ -3,6 +3,7 @@
 // Comprehensive tests for SHOIN(D) Tableaux reasoner implementation
 
 import Testing
+import TestSupport
 import TestHeartbeat
 import Foundation
 import DatabaseKit
@@ -21,7 +22,7 @@ struct TableauxReasonerBasicTests {
 
     @Test("Thing is always satisfiable")
     func thingSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.thing)
         #expect(result.isSatisfiable)
         #expect(result.clash == nil)
@@ -29,7 +30,7 @@ struct TableauxReasonerBasicTests {
 
     @Test("Nothing is never satisfiable")
     func nothingUnsatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.nothing)
         #expect(!result.isSatisfiable)
         #expect(result.clash != nil)
@@ -37,13 +38,13 @@ struct TableauxReasonerBasicTests {
 
     @Test("Named class is satisfiable by default")
     func namedClassSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(.named("ex:Person")).isSatisfiable)
     }
 
     @Test("C ⊓ ¬C is unsatisfiable (complement clash)")
     func complementClash() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .named("ex:Person"),
             .complement(.named("ex:Person"))
@@ -53,7 +54,7 @@ struct TableauxReasonerBasicTests {
 
     @Test("Thing ⊓ Nothing is unsatisfiable")
     func thingAndNothing() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .thing,
             .nothing
@@ -66,7 +67,7 @@ struct TableauxReasonerBasicTests {
         var ontology = minimalOntology()
         ontology.axioms.append(.disjointClasses([.named("ex:Dog"), .named("ex:Cat")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .named("ex:Dog"),
             .named("ex:Cat")
@@ -76,7 +77,7 @@ struct TableauxReasonerBasicTests {
 
     @Test("Union is satisfiable if any disjunct is satisfiable")
     func unionSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.union([
             .nothing,
             .named("ex:Person")
@@ -86,7 +87,7 @@ struct TableauxReasonerBasicTests {
 
     @Test("Union of complements (excluded middle)")
     func unionOfComplements() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.union([
             .named("ex:Person"),
             .complement(.named("ex:Person"))
@@ -96,7 +97,7 @@ struct TableauxReasonerBasicTests {
 
     @Test("isSatisfiable convenience method")
     func convenienceMethod() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.isSatisfiable(.thing))
         #expect(!reasoner.isSatisfiable(.nothing))
     }
@@ -113,7 +114,7 @@ struct TableauxReasonerExistentialTests {
 
     @Test("∃R.⊤ is satisfiable")
     func existentialThingSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(
             .someValuesFrom(property: "ex:hasChild", filler: .thing)
         ).isSatisfiable)
@@ -121,7 +122,7 @@ struct TableauxReasonerExistentialTests {
 
     @Test("∃R.⊥ is unsatisfiable")
     func existentialNothingUnsatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(!reasoner.checkSatisfiability(
             .someValuesFrom(property: "ex:hasChild", filler: .nothing)
         ).isSatisfiable)
@@ -129,7 +130,7 @@ struct TableauxReasonerExistentialTests {
 
     @Test("∃R.C is satisfiable when C is satisfiable")
     func existentialSatisfiableClass() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(
             .someValuesFrom(property: "ex:hasChild", filler: .named("ex:Person"))
         ).isSatisfiable)
@@ -137,7 +138,7 @@ struct TableauxReasonerExistentialTests {
 
     @Test("∃R.(C ⊓ ¬C) is unsatisfiable")
     func existentialUnsatisfiableFiller() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(!reasoner.checkSatisfiability(
             .someValuesFrom(
                 property: "ex:hasChild",
@@ -161,7 +162,7 @@ struct TableauxReasonerUniversalTests {
 
     @Test("∀R.⊤ is satisfiable")
     func universalThingSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(
             .allValuesFrom(property: "ex:hasChild", filler: .thing)
         ).isSatisfiable)
@@ -169,7 +170,7 @@ struct TableauxReasonerUniversalTests {
 
     @Test("∀R.⊥ is satisfiable (vacuously true)")
     func universalNothingSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(
             .allValuesFrom(property: "ex:hasChild", filler: .nothing)
         ).isSatisfiable)
@@ -177,7 +178,7 @@ struct TableauxReasonerUniversalTests {
 
     @Test("∃R.C ⊓ ∀R.¬C is unsatisfiable")
     func existentialUniversalConflict() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .someValuesFrom(property: "ex:hasChild", filler: .named("ex:Person")),
             .allValuesFrom(property: "ex:hasChild", filler: .complement(.named("ex:Person")))
@@ -187,7 +188,7 @@ struct TableauxReasonerUniversalTests {
 
     @Test("∀R.C ⊓ ∃R.D is satisfiable when C ⊓ D is satisfiable")
     func universalExistentialCompatible() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .allValuesFrom(property: "ex:hasChild", filler: .named("ex:Person")),
             .someValuesFrom(property: "ex:hasChild", filler: .named("ex:Student"))
@@ -207,7 +208,7 @@ struct TableauxReasonerCardinalityTests {
 
     @Test("≥0 R.C is always satisfiable")
     func minZeroSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(
             .minCardinality(property: "ex:hasChild", n: 0, filler: .thing)
         ).isSatisfiable)
@@ -215,7 +216,7 @@ struct TableauxReasonerCardinalityTests {
 
     @Test("≥1 R.C is satisfiable")
     func minOneSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(
             .minCardinality(property: "ex:hasChild", n: 1, filler: .thing)
         ).isSatisfiable)
@@ -223,7 +224,7 @@ struct TableauxReasonerCardinalityTests {
 
     @Test("≤0 R.⊤ is satisfiable (no successors)")
     func maxZeroSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(
             .maxCardinality(property: "ex:hasChild", n: 0, filler: .thing)
         ).isSatisfiable)
@@ -231,7 +232,7 @@ struct TableauxReasonerCardinalityTests {
 
     @Test("≥2 R.C ⊓ ≤1 R.C is unsatisfiable")
     func cardinalityConflict() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .minCardinality(property: "ex:hasChild", n: 2, filler: .thing),
             .maxCardinality(property: "ex:hasChild", n: 1, filler: .thing)
@@ -241,7 +242,7 @@ struct TableauxReasonerCardinalityTests {
 
     @Test("=2 R.C is satisfiable")
     func exactCardinalitySatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(
             .exactCardinality(property: "ex:hasChild", n: 2, filler: .thing)
         ).isSatisfiable)
@@ -252,7 +253,7 @@ struct TableauxReasonerCardinalityTests {
         var ontology = minimalOntology()
         ontology.axioms.append(.disjointClasses([.named("ex:A"), .named("ex:B")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .maxCardinality(property: "ex:hasChild", n: 1, filler: .thing),
             .someValuesFrom(property: "ex:hasChild", filler: .named("ex:A")),
@@ -263,7 +264,7 @@ struct TableauxReasonerCardinalityTests {
 
     @Test("≤1 R.⊤ ⊓ ∃R.A ⊓ ∃R.B with compatible A,B is satisfiable")
     func maxCardinalityCompatible() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .maxCardinality(property: "ex:hasChild", n: 1, filler: .thing),
             .someValuesFrom(property: "ex:hasChild", filler: .named("ex:A")),
@@ -274,7 +275,7 @@ struct TableauxReasonerCardinalityTests {
 
     @Test("≤1 R.⊤ merges duplicate existentials")
     func maxCardinalityMerging() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .maxCardinality(property: "ex:hasChild", n: 1, filler: .thing),
             .someValuesFrom(property: "ex:hasChild", filler: .named("ex:A")),
@@ -295,25 +296,25 @@ struct TableauxReasonerSubsumptionTests {
 
     @Test("⊥ ⊑ C for any C")
     func nothingSubsumesAll() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .named("ex:Person"), subClass: .nothing))
     }
 
     @Test("C ⊑ ⊤ for any C")
     func thingSubsumesAll() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .thing, subClass: .named("ex:Person")))
     }
 
     @Test("C ⊑ C (reflexivity)")
     func subsumptionReflexive() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .named("ex:Dog"), subClass: .named("ex:Dog")))
     }
 
     @Test("C ⊓ D ⊑ C (conjunction subsumption)")
     func conjunctionSubsumption() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(
             superClass: .named("ex:Animal"),
             subClass: .intersection([.named("ex:Animal"), .named("ex:Pet")])
@@ -326,7 +327,7 @@ struct TableauxReasonerSubsumptionTests {
         ontology.axioms.append(.subClassOf(sub: .named("ex:Dog"), sup: .named("ex:Mammal")))
         ontology.axioms.append(.subClassOf(sub: .named("ex:Mammal"), sup: .named("ex:Animal")))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .named("ex:Animal"), subClass: .named("ex:Dog")))
     }
 
@@ -335,7 +336,7 @@ struct TableauxReasonerSubsumptionTests {
         var ontology = minimalOntology()
         ontology.axioms.append(.equivalentClasses([.named("ex:Human"), .named("ex:Person")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.subsumes(superClass: .named("ex:Human"), subClass: .named("ex:Person")))
         #expect(reasoner.subsumes(superClass: .named("ex:Person"), subClass: .named("ex:Human")))
     }
@@ -345,7 +346,7 @@ struct TableauxReasonerSubsumptionTests {
         var ontology = minimalOntology()
         ontology.axioms.append(.equivalentClasses([.named("ex:Human"), .named("ex:Person")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.areEquivalent(.named("ex:Human"), .named("ex:Person")))
         #expect(!reasoner.areEquivalent(.named("ex:Human"), .named("ex:Dog")))
     }
@@ -355,7 +356,7 @@ struct TableauxReasonerSubsumptionTests {
         var ontology = minimalOntology()
         ontology.axioms.append(.disjointClasses([.named("ex:Dog"), .named("ex:Cat")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.areDisjoint(.named("ex:Dog"), .named("ex:Cat")))
         #expect(!reasoner.areDisjoint(.named("ex:Dog"), .named("ex:Animal")))
     }
@@ -372,7 +373,7 @@ struct TableauxReasonerTBoxTests {
         ontology.axioms.append(.subClassOf(sub: .named("ex:Employee"), sup: .named("ex:Person")))
         ontology.axioms.append(.disjointClasses([.named("ex:Person"), .named("ex:Animal")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .named("ex:Employee"),
             .named("ex:Animal")
@@ -387,7 +388,7 @@ struct TableauxReasonerTBoxTests {
         ontology.axioms.append(.subClassOf(sub: .named("ex:Mammal"), sup: .named("ex:Animal")))
         ontology.axioms.append(.disjointClasses([.named("ex:Animal"), .named("ex:Plant")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .named("ex:Dog"),
             .named("ex:Plant")
@@ -401,7 +402,7 @@ struct TableauxReasonerTBoxTests {
         ontology.axioms.append(.equivalentClasses([.named("ex:Human"), .named("ex:Person")]))
         ontology.axioms.append(.disjointClasses([.named("ex:Person"), .named("ex:Robot")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .named("ex:Human"),
             .named("ex:Robot")
@@ -421,7 +422,7 @@ struct TableauxReasonerTBoxTests {
             ])
         ]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         // Parent ⊑ Person (from definition)
         #expect(reasoner.subsumes(superClass: .named("ex:Person"), subClass: .named("ex:Parent")))
         // Person ⋢ Parent (not all persons are parents)
@@ -440,19 +441,19 @@ struct TableauxReasonerNominalTests {
 
     @Test("oneOf with individuals is satisfiable")
     func oneOfSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(.oneOf(["ex:john", "ex:mary"])).isSatisfiable)
     }
 
     @Test("oneOf with single individual is satisfiable")
     func oneOfSingleSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(.oneOf(["ex:john"])).isSatisfiable)
     }
 
     @Test("Empty oneOf is unsatisfiable")
     func emptyOneOfUnsatisfiable() {
-        let reasoner = TableauxReasoner(ontology: minimalOntology())
+        let reasoner = TableauxReasoner(ontology: minimalOntology(), clock: TestProcessMonotonicClock())
         #expect(!reasoner.checkSatisfiability(.oneOf([])).isSatisfiable)
     }
 
@@ -469,7 +470,7 @@ struct TableauxReasonerNominalTests {
         ]))
         ontology.axioms.append(.subClassOf(sub: .named("ex:GlobalCorp"), sup: .named("ex:Corporation")))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         // Corporation ⊓ hasValue(hasScale, Global) ⊑ GlobalCorp
         #expect(reasoner.subsumes(
             superClass: .named("ex:GlobalCorp"),
@@ -489,7 +490,7 @@ struct TableauxReasonerHasSelfTests {
     @Test("∃R.Self is satisfiable")
     func hasSelfSatisfiable() {
         let ontology = OWLOntology(iri: "http://test.org/hasSelf")
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.checkSatisfiability(.hasSelf(property: "ex:knows")).isSatisfiable)
     }
 }
@@ -509,7 +510,7 @@ struct TableauxReasonerTransitiveRoleTests {
 
     @Test("Transitive role propagates universal restrictions")
     func transitiveUniversalPropagation() {
-        let reasoner = TableauxReasoner(ontology: transitiveOntology())
+        let reasoner = TableauxReasoner(ontology: transitiveOntology(), clock: TestProcessMonotonicClock())
         // ∀ancestorOf.Person ⊓ ∃ancestorOf.∃ancestorOf.¬Person
         // Due to transitivity, ∀ancestorOf.Person reaches all transitive successors
         let result = reasoner.checkSatisfiability(.intersection([
@@ -527,7 +528,7 @@ struct TableauxReasonerTransitiveRoleTests {
 
     @Test("Transitive role without conflict is satisfiable")
     func transitiveRoleSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: transitiveOntology())
+        let reasoner = TableauxReasoner(ontology: transitiveOntology(), clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.intersection([
             .allValuesFrom(property: "ex:ancestorOf", filler: .named("ex:Person")),
             .someValuesFrom(property: "ex:ancestorOf", filler: .named("ex:Person"))
@@ -547,7 +548,7 @@ struct TableauxReasonerRoleHierarchyTests {
         // hasMother ⊑ hasParent
         ontology.axioms.append(.subObjectPropertyOf(sub: "ex:hasMother", sup: "ex:hasParent"))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ∃hasMother.C ⊓ ∀hasParent.¬C should be unsatisfiable
         // Because hasMother successor is also a hasParent successor
@@ -563,7 +564,7 @@ struct TableauxReasonerRoleHierarchyTests {
         var ontology = OWLOntology(iri: "http://test.org/role-hierarchy-2")
         ontology.axioms.append(.subObjectPropertyOf(sub: "ex:hasMother", sup: "ex:hasParent"))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ∃hasParent.C ⊓ ∀hasMother.¬C should be satisfiable
         // Because hasParent successor is not necessarily a hasMother successor
@@ -589,7 +590,7 @@ struct TableauxReasonerInverseRoleTests {
         ontology.objectProperties.append(OWLObjectProperty(iri: "ex:childOf"))
         ontology.axioms.append(.inverseObjectProperties(first: "ex:parentOf", second: "ex:childOf"))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ∃parentOf.C ⊓ ∀childOf⁻.¬C  (i.e., ∀parentOf.¬C)
         // This should be equivalent to ∃parentOf.C ⊓ ∀parentOf.¬C → unsatisfiable
@@ -616,7 +617,7 @@ struct TableauxReasonerSymmetricRoleTests {
         knows.characteristics.insert(.symmetric)
         ontology.objectProperties.append(knows)
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // With a symmetric role, ∃knows.C means the successor also knows us
         // So: C ⊓ ∃knows.(D ⊓ ∀knows.¬C) should be unsatisfiable
@@ -649,7 +650,7 @@ struct TableauxReasonerFunctionalRoleTests {
 
         ontology.axioms.append(.disjointClasses([.named("ex:A"), .named("ex:B")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ∃hasMother.A ⊓ ∃hasMother.B with functional hasMother
         // The two successors must be merged, but A ⊓ B = ⊥
@@ -667,7 +668,7 @@ struct TableauxReasonerFunctionalRoleTests {
         hasMother.characteristics.insert(.functional)
         ontology.objectProperties.append(hasMother)
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ∃hasMother.(A ⊓ B) → single successor that is A ⊓ B
         let result = reasoner.checkSatisfiability(
@@ -693,7 +694,7 @@ struct TableauxReasonerDomainRangeTests {
         ontology.objectProperties.append(teaches)
         ontology.axioms.append(.disjointClasses([.named("ex:Teacher"), .named("ex:Student")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // Student ⊓ ∃teaches.⊤ should be unsatisfiable
         // Because teaches domain = Teacher, and Teacher ⊓ Student = ⊥
@@ -712,7 +713,7 @@ struct TableauxReasonerDomainRangeTests {
         ontology.objectProperties.append(teaches)
         ontology.axioms.append(.disjointClasses([.named("ex:Course"), .named("ex:Person")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ∃teaches.Person should be unsatisfiable
         // Because teaches range = Course, and Course ⊓ Person = ⊥
@@ -735,7 +736,7 @@ struct TableauxReasonerInstanceTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:alice"))
         ontology.axioms.append(.classAssertion(individual: "ex:alice", class_: .named("ex:Person")))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isInstanceOf(individual: "ex:alice", classExpr: .named("ex:Person")))
     }
 
@@ -748,7 +749,7 @@ struct TableauxReasonerInstanceTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:rex"))
         ontology.axioms.append(.classAssertion(individual: "ex:rex", class_: .named("ex:Dog")))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isInstanceOf(individual: "ex:rex", classExpr: .named("ex:Animal")))
     }
 
@@ -763,7 +764,7 @@ struct TableauxReasonerInstanceTests {
             subject: "ex:alice", property: "ex:knows", object: "ex:bob"
         ))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         // alice is Person ⊓ hasValue(knows, bob)
         #expect(reasoner.isInstanceOf(
             individual: "ex:alice",
@@ -777,7 +778,7 @@ struct TableauxReasonerInstanceTests {
         ontology.classes.append(OWLClass(iri: "ex:Person"))
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:unknown"))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(!reasoner.isInstanceOf(individual: "ex:unknown", classExpr: .named("ex:Person")))
     }
 
@@ -804,7 +805,7 @@ struct TableauxReasonerInstanceTests {
             subject: "ex:Toyota", property: "ex:hasScale", object: "ex:Global"
         ))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isInstanceOf(individual: "ex:Toyota", classExpr: .named("ex:GlobalCorp")))
     }
 }
@@ -825,7 +826,7 @@ struct TableauxReasonerTypesTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:rex"))
         ontology.axioms.append(.classAssertion(individual: "ex:rex", class_: .named("ex:Dog")))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let types = reasoner.types(of: "ex:rex")
 
         #expect(types.contains("ex:Dog"))
@@ -839,7 +840,7 @@ struct TableauxReasonerTypesTests {
         ontology.classes.append(OWLClass(iri: "ex:Person"))
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:unknown"))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let types = reasoner.types(of: "ex:unknown")
         // No assertions → no types
         #expect(types.isEmpty)
@@ -864,7 +865,7 @@ struct TableauxReasonerInstancesTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:tweety"))
         ontology.axioms.append(.classAssertion(individual: "ex:tweety", class_: .named("ex:Animal")))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let dogInstances = reasoner.instances(of: .named("ex:Dog"))
         #expect(dogInstances.contains("ex:rex"))
@@ -881,7 +882,7 @@ struct TableauxReasonerInstancesTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:x"))
         ontology.axioms.append(.classAssertion(individual: "ex:x", class_: .named("ex:A")))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let instances = reasoner.instances(of: .nothing)
         #expect(instances.isEmpty)
     }
@@ -902,7 +903,7 @@ struct TableauxReasonerClassifyTests {
         ontology.axioms.append(.subClassOf(sub: .named("ex:Dog"), sup: .named("ex:Mammal")))
         ontology.axioms.append(.subClassOf(sub: .named("ex:Cat"), sup: .named("ex:Mammal")))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         var hierarchy = reasoner.classify()
 
         #expect(hierarchy.superClasses(of: "ex:Dog").contains("ex:Mammal"))
@@ -917,7 +918,7 @@ struct TableauxReasonerClassifyTests {
         ontology.classes.append(OWLClass(iri: "ex:Person"))
         ontology.axioms.append(.equivalentClasses([.named("ex:Human"), .named("ex:Person")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let hierarchy = reasoner.classify()
 
         #expect(hierarchy.equivalentClasses(of: "ex:Human").contains("ex:Person"))
@@ -938,7 +939,7 @@ struct TableauxReasonerPropertyChainTests {
             sup: "ex:hasUncle"
         ))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ∃hasParent.∃hasSibling.⊤ should imply ∃hasUncle.⊤
         // But the specific test: the chain should fire and produce the uncle edge
@@ -967,7 +968,7 @@ struct TableauxReasonerBacktrackingTests {
 
     @Test("Union with first disjunct failing requires backtracking")
     func unionBacktracking() {
-        let reasoner = TableauxReasoner(ontology: disjointOntology())
+        let reasoner = TableauxReasoner(ontology: disjointOntology(), clock: TestProcessMonotonicClock())
         // (A ⊔ C) ⊓ B - first choice A fails, backtrack to C
         let result = reasoner.checkSatisfiability(.intersection([
             .union([.named("ex:A"), .named("ex:C")]),
@@ -978,7 +979,7 @@ struct TableauxReasonerBacktrackingTests {
 
     @Test("All union choices fail")
     func allChoicesFail() {
-        let reasoner = TableauxReasoner(ontology: disjointOntology())
+        let reasoner = TableauxReasoner(ontology: disjointOntology(), clock: TestProcessMonotonicClock())
         // (A ⊔ B) ⊓ ¬A ⊓ ¬B
         let result = reasoner.checkSatisfiability(.intersection([
             .union([.named("ex:A"), .named("ex:B")]),
@@ -990,7 +991,7 @@ struct TableauxReasonerBacktrackingTests {
 
     @Test("Multiple union backtracking")
     func multipleUnionBacktracking() {
-        let reasoner = TableauxReasoner(ontology: disjointOntology())
+        let reasoner = TableauxReasoner(ontology: disjointOntology(), clock: TestProcessMonotonicClock())
         // (A ⊔ B) ⊓ (A ⊔ C) ⊓ ¬A → B ⊓ C ⊓ ¬A
         let result = reasoner.checkSatisfiability(.intersection([
             .union([.named("ex:A"), .named("ex:B")]),
@@ -1002,7 +1003,7 @@ struct TableauxReasonerBacktrackingTests {
 
     @Test("Backtrack count is recorded in statistics")
     func backtrackCountRecorded() {
-        let reasoner = TableauxReasoner(ontology: disjointOntology())
+        let reasoner = TableauxReasoner(ontology: disjointOntology(), clock: TestProcessMonotonicClock())
         // (A ⊔ C) ⊓ B → A fails (disjoint), must backtrack
         let result = reasoner.checkSatisfiability(.intersection([
             .union([.named("ex:A"), .named("ex:C")]),
@@ -1021,7 +1022,7 @@ struct TableauxReasonerBlockingTests {
     @Test("Cyclic concept terminates via blocking")
     func infiniteChainBlocking() {
         let ontology = OWLOntology(iri: "http://test.org/blocking")
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ∃hasChild.Person ⊓ ∀hasChild.∃hasChild.Person
         // Would create infinite nodes without blocking
@@ -1041,7 +1042,7 @@ struct TableauxReasonerBlockingTests {
         var ontology = OWLOntology(iri: "http://test.org/blocking-clash")
         ontology.axioms.append(.disjointClasses([.named("ex:A"), .named("ex:B")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         // ∃hasChild.A ⊓ ∀hasChild.B → child is A ⊓ B → clash
         let result = reasoner.checkSatisfiability(.intersection([
             .someValuesFrom(property: "ex:hasChild", filler: .named("ex:A")),
@@ -1058,7 +1059,10 @@ struct TableauxReasonerComplexTests {
 
     @Test("Deeply nested expression is satisfiable")
     func deeplyNestedSatisfiable() {
-        let reasoner = TableauxReasoner(ontology: OWLOntology(iri: "http://test.org/complex"))
+        let reasoner = TableauxReasoner(
+            ontology: OWLOntology(iri: "http://test.org/complex"),
+            clock: TestProcessMonotonicClock()
+        )
         let result = reasoner.checkSatisfiability(
             .someValuesFrom(
                 property: "ex:hasChild",
@@ -1076,7 +1080,10 @@ struct TableauxReasonerComplexTests {
 
     @Test("Statistics are tracked")
     func statisticsTracking() {
-        let reasoner = TableauxReasoner(ontology: OWLOntology(iri: "http://test.org/stats"))
+        let reasoner = TableauxReasoner(
+            ontology: OWLOntology(iri: "http://test.org/stats"),
+            clock: TestProcessMonotonicClock()
+        )
         let result = reasoner.checkSatisfiability(.intersection([
             .named("ex:Person"),
             .someValuesFrom(property: "ex:hasChild", filler: .named("ex:Person"))
@@ -1100,7 +1107,7 @@ struct TableauxReasonerComplexTests {
             .named("ex:CatHater")
         ]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // CatHater ⊓ ∃owns.Dog should be unsatisfiable
         // Because ∃owns.Dog → DogOwner, and DogOwner ⊓ CatHater = ⊥
@@ -1122,7 +1129,7 @@ struct TableauxReasonerRegularityTests {
         var ontology = OWLOntology(iri: "http://test.org/regular")
         ontology.axioms.append(.subClassOf(sub: .named("ex:Dog"), sup: .named("ex:Animal")))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isRegular)
         #expect(reasoner.regularityViolations.isEmpty)
     }
@@ -1136,7 +1143,7 @@ struct TableauxReasonerRegularityTests {
             sup: .maxCardinality(property: "ex:hasAncestor", n: 10, filler: nil)
         ))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(!reasoner.isRegular)
 
         let hasTransitiveViolation = reasoner.regularityViolations.contains { violation in
@@ -1155,7 +1162,7 @@ struct TableauxReasonerRegularityTests {
             sup: .maxCardinality(property: "ex:hasAncestor", n: 10, filler: nil)
         ))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.named("ex:Person"))
         #expect(result.isUnknown)
         #expect(result.status == .unknown)
@@ -1175,7 +1182,7 @@ struct TableauxReasonerRegularityTests {
             checkRegularity: true,
             abortOnRegularityViolations: false
         )
-        let reasoner = TableauxReasoner(ontology: ontology, configuration: config)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock(), configuration: config)
         let result = reasoner.checkSatisfiability(.thing)
         #expect(!result.isUnknown)
         #expect(result.isSatisfiable)
@@ -1191,7 +1198,7 @@ struct TableauxReasonerRegularityTests {
         ))
 
         let config = TableauxReasoner.Configuration(checkRegularity: false)
-        let reasoner = TableauxReasoner(ontology: ontology, configuration: config)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock(), configuration: config)
         #expect(reasoner.regularityViolations.isEmpty)
         #expect(reasoner.isRegular)
 
@@ -1213,6 +1220,7 @@ struct TableauxReasonerConfigurationTests {
         )
         let reasoner = TableauxReasoner(
             ontology: OWLOntology(iri: "http://test.org/config"),
+            clock: TestProcessMonotonicClock(),
             configuration: config
         )
         #expect(reasoner.checkSatisfiability(.thing).isSatisfiable)
@@ -1227,7 +1235,7 @@ struct TableauxReasonerConfigurationTests {
             maxExpansionSteps: 1,
             checkRegularity: false
         )
-        let reasoner = TableauxReasoner(ontology: ontology, configuration: config)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock(), configuration: config)
 
         let result = reasoner.checkSatisfiability(.intersection([
             .minCardinality(property: "ex:R", n: 3, filler: .thing),
@@ -1243,6 +1251,7 @@ struct TableauxReasonerConfigurationTests {
     func convenienceInit() {
         let reasoner = TableauxReasoner(
             ontology: OWLOntology(iri: "http://test.org/conv"),
+            clock: TestProcessMonotonicClock(),
             maxExpansionSteps: 5000
         )
         #expect(reasoner.checkSatisfiability(.thing).isSatisfiable)
@@ -1282,7 +1291,7 @@ struct TableauxReasonerDataPropertyTests {
     @Test("dataHasValue is satisfiable")
     func dataHasValueSatisfiable() {
         let ontology = OWLOntology(iri: "http://test.org/data")
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let result = reasoner.checkSatisfiability(
             .dataHasValue(
@@ -1309,7 +1318,7 @@ struct TableauxReasonerDataPropertyTests {
             )
         ))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         #expect(reasoner.isInstanceOf(
             individual: "ex:alice",
             classExpr: .dataHasValue(
@@ -1335,7 +1344,7 @@ struct TableauxReasonerRoleConstraintTests {
         before.characteristics.insert(.irreflexive)
         ontology.objectProperties.append(before)
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.hasSelf(property: "ex:before"))
         #expect(!result.isSatisfiable)
     }
@@ -1349,7 +1358,7 @@ struct TableauxReasonerRoleConstraintTests {
 
         // asymmetric: R(x,y) → ¬R(y,x)
         // hasSelf would mean R(x,x), which is a special case of both R(x,y) and R(y,x) with y=x
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let result = reasoner.checkSatisfiability(.hasSelf(property: "ex:parentOf"))
         #expect(!result.isSatisfiable)
     }

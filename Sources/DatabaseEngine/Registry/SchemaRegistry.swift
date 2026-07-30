@@ -72,7 +72,7 @@ public struct SchemaRegistry: Sendable {
         let targetNames = Set(entities.map { $0.name })
         let catalogRange = Subspace(prefix: Tuple([Self.catalogPrefix]).pack())
             .range()
-        let existingRows = try await transaction.collectRange(
+        let existingRows = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(catalogRange.begin),
             to: .firstGreaterOrEqual(catalogRange.end),
             limit: 0,
@@ -106,7 +106,7 @@ public struct SchemaRegistry: Sendable {
         let targetNames = Set(schema.entities.map { $0.name })
         let catalogRange = Subspace(prefix: Tuple([Self.catalogPrefix]).pack())
             .range()
-        let existingRows = try await transaction.collectRange(
+        let existingRows = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(catalogRange.begin),
             to: .firstGreaterOrEqual(catalogRange.end),
             limit: 0,
@@ -212,7 +212,7 @@ public struct SchemaRegistry: Sendable {
         return try await transactionExecutor.withTransaction(configuration: .default, clock: clock) { transaction in
             var entities: [Schema.Entity] = []
 
-            let sequence = try await transaction.collectRange(
+            let sequence = try await TransactionRangeCollection.collect(using: transaction,
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 limit: 0,

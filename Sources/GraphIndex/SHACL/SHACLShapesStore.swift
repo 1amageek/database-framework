@@ -87,7 +87,7 @@ struct SHACLShapesStore: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [String] {
         let (beginKey, endKey) = graphsSubspace.range()
-        let stream = try await transaction.collectRange(
+        let stream = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,

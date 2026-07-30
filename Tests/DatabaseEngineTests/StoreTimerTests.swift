@@ -5,6 +5,7 @@
 
 import Testing
 import TestHeartbeat
+import TestSupport
 import Foundation
 @testable import DatabaseEngine
 
@@ -52,7 +53,7 @@ struct StoreTimerTests {
 
     @Test("Entity timing event")
     func recordTimingEvent() {
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         timer.record(.saveEntity, duration: 1_000_000) // 1ms
         timer.record(.saveEntity, duration: 2_000_000) // 2ms
@@ -67,7 +68,7 @@ struct StoreTimerTests {
 
     @Test("Increment count event")
     func incrementCountEvent() {
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         timer.increment(.entitiesSaved, by: 5)
         timer.increment(.entitiesSaved, by: 10)
@@ -78,7 +79,7 @@ struct StoreTimerTests {
 
     @Test("Time synchronous operation")
     func timeSynchronousOperation() {
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         let result = timer.time(.serialize) {
             Thread.sleep(forTimeInterval: 0.01) // 10ms
@@ -95,7 +96,7 @@ struct StoreTimerTests {
 
     @Test("Time async operation")
     func timeAsyncOperation() async throws {
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         let result = try await timer.time(.loadEntity) {
             try await Task.sleep(nanoseconds: 10_000_000) // 10ms
@@ -111,7 +112,7 @@ struct StoreTimerTests {
 
     @Test("Get all stats")
     func getAllStats() {
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         timer.record(.saveEntity, duration: 1_000_000)
         timer.record(.loadEntity, duration: 2_000_000)
@@ -123,7 +124,7 @@ struct StoreTimerTests {
 
     @Test("Reset clears all data")
     func resetClearsData() {
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         timer.record(.saveEntity, duration: 1_000_000)
         timer.increment(.entitiesSaved, by: 5)
@@ -137,7 +138,7 @@ struct StoreTimerTests {
 
     @Test("Reset specific event")
     func resetSpecificEvent() {
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         timer.record(.saveEntity, duration: 1_000_000)
         timer.record(.loadEntity, duration: 2_000_000)
@@ -150,8 +151,8 @@ struct StoreTimerTests {
 
     @Test("Add timers merges data")
     func addTimersMergesData() {
-        let timer1 = StoreTimer(emitMetrics: false)
-        let timer2 = StoreTimer(emitMetrics: false)
+        let timer1 = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
+        let timer2 = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         timer1.record(.saveEntity, duration: 1_000_000)
         timer2.record(.saveEntity, duration: 2_000_000)
@@ -165,7 +166,7 @@ struct StoreTimerTests {
 
     @Test("EventStats calculations correct")
     func eventStatsCalculations() {
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         timer.record(.saveEntity, duration: 1_000_000)
         timer.record(.saveEntity, duration: 3_000_000)
@@ -187,7 +188,7 @@ struct StoreTimerSnapshotTests {
 
     @Test("Snapshot captures current state")
     func snapshotCapturesState() {
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         timer.record(.saveEntity, duration: 1_000_000)
         timer.increment(.entitiesSaved, by: 5)
@@ -201,7 +202,7 @@ struct StoreTimerSnapshotTests {
 
     @Test("Snapshot difference calculation")
     func snapshotDifference() {
-        let timer = StoreTimer(emitMetrics: false)
+        let timer = StoreTimer(monotonicClock: TestProcessMonotonicClock(), metrics: .disabled)
 
         timer.record(.saveEntity, duration: 1_000_000)
         let snapshot1 = StoreTimerSnapshot(from: timer)

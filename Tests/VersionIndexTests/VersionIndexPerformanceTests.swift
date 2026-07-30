@@ -85,7 +85,10 @@ private struct VersionIndexBenchmarkContext {
             index: index,
             strategy: strategy,
             subspace: indexSubspace,
-            idExpression: FieldKeyExpression(fieldName: "id")
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            wallClock: FixedVersionIndexBenchmarkWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 1_700_000_000)
+            )
         )
     }
 
@@ -99,13 +102,17 @@ private struct VersionIndexBenchmarkContext {
     func countIndexEntries() async throws -> Int {
         try await database.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
+}
+
+private struct FixedVersionIndexBenchmarkWallClock: WallClock {
+    let now: Timestamp
 }
 
 // MARK: - Performance Tests
@@ -214,10 +221,11 @@ struct VersionIndexPerformanceTests {
                         content: "Version \(versionNum) content",
                         version: Int64(versionNum)
                     )
+                    let priorDocument = previousDoc
 
                     try await ctx.database.withTransaction { transaction in
                         try await ctx.maintainer.updateIndex(
-                            oldItem: previousDoc,
+                            oldItem: priorDocument,
                             newItem: doc,
                             transaction: transaction
                         )
@@ -259,10 +267,11 @@ struct VersionIndexPerformanceTests {
                     content: "Version \(versionNum)",
                     version: Int64(versionNum)
                 )
+                let priorDocument = previousDoc
 
                 try await ctx.database.withTransaction { transaction in
                     try await ctx.maintainer.updateIndex(
-                        oldItem: previousDoc,
+                        oldItem: priorDocument,
                         newItem: doc,
                         transaction: transaction
                     )
@@ -310,10 +319,11 @@ struct VersionIndexPerformanceTests {
                     content: "Version \(versionNum) with some content",
                     version: Int64(versionNum)
                 )
+                let priorDocument = previousDoc
 
                 try await ctx.database.withTransaction { transaction in
                     try await ctx.maintainer.updateIndex(
-                        oldItem: previousDoc,
+                        oldItem: priorDocument,
                         newItem: doc,
                         transaction: transaction
                     )
@@ -379,10 +389,11 @@ struct VersionIndexPerformanceTests {
                     content: "Version \(versionNum) content",
                     version: Int64(versionNum)
                 )
+                let priorDocument = previousDoc
 
                 try await ctx.database.withTransaction { transaction in
                     try await ctx.maintainer.updateIndex(
-                        oldItem: previousDoc,
+                        oldItem: priorDocument,
                         newItem: doc,
                         transaction: transaction
                     )
@@ -412,7 +423,9 @@ struct VersionIndexPerformanceTests {
     func testKeepForDurationRetentionPerformance() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         // Very short duration for testing (retention won't actually clean up recent items)
-        let ctx = try await VersionIndexBenchmarkContext(strategy: .keepForDuration(3600)) // 1 hour
+        let ctx = try await VersionIndexBenchmarkContext(
+            strategy: .keepForDuration(try TimeSpan(seconds: 3_600))
+        )
 
         let docId = "duration-test-doc"
         let totalUpdates = 20
@@ -426,10 +439,11 @@ struct VersionIndexPerformanceTests {
                     content: "Version \(versionNum) content",
                     version: Int64(versionNum)
                 )
+                let priorDocument = previousDoc
 
                 try await ctx.database.withTransaction { transaction in
                     try await ctx.maintainer.updateIndex(
-                        oldItem: previousDoc,
+                        oldItem: priorDocument,
                         newItem: doc,
                         transaction: transaction
                     )
@@ -565,10 +579,11 @@ struct VersionIndexPerformanceTests {
                     content: String(repeating: "Content ", count: 10), // ~80 bytes content
                     version: Int64(versionNum)
                 )
+                let priorDocument = previousDoc
 
                 try await ctx.database.withTransaction { transaction in
                     try await ctx.maintainer.updateIndex(
-                        oldItem: previousDoc,
+                        oldItem: priorDocument,
                         newItem: doc,
                         transaction: transaction
                     )
@@ -638,10 +653,11 @@ struct VersionIndexPerformanceTests {
                                 content: "Version \(versionNum)",
                                 version: Int64(versionNum)
                             )
+                            let priorDocument = previousDoc
 
                             try await ctx.database.withTransaction { transaction in
                                 try await ctx.maintainer.updateIndex(
-                                    oldItem: previousDoc,
+                                    oldItem: priorDocument,
                                     newItem: doc,
                                     transaction: transaction
                                 )

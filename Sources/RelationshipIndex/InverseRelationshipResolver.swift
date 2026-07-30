@@ -105,13 +105,13 @@ public struct InverseRelationshipResolver: Sendable {
                 ) else {
                     throw RelationshipError.catalogOwnerMissing(identity)
                 }
-                guard let owner = model as? Owner else {
+                guard model.entity == Owner.persistableType else {
                     throw RelationshipReferenceError.loadedTypeMismatch(
                         expected: Owner.persistableType,
-                        actual: type(of: model).persistableType
+                        actual: model.entity
                     )
                 }
-                entities.append(owner)
+                entities.append(try model.decode(as: Owner.self))
             }
             return RelationshipPage(
                 entities: entities,

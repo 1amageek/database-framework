@@ -5,6 +5,7 @@ import DatabaseWire
 import StorageKit
 import Synchronization
 import Testing
+import TestSupport
 @testable import GraphIndex
 
 @Suite("SPARQL SubSelect cache storage sharing")
@@ -129,7 +130,7 @@ struct SPARQLSubqueryCacheStorageSharingTests {
             let sharedOwnership = try (
                 consume original
             ).sharingForFanOut(at: .subqueryCache)
-            let shared = consume sharedOwnership.retained
+            let shared = (consume sharedOwnership).takeRetainedBindings()
             let slice = (consume shared).applyingSlice(offset: 1, limit: 1)
 
             #expect(slice.count == 1)
@@ -265,7 +266,8 @@ private func makeMeter(
             maximumIntermediateRows: 10,
             maximumIntermediateBytes: maximumIntermediateBytes,
             timeoutMilliseconds: 30_000
-        )
+        ),
+        monotonicClock: TestProcessMonotonicClock()
     )
 }
 

@@ -84,8 +84,8 @@ struct GraphTableExecutorTests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialEdge.self, NoGraphIndexType.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self), try DatabaseFrameworkRuntime.entity(NoGraphIndexType.self)]),
             security: .disabled,
         )
 
@@ -298,8 +298,8 @@ struct GraphTableExecutorTests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialEdge.self, NoGraphIndexType.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self), try DatabaseFrameworkRuntime.entity(NoGraphIndexType.self)]),
             security: .disabled,
         )
         let subspace = try await container.resolveDirectory(for: NoGraphIndexType.self)
@@ -321,10 +321,10 @@ struct GraphTableExecutorTests {
 
         do {
             // This should fail because the type has no property-graph index.
-            _ = try await GraphTableExecutor<NoGraphIndexType>(
-                container: container,
-                graphTableSource: source
-            ).execute()
+            _ = try await DatabaseContext(container: container).graphTable(
+                NoGraphIndexType.self,
+                source: source
+            )
 
             Issue.record("Should throw indexNotFound error")
         } catch let error as GraphTableError {

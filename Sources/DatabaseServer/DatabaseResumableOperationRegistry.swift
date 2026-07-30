@@ -4,7 +4,7 @@ public struct DatabaseResumableOperationRegistry: Sendable {
     private let operations: [AnyDatabaseResumableOperation]
 
     public var identifiers: [JobOperationIdentifier] {
-        operations.map(\.operation)
+        operations.map { $0.operation }
     }
 
     public init(operations: [AnyDatabaseResumableOperation]) throws {

@@ -51,14 +51,6 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private let metric: VectorMetric
     private let parameters: IVFParameters
 
-    // Subspace keys
-    private enum SubspaceKey: Int {
-        case centroids = 0
-        case metadata = 1
-        case lists = 2
-        case assignments = 3
-    }
-
     // MARK: - Initialization
 
     /// Create IVF index maintainer
@@ -134,7 +126,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [ByteString] {
         // IVF stores data in inverted lists, not directly by primary key
         // Return the assignment key for verification
-        let assignmentSubspace = subspace.subspace(SubspaceKey.assignments.rawValue)
+        let assignmentSubspace = subspace.subspace(IVFIndexStorageKey.assignments.rawValue)
         return [assignmentSubspace.pack(id)]
     }
 
@@ -198,77 +190,16 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         k: Int,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
-        guard queryVector.count == dimensions else {
-            throw VectorIndexError.dimensionMismatch(expected: dimensions, actual: queryVector.count)
-        }
-
-        guard k > 0 else {
-            throw VectorIndexError.invalidArgument("k must be positive")
-        }
-
-        // Load centroids
-        let centroids = try await loadCentroids(transaction: transaction)
-        guard !centroids.isEmpty else {
-            throw VectorIndexError.invalidStructure("IVF index not trained")
-        }
-
-        // Find nprobe nearest centroids
-        let clustering = KMeansClustering(k: parameters.nlist, dimensions: dimensions)
-        let nearestClusters = clustering.findNearestCentroids(
-            query: queryVector,
-            centroids: centroids,
-            nprobe: parameters.nprobe
+        try await IVFIndexReader(
+            subspace: subspace,
+            dimensions: dimensions,
+            metric: metric,
+            parameters: parameters
+        ).search(
+            queryVector: queryVector,
+            k: k,
+            transaction: transaction
         )
-
-        // Search in the selected clusters
-        var heap = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
-            maxSize: k,
-            heapType: .max,
-            comparator: { $0.distance > $1.distance }
-        )
-
-        for clusterId in nearestClusters {
-            let listSubspace = subspace
-                .subspace(SubspaceKey.lists.rawValue)
-                .subspace(clusterId)
-
-            let (begin, end) = listSubspace.range()
-            let sequence = try await transaction.collectRange(
-                from: .firstGreaterOrEqual(begin),
-                to: .firstGreaterOrEqual(end),
-                limit: 0,
-                reverse: false,
-                snapshot: true,
-                streamingMode: .wantAll
-            )
-
-            for (key, value) in sequence {
-            let pkTuple: Tuple
-            do {
-                pkTuple = try listSubspace.unpack(key)
-            } catch {
-                throw VectorIndexError.invalidStructure("Invalid IVF list primary key")
-            }
-
-            let vector = try VectorConversion.decodeFloatArray(value, expectedCount: dimensions)
-
-                // Calculate distance
-                let distance = calculateDistance(queryVector, vector)
-
-                // Convert Tuple to [any TupleElement]
-                var primaryKey: [any TupleElement] = []
-                for i in 0..<pkTuple.count {
-                    if let element = pkTuple[i] {
-                        primaryKey.append(element)
-                    }
-                }
-
-                // Insert into heap
-                heap.insert((primaryKey: primaryKey, distance: distance))
-            }
-        }
-
-        return heap.sorted()
     }
 
     // MARK: - Private Methods
@@ -279,7 +210,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionAccess
     ) async throws {
         // Get current cluster assignment
-        let assignmentSubspace = subspace.subspace(SubspaceKey.assignments.rawValue)
+        let assignmentSubspace = subspace.subspace(IVFIndexStorageKey.assignments.rawValue)
         let assignmentKey = assignmentSubspace.pack(id)
 
         guard let assignmentData = try await transaction.getValue(for: assignmentKey) else {
@@ -300,7 +231,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
 
         // Remove from inverted list
-        let listSubspace = subspace.subspace(SubspaceKey.lists.rawValue)
+        let listSubspace = subspace.subspace(IVFIndexStorageKey.lists.rawValue)
         let listKey = listSubspace.subspace(Int(clusterId)).pack(id)
         try transaction.clear(key: listKey)
 
@@ -316,7 +247,12 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionAccess
     ) async throws {
         // Load centroids
-        let centroids = try await loadCentroids(transaction: transaction)
+        let centroids = try await IVFIndexReader(
+            subspace: subspace,
+            dimensions: dimensions,
+            metric: metric,
+            parameters: parameters
+        ).loadCentroids(transaction: transaction)
 
         // If not trained, store in cluster 0 (will be reorganized after training)
         let clusterId: Int
@@ -328,13 +264,13 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
 
         // Add to inverted list
-        let listSubspace = subspace.subspace(SubspaceKey.lists.rawValue)
+        let listSubspace = subspace.subspace(IVFIndexStorageKey.lists.rawValue)
         let listKey = listSubspace.subspace(clusterId).pack(id)
         let vectorValue = VectorConversion.floatArrayToBytes(vector)
         try transaction.setValue(vectorValue, for: listKey)
 
         // Store assignment
-        let assignmentSubspace = subspace.subspace(SubspaceKey.assignments.rawValue)
+        let assignmentSubspace = subspace.subspace(IVFIndexStorageKey.assignments.rawValue)
         let assignmentKey = assignmentSubspace.pack(id)
         let assignmentValue = Tuple([Int64(clusterId)]).pack()
         try transaction.setValue(assignmentValue, for: assignmentKey)
@@ -361,7 +297,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         _ centroids: [[Float]],
         transaction: any TransactionAccess
     ) async throws {
-        let centroidSubspace = subspace.subspace(SubspaceKey.centroids.rawValue)
+        let centroidSubspace = subspace.subspace(IVFIndexStorageKey.centroids.rawValue)
 
         // Store each centroid with its index
         for (i, centroid) in centroids.enumerated() {
@@ -371,36 +307,12 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
     }
 
-    /// Load centroids
-    private func loadCentroids(
-        transaction: any TransactionAccess
-    ) async throws -> [[Float]] {
-        let centroidSubspace = subspace.subspace(SubspaceKey.centroids.rawValue)
-        let (begin, end) = centroidSubspace.range()
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            limit: 0,
-            reverse: false,
-            snapshot: true,
-            streamingMode: .wantAll
-        )
-
-        var centroids: [[Float]] = []
-        for (_, value) in sequence {
-            let vector = try VectorConversion.decodeFloatArray(value, expectedCount: dimensions)
-            centroids.append(vector)
-        }
-
-        return centroids
-    }
-
     /// Store metadata
     private func storeMetadata(
         _ metadata: IVFMetadata,
         transaction: any TransactionAccess
     ) async throws {
-        let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
+        let metadataKey = subspace.pack(Tuple([IVFIndexStorageKey.metadata.rawValue]))
         let encoded = Tuple(
             IVFMetadata.formatVersion,
             Int64(metadata.nlist),
@@ -415,7 +327,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func loadMetadata(
         transaction: any TransactionAccess
     ) async throws -> IVFMetadata? {
-        let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
+        let metadataKey = subspace.pack(Tuple([IVFIndexStorageKey.metadata.rawValue]))
         guard let data = try await transaction.getValue(for: metadataKey) else {
             return nil
         }
@@ -426,17 +338,6 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
     }
 
-    /// Calculate distance between vectors using VectorConversion utilities
-    private func calculateDistance(_ v1: [Float], _ v2: [Float]) -> Double {
-        switch metric {
-        case .cosine:
-            return VectorConversion.cosineDistance(v1, v2)
-        case .euclidean:
-            return VectorConversion.euclideanDistance(v1, v2)
-        case .dotProduct:
-            return VectorConversion.dotProductDistance(v1, v2)
-        }
-    }
 }
 
 // MARK: - IVF Metadata

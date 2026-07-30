@@ -43,6 +43,9 @@ final class CommitOutcomeUnknownEngine: StorageEngine, Sendable {
         var transactionDomain: StorageTransactionDomain {
             underlying.transactionDomain
         }
+        var storageFailure: StorageError? {
+            underlying.storageFailure
+        }
 
         fileprivate init(
             underlying: InMemoryTransaction,
@@ -65,6 +68,10 @@ final class CommitOutcomeUnknownEngine: StorageEngine, Sendable {
             try await underlying.getValue(for: key, snapshot: snapshot)
         }
 
+        func getValue(for key: ByteString) async throws -> ByteString? {
+            try await underlying.getValue(for: key)
+        }
+
         func getKey(
             selector: KeySelector,
             snapshot: Bool
@@ -75,15 +82,15 @@ final class CommitOutcomeUnknownEngine: StorageEngine, Sendable {
             )
         }
 
-        func getRange(
+        func rangeCursor(
             from begin: KeySelector,
             to end: KeySelector,
             limit: Int,
             reverse: Bool,
             snapshot: Bool,
             streamingMode: StreamingMode
-        ) -> KeyValueRangeResult {
-            underlying.getRange(
+        ) -> KeyValueCursor {
+            underlying.rangeCursor(
                 from: begin,
                 to: end,
                 limit: limit,

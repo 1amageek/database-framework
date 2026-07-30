@@ -1,5 +1,6 @@
 import DatabaseKit
 import DatabaseEngine
+import DatabaseTypes
 import Testing
 
 @Persistable
@@ -26,6 +27,7 @@ struct ModelDiffBuilderTests {
         let diff = try ModelDiffBuilder.diff(
             old: old,
             new: new,
+            timestamp: Timestamp(secondsSinceUnixEpoch: 0),
             options: options
         )
         let scoreChange = try #require(diff.change(for: "score"))
@@ -43,6 +45,7 @@ struct ModelDiffBuilderTests {
         let diff = try ModelDiffBuilder.diff(
             old: old,
             new: new,
+            timestamp: Timestamp(secondsSinceUnixEpoch: 0),
             options: DiffOptions(excludedFields: ["score"])
         )
 

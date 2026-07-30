@@ -4,6 +4,7 @@ import DatabaseTypes
 import DatabaseWire
 import QueryAST
 import StorageKit
+import TestSupport
 import Testing
 @testable import GraphIndex
 
@@ -250,8 +251,9 @@ struct SPARQLBlankNodePatternTests {
                 prefix: Tuple("sparql-blank-node-pattern-tests").pack()
             )
         )
-        _ = try await engine.withTransaction(
-            configuration: .batch
+        _ = try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             let meter = makeMeter()
             for quad in quads {
@@ -265,6 +267,9 @@ struct SPARQLBlankNodePatternTests {
         return SPARQLExecutionContext(
             executor: SPARQLQueryExecutor(
                 database: engine,
+                wallClock: FixedTestWallClock(
+                    now: Timestamp(secondsSinceUnixEpoch: 0)
+                ),
                 datasetScanner: store
             )
         )
@@ -288,7 +293,8 @@ struct SPARQLBlankNodePatternTests {
                 maximumRows: 1_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
     }
 }

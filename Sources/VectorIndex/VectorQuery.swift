@@ -34,16 +34,26 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
     private let fieldName: String
     private let dimensions: Int
+    private let graphCache: HNSWGraphCache
+    private var graphResourceLimits: HNSWGraphResourceLimits
     private var queryVector: [Float]?
     private var k: Int = 10
     private var distanceMetric: VectorDistanceMetric = .cosine
     private var filterPredicate: (@Sendable (T) async throws -> Bool)?
     private var postFilterParameters: HNSWPostFilterParameters = .default
 
-    internal init(queryContext: IndexQueryContext, fieldName: String, dimensions: Int) {
+    internal init(
+        queryContext: IndexQueryContext,
+        fieldName: String,
+        dimensions: Int,
+        graphCache: HNSWGraphCache = HNSWGraphCache(),
+        graphResourceLimits: HNSWGraphResourceLimits = .default
+    ) {
         self.queryContext = queryContext
         self.fieldName = fieldName
         self.dimensions = dimensions
+        self.graphCache = graphCache
+        self.graphResourceLimits = graphResourceLimits
     }
 
     /// Set the query vector and number of results
@@ -72,6 +82,13 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     public func metric(_ metric: VectorDistanceMetric) -> Self {
         var copy = self
         copy.distanceMetric = metric
+        return copy
+    }
+
+    /// Sets the memory limit used while materializing a persisted HNSW graph.
+    public func graphResourceLimits(_ limits: HNSWGraphResourceLimits) -> Self {
+        var copy = self
+        copy.graphResourceLimits = limits
         return copy
     }
 
@@ -277,7 +294,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                     metric: specification.metric,
                     subspace: indexSubspace,
                     idExpression: FieldKeyExpression(fieldName: "id"),
-                    parameters: params
+                    parameters: params,
+                    graphCache: graphCache,
+                    resourceLimits: graphResourceLimits
                 )
                 // Use efSearch >= k for good recall
                 let searchParams = HNSWSearchParameters(ef: max(k, hnswParams.efSearch))
@@ -466,7 +485,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                     m: hnswParams.m,
                     efConstruction: hnswParams.efConstruction,
                     efSearch: hnswParams.efSearch
-                )
+                ),
+                graphCache: graphCache,
+                resourceLimits: graphResourceLimits
             )
 
             // Fetch each HNSW candidate before evaluating the application predicate.

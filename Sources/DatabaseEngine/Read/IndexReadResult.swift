@@ -27,15 +27,15 @@ public struct IndexReadRow: Sendable {
         _ item: T,
         annotations: [String: FieldValue] = [:]
     ) throws -> IndexReadRow {
-        let row = try QueryRowCodec.encodeAny(item, annotations: annotations)
+        let row = try QueryRowCodec.encode(item, annotations: annotations)
         return IndexReadRow(fields: row.fields, annotations: row.annotations, version: row.version)
     }
 
     public static func materializing(
-        any item: any Persistable,
+        _ item: PersistedModel,
         annotations: [String: FieldValue] = [:]
     ) throws -> IndexReadRow {
-        let row = try QueryRowCodec.encodeAny(item, annotations: annotations)
+        let row = try QueryRowCodec.encode(item, annotations: annotations)
         return IndexReadRow(fields: row.fields, annotations: row.annotations, version: row.version)
     }
 }

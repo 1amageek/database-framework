@@ -57,8 +57,8 @@ struct SPARQLNumericLiteralTests {
             SPARQLNumericValue(try rdfLiteral("10.0", datatype: xsd + "decimal"))
         )
 
-        #expect(ten.compare(to: two) == .orderedDescending)
-        #expect(ten.compare(to: equivalent) == .orderedSame)
+        #expect(ten.compare(to: two) == .descending)
+        #expect(ten.compare(to: equivalent) == .same)
     }
 
     private func rdfLiteral(

@@ -331,7 +331,13 @@ internal struct TransactionRunner: Sendable {
 
             } catch {
                 let operationError = error
+                // Storage backends record failures on the owned transaction,
+                // while application operations and transaction creation can
+                // throw a StorageError before backend state records it. Both
+                // paths carry the same domain contract and must participate in
+                // the runner's single retry policy.
                 let storageError = cancellationGate?.storageFailure
+                    ?? (operationError as? StorageError)
 
                 if Task.isCancelled {
                     if commitDispatched {

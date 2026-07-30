@@ -118,7 +118,7 @@ struct RankScanner {
         reverse: Bool
     ) async throws -> [(ByteString, ByteString)] {
         let range = scoresSubspace.range()
-        return try await transaction.collectRange(
+        return try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: limit,

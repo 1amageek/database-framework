@@ -96,8 +96,8 @@ struct PolymorphicFetchTests {
 
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [PolymorphicFetchArticle.self, PolymorphicFetchReport.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicFetchArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicFetchReport.self)]),
             security: .disabled,
         )
     }
@@ -134,14 +134,15 @@ struct PolymorphicFetchTests {
                 )
             )
         }
+        let resolvedIndexSubspace = indexSubspace
 
         return try await container.engine.withTransaction { transaction -> Int in
-            let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            let (begin, end) = resolvedIndexSubspace.range()
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 
@@ -247,8 +248,8 @@ struct PolymorphicFetchTests {
             .executePage()
 
         #expect(firstPage.results.map { $0.fields["title"]?.stringValue } == ["Alpha", "Beta"])
-        #expect(firstPage.results.first?.item(as: PolymorphicFetchReport.self)?.id == alpha.id)
-        #expect(firstPage.results.dropFirst().first?.item(as: PolymorphicFetchArticle.self)?.id == beta.id)
+        #expect(try firstPage.results.first?.decodedModel(as: PolymorphicFetchReport.self)?.id == alpha.id)
+        #expect(try firstPage.results.dropFirst().first?.decodedModel(as: PolymorphicFetchArticle.self)?.id == beta.id)
         #expect(firstPage.continuation != nil)
 
         let secondPage = try await context.findPolymorphic(PolymorphicFetchArticle.self)
@@ -258,7 +259,7 @@ struct PolymorphicFetchTests {
             .executePage()
 
         #expect(secondPage.results.map { $0.fields["title"]?.stringValue } == ["Gamma"])
-        #expect(secondPage.results.first?.item(as: PolymorphicFetchArticle.self)?.id == gamma.id)
+        #expect(try secondPage.results.first?.decodedModel(as: PolymorphicFetchArticle.self)?.id == gamma.id)
         #expect(secondPage.continuation == nil)
     }
 
@@ -371,11 +372,11 @@ struct PolymorphicFetchTests {
             .fullText(PolymorphicFetchArticle.fields.title)
             .term("needle")
             .execute()
-        let initialIDs = Set(initial.compactMap { result -> String? in
-            if let article = result.item(as: PolymorphicFetchArticle.self) {
+        let initialIDs = try Set(initial.compactMap { result -> String? in
+            if let article = try result.decodedModel(as: PolymorphicFetchArticle.self) {
                 return article.id
             }
-            if let report = result.item(as: PolymorphicFetchReport.self) {
+            if let report = try result.decodedModel(as: PolymorphicFetchReport.self) {
                 return report.id
             }
             return nil
@@ -397,9 +398,9 @@ struct PolymorphicFetchTests {
             .execute()
 
         #expect(afterUpdateNeedle.count == 1)
-        #expect(afterUpdateNeedle.first?.item(as: PolymorphicFetchArticle.self)?.id == article.id)
+        #expect(try afterUpdateNeedle.first?.decodedModel(as: PolymorphicFetchArticle.self)?.id == article.id)
         #expect(afterUpdateBeacon.count == 1)
-        #expect(afterUpdateBeacon.first?.item(as: PolymorphicFetchReport.self)?.id == report.id)
+        #expect(try afterUpdateBeacon.first?.decodedModel(as: PolymorphicFetchReport.self)?.id == report.id)
 
         try context.delete(article)
         try await context.save()

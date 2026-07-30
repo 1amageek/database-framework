@@ -185,7 +185,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
 
         let rows = try orderedResults.map { result in
             try IndexReadRow.materializing(
-                any: result.entity.item,
+                result.entity.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(result.entity.typeName),
                     PolymorphicRowAnnotation.typeCode: .int64(result.entity.typeCode),

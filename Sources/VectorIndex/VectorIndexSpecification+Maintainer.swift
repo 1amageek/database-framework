@@ -8,7 +8,8 @@ extension VectorIndexSpecification {
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
-        graphCache: HNSWGraphCache
+        graphCache: HNSWGraphCache,
+        graphResourceLimits: HNSWGraphResourceLimits
     ) throws -> any IndexMaintainer<Item> {
         let matchingConfigurations = configurations.filter { configuration in
             configuration.kindIdentifier == Self.identifier
@@ -41,7 +42,8 @@ extension VectorIndexSpecification {
                         efConstruction: parameters.efConstruction,
                         efSearch: parameters.efSearch
                     ),
-                    graphCache: graphCache
+                    graphCache: graphCache,
+                    resourceLimits: graphResourceLimits
                 )
             case .ivf(let parameters):
                 return IVFIndexMaintainer<Item>(

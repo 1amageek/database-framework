@@ -8,6 +8,7 @@ import TestHeartbeat
 import Foundation
 import DatabaseKit
 import DatabaseTypes
+import TestSupport
 @testable import DatabaseEngine
 
 // MARK: - Test Model
@@ -30,7 +31,7 @@ struct CacheConfigurationTests {
 
         #expect(config.maxEntries == 10_000)
         #expect(config.maxMemoryBytes == 100 * 1024 * 1024)
-        #expect(config.ttlSeconds == 300)
+        #expect(config.timeToLive == .seconds(300))
         #expect(config.enableStatistics == true)
         #expect(config.evictionPolicy == .lru)
     }
@@ -40,7 +41,7 @@ struct CacheConfigurationTests {
         let config = CacheConfiguration.small
 
         #expect(config.maxEntries == 1_000)
-        #expect(config.ttlSeconds == 60)
+        #expect(config.timeToLive == .seconds(60))
     }
 
     @Test("Large configuration")
@@ -69,7 +70,7 @@ struct PersistablePreloadCacheTests {
 
     @Test("Put and get item")
     func putAndGet() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
         let item = PreloadCacheItem(name: "test", value: 42)
 
         try cache.put(item: item, key: "key1")
@@ -80,7 +81,7 @@ struct PersistablePreloadCacheTests {
 
     @Test("Get missing item returns nil")
     func getMissingItem() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
 
         let result = cache.get(key: "nonexistent")
         #expect(result == nil)
@@ -88,7 +89,7 @@ struct PersistablePreloadCacheTests {
 
     @Test("Contains check")
     func containsCheck() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
         let item = PreloadCacheItem(name: "test", value: 42)
 
         #expect(cache.contains(key: "key1") == false)
@@ -99,7 +100,7 @@ struct PersistablePreloadCacheTests {
 
     @Test("Remove item")
     func removeItem() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
         let item = PreloadCacheItem(name: "test", value: 42)
 
         try cache.put(item: item, key: "key1")
@@ -111,7 +112,7 @@ struct PersistablePreloadCacheTests {
 
     @Test("Clear cache")
     func clearCache() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
 
         try cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "key1")
         try cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "key2")
@@ -125,7 +126,7 @@ struct PersistablePreloadCacheTests {
 
     @Test("Update existing key")
     func updateExistingKey() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
 
         let item1 = PreloadCacheItem(name: "original", value: 1)
         let item2 = PreloadCacheItem(name: "updated", value: 2)
@@ -146,7 +147,7 @@ struct PreloadCacheStatisticsTests {
 
     @Test("Hit and miss tracking")
     func hitMissTracking() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
         let item = PreloadCacheItem(name: "test", value: 42)
 
         try cache.put(item: item, key: "key1")
@@ -164,7 +165,7 @@ struct PreloadCacheStatisticsTests {
 
     @Test("Reset statistics")
     func resetStatistics() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
         let item = PreloadCacheItem(name: "test", value: 42)
 
         try cache.put(item: item, key: "key1")
@@ -180,7 +181,7 @@ struct PreloadCacheStatisticsTests {
 
     @Test("Entry count tracking")
     func entryCountTracking() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
 
         try cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "key1")
         try cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "key2")
@@ -201,7 +202,7 @@ struct CacheEvictionTests {
             maxEntries: 3,
             evictionPolicy: .lru
         )
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: config)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: config, monotonicClock: TestProcessMonotonicClock())
 
         try cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "key1")
         try cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "key2")
@@ -225,7 +226,7 @@ struct CacheEvictionTests {
             maxEntries: 3,
             evictionPolicy: .fifo
         )
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: config)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: config, monotonicClock: TestProcessMonotonicClock())
 
         try cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "key1")
         try cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "key2")
@@ -249,7 +250,7 @@ struct CacheEvictionTests {
             maxEntries: 2,
             evictionPolicy: .lru
         )
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: config)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: config, monotonicClock: TestProcessMonotonicClock())
 
         try cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "key1")
         try cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "key2")
@@ -266,7 +267,7 @@ struct CacheBulkOperationsTests {
 
     @Test("Preload multiple items")
     func preloadMultipleItems() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
 
         let items = [
             (key: "k1", item: PreloadCacheItem(name: "1", value: 1)),
@@ -283,7 +284,7 @@ struct CacheBulkOperationsTests {
 
     @Test("Get multiple items")
     func getMultipleItems() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
 
         try cache.put(item: PreloadCacheItem(name: "1", value: 1), key: "k1")
         try cache.put(item: PreloadCacheItem(name: "2", value: 2), key: "k2")
@@ -304,7 +305,7 @@ struct CacheGetOrFetchTests {
 
     @Test("GetOrFetch returns cached item")
     func getOrFetchReturnsCached() async throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
         let item = PreloadCacheItem(name: "cached", value: 100)
 
         try cache.put(item: item, key: "key1")
@@ -321,7 +322,7 @@ struct CacheGetOrFetchTests {
 
     @Test("GetOrFetch calls fetch on miss")
     func getOrFetchCallsFetch() async throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
 
         var fetchCalled = false
         let result = try await cache.getOrFetch(key: "key1") {
@@ -335,7 +336,7 @@ struct CacheGetOrFetchTests {
 
     @Test("GetOrFetch caches fetched item")
     func getOrFetchCachesFetched() async throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
 
         _ = try await cache.getOrFetch(key: "key1") {
             PreloadCacheItem(name: "fetched", value: 42)
@@ -353,7 +354,7 @@ struct ScopedCacheTests {
 
     @Test("Scoped key generation")
     func scopedKeyGeneration() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
         let scoped = ScopedCache(cache: cache, keyPrefix: "users")
 
         #expect(scoped.scopedKey("123") == "users:123")
@@ -361,7 +362,7 @@ struct ScopedCacheTests {
 
     @Test("Scoped operations use prefix")
     func scopedOperationsUsePrefix() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
         let scoped = ScopedCache(cache: cache, keyPrefix: "users")
 
         let item = PreloadCacheItem(name: "test", value: 42)
@@ -382,7 +383,7 @@ struct CacheWarmerTests {
 
     @Test("Warm from array")
     func warmFromArray() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
         let warmer = CacheWarmer(cache: cache)
 
         let items = [
@@ -399,7 +400,7 @@ struct CacheWarmerTests {
 
     @Test("Warm with custom key")
     func warmWithCustomKey() throws {
-        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small)
+        let cache = PersistablePreloadCache<PreloadCacheItem>(configuration: .small, monotonicClock: TestProcessMonotonicClock())
         let warmer = CacheWarmer(cache: cache)
 
         let items = [

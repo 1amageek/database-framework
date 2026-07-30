@@ -41,7 +41,7 @@ extension DatabaseContext {
         guard let loaded else {
             return nil
         }
-        return RelationshipSnapshot(item: loaded.owner).with(
+        return try RelationshipSnapshot(item: loaded.owner).with(
             field,
             loadedAs: loaded.related
         )
@@ -73,7 +73,7 @@ extension DatabaseContext {
         guard let loaded else {
             return nil
         }
-        return RelationshipSnapshot(item: loaded.owner).with(
+        return try RelationshipSnapshot(item: loaded.owner).with(
             field,
             loadedAs: loaded.related
         )
@@ -110,7 +110,7 @@ extension DatabaseContext {
         guard let loaded else {
             return nil
         }
-        return RelationshipSnapshot(item: loaded.owner).with(
+        return try RelationshipSnapshot(item: loaded.owner).with(
             field,
             loadedAs: loaded.related
         )

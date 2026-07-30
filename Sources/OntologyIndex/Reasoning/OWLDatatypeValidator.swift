@@ -244,7 +244,7 @@ public struct OWLDatatypeValidator: Sendable {
             let parsedPattern: XSDParsedValue
             do {
                 parsedPattern = try parser.parse(restriction.value)
-            } catch let failure as XSDValidationFailure {
+            } catch let failure {
                 switch failure {
                 case .invalidLexicalForm(_, _, let diagnostic):
                     throw XSDValidationFailure.invalidRestriction(diagnostic)
@@ -276,7 +276,7 @@ public struct OWLDatatypeValidator: Sendable {
             let parsedRange: XSDParsedValue
             do {
                 parsedRange = try parser.parse(restriction.value)
-            } catch let failure as XSDValidationFailure {
+            } catch let failure {
                 switch failure {
                 case .invalidLexicalForm(_, _, let diagnostic):
                     throw XSDValidationFailure.invalidRestriction(diagnostic)
@@ -344,7 +344,7 @@ public struct OWLDatatypeValidator: Sendable {
         let value: XSDParsedValue
         do {
             value = try parser.parse(literal)
-        } catch let failure as XSDValidationFailure {
+        } catch let failure {
             switch failure {
             case .invalidLexicalForm(_, _, let diagnostic):
                 throw XSDValidationFailure.invalidRestriction(diagnostic)
@@ -367,7 +367,7 @@ public struct OWLDatatypeValidator: Sendable {
         let value: XSDParsedValue
         do {
             value = try parser.parse(literal)
-        } catch let failure as XSDValidationFailure {
+        } catch let failure {
             switch failure {
             case .invalidLexicalForm(_, _, let diagnostic):
                 throw XSDValidationFailure.invalidRestriction(diagnostic)

@@ -35,10 +35,12 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         )
         let executor = SPARQLQueryExecutor(
             database: container.engine,
+            wallClock: container.wallClock,
             sources: resolved.source.map { [$0] } ?? []
         )
         let entailmentResolution = try await DatabaseSHACLEntailmentResolver(
-            ontologyStore: ontologyStore
+            ontologyStore: ontologyStore,
+            monotonicClock: container.monotonicClock
         ).resolve(
             entailment,
             executor: executor,
@@ -181,8 +183,8 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         case .nodes(let nodes):
             return Array(Set(nodes)).sorted()
         case .entities(let identities):
-            guard let persistableType = container.runtimeConfiguration
-                .entityRuntimes.modelType(named: entity.name) else {
+            guard container.runtimeConfiguration.entityRuntimes
+                .registration(named: entity.name) != nil else {
                 throw DatabaseSHACLDataSourceError.schemaEntityNotFound(data.entity)
             }
             let expectedPartition: [String]

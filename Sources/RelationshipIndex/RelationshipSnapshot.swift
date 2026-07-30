@@ -60,13 +60,27 @@ public struct RelationshipSnapshot<Model: Persistable>: Sendable {
                 expected: .toMany
             )
         }
-        guard let related = value as? [Related] else {
-            throw .relatedTypeMismatch(
-                owner: Model.persistableType,
-                field: fieldName,
-                expected: Related.persistableType,
-                actual: loaded.relatedTypeName
-            )
+        var related: [Related] = []
+        related.reserveCapacity(value.count)
+        for model in value {
+            guard model.entity == Related.persistableType else {
+                throw .relatedTypeMismatch(
+                    owner: Model.persistableType,
+                    field: fieldName,
+                    expected: Related.persistableType,
+                    actual: model.entity
+                )
+            }
+            do {
+                related.append(try model.decode(as: Related.self))
+            } catch {
+                throw .relatedTypeMismatch(
+                    owner: Model.persistableType,
+                    field: fieldName,
+                    expected: Related.persistableType,
+                    actual: model.entity
+                )
+            }
         }
         return related
     }
@@ -74,30 +88,32 @@ public struct RelationshipSnapshot<Model: Persistable>: Sendable {
     func with<Related: Persistable>(
         _ field: Field<Model, PersistableReference<Related>?>,
         loadedAs value: Related?
-    ) -> RelationshipSnapshot<Model> {
+    ) throws -> RelationshipSnapshot<Model> {
         replacingRelationship(
             named: field.name,
-            with: value.map(LoadedRelationship.toOne) ?? .absentToOne
+            with: try value.map { .toOne(try PersistedModel($0)) }
+                ?? .absentToOne
         )
     }
 
     func with<Related: Persistable>(
         _ field: Field<Model, PersistableReference<Related>>,
         loadedAs value: Related?
-    ) -> RelationshipSnapshot<Model> {
+    ) throws -> RelationshipSnapshot<Model> {
         replacingRelationship(
             named: field.name,
-            with: value.map(LoadedRelationship.toOne) ?? .absentToOne
+            with: try value.map { .toOne(try PersistedModel($0)) }
+                ?? .absentToOne
         )
     }
 
     func with<Related: Persistable>(
         _ field: Field<Model, [PersistableReference<Related>]>,
         loadedAs value: [Related]
-    ) -> RelationshipSnapshot<Model> {
+    ) throws -> RelationshipSnapshot<Model> {
         replacingRelationship(
             named: field.name,
-            with: .toMany(value)
+            with: .toMany(try value.map(PersistedModel.init))
         )
     }
 
@@ -116,15 +132,24 @@ public struct RelationshipSnapshot<Model: Persistable>: Sendable {
         case .absentToOne:
             return nil
         case let .toOne(value):
-            guard let related = value as? Related else {
+            guard value.entity == Related.persistableType else {
                 throw .relatedTypeMismatch(
                     owner: Model.persistableType,
                     field: fieldName,
                     expected: Related.persistableType,
-                    actual: type(of: value).persistableType
+                    actual: value.entity
                 )
             }
-            return related
+            do {
+                return try value.decode(as: Related.self)
+            } catch {
+                throw .relatedTypeMismatch(
+                    owner: Model.persistableType,
+                    field: fieldName,
+                    expected: Related.persistableType,
+                    actual: value.entity
+                )
+            }
         case .toMany:
             throw .cardinalityMismatch(
                 owner: Model.persistableType,
@@ -177,17 +202,17 @@ extension RelationshipSnapshot: CustomDebugStringConvertible {
 
 enum LoadedRelationship: Sendable, CustomStringConvertible {
     case absentToOne
-    case toOne(any Persistable)
-    case toMany(any Sendable)
+    case toOne(PersistedModel)
+    case toMany([PersistedModel])
 
     var relatedTypeName: String {
         switch self {
         case .absentToOne:
             return "none"
         case let .toOne(value):
-            return type(of: value).persistableType
-        case .toMany:
-            return "collection"
+            return value.entity
+        case let .toMany(values):
+            return values.first?.entity ?? "collection"
         }
     }
 

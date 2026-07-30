@@ -75,7 +75,7 @@ struct ScrubberTypesTests {
     @Test("ScrubberSummary computed properties")
     func testScrubberSummaryComputedProperties() {
         let summary = ScrubberSummary(
-            timeElapsed: 10.5,
+            timeElapsed: .milliseconds(10_500),
             entriesScanned: 1000,
             itemsScanned: 500,
             danglingEntriesDetected: 5,
@@ -92,7 +92,7 @@ struct ScrubberTypesTests {
     @Test("ScrubberSummary description")
     func testScrubberSummaryDescription() {
         let summary = ScrubberSummary(
-            timeElapsed: 10.5,
+            timeElapsed: .milliseconds(10_500),
             entriesScanned: 1000,
             itemsScanned: 500,
             danglingEntriesDetected: 5,
@@ -116,7 +116,7 @@ struct ScrubberTypesTests {
     @Test("Healthy result")
     func testHealthyResult() {
         let summary = ScrubberSummary(
-            timeElapsed: 5.0,
+            timeElapsed: .seconds(5),
             entriesScanned: 100,
             itemsScanned: 100,
             danglingEntriesDetected: 0,
@@ -141,7 +141,7 @@ struct ScrubberTypesTests {
     @Test("Unhealthy result with issues")
     func testUnhealthyResult() {
         let summary = ScrubberSummary(
-            timeElapsed: 5.0,
+            timeElapsed: .seconds(5),
             entriesScanned: 100,
             itemsScanned: 100,
             danglingEntriesDetected: 5,
@@ -164,7 +164,7 @@ struct ScrubberTypesTests {
     @Test("Failed result with error")
     func testFailedResult() {
         let summary = ScrubberSummary(
-            timeElapsed: 1.0,
+            timeElapsed: .seconds(1),
             entriesScanned: 50,
             itemsScanned: 0,
             danglingEntriesDetected: 0,
@@ -193,7 +193,7 @@ struct ScrubberTypesTests {
     @Test("ScrubberResult description - completed")
     func testScrubberResultDescriptionCompleted() {
         let summary = ScrubberSummary(
-            timeElapsed: 5.0,
+            timeElapsed: .seconds(5),
             entriesScanned: 100,
             itemsScanned: 100,
             danglingEntriesDetected: 2,
@@ -219,7 +219,7 @@ struct ScrubberTypesTests {
     @Test("ScrubberResult description - incomplete")
     func testScrubberResultDescriptionIncomplete() {
         let summary = ScrubberSummary(
-            timeElapsed: 1.0,
+            timeElapsed: .seconds(1),
             entriesScanned: 50,
             itemsScanned: 0,
             danglingEntriesDetected: 0,

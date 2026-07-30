@@ -241,10 +241,9 @@ enum SPARQLIRIResolver {
     }
 
     private static func containsDotSegment(_ path: Substring) -> Bool {
-        path == "." || path == ".."
-            || path.hasPrefix("./") || path.hasPrefix("../")
-            || path.contains("/./") || path.contains("/../")
-            || path.hasSuffix("/.") || path.hasSuffix("/..")
+        path.split(separator: "/", omittingEmptySubsequences: false).contains {
+            $0 == "." || $0 == ".."
+        }
     }
 
     private static func serialize(

@@ -1,5 +1,6 @@
 #if SQLITE
 import Testing
+import TestSupport
 import Foundation
 import Database
 import DatabaseKitFoundation
@@ -255,8 +256,8 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV1.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicVectorPersonV1.self, SQLitePolymorphicVectorOrganizationV1.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV1.self)]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -291,12 +292,9 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV2.self,
             migrationPlan: SQLitePolymorphicVectorAddMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try Self.vectorRuntimeConfiguration(
-                persistableTypes: [
-                    SQLitePolymorphicVectorPersonV2.self,
-                    SQLitePolymorphicVectorOrganizationV2.self,
-                ]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self)]
             ),
             security: .disabled
         )
@@ -310,7 +308,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
             .query([1, 0, 0], k: 2)
             .metric(.cosine)
             .executePage()
-        let ids = Set(page.results.compactMap(Self.resultIDV2))
+        let ids = try Set(page.results.compactMap(Self.resultIDV2))
 
         #expect(ids == Set([anchor.id, organization.id]))
 
@@ -323,7 +321,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
             .query([1, 0, 0], k: 2)
             .metric(.cosine)
             .executePage()
-        let organizationStartedIDs = Set(organizationStartedPage.results.compactMap(Self.resultIDV2))
+        let organizationStartedIDs = try Set(organizationStartedPage.results.compactMap(Self.resultIDV2))
 
         #expect(organizationStartedIDs == Set([anchor.id, organization.id]))
     }
@@ -333,8 +331,8 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV2.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SQLitePolymorphicVectorPersonV2.self, SQLitePolymorphicVectorOrganizationV2.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self)]),
             security: .disabled
         )
         let context = initialContainer.newContext()
@@ -361,12 +359,9 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV3.self,
             migrationPlan: SQLitePolymorphicVectorRebuildMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try Self.vectorRuntimeConfiguration(
-                persistableTypes: [
-                    SQLitePolymorphicVectorPersonV3.self,
-                    SQLitePolymorphicVectorOrganizationV3.self,
-                ]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV3.self)]
             ),
             security: .disabled
         )
@@ -378,7 +373,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
             .query([1, 0, 0], k: 2)
             .metric(.cosine)
             .executePage()
-        let ids = Set(page.results.compactMap(Self.resultIDV3))
+        let ids = try Set(page.results.compactMap(Self.resultIDV3))
 
         #expect(ids == Set([person.id, organization.id]))
 
@@ -391,7 +386,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
             .query([1, 0, 0], k: 2)
             .metric(.cosine)
             .executePage()
-        let organizationStartedIDs = Set(organizationStartedPage.results.compactMap(Self.resultIDV3))
+        let organizationStartedIDs = try Set(organizationStartedPage.results.compactMap(Self.resultIDV3))
 
         #expect(organizationStartedIDs == Set([person.id, organization.id]))
         #expect(try await Self.countEntityVectorIndexEntries(container: migratedContainer) == 2)
@@ -399,33 +394,32 @@ struct PolymorphicVectorMigrationSQLiteTests {
     }
 
     private static func vectorRuntimeConfiguration(
-        persistableTypes: [any Persistable.Type]
+        entityRuntimes: [EntityRuntimeRegistration]
     ) throws -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
-            indexMaintainerProviders: [
-                VectorIndexMaintainerProvider()
+            indexMaintainerProviderDescriptors: [
+                .init(describing: VectorIndexMaintainerProvider())
             ],
-            indexReadExecutors: [VectorReadExecutors.indexExecutor],
-            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor],
-            persistableTypes: persistableTypes
+            polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor()],
+            entityRuntimes: entityRuntimes
         )
     }
 
-    private static func resultIDV2(_ result: PolymorphicQueryResult) -> String? {
-        if let person = result.item(as: SQLitePolymorphicVectorPersonV2.self) {
+    private static func resultIDV2(_ result: PolymorphicQueryResult) throws -> String? {
+        if let person = try result.decodedModel(as: SQLitePolymorphicVectorPersonV2.self) {
             return person.id
         }
-        if let organization = result.item(as: SQLitePolymorphicVectorOrganizationV2.self) {
+        if let organization = try result.decodedModel(as: SQLitePolymorphicVectorOrganizationV2.self) {
             return organization.id
         }
         return nil
     }
 
-    private static func resultIDV3(_ result: PolymorphicQueryResult) -> String? {
-        if let person = result.item(as: SQLitePolymorphicVectorPersonV3.self) {
+    private static func resultIDV3(_ result: PolymorphicQueryResult) throws -> String? {
+        if let person = try result.decodedModel(as: SQLitePolymorphicVectorPersonV3.self) {
             return person.id
         }
-        if let organization = result.item(as: SQLitePolymorphicVectorOrganizationV3.self) {
+        if let organization = try result.decodedModel(as: SQLitePolymorphicVectorOrganizationV3.self) {
             return organization.id
         }
         return nil
@@ -436,11 +430,11 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
+            return try await transaction.collectRange(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).count
         }
     }
 

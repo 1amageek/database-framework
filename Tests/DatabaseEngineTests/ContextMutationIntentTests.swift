@@ -58,8 +58,8 @@ struct ContextMutationIntentTests {
         let schema = try Schema(entities: [try DelInsUser.schemaEntity])
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DelInsUser.self, DelInsArticle.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DelInsUser.self), try DatabaseFrameworkRuntime.entity(DelInsArticle.self)]),
             security: .disabled,
         )
     }
@@ -69,8 +69,8 @@ struct ContextMutationIntentTests {
         let schema = try Schema(entities: [try DelInsArticle.schemaEntity])
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DelInsUser.self, DelInsArticle.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DelInsUser.self), try DatabaseFrameworkRuntime.entity(DelInsArticle.self)]),
             security: .disabled,
         )
     }

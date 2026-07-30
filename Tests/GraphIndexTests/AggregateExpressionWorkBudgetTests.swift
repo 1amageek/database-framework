@@ -4,6 +4,7 @@ import DatabaseTypes
 import DatabaseWire
 @testable import GraphIndex
 import Testing
+import TestSupport
 
 @Suite("Aggregate expression work budget")
 struct AggregateExpressionWorkBudgetTests {
@@ -14,7 +15,8 @@ struct AggregateExpressionWorkBudgetTests {
                 maximumRows: 1,
                 maximumWorkUnits: 4,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
         let aggregate = try AggregateExpression.groupConcat(
             "?value",
@@ -44,7 +46,8 @@ struct AggregateExpressionWorkBudgetTests {
                 maximumRows: 1,
                 maximumWorkUnits: 4,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
         let aggregate = try AggregateExpression.countDistinct(
             "?value",
@@ -83,7 +86,8 @@ struct AggregateExpressionWorkBudgetTests {
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
         var builder = try SPARQLRetainedBindingBuilder.make(
             workMeter: workMeter,
@@ -97,7 +101,7 @@ struct AggregateExpressionWorkBudgetTests {
             source: builder.finish(),
             grouping: .implicitSingleGroup,
             expressionContext: try SPARQLQueryExpressionContext(
-                now: try Timestamp(secondsSinceUnixEpoch: 0),
+                now: Timestamp(secondsSinceUnixEpoch: 0),
                 functionRegistry: .empty,
                 workMeter: workMeter
             ),

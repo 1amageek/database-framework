@@ -3,6 +3,7 @@
 // Performance and correctness tests for OWLReasoner optimizations
 
 import Testing
+import TestSupport
 import TestHeartbeat
 import Foundation
 import DatabaseKit
@@ -169,7 +170,7 @@ struct OWLReasonerBenchmarkTests {
             ))
         }
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let start = ContinuousClock.now
         for individual in ontology.individuals {
@@ -197,7 +198,7 @@ struct OWLReasonerBenchmarkTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:bonsai"))
         ontology.axioms.append(.classAssertion(individual: "ex:bonsai", class_: .named("ex:Plant")))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let buddyTypes = reasoner.types(of: "ex:buddy")
         // CatDog ⊑ Dog, Cat ⊑ Animal ⊑ LivingThing ⊑ Thing
@@ -219,7 +220,7 @@ struct OWLReasonerBenchmarkTests {
     @Test("Defined class classification with 10 classes and 20 individuals", .timeLimit(.minutes(1)))
     func benchmarkDefinedClassClassification() {
         let ontology = OntologyBuilder.richOntology(classCount: 10, individualCount: 20)
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let start = ContinuousClock.now
         for individual in ontology.individuals {
@@ -238,7 +239,7 @@ struct OWLReasonerBenchmarkTests {
     @Test("Cache effectiveness on repeated queries", .timeLimit(.minutes(1)))
     func benchmarkCacheEffectiveness() {
         let ontology = OntologyBuilder.richOntology(classCount: 6, individualCount: 10)
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let inds = ontology.individuals.map(\.iri).filter { $0.hasPrefix("ex:ind") }
 
@@ -267,7 +268,7 @@ struct OWLReasonerBenchmarkTests {
             prev = cls
         }
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let start = ContinuousClock.now
         // Check all pairs
@@ -314,7 +315,7 @@ struct OWLReasonerBenchmarkTests {
             ontology.axioms.append(.classAssertion(individual: iri, class_: .named("ex:Bird")))
         }
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let dogs = reasoner.instances(of: .named("ex:Dog"))
         #expect(dogs.count == 5)
@@ -365,7 +366,7 @@ struct OWLReasonerTypesCorrectnessTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:Local"))
         ontology.axioms.append(.objectPropertyAssertion(subject: "ex:LocalShop", property: "ex:hasScale", object: "ex:Local"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let toyotaTypes = reasoner.types(of: "ex:Toyota")
         #expect(toyotaTypes.contains("ex:Corporation"))
@@ -391,7 +392,7 @@ struct OWLReasonerTypesCorrectnessTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:rex"))
         ontology.axioms.append(.classAssertion(individual: "ex:rex", class_: .named("ex:Dog")))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let types = reasoner.types(of: "ex:rex")
 
         #expect(types.contains("ex:Dog"))
@@ -417,8 +418,8 @@ struct OWLReasonerTypesCorrectnessTests {
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:bob"))
         ontology.axioms.append(.classAssertion(individual: "ex:bob", class_: .named("ex:Employee")))
 
-        let optimized = OWLReasoner(ontology: ontology)
-        let naive = TableauxReasoner(ontology: ontology)
+        let optimized = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
+        let naive = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         for individual in ontology.individuals {
             let iri = individual.iri
@@ -436,7 +437,7 @@ struct OWLReasonerTypesCorrectnessTests {
         ontology.classes.append(OWLClass(iri: "ex:Person"))
         ontology.individuals.append(OWLNamedIndividual(iri: "ex:unknown"))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
         let types = reasoner.types(of: "ex:unknown")
 
         #expect(types == Set(["owl:Thing"]))
@@ -487,7 +488,7 @@ struct OWLReasonerTypesCorrectnessTests {
             subject: "ex:mytruck", property: "ex:hasType", object: "ex:pickup"
         ))
 
-        let reasoner = OWLReasoner(ontology: ontology)
+        let reasoner = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let carTypes = reasoner.types(of: "ex:mycar")
         #expect(carTypes.contains("ex:Car"))
@@ -503,8 +504,8 @@ struct OWLReasonerTypesCorrectnessTests {
     @Test("Optimized vs naive on rich ontology")
     func optimizedMatchesNaiveRichOntology() {
         let ontology = OntologyBuilder.richOntology(classCount: 6, individualCount: 8)
-        let optimized = OWLReasoner(ontology: ontology)
-        let naive = TableauxReasoner(ontology: ontology)
+        let optimized = OWLReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
+        let naive = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let inds = ontology.individuals.map(\.iri).filter { $0.hasPrefix("ex:ind") }
         for iri in inds {
@@ -532,7 +533,7 @@ struct TableauxReasonerBenchmarkTests {
             ]))
         }
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         let start = ContinuousClock.now
         // Test union with many disjuncts requiring backtracking
@@ -554,7 +555,7 @@ struct TableauxReasonerBenchmarkTests {
         var ontology = OWLOntology(iri: "http://bench.org/nested")
         ontology.axioms.append(.disjointClasses([.named("ex:Good"), .named("ex:Bad")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ∃R.(∃R.(∃R.Good ⊓ ∀R.Bad)) → 3-deep chain, clash at depth 3
         let result = reasoner.checkSatisfiability(
@@ -574,7 +575,7 @@ struct TableauxReasonerBenchmarkTests {
     @Test("Cardinality with multiple roles", .timeLimit(.minutes(1)))
     func benchmarkCardinalityMultipleRoles() {
         let ontology = OWLOntology(iri: "http://bench.org/card")
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // ≥2 R1.⊤ ⊓ ≥2 R2.⊤ ⊓ ≤3 R1.⊤ ⊓ ≤3 R2.⊤
         // Satisfiable: 2-3 R1-successors and 2-3 R2-successors
@@ -601,7 +602,7 @@ struct TableauxReasonerBenchmarkTests {
         ))
         ontology.axioms.append(.disjointClasses([.named("ex:C"), .named("ex:D")]))
 
-        let reasoner = TableauxReasoner(ontology: ontology)
+        let reasoner = TableauxReasoner(ontology: ontology, clock: TestProcessMonotonicClock())
 
         // A ⊓ ∀R.∀R.D → A must have R-successor B, B must have R-successor C,
         // but ∀R.∀R.D forces C to be D, which contradicts C ⊓ D = ⊥

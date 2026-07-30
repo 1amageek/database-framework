@@ -369,6 +369,7 @@ let package = Package(
                 "DatabaseCLICore",
                 "DatabaseEngine",
                 .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "StorageKitSystemClock", package: "storage-kit"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             exclude: ["README.md"],
@@ -447,6 +448,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "StorageKitSystemClock", package: "storage-kit"),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"], .when(platforms: hostPlatforms)),
@@ -715,6 +717,7 @@ let package = Package(
                 .product(name: "DatabaseKitFoundation", package: "database-kit"),
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
+                "TestSupport",
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -862,6 +865,7 @@ let package = Package(
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
+                "TestSupport",
             ],
             swiftSettings: [
                 .define("SQLITE", .when(traits: ["SQLite"])),

@@ -84,10 +84,11 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 }
                 try validateMaintainerProviders(
                     source: .polymorphicGroup(group.identifier),
-                        descriptors: schema.polymorphicIndexDescriptors(
+                    descriptors: schema.polymorphicIndexDescriptors(
                         identifier: group.identifier,
                         memberTypeName: memberRuntime.entity.name
-                    )
+                    ),
+                    entityRuntime: memberRuntime
                 )
             }
             try validateMaintainerProviders(

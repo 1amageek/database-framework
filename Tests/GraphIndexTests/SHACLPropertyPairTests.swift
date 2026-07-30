@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseRuntime
 import DatabaseTypes
 import Foundation
@@ -38,8 +39,8 @@ struct SHACLPropertyPairTests {
         )
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(InMemoryEngine())),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Statement.self]),
+            configuration: .testing(backend: .custom(InMemoryEngine())),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Statement.self)]),
             security: .disabled
         )
     }

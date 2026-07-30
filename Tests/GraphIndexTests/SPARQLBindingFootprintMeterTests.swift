@@ -2,6 +2,7 @@ import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
 import DatabaseWire
+import TestSupport
 import Testing
 @testable import GraphIndex
 
@@ -190,7 +191,8 @@ struct SPARQLBindingFootprintMeterTests {
                 maximumIntermediateRows: 10,
                 maximumIntermediateBytes: 500,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
         let footprintMeter = try SPARQLBindingFootprintMeter.make(
             workMeter: workMeter,
@@ -251,7 +253,8 @@ struct SPARQLBindingFootprintMeterTests {
                 maximumIntermediateRows: 100,
                 maximumIntermediateBytes: 1_000_000,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
     }
 

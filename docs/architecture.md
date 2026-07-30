@@ -43,21 +43,23 @@ interpret models, QueryIR, graph semantics, or application commands.
 
 ## Runtime Forms
 
-The native and standard WASI builds use the same database-framework sources and
-the same synchronization contract. A full Cloudflare database runtime links the
-application-specific schema and database-framework into a standard WASI reactor.
-It is not an Embedded Swift module.
+Native and Embedded WASI builds use the same database-framework sources and the
+same synchronization, transaction, and error contracts. A full Cloudflare
+database runtime links the application-specific schema and database-framework
+into a Swift 6.4 Embedded WASM reactor. `DatabaseTypesFoundation`,
+`DatabaseKitFoundation`, and `DatabaseServerFoundation` are adapter products and
+do not enter that reactor dependency graph.
 
-An Embedded application, such as Calendar, communicates through DatabaseWire by
-using database-client. It does not link database-framework into its Embedded WASM
-artifact.
+An Embedded application, such as Calendar, remains a separate WASM artifact. It
+uses database-client and DatabaseWire to call the full Embedded database reactor;
+it does not link the database execution engine into the Calendar artifact.
 
 ~~~text
 Embedded application WASM
         |
         | DatabaseWire
         v
-standard WASI database reactor
+Full database-framework Embedded WASM reactor
         |
         | StorageEngine transaction contract
         v

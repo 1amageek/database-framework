@@ -180,7 +180,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexUniquenessMaintaine
         ) async throws -> IndexUniquenessConflict? {
             let valueKey = subspace.pack(Tuple(values))
             let rangeEnd = try strinc(valueKey)
-            let entries = try await transaction.collectRange(
+            let entries = try await TransactionRangeCollection.collect(using: transaction,
                 from: .firstGreaterOrEqual(valueKey),
                 to: .firstGreaterOrEqual(rangeEnd),
                 limit: 2,

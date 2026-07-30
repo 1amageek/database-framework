@@ -94,7 +94,7 @@ public enum RelationshipReferenceCatalog {
         } else {
             beginSelector = .firstGreaterOrEqual(begin)
         }
-        let rows = try await transaction.collectRange(
+        let rows = try await TransactionRangeCollection.collect(using: transaction,
             from: beginSelector,
             to: .firstGreaterOrEqual(end),
             limit: limit + 1,

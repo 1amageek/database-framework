@@ -3,17 +3,26 @@ import DatabaseKit
 /// One primary persisted-model intent applied by `DatabaseTransaction`.
 package enum PersistableMutation: Sendable {
     case save(
-        model: any Persistable,
+        identity: EntityReference,
+        model: PersistedModel,
         precondition: WritePrecondition
     )
     case delete(
-        model: any Persistable,
+        identity: EntityReference,
+        model: PersistedModel,
         precondition: WritePrecondition
     )
 
-    package var model: any Persistable {
+    package var identity: EntityReference {
         switch self {
-        case .save(let model, _), .delete(let model, _):
+        case .save(let identity, _, _), .delete(let identity, _, _):
+            return identity
+        }
+    }
+
+    package var model: PersistedModel {
+        switch self {
+        case .save(_, let model, _), .delete(_, let model, _):
             return model
         }
     }

@@ -351,20 +351,20 @@ public final class DBContainer: Sendable {
         for entity in schema.entities {
             guard !entity.indexDescriptors.isEmpty else { continue }
             guard !entity.hasDynamicDirectory else { continue }
-            guard let persistableType = runtimeConfiguration.entityRuntimes.modelType(
+            guard runtimeConfiguration.entityRuntimes.registration(
                 named: entity.name
-            ) else {
+            ) != nil else {
                 throw DatabaseRuntimeConfigurationError
                     .missingCompiledEntityType(entityName: entity.name)
             }
-            let subspace = try await resolveDirectory(for: persistableType)
+            let subspace = try await resolveDirectory(for: entity)
             let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
             let indexNames = entity.indexDescriptors.map { $0.name }
             try await lifecycleStore.ensureReadable(
                 indexNames,
                 entityRange: subspace
                     .subspace(SubspaceKey.items)
-                    .subspace(persistableType.persistableType)
+                    .subspace(entity.name)
                     .range()
             )
         }
@@ -423,18 +423,10 @@ public final class DBContainer: Sendable {
         for type: T.Type,
         path: DirectoryPath<T> = DirectoryPath()
     ) async throws -> Subspace {
-        try await resolveDirectory(for: type, path: try AnyDirectoryPath(path))
-    }
-
-    /// Resolve directory (type-erased version)
-    ///
-    /// Used when the generic type is not known at compile time.
-    public func resolveDirectory(
-        for type: any Persistable.Type,
-        path: AnyDirectoryPath? = nil
-    ) async throws -> Subspace {
-        let entity = try schemaEntity(named: type.persistableType)
-        return try await resolveDirectory(for: entity, path: path)
+        try await resolveDirectory(
+            for: schemaEntity(named: T.persistableType),
+            path: try AnyDirectoryPath(path)
+        )
     }
 
     public func resolveDirectory(
@@ -451,20 +443,6 @@ public final class DBContainer: Sendable {
                 transaction: transaction
             )
         }
-    }
-
-    /// Resolve a model directory and partition catalog entry in one caller-owned
-    /// transaction.
-    package func resolveDirectory(
-        for type: any Persistable.Type,
-        path: AnyDirectoryPath? = nil,
-        transaction: any TransactionAccess
-    ) async throws -> Subspace {
-        try await resolveDirectory(
-            for: schemaEntity(named: type.persistableType),
-            path: path,
-            transaction: transaction
-        )
     }
 
     package func resolveDirectory(
@@ -500,18 +478,6 @@ public final class DBContainer: Sendable {
     /// Open an existing model directory without creating namespace metadata or
     /// registering partition catalog entries.
     package func openDirectory(
-        for type: any Persistable.Type,
-        path: AnyDirectoryPath? = nil,
-        transaction: any TransactionAccess
-    ) async throws -> Subspace {
-        try await openDirectory(
-            for: schemaEntity(named: type.persistableType),
-            path: path,
-            transaction: transaction
-        )
-    }
-
-    package func openDirectory(
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
@@ -534,15 +500,15 @@ public final class DBContainer: Sendable {
     /// The read path never creates directory metadata, partition catalog
     /// entries, or index state. A directory that has never existed represents
     /// an empty logical partition and therefore returns `nil`.
-    internal func readableIndexSubspace(
+    internal func readableIndexSubspace<Model: Persistable>(
         named indexName: String,
-        for type: any Persistable.Type,
+        for type: Model.Type,
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> Subspace? {
         try await readableIndexSubspace(
             named: indexName,
-            for: schemaEntity(named: type.persistableType),
+            for: schemaEntity(named: Model.persistableType),
             path: path,
             transaction: transaction
         )
@@ -621,7 +587,11 @@ public final class DBContainer: Sendable {
         for type: T.Type,
         path: DirectoryPath<T> = DirectoryPath()
     ) async throws -> DatabaseDataStore {
-        let cacheKey = try storeCacheKey(for: type, path: AnyDirectoryPath(path))
+        let entity = try schemaEntity(named: T.persistableType)
+        let cacheKey = try storeCacheKey(
+            for: entity,
+            path: AnyDirectoryPath(path)
+        )
         if let cached = dataStoreCache.withLock({
             $0.stores.value(for: cacheKey)
         }) {
@@ -629,7 +599,7 @@ public final class DBContainer: Sendable {
         }
 
         let subspace = try await resolveDirectory(for: type, path: path)
-        try await initializeIndexStates(for: type, subspace: subspace)
+        try await initializeIndexStates(for: entity, subspace: subspace)
         let store = DatabaseDataStore(
             container: self,
             subspace: subspace,
@@ -639,17 +609,6 @@ public final class DBContainer: Sendable {
         )
         dataStoreCache.withLock { $0.stores.insert(store, for: cacheKey) }
         return store
-    }
-
-    /// Get DataStore (type-erased version)
-    internal func store(
-        for type: any Persistable.Type,
-        path: AnyDirectoryPath? = nil
-    ) async throws -> DatabaseDataStore {
-        try await store(
-            for: schemaEntity(named: type.persistableType),
-            path: path
-        )
     }
 
     internal func store(
@@ -680,18 +639,6 @@ public final class DBContainer: Sendable {
     /// transaction. The store is intentionally not inserted into the global
     /// cache until that transaction has committed.
     internal func store(
-        for type: any Persistable.Type,
-        path: AnyDirectoryPath? = nil,
-        transaction: any TransactionAccess
-    ) async throws -> DatabaseDataStore {
-        try await store(
-            for: schemaEntity(named: type.persistableType),
-            path: path,
-            transaction: transaction
-        )
-    }
-
-    internal func store(
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
@@ -716,16 +663,6 @@ public final class DBContainer: Sendable {
     }
 
     private func initializeIndexStates(
-        for type: any Persistable.Type,
-        subspace: Subspace
-    ) async throws {
-        try await initializeIndexStates(
-            for: schemaEntity(named: type.persistableType),
-            subspace: subspace
-        )
-    }
-
-    private func initializeIndexStates(
         for entity: Schema.Entity,
         subspace: Subspace
     ) async throws {
@@ -739,18 +676,6 @@ public final class DBContainer: Sendable {
                 .subspace(SubspaceKey.items)
                 .subspace(entity.name)
                 .range()
-        )
-    }
-
-    private func initializeIndexStates(
-        for type: any Persistable.Type,
-        subspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws {
-        try await initializeIndexStates(
-            for: schemaEntity(named: type.persistableType),
-            subspace: subspace,
-            transaction: transaction
         )
     }
 
@@ -770,16 +695,6 @@ public final class DBContainer: Sendable {
                 .subspace(entity.name)
                 .range(),
             transaction: transaction
-        )
-    }
-
-    private func storeCacheKey(
-        for type: any Persistable.Type,
-        path: AnyDirectoryPath?
-    ) throws -> DatabaseStoreCacheKey {
-        try storeCacheKey(
-            for: schemaEntity(named: type.persistableType),
-            path: path
         )
     }
 
@@ -1289,18 +1204,18 @@ extension DBContainer {
             guard !entity.hasDynamicDirectory else {
                 continue
             }
-            guard let persistableType = runtimeConfiguration.entityRuntimes.modelType(
+            guard runtimeConfiguration.entityRuntimes.registration(
                 named: entity.name
-            ) else {
+            ) != nil else {
                 throw DatabaseRuntimeConfigurationError
                     .missingCompiledEntityType(entityName: entity.name)
             }
-            let subspace = try await resolveDirectory(for: persistableType)
+            let subspace = try await resolveDirectory(for: entity)
             staticStores.append((
                 entity: entity.name,
                 range: subspace
                     .subspace(SubspaceKey.items)
-                    .subspace(persistableType.persistableType)
+                    .subspace(entity.name)
                     .range(),
                 lifecycleStore: IndexLifecycleStore(
                     container: self,
@@ -1322,7 +1237,7 @@ extension DBContainer {
                 return false
             }
             for store in stores {
-                let rows = try await transaction.collectRange(
+                let rows = try await TransactionRangeCollection.collect(using: transaction,
                     from: .firstGreaterOrEqual(store.range.begin),
                     to: .firstGreaterOrEqual(store.range.end),
                     limit: 1,
@@ -1477,16 +1392,16 @@ extension DBContainer {
         var registry: [String: MigrationStoreInfo] = [:]
 
         for entity in schema.entities {
-            guard let persistableType = runtimeConfiguration.entityRuntimes.modelType(
+            guard runtimeConfiguration.entityRuntimes.registration(
                 named: entity.name
-            ) else {
+            ) != nil else {
                 throw DatabaseRuntimeConfigurationError
                     .missingCompiledEntityType(entityName: entity.name)
             }
             // Use resolveDirectory to respect #Directory definitions declared
             // by *this schema's* Swift type — V1 and V2 with the same entity
             // name may point to different directories.
-            let subspace = try await resolveDirectory(for: persistableType)
+            let subspace = try await resolveDirectory(for: entity)
             let info = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),

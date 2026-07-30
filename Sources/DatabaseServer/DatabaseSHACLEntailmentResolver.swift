@@ -18,6 +18,7 @@ struct DatabaseSHACLEntailmentResolver: Sendable {
     }
 
     let ontologyStore: OntologyStore
+    let monotonicClock: any StorageMonotonicClock
 
     func resolve(
         _ entailment: SHACLExecuteOperation.Entailment,
@@ -57,6 +58,7 @@ struct DatabaseSHACLEntailmentResolver: Sendable {
                 entailmentContext: OWLGraphEntailment(
                     reasoner: OWLReasoner(
                         ontology: ontology,
+                        clock: monotonicClock,
                         configuration: reasonerConfiguration(
                             workBudget.workMeter.budget
                         )
@@ -105,7 +107,7 @@ struct DatabaseSHACLEntailmentResolver: Sendable {
             ),
             enableIncrementalReasoning: true,
             cacheClassification: true,
-            timeout: Double(budget.timeoutMilliseconds) / 1_000
+            timeout: .milliseconds(Int64(clamping: budget.timeoutMilliseconds))
         )
     }
 }

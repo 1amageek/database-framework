@@ -85,8 +85,8 @@ struct SPARQLGroupByTests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SocialEdgeForGroupBy.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdgeForGroupBy.self)]),
             security: .disabled,
         )
         if try await database.namespaceExists(path: ["sparql_group_by_tests"]) {

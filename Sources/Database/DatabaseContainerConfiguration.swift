@@ -1,5 +1,6 @@
 import DatabaseKit
 import DatabaseEngine
+import StorageKit
 
 /// Backend-specific container configuration used by the `Database` facade.
 ///
@@ -9,6 +10,8 @@ import DatabaseEngine
 /// `PostgreSQLStorageEngine.Configuration` into that generic representation.
 public protocol DatabaseContainerConfiguration: Sendable {
     func makeDBConfiguration(
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock,
         indexConfigurations: [any IndexRuntimeConfiguration]
     ) async throws -> DBConfiguration
 }
@@ -21,11 +24,15 @@ extension DBContainer {
     public static func open(
         for schema: Schema,
         configuration: any DatabaseContainerConfiguration,
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
         let dbConfiguration = try await configuration.makeDBConfiguration(
+            monotonicClock: monotonicClock,
+            wallClock: wallClock,
             indexConfigurations: indexConfigurations
         )
         return try await open(
@@ -44,11 +51,15 @@ extension DBContainer {
         for schema: S.Type,
         migrationPlan: P.Type,
         configuration: any DatabaseContainerConfiguration,
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
         let dbConfiguration = try await configuration.makeDBConfiguration(
+            monotonicClock: monotonicClock,
+            wallClock: wallClock,
             indexConfigurations: indexConfigurations
         )
         return try await open(

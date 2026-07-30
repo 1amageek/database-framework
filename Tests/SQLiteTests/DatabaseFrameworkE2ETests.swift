@@ -1,5 +1,6 @@
 #if SQLITE
 import Foundation
+import TestSupport
 import Testing
 import Database
 import StorageKit
@@ -248,7 +249,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -268,7 +269,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -288,7 +289,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -319,7 +320,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -380,7 +381,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -409,7 +410,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -455,7 +456,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -481,7 +482,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -522,7 +523,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -548,7 +549,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -589,7 +590,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2ESecuredDocument.self],
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ESecuredDocument.self)],
                 authorizationPolicies: [
                     AuthorizationPolicyHandler(DatabaseFrameworkE2ESecuredDocument.self)
                 ]
@@ -629,7 +630,7 @@ struct DatabaseFrameworkE2ETests {
             Issue.record("Expected stale delete to be denied by current stored owner")
         } catch let error as SecurityError {
             #expect(error.operation == .delete)
-            #expect(error.resourceID == original.id)
+            #expect(error.resource?.id == .string(original.id))
             #expect(error.userID == "alice")
         }
 
@@ -637,7 +638,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2ESecuredDocument.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ESecuredDocument.self)]
             ),
             security: .disabled
         )
@@ -669,7 +670,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -690,9 +691,9 @@ struct DatabaseFrameworkE2ETests {
             try await duplicateContext.save()
             Issue.record("Expected duplicate create to fail")
         } catch let error as DatabaseContextError {
-            if case .preconditionFailed(let typeName, let idDescription, let precondition, _) = error {
-                #expect(typeName == DatabaseFrameworkE2EAccount.persistableType)
-                #expect(idDescription == original.id)
+            if case .preconditionFailed(let identity, let precondition, _) = error {
+                #expect(identity.entity == DatabaseFrameworkE2EAccount.persistableType)
+                #expect(identity.id == .string(original.id))
                 #expect(precondition == .notExists)
             } else {
                 Issue.record("Unexpected context error: \(error)")
@@ -703,7 +704,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -745,7 +746,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -774,7 +775,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -820,7 +821,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2ETenantAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
             ),
             security: .disabled
         )
@@ -907,7 +908,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2ETenantAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
             ),
             security: .disabled
         )
@@ -935,7 +936,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2ETenantAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
             ),
             security: .disabled
         )
@@ -973,9 +974,9 @@ struct DatabaseFrameworkE2ETests {
         let schema = try Schema(entities: [try DatabaseFrameworkE2ELargeDocument.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2ELargeDocument.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ELargeDocument.self)]
             ),
             security: .disabled
         )
@@ -1097,7 +1098,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -1127,7 +1128,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -1168,7 +1169,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -1186,9 +1187,9 @@ struct DatabaseFrameworkE2ETests {
             try await retryingContext.save()
             Issue.record("Expected update on missing row to fail")
         } catch let error as DatabaseContextError {
-            if case .preconditionFailed(let typeName, let idDescription, let precondition, _) = error {
-                #expect(typeName == DatabaseFrameworkE2EAccount.persistableType)
-                #expect(idDescription == "database-framework-retry-account")
+            if case .preconditionFailed(let identity, let precondition, _) = error {
+                #expect(identity.entity == DatabaseFrameworkE2EAccount.persistableType)
+                #expect(identity.id == .string("database-framework-retry-account"))
                 #expect(precondition == .exists)
             } else {
                 Issue.record("Unexpected context error: \(error)")
@@ -1199,7 +1200,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -1231,7 +1232,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -1272,7 +1273,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -1293,9 +1294,9 @@ struct DatabaseFrameworkE2ETests {
             try await retryingContext.save()
             Issue.record("Expected multi-change save to fail")
         } catch let error as DatabaseContextError {
-            if case .preconditionFailed(let typeName, let idDescription, let precondition, _) = error {
-                #expect(typeName == DatabaseFrameworkE2EAccount.persistableType)
-                #expect(idDescription == "database-framework-missing-account")
+            if case .preconditionFailed(let identity, let precondition, _) = error {
+                #expect(identity.entity == DatabaseFrameworkE2EAccount.persistableType)
+                #expect(identity.id == .string("database-framework-missing-account"))
                 #expect(precondition == .exists)
             } else {
                 Issue.record("Unexpected context error: \(error)")
@@ -1306,7 +1307,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -1344,7 +1345,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -1396,10 +1397,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    DatabaseFrameworkE2EAccount.self,
-                    DatabaseFrameworkE2ETenantAccount.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self), try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
             ),
             security: .disabled
         )
@@ -1427,9 +1425,9 @@ struct DatabaseFrameworkE2ETests {
             try await retryingContext.save()
             Issue.record("Expected cross-store save to fail")
         } catch let error as DatabaseContextError {
-            if case .preconditionFailed(let typeName, let idDescription, let precondition, _) = error {
-                #expect(typeName == DatabaseFrameworkE2EAccount.persistableType)
-                #expect(idDescription == missingOriginal.id)
+            if case .preconditionFailed(let identity, let precondition, _) = error {
+                #expect(identity.entity == DatabaseFrameworkE2EAccount.persistableType)
+                #expect(identity.id == .string(missingOriginal.id))
                 #expect(precondition == .exists)
             } else {
                 Issue.record("Unexpected context error: \(error)")
@@ -1440,10 +1438,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    DatabaseFrameworkE2EAccount.self,
-                    DatabaseFrameworkE2ETenantAccount.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self), try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
             ),
             security: .disabled
         )
@@ -1474,10 +1469,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    DatabaseFrameworkE2EAccount.self,
-                    DatabaseFrameworkE2ETenantAccount.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self), try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
             ),
             security: .disabled
         )
@@ -1522,7 +1514,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EAccount.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .disabled
         )
@@ -1579,7 +1571,7 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseFrameworkE2EOrder.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EOrder.self)]
             ),
             security: .disabled
         )
@@ -1651,8 +1643,8 @@ struct DatabaseFrameworkE2ETests {
 
         let initialContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV1.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DatabaseFrameworkE2EMigratedAccountV1.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV1.self)]),
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -1676,16 +1668,16 @@ struct DatabaseFrameworkE2ETests {
         let migratedContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV2.self,
             migrationPlan: DatabaseFrameworkE2EMigrationPlan.self,
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DatabaseFrameworkE2EMigratedAccountV2.self])
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)])
         )
         try await migratedContainer.migrateIfNeeded()
         let migratedVersion = try await migratedContainer.getCurrentSchemaVersion()
 
         let verificationContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV2.makeSchema(),
-            configuration: .init(backend: .custom(engine)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DatabaseFrameworkE2EMigratedAccountV2.self]),
+            configuration: .testing(backend: .custom(engine)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)]),
             security: .disabled
         )
         let verificationContext = verificationContainer.newContext()

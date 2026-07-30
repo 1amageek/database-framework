@@ -5,6 +5,7 @@ import DatabaseWire
 @testable import GraphIndex
 import Synchronization
 import TestHeartbeat
+import TestSupport
 import Testing
 
 @Suite("SPARQL aggregate expression semantics", .heartbeat)
@@ -222,7 +223,7 @@ struct SPARQLAggregateExpressionTests {
             try builder.append(binding, at: .aggregateInput)
         }
         let expressionContext = try SPARQLQueryExpressionContext(
-            now: try Timestamp(secondsSinceUnixEpoch: 0),
+            now: Timestamp(secondsSinceUnixEpoch: 0),
             functionRegistry: .empty,
             workMeter: workMeter
         )
@@ -253,7 +254,8 @@ struct SPARQLAggregateExpressionTests {
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
     }
 

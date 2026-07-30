@@ -3,6 +3,7 @@
 // Scalar index tests against PostgreSQL backend
 
 import Testing
+import DatabaseRuntime
 import Foundation
 import StorageKit
 import PostgreSQLStorage
@@ -54,12 +55,12 @@ struct PostgreSQLScalarIndexTests {
 
     private func setupUserContainer() async throws -> DBContainer {
         let schema = try Schema(entities: [try PGUser.schemaEntity], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGUser.self])
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGUser.self)])
     }
 
     private func setupProductContainer() async throws -> DBContainer {
         let schema = try Schema(entities: [try PGProduct.schemaEntity], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, persistableTypes: [PGProduct.self])
+        return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGProduct.self)])
     }
 
     // MARK: - Basic Index CRUD

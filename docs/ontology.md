@@ -49,18 +49,23 @@ the core persistence macro.
 Register ontology-aware models in the schema:
 
 ~~~swift
-let persistableTypes: [any Persistable.Type] = [
-    Employee.self,
-    Department.self,
-    WorksFor.self,
-    RDFTriple.self,
+let entities: [Schema.Entity] = [
+    try Employee.schemaEntity,
+    try Department.schemaEntity,
+    try WorksFor.schemaEntity,
+    try RDFTriple.schemaEntity,
 ]
 let schema = try Schema(
-    entities: try persistableTypes.map { try $0.schemaEntity },
+    entities: entities,
     version: .init(1, 0, 0)
 )
 let runtime = try DatabaseFrameworkRuntime.configuration(
-    persistableTypes: persistableTypes
+    entityRuntimes: [
+        try DatabaseFrameworkRuntime.entity(Employee.self),
+        try DatabaseFrameworkRuntime.entity(Department.self),
+        try DatabaseFrameworkRuntime.entity(WorksFor.self),
+        try DatabaseFrameworkRuntime.entity(RDFTriple.self),
+    ]
 )
 let container = try await DBContainer.open(
     for: schema,

@@ -86,8 +86,8 @@ struct SPARQLFunctionIntegrationTests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [SPARQLFunctionUser.self, SPARQLFunctionTriple.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLFunctionUser.self), try DatabaseFrameworkRuntime.entity(SPARQLFunctionTriple.self)]),
             security: .disabled,
         )
 
@@ -437,7 +437,8 @@ struct SPARQLFunctionIntegrationTests {
         let rewriter = SPARQLFunctionRewriter(
             context: context,
             workMeter: DatabaseWorkMeter(
-                budget: ExecutionBudget()
+                budget: ExecutionBudget(),
+                monotonicClock: container.monotonicClock
             )
         )
         let rewritten = try await rewriter.rewrite(query)
@@ -445,7 +446,7 @@ struct SPARQLFunctionIntegrationTests {
         #expect(rewritten.dataset == query.dataset)
 
         // Verify other fields are also preserved
-        #expect(rewritten.projection == .all)
+        #expect(rewritten.projection == Projection.all)
         #expect(rewritten.limit == nil)
         #expect(rewritten.distinct == false)
     }

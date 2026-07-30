@@ -128,13 +128,17 @@ The model and application code are backend-neutral:
         version: .init(1, 0, 0)
     )
     let runtime = try DatabaseFrameworkRuntime.configuration(
-        persistableTypes: [User.self]
+        entityRuntimes: [try DatabaseFrameworkRuntime.entity(User.self)]
     )
 
     // Supply a backend-specific configuration here.
     let container = try await DBContainer.open(
         for: schema,
-        configuration: DBConfiguration(backend: .custom(engine)),
+        configuration: DBConfiguration(
+            backend: .custom(engine),
+            monotonicClock: applicationMonotonicClock,
+            wallClock: applicationWallClock
+        ),
         runtimeConfiguration: runtime
     )
 
@@ -148,8 +152,10 @@ The model and application code are backend-neutral:
         .where(User.fields.name == "Alice")
         .execute()
 
-The engine in the example is intentionally abstract. Choose one of the
-backend initializers below for the target you are building.
+The engine and clocks in the example are intentionally abstract. Every runtime
+injects a monotonic clock for scheduling and a wall clock for persisted time.
+Native applications can use Foundation-backed adapters; Embedded runtimes
+provide clocks at their platform boundary. Choose one backend below.
 
 ## Backend Examples
 
@@ -165,12 +171,18 @@ native versionstamps, and the dynamic FoundationDB DirectoryLayer.
 
     let container = try await DBContainer.open(
         for: schema,
+        monotonicClock: applicationMonotonicClock,
+        wallClock: applicationWallClock,
         runtimeConfiguration: runtime
     )
 
 The explicit form is useful when supplying FoundationDB configuration:
 
-    let configuration = DBConfiguration(backend: .fdb())
+    let configuration = DBConfiguration(
+        backend: .fdb(),
+        monotonicClock: applicationMonotonicClock,
+        wallClock: applicationWallClock
+    )
     let container = try await DBContainer.open(
         for: schema,
         configuration: configuration,
@@ -200,6 +212,8 @@ not require a FoundationDB process.
         configuration: SQLiteStorageEngine.Configuration.file(
             "/path/to/application.sqlite"
         ),
+        monotonicClock: applicationMonotonicClock,
+        wallClock: applicationWallClock,
         runtimeConfiguration: runtime
     )
 
@@ -208,6 +222,8 @@ For tests and disposable processes:
     let container = try await DBContainer.open(
         for: schema,
         configuration: SQLiteStorageEngine.Configuration.inMemory,
+        monotonicClock: applicationMonotonicClock,
+        wallClock: applicationWallClock,
         runtimeConfiguration: runtime
     )
 
@@ -236,6 +252,8 @@ Cloud SQL socket mounted into Cloud Run.
     let container = try await DBContainer.open(
         for: schema,
         configuration: postgres,
+        monotonicClock: applicationMonotonicClock,
+        wallClock: applicationWallClock,
         runtimeConfiguration: runtime
     )
 
@@ -253,6 +271,8 @@ configuration changes:
     let container = try await DBContainer.open(
         for: schema,
         configuration: postgres,
+        monotonicClock: applicationMonotonicClock,
+        wallClock: applicationWallClock,
         runtimeConfiguration: runtime
     )
 
@@ -272,7 +292,11 @@ tests, local tools, storage proxies, and future backends.
     let engine = InMemoryEngine()
     let container = try await DBContainer.open(
         for: schema,
-        configuration: DBConfiguration(backend: .custom(engine)),
+        configuration: DBConfiguration(
+            backend: .custom(engine),
+            monotonicClock: applicationMonotonicClock,
+            wallClock: applicationWallClock
+        ),
         runtimeConfiguration: runtime
     )
 
@@ -281,6 +305,8 @@ The same injection path is used for a custom remote or host-provided engine:
     let configuration = DBConfiguration(
         name: "application-storage",
         backend: .custom(customEngine),
+        monotonicClock: applicationMonotonicClock,
+        wallClock: applicationWallClock,
         indexConfigurations: [vectorConfiguration]
     )
     let container = try await DBContainer.open(

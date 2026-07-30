@@ -11,18 +11,22 @@ public struct RelationshipEntityEditor: Sendable {
 
     public func removingReference(
         to target: EntityReference,
-        from model: any Persistable,
+        from model: PersistedModel,
         descriptor: RelationshipDescriptor
     ) throws -> PersistedModel {
-        let modelType = type(of: model)
-        var fields = try model.persistedFields()
+        var fields = model.fields
+        guard let entity = resolver.entity(named: model.entity) else {
+            throw RelationshipReferenceError.invalidOwnerIdentity(
+                entity: model.entity
+            )
+        }
         guard let fieldIndex = fields.firstIndex(where: {
             $0.name == descriptor.propertyName
-        }), let fieldSchema = modelType.fieldSchemas.first(where: {
+        }), let fieldSchema = entity.fields.first(where: {
             $0.name == descriptor.propertyName
         }) else {
             throw RelationshipReferenceError.missingRelationshipField(
-                entity: modelType.persistableType,
+                entity: model.entity,
                 field: descriptor.propertyName
             )
         }
@@ -31,7 +35,7 @@ public struct RelationshipEntityEditor: Sendable {
         if descriptor.isToMany {
             guard case .array(let values) = fields[fieldIndex].value else {
                 throw RelationshipReferenceError.invalidRelationshipValue(
-                    entity: modelType.persistableType,
+                    entity: model.entity,
                     field: descriptor.propertyName
                 )
             }
@@ -46,7 +50,7 @@ public struct RelationshipEntityEditor: Sendable {
         } else {
             guard fieldSchema.isOptional else {
                 throw RelationshipReferenceError.nullifyRequiresOptionalField(
-                    entity: modelType.persistableType,
+                    entity: model.entity,
                     field: descriptor.propertyName
                 )
             }
@@ -60,12 +64,12 @@ public struct RelationshipEntityEditor: Sendable {
         )
         do {
             return try PersistedModel(
-                entity: modelType.persistableType,
+                entity: model.entity,
                 fields: fields
             )
         } catch {
             throw RelationshipReferenceError.entityDecodingFailed(
-                entity: modelType.persistableType,
+                entity: model.entity,
                 reason: "updated fields do not form a canonical persisted model"
             )
         }

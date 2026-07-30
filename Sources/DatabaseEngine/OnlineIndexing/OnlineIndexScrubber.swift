@@ -312,7 +312,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
             // Use limit + .iterator for efficient batch scrubbing
             // .iterator is appropriate since we do reads within the transaction
-            let sequence = try await transaction.collectRange(
+            let sequence = try await TransactionRangeCollection.collect(using: transaction,
                 from: .firstGreaterOrEqual(bounds.begin),
                 to: .firstGreaterOrEqual(bounds.end),
                 limit: batchSize,

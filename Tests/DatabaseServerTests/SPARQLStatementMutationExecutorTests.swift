@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseTypes
@@ -203,7 +204,9 @@ struct SPARQLStatementMutationExecutorTests {
                     )
                 )
             ),
-            options: ReadExecutionContext(),
+            options: ReadExecutionContext(
+                monotonicClock: TestProcessMonotonicClock()
+            ),
             partitions: FieldObject()
         )
         #expect(response.continuation == nil)
@@ -1265,9 +1268,9 @@ struct SPARQLStatementMutationExecutorTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseEndpointEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .disabled
         )
@@ -1381,7 +1384,8 @@ struct SPARQLStatementMutationExecutorTests {
                 readMode: .snapshot,
                 transaction: transaction,
                 workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget()
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
                 )
             )
         }
@@ -1397,7 +1401,8 @@ struct SPARQLStatementMutationExecutorTests {
                 readMode: .snapshot,
                 transaction: transaction,
                 workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget()
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
                 )
             )
         }

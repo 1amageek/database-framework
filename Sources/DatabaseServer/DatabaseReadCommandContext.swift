@@ -3,7 +3,7 @@ import DatabaseEngine
 
 public struct DatabaseReadCommandContext: Sendable {
     public let request: DatabaseCommandRequestContext
-    public let transaction: any DatabaseTransactionReading
+    public let transaction: DatabaseTransaction
     public let budget: ExecutionBudget
 
     init(

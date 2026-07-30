@@ -848,7 +848,8 @@ extension CountAggregationMaintainer {
         var scannedKeys = 0
         var scannedBytes = 0
 
-        try await transaction.forEachInRange(
+        try await TransactionRangeIteration.forEach(
+            in: transaction,
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: maxScanKeys + 1,

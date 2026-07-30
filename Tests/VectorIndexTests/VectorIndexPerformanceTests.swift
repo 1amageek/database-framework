@@ -422,8 +422,9 @@ struct VectorIndexPerformanceTests {
             ))
         }
 
+        let recallDocuments = docs
         try await ctx.database.withTransaction { transaction in
-            for doc in docs {
+            for doc in recallDocuments {
                 try await ctx.flatMaintainer.updateIndex(
                     oldItem: nil,
                     newItem: doc,
@@ -470,8 +471,9 @@ struct VectorIndexPerformanceTests {
             )
         }
 
+        let documentsBeforeUpdates = docs
         try await ctx.database.withTransaction { transaction in
-            for doc in docs {
+            for doc in documentsBeforeUpdates {
                 try await ctx.flatMaintainer.updateIndex(
                     oldItem: nil,
                     newItem: doc,

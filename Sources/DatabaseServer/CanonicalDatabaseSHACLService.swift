@@ -26,7 +26,10 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
         _ request: SHACLExecuteOperation.Request,
         context: DatabaseOperationContext
     ) async throws -> SHACLExecutionResult {
-        let workBudget = SHACLValidationWorkBudget(budget: request.budget)
+        let workBudget = SHACLValidationWorkBudget(
+            budget: request.budget,
+            monotonicClock: context.container.monotonicClock
+        )
         switch request.invocation {
         case .describeShapes(let graph):
             let page = try await describe(
@@ -222,8 +225,9 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
         context: DatabaseOperationContext,
         body: @Sendable @escaping (any TransactionAccess) async throws -> Value
     ) async throws -> Value {
-        try await context.container.engine.withTransaction(
+        try await context.container.transactionExecutor.withTransaction(
             configuration: .readOnly,
+            clock: context.container.monotonicClock,
             body
         )
     }

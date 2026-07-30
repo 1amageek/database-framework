@@ -6,6 +6,7 @@ import GraphIndex
 import StorageKit
 import TestHeartbeat
 import Testing
+import TestSupport
 
 @Suite("SPARQL runtime expression execution", .heartbeat)
 struct SPARQLRuntimeExpressionExecutionTests {
@@ -70,7 +71,9 @@ struct SPARQLRuntimeExpressionExecutionTests {
     private struct EchoFunction: SPARQLFunction {
         let identifier: RDFIRI
 
-        func evaluate(arguments: [FieldValue]) throws -> FieldValue {
+        func evaluate(
+            arguments: [FieldValue]
+        ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
             guard arguments.count == 1 else {
                 throw SPARQLExpressionEvaluationError.invalidFunctionArguments(
                     identifier.rawValue
@@ -83,7 +86,9 @@ struct SPARQLRuntimeExpressionExecutionTests {
     private struct FailureFunction: SPARQLFunction {
         let identifier: RDFIRI
 
-        func evaluate(arguments: [FieldValue]) throws -> FieldValue {
+        func evaluate(
+            arguments: [FieldValue]
+        ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
             throw SPARQLExpressionEvaluationError.runtimeInvariant(
                 "failure function was evaluated"
             )
@@ -306,6 +311,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
         )
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             datasetScanner: ExistsLimitScanner()
         ).execute(
             pattern: pattern,
@@ -316,7 +322,8 @@ struct SPARQLRuntimeExpressionExecutionTests {
                     maximumRows: 100,
                     maximumWorkUnits: 1_000,
                     timeoutMilliseconds: 30_000
-                )
+                ),
+                monotonicClock: TestProcessMonotonicClock()
             )
         )
 
@@ -557,6 +564,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
     ) async throws -> [VariableBinding] {
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(),
             sources: [],
             functionRegistry: functionRegistry
         ).execute(
@@ -568,7 +576,8 @@ struct SPARQLRuntimeExpressionExecutionTests {
                     maximumRows: 1_000,
                     maximumWorkUnits: 10_000,
                     timeoutMilliseconds: 30_000
-                )
+                ),
+                monotonicClock: TestProcessMonotonicClock()
             )
         )
         return result.0

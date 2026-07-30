@@ -2,6 +2,7 @@
 import DatabaseTypes
 import DatabaseWire
 import DatabaseKit
+import TestSupport
 import Testing
 @testable import DatabaseEngine
 
@@ -45,7 +46,10 @@ struct CanonicalPaginationFingerprintTests {
             maximumIntermediateBytes: 1_024 * 1_024,
             timeoutMilliseconds: 30_000
         )
-        let meter = DatabaseWorkMeter(budget: budget)
+        let meter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: TestProcessMonotonicClock()
+        )
 
         do {
             _ = try CanonicalQueryPagination.window(
@@ -81,7 +85,10 @@ struct CanonicalPaginationFingerprintTests {
             maximumIntermediateBytes: 1,
             timeoutMilliseconds: 30_000
         )
-        let meter = DatabaseWorkMeter(budget: budget)
+        let meter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: TestProcessMonotonicClock()
+        )
 
         #expect(throws: DatabaseWorkLimitError.self) {
             _ = try CanonicalQueryPagination.window(
@@ -156,13 +163,18 @@ struct CanonicalPaginationFingerprintTests {
         continuationScope: ByteString = [],
         structuralLimits: QueryStructuralLimits = .default
     ) -> ReadExecutionContext {
-        ReadExecutionContext(
+        let clock = TestProcessMonotonicClock()
+        return ReadExecutionContext(
             options: ReadExecutionOptions(
                 pageSize: 1,
                 budget: budget,
                 continuationScope: continuationScope
             ),
-            workMeter: workMeter ?? DatabaseWorkMeter(budget: budget),
+            monotonicClock: clock,
+            workMeter: workMeter ?? DatabaseWorkMeter(
+                budget: budget,
+                monotonicClock: clock
+            ),
             queryStructuralLimits: structuralLimits
         )
     }

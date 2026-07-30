@@ -6,7 +6,7 @@ public enum QueryRowCodec {
         _ item: T,
         annotations: [String: FieldValue] = [:]
     ) throws -> QueryRow {
-        let fields = try canonicalFields(item)
+        let fields = try canonicalFields(PersistedModel(item))
         return QueryRow(
             fields: fields,
             annotations: annotations,
@@ -36,6 +36,18 @@ public enum QueryRowCodec {
             )
         }
         return try T.decodePersistedFields(fields)
+    }
+
+    public static func encode(
+        _ item: PersistedModel,
+        annotations: [String: FieldValue] = [:]
+    ) throws -> QueryRow {
+        let fields = try canonicalFields(item)
+        return QueryRow(
+            fields: fields,
+            annotations: annotations,
+            version: try PersistableVersionTokenCodec.token(for: fields)
+        )
     }
 
     public static func persistedModel(
@@ -68,28 +80,15 @@ public enum QueryRowCodec {
         )
     }
 
-    public static func encodeAny(
-        _ item: any Persistable,
-        annotations: [String: FieldValue] = [:]
-    ) throws -> QueryRow {
-        let fields = try canonicalFields(item)
-        return QueryRow(
-            fields: fields,
-            annotations: annotations,
-            version: try PersistableVersionTokenCodec.token(for: fields)
-        )
-    }
-
     private static func canonicalFields(
-        _ item: any Persistable
+        _ item: PersistedModel
     ) throws -> [String: FieldValue] {
-        let encoded = try item.persistedFields()
         var fields: [String: FieldValue] = [:]
-        fields.reserveCapacity(encoded.count)
-        for field in encoded {
+        fields.reserveCapacity(item.fields.count)
+        for field in item.fields {
             guard fields.updateValue(field.value, forKey: field.name) == nil else {
                 throw QueryRowCodecError.duplicateField(
-                    type: type(of: item).persistableType,
+                    type: item.entity,
                     field: field.name
                 )
             }

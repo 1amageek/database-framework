@@ -10,16 +10,19 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     private let ontologyStore: OntologyStore
     private let wireLimits: DatabaseWireLimits
     private let clock: AnyDatabaseWallClock
+    private let monotonicClock: any StorageMonotonicClock
 
     public init(
         documentStore: DatabaseRDFDocumentStore,
         ontologyStore: OntologyStore,
         clock: AnyDatabaseWallClock,
+        monotonicClock: any StorageMonotonicClock,
         wireLimits: DatabaseWireLimits = .default
     ) {
         self.documentStore = documentStore
         self.ontologyStore = ontologyStore
         self.clock = clock
+        self.monotonicClock = monotonicClock
         self.wireLimits = wireLimits
     }
 
@@ -29,7 +32,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         transaction: any TransactionAccess
     ) async throws {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
-        let timestamp = clock.now()
+        let timestamp = clock.now
         _ = try sourceOntology(
             identifier: document.ontology,
             imports: document.imports,
@@ -119,7 +122,10 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             fingerprint: entailmentClosure.fingerprint,
             kind: kind
         )
-        let materializer = OWL2RLMaterializer(ontologyStore: ontologyStore)
+        let materializer = OWL2RLMaterializer(
+            ontologyStore: ontologyStore,
+            clock: monotonicClock
+        )
         var explicit = Set<ReasoningTriple>()
         for document in entailmentClosure.documents {
             for quad in document.quads {
@@ -228,6 +234,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         )
         let reasoner = OWLReasoner(
             ontology: ontologyModel,
+            clock: monotonicClock,
             configuration: reasonerConfiguration(budget)
         )
         var entries: [OntologyExecuteOperation.HierarchyEntry] = []
@@ -309,13 +316,14 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         try work.consume(UInt64(ontologyModel.axioms.count))
         let reasoner = OWLReasoner(
             ontology: ontologyModel,
+            clock: monotonicClock,
             configuration: reasonerConfiguration(budget)
         )
         var issues = reasoner.validateStructure().map { error in
             ValidationReport.Issue(
                 severity: .violation,
                 code: Self.validationCode(error),
-                messages: [String(describing: error)]
+                messages: [Self.validationMessage(error)]
             )
         }
         let regularity = reasoner.validateOWLDL()
@@ -546,7 +554,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             )
         } catch {
             throw DatabaseOntologyProcessingError.invalidDocument(
-                String(describing: error)
+                "Ontology document is invalid"
             )
         }
         guard decoded.iri == identifier else {
@@ -638,7 +646,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             },
             individuals: individuals.values.sorted { $0.iri < $1.iri },
             axioms: axioms.sorted {
-                String(describing: $0) < String(describing: $1)
+                $0.description < $1.description
             }
         )
     }
@@ -767,7 +775,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             ),
             enableIncrementalReasoning: true,
             cacheClassification: true,
-            timeout: Double(budget.timeoutMilliseconds) / 1_000
+            timeout: .milliseconds(Int64(clamping: budget.timeoutMilliseconds))
         )
     }
 
@@ -809,6 +817,29 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             return "OWL_DUPLICATE_DATA_PROPERTY"
         case .duplicateIndividual:
             return "OWL_DUPLICATE_INDIVIDUAL"
+        }
+    }
+
+    private static func validationMessage(
+        _ error: OWLOntology.ValidationError
+    ) -> String {
+        switch error {
+        case .undeclaredClass(let iri):
+            return "Undeclared class: \(iri)"
+        case .undeclaredObjectProperty(let iri):
+            return "Undeclared object property: \(iri)"
+        case .undeclaredDataProperty(let iri):
+            return "Undeclared data property: \(iri)"
+        case .undeclaredIndividual(let iri):
+            return "Undeclared individual: \(iri)"
+        case .duplicateClass(let iri):
+            return "Duplicate class: \(iri)"
+        case .duplicateObjectProperty(let iri):
+            return "Duplicate object property: \(iri)"
+        case .duplicateDataProperty(let iri):
+            return "Duplicate data property: \(iri)"
+        case .duplicateIndividual(let iri):
+            return "Duplicate individual: \(iri)"
         }
     }
 

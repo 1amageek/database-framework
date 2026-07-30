@@ -92,8 +92,8 @@ struct RequestAuthorizationPolicyTests {
         )
 
         try RequestAuthorization.$context.withValue(principal("alice")) {
-            try security.evaluateGet(owned)
-            try security.evaluateGet(published)
+            try security.evaluateGet(try PersistedModel(owned))
+            try security.evaluateGet(try PersistedModel(published))
         }
     }
 
@@ -104,13 +104,13 @@ struct RequestAuthorizationPolicyTests {
 
         do {
             try RequestAuthorization.$context.withValue(principal("alice")) {
-                try security.evaluateGet(record)
+                try security.evaluateGet(try PersistedModel(record))
             }
             Issue.record("Expected read denial")
         } catch let error as SecurityError {
             #expect(error.operation == .get)
             #expect(error.targetType == SecuredRecord.persistableType)
-            #expect(error.resourceID == record.id)
+            #expect(error.resource?.id == .string(record.id))
             #expect(error.userID == "alice")
         }
     }
@@ -121,7 +121,7 @@ struct RequestAuthorizationPolicyTests {
 
         try RequestAuthorization.$context.withValue(principal("alice")) {
             try security.evaluateList(
-                type: SecuredRecord.self,
+                entity: SecuredRecord.persistableType,
                 limit: 100,
                 offset: 0,
                 orderBy: ["title"]
@@ -131,7 +131,7 @@ struct RequestAuthorizationPolicyTests {
         #expect(throws: SecurityError.self) {
             try RequestAuthorization.$context.withValue(principal("alice")) {
                 try security.evaluateList(
-                    type: SecuredRecord.self,
+                    entity: SecuredRecord.persistableType,
                     limit: 101,
                     offset: 0,
                     orderBy: nil
@@ -140,7 +140,7 @@ struct RequestAuthorizationPolicyTests {
         }
         #expect(throws: SecurityError.self) {
             try security.evaluateList(
-                type: SecuredRecord.self,
+                entity: SecuredRecord.persistableType,
                 limit: 10,
                 offset: 0,
                 orderBy: nil
@@ -158,22 +158,25 @@ struct RequestAuthorizationPolicyTests {
         transferred.ownerID = "bob"
 
         try RequestAuthorization.$context.withValue(principal("alice")) {
-            try security.evaluateCreate(original)
-            try security.evaluateUpdate(original, newResource: updated)
-            try security.evaluateDelete(updated)
+            try security.evaluateCreate(try PersistedModel(original))
+            try security.evaluateUpdate(
+                try PersistedModel(original),
+                newResource: try PersistedModel(updated)
+            )
+            try security.evaluateDelete(try PersistedModel(updated))
         }
 
         #expect(throws: SecurityError.self) {
             try RequestAuthorization.$context.withValue(principal("alice")) {
                 try security.evaluateUpdate(
-                    original,
-                    newResource: transferred
+                    try PersistedModel(original),
+                    newResource: try PersistedModel(transferred)
                 )
             }
         }
         #expect(throws: SecurityError.self) {
             try RequestAuthorization.$context.withValue(principal("bob")) {
-                try security.evaluateDelete(original)
+                try security.evaluateDelete(try PersistedModel(original))
             }
         }
     }
@@ -185,7 +188,7 @@ struct RequestAuthorizationPolicyTests {
         #expect(throws: SecurityError.self) {
             try RequestAuthorization.$context.withValue(principal("alice")) {
                 try security.evaluateList(
-                    type: UnregisteredRecord.self,
+                    entity: UnregisteredRecord.persistableType,
                     limit: 10,
                     offset: 0,
                     orderBy: nil
@@ -202,7 +205,7 @@ struct RequestAuthorizationPolicyTests {
         try RequestAuthorization.$context.withValue(
             principal("operator", roles: ["admin"])
         ) {
-            try security.evaluateGet(foreign)
+            try security.evaluateGet(try PersistedModel(foreign))
             try security.requireAdmin(
                 operation: "rebuildIndex",
                 targetType: SecuredRecord.persistableType
@@ -229,9 +232,9 @@ struct RequestAuthorizationPolicyTests {
         let security = try delegate(configuration: .disabled)
         let foreign = SecuredRecord(ownerID: "bob", title: "Private")
 
-        try security.evaluateGet(foreign)
+        try security.evaluateGet(try PersistedModel(foreign))
         try security.evaluateList(
-            type: UnregisteredRecord.self,
+            entity: UnregisteredRecord.persistableType,
             limit: nil,
             offset: nil,
             orderBy: nil
@@ -249,7 +252,7 @@ struct RequestAuthorizationPolicyTests {
 
         #expect(throws: AuthorizationPolicyHandlerError.self) {
             _ = try handler.permitsRead(
-                other,
+                try PersistedModel(other),
                 context: principal("alice")
             )
         }

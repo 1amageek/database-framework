@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
@@ -151,8 +152,11 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             scope: .named(try .rdf(namedGraph))
         )
 
-        let edges = try await graphContext.container.engine.withTransaction(
-            configuration: .default
+        let edges = try await StorageTransactionExecutor(
+            engine: graphContext.container.engine
+        ).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await scanner.scanAllOutgoing(
                 from: source,
@@ -182,7 +186,10 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
                 ),
             ])
         )
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
             try transaction.setValue([], for: malformed)
         }
         let scanner = GraphEdgeScanner(
@@ -192,12 +199,16 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
         )
 
         do {
-            try await engine.withTransaction(configuration: .default) {
+            try await StorageTransactionExecutor(engine: engine).withTransaction(
+                configuration: .default,
+                clock: TestProcessMonotonicClock()
+            ) {
                 transaction in
-                for try await _ in scanner.scanAllEdges(
+                var cursor = scanner.scanAllEdges(
                     edgeLabel: nil,
                     transaction: transaction
-                ) {}
+                ).makeCursor()
+                while try await cursor.next() != nil {}
             }
             Issue.record("Expected malformed RDF bytes to fail")
         } catch let error as GraphIndexError {
@@ -221,12 +232,9 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(backend: .custom(engine)),
+            configuration: DBConfiguration.testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    DatabaseEndpointEntity.self,
-                    CanonicalRDFGraphStatement.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self), try DatabaseFrameworkRuntime.entity(CanonicalRDFGraphStatement.self)]
             ),
             security: .disabled
         )
@@ -314,7 +322,10 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
                 weight: 0.1
             ),
         ] {
-            try await engine.withTransaction(configuration: .batch) { transaction in
+            try await StorageTransactionExecutor(engine: engine).withTransaction(
+                configuration: .batch,
+                clock: TestProcessMonotonicClock()
+            ) { transaction in
                 try await maintainer.updateIndex(
                     oldItem: nil,
                     newItem: statement,

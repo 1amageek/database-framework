@@ -115,6 +115,7 @@ struct SPARQLRuntimeSQLiteTests {
         ]
         let executor = SPARQLQueryExecutor(
             database: context.container.engine,
+            wallClock: context.container.wallClock,
             sources: sources
         )
         let pattern = ExecutionPattern.basic([
@@ -134,7 +135,7 @@ struct SPARQLRuntimeSQLiteTests {
             pattern: pattern,
             limit: nil,
             offset: 0,
-            workMeter: makeWorkMeter()
+            workMeter: makeWorkMeter(for: context)
         )
 
         #expect(bindings.count == 1)
@@ -215,7 +216,7 @@ struct SPARQLRuntimeSQLiteTests {
 
     private func seededContext() async throws -> DatabaseContext {
         let container = try await makeContainer(
-            persistableTypes: [SQLiteSPARQLPrimaryStatement.self],
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSPARQLPrimaryStatement.self)],
             entities: [try SQLiteSPARQLPrimaryStatement.schemaEntity]
         )
         let context = container.newContext()
@@ -228,10 +229,7 @@ struct SPARQLRuntimeSQLiteTests {
 
     private func federatedContext() async throws -> DatabaseContext {
         let container = try await makeContainer(
-            persistableTypes: [
-                SQLiteSPARQLPrimaryStatement.self,
-                SQLiteSPARQLSecondaryStatement.self,
-            ],
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSPARQLPrimaryStatement.self), try DatabaseFrameworkRuntime.entity(SQLiteSPARQLSecondaryStatement.self)],
             entities: [
                 try SQLiteSPARQLPrimaryStatement.schemaEntity,
                 try SQLiteSPARQLSecondaryStatement.schemaEntity,
@@ -259,7 +257,7 @@ struct SPARQLRuntimeSQLiteTests {
     }
 
     private func makeContainer(
-        persistableTypes: [any Persistable.Type],
+        entityRuntimes: [EntityRuntimeRegistration],
         entities: [Schema.Entity]
     ) async throws -> DBContainer {
         let schema = try Schema(
@@ -269,7 +267,7 @@ struct SPARQLRuntimeSQLiteTests {
         return try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: persistableTypes
+                entityRuntimes: entityRuntimes
             ),
             security: .disabled
         )
@@ -392,13 +390,14 @@ struct SPARQLRuntimeSQLiteTests {
         .rdfTerm(titleTerm(lexicalForm))
     }
 
-    private func makeWorkMeter() -> DatabaseWorkMeter {
+    private func makeWorkMeter(for context: DatabaseContext) -> DatabaseWorkMeter {
         DatabaseWorkMeter(
             budget: ExecutionBudget(
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: context.container.monotonicClock
         )
     }
 }

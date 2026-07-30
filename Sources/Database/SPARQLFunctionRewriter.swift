@@ -260,11 +260,11 @@ internal struct SPARQLFunctionRewriter: Sendable {
         let graphIndex = dataset.indexDescriptor
 
         // 4. Resolve type directory and index subspace
-        guard let persistableType = context.container.runtimeConfiguration
-            .entityRuntimes.modelType(named: entity.name) else {
+        guard context.container.runtimeConfiguration.entityRuntimes
+            .registration(named: entity.name) != nil else {
             throw SPARQLFunctionError.invalidGraphIndex(entity.name)
         }
-        let typeDirectory = try await resolveTypeDirectory(persistableType)
+        let typeDirectory = try await resolveTypeDirectory(entity)
         let indexSubspace = typeDirectory
             .subspace(SubspaceKey.indexes)
             .subspace(graphIndex.name)
@@ -357,20 +357,20 @@ internal struct SPARQLFunctionRewriter: Sendable {
 
     /// Resolve type directory using DBContainer
     ///
-    /// - Parameter persistableType: The Persistable type to resolve
+    /// - Parameter entity: The compiled entity to resolve
     /// - Returns: Subspace for the type
     /// - Throws: Directory resolution errors (including dynamic directory detection)
-    private func resolveTypeDirectory(_ persistableType: any Persistable.Type) async throws -> Subspace {
+    private func resolveTypeDirectory(_ entity: Schema.Entity) async throws -> Subspace {
         // Check for dynamic directory components (not supported in SPARQL function)
-        if persistableType.hasDynamicDirectory {
+        if entity.hasDynamicDirectory {
             throw SPARQLFunctionError.invalidArguments(
                 "Dynamic directory partitions not supported in SPARQL() function. " +
-                "Type '\(persistableType.persistableType)' has dynamic directory components."
+                "Type '\(entity.name)' has dynamic directory components."
             )
         }
 
         // Use DBContainer's directory resolution (handles caching)
-        return try await context.container.resolveDirectory(for: persistableType)
+        return try await context.container.resolveDirectory(for: entity)
     }
 
     // MARK: - SPARQL Execution
@@ -400,11 +400,16 @@ internal struct SPARQLFunctionRewriter: Sendable {
             storedFieldNames: storedFieldNames
         )
         // Execute using database transaction (shares snapshot with parent SQL transaction)
-        return try await context.container.engine.withTransaction(configuration: .default) { transaction in
+        return try await context.container.transactionExecutor.withTransaction(
+            configuration: .default,
+            clock: context.container.monotonicClock
+        ) { transaction in
             try await _executeSPARQLString(
                 sparqlQuery,
                 database: context.container.engine,
                 sources: [source],
+                monotonicClock: context.container.monotonicClock,
+                wallClock: context.container.wallClock,
                 transaction: transaction,
                 workMeter: workMeter
             )

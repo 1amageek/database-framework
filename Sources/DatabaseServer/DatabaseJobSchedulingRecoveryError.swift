@@ -11,6 +11,6 @@ public struct DatabaseJobSchedulingRecoveryError: Error, CustomStringConvertible
     }
 
     public var description: String {
-        "Job processing failed with \(processingError); rescheduling also failed with \(schedulingError)"
+        "Job processing and subsequent rescheduling both failed"
     }
 }

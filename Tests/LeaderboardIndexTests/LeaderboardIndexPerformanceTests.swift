@@ -14,64 +14,12 @@ import TestSupport
 
 // MARK: - Test Model
 
-private struct LeaderboardBenchmarkScore: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+private struct LeaderboardBenchmarkScore {
+    var id: String = UUID().uuidString
     var playerId: String
     var score: Int64
-    var region: String
-
-    init(id: String = UUID().uuidString, playerId: String, score: Int64, region: String = "global") {
-        self.id = id
-        self.playerId = playerId
-        self.score = score
-        self.region = region
-    }
-
-    static var persistableType: String { "LeaderboardBenchmarkScore" }
-    static var allFields: [String] { ["id", "playerId", "score", "region"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "playerId": return playerId
-        case "score": return score
-        case "region": return region
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<LeaderboardBenchmarkScore, Value>) -> String {
-        switch keyPath {
-        case \LeaderboardBenchmarkScore.id: return "id"
-        case \LeaderboardBenchmarkScore.playerId: return "playerId"
-        case \LeaderboardBenchmarkScore.score: return "score"
-        case \LeaderboardBenchmarkScore.region: return "region"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<LeaderboardBenchmarkScore>) -> String {
-        switch keyPath {
-        case \LeaderboardBenchmarkScore.id: return "id"
-        case \LeaderboardBenchmarkScore.playerId: return "playerId"
-        case \LeaderboardBenchmarkScore.score: return "score"
-        case \LeaderboardBenchmarkScore.region: return "region"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<LeaderboardBenchmarkScore> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    var region: String = "global"
 }
 
 // MARK: - Leaderboard Benchmark Context
@@ -108,7 +56,10 @@ private struct LeaderboardBenchmarkContext {
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
             window: window,
-            windowCount: windowCount
+            windowCount: windowCount,
+            wallClock: FixedTestWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 0)
+            )
         )
     }
 
@@ -417,13 +368,19 @@ struct LeaderboardIndexUpdatePerformanceTests {
             let ctx = try await LeaderboardBenchmarkContext(testName: "score_update")
 
             // Setup: Insert 100 entities
-            var scores = (0..<100).map { i in
+            let scores = (0..<100).map { i in
                 LeaderboardBenchmarkScore(
                     id: "game-\(i)",
                     playerId: "player-\(i)",
                     score: Int64(i * 100),
                     region: "global"
                 )
+            }
+
+            let updatedScores = scores.map { score in
+                var updatedScore = score
+                updatedScore.score = score.score + 500
+                return updatedScore
             }
 
             try await ctx.database.withTransaction { transaction in
@@ -439,18 +396,12 @@ struct LeaderboardIndexUpdatePerformanceTests {
             // Benchmark: Update all scores
             let (updateMs, _) = try await benchmark("Update 100 scores") {
                 try await ctx.database.withTransaction { transaction in
-                    for i in 0..<100 {
-                        let oldScore = scores[i]
-                        var newScore = oldScore
-                        newScore.score = oldScore.score + 500
-
+                    for (oldScore, newScore) in zip(scores, updatedScores) {
                         try await ctx.maintainer.updateIndex(
                             oldItem: oldScore,
                             newItem: newScore,
                             transaction: transaction
                         )
-
-                        scores[i] = newScore
                     }
                 }
             }

@@ -29,14 +29,21 @@ public func executeSPARQLString(
     _ sparql: String,
     database: any StorageEngine,
     sources: [RDFDatasetSource],
+    monotonicClock: any StorageMonotonicClock,
+    wallClock: any WallClock,
     transaction: (any TransactionAccess)? = nil,
     budget: ExecutionBudget
 ) async throws -> SPARQLResult {
-    let workMeter = DatabaseWorkMeter(budget: budget)
+    let workMeter = DatabaseWorkMeter(
+        budget: budget,
+        monotonicClock: monotonicClock
+    )
     let result = try await _executeSPARQLString(
         sparql,
         database: database,
         sources: sources,
+        monotonicClock: monotonicClock,
+        wallClock: wallClock,
         transaction: transaction,
         workMeter: workMeter
     )
@@ -56,6 +63,8 @@ func _executeSPARQLString(
     _ sparql: String,
     database: any StorageEngine,
     sources: [RDFDatasetSource],
+    monotonicClock: any StorageMonotonicClock,
+    wallClock: any WallClock,
     transaction: (any TransactionAccess)? = nil,
     workMeter: DatabaseWorkMeter
 ) async throws -> SPARQLResult {
@@ -66,10 +75,11 @@ func _executeSPARQLString(
     let plan = try SPARQLSelectPlanCompiler.compile(query)
     let executor = SPARQLQueryExecutor(
         database: database,
+        wallClock: wallClock,
         sources: sources,
         datasetScope: try SPARQLDatasetExecutionScope(query.dataset)
     )
-    let startTime = MonotonicClock.now()
+    let startTime = monotonicClock.now
     let executionResult: ([VariableBinding], ExecutionStatistics)
     if let transaction {
         executionResult = try await executor.executeInTransaction(
@@ -84,8 +94,10 @@ func _executeSPARQLString(
         )
     }
     var (bindings, statistics) = executionResult
-    statistics.durationNs = MonotonicClock.now().uptimeNanoseconds
-        - startTime.uptimeNanoseconds
+    statistics.durationNs = DatabaseMonotonicMeasurement.nanoseconds(
+        from: startTime,
+        to: monotonicClock.now
+    )
     let reachedLimit = plan.slice.limit.map {
         bindings.count >= $0
     } ?? false

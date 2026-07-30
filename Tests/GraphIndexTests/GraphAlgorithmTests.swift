@@ -3,6 +3,7 @@
 // Tests for Graph algorithms: Shortest Path, Path Pattern, PageRank, Community Detection
 
 import Testing
+import TestSupport
 import Foundation
 import StorageKit
 import DatabaseKit
@@ -40,7 +41,7 @@ private struct GraphAlgorithmContext {
 
     func cleanup() async throws {
         let range = subspace.range()
-        try await database.withTransaction(configuration: .batch) { tx in
+        try await StorageTransactionExecutor(engine: database).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { tx in
             try tx.clearRange(beginKey: range.0, endKey: range.1)
             // Note: withTransaction automatically commits on success - don't call commit() explicitly
         }
@@ -57,7 +58,7 @@ private struct GraphAlgorithmContext {
     /// Inserts canonical adjacency keys so these tests isolate scanner and
     /// algorithm behavior from entity-schema and index-maintainer behavior.
     func insertEdges(_ edges: [Edge]) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: database).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             for edge in edges {
                 try transaction.setValue(
                     ByteString(),
@@ -82,7 +83,10 @@ private struct GraphAlgorithmContext {
         configuration: ShortestPathConfiguration = .default
     ) async throws -> ShortestPathResult {
         try await database.withTransaction { transaction in
-            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let snapshot = GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: TestProcessMonotonicClock()
+            )
             let finder = ShortestPathFinder(
                 snapshot: snapshot,
                 subspace: indexSubspace,
@@ -103,7 +107,10 @@ private struct GraphAlgorithmContext {
         configuration: ShortestPathConfiguration = .default
     ) async throws -> AllShortestPathsResult {
         try await database.withTransaction { transaction in
-            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let snapshot = GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: TestProcessMonotonicClock()
+            )
             let finder = ShortestPathFinder(
                 snapshot: snapshot,
                 subspace: indexSubspace,
@@ -122,7 +129,10 @@ private struct GraphAlgorithmContext {
         edgeLabel: String? = nil
     ) async throws -> PageRankResult {
         try await database.withTransaction { transaction in
-            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let snapshot = GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: TestProcessMonotonicClock()
+            )
             let computer = PageRankComputer(
                 snapshot: snapshot,
                 subspace: indexSubspace,
@@ -139,7 +149,10 @@ private struct GraphAlgorithmContext {
         edgeLabel: String? = nil
     ) async throws -> CommunityResult {
         try await database.withTransaction { transaction in
-            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let snapshot = GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: TestProcessMonotonicClock()
+            )
             let detector = CommunityDetector(
                 snapshot: snapshot,
                 subspace: indexSubspace,
@@ -158,7 +171,10 @@ private struct GraphAlgorithmContext {
         edgeLabel: String? = nil
     ) async throws -> Set<GraphIdentity> {
         try await database.withTransaction { transaction in
-            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let snapshot = GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: TestProcessMonotonicClock()
+            )
             let detector = CommunityDetector(
                 snapshot: snapshot,
                 subspace: indexSubspace,

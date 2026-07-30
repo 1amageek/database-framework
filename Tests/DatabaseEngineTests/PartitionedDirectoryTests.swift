@@ -23,7 +23,7 @@ struct PartitionedDirectoryTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try Player.schemaEntity, try TenantOrder.schemaEntity], version: Schema.Version(1, 0, 0))
-        return try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Player.self, TenantOrder.self]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self), try DatabaseFrameworkRuntime.entity(TenantOrder.self)]), security: .disabled)
     }
 
     // MARK: - hasDynamicDirectory Tests
@@ -443,7 +443,8 @@ struct PartitionedDirectoryTests {
                 let fetched = try await transaction.fetch(
                     TenantOrder.self,
                     identifiedBy: orderID,
-                    in: binding
+                    in: binding,
+                    consistency: .serializable
                 )
 
                 #expect(fetched != nil)
@@ -461,7 +462,8 @@ struct PartitionedDirectoryTests {
                 try await container.newContext().withTransaction { transaction in
                     _ = try await transaction.fetch(
                         TenantOrder.self,
-                        identifiedBy: "any-id"
+                        identifiedBy: "any-id",
+                        consistency: .serializable
                     )
                 }
             }

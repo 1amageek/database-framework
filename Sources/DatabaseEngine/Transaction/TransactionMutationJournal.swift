@@ -5,8 +5,8 @@ import DatabaseTypes
 struct TransactionMutationJournal: Sendable {
     private struct Entry: Sendable {
         let identity: EntityReference
-        let originalModel: (any Persistable)?
-        var currentModel: (any Persistable)?
+        let originalModel: PersistedModel?
+        var currentModel: PersistedModel?
     }
 
     private struct Lookup: Sendable {
@@ -19,8 +19,8 @@ struct TransactionMutationJournal: Sendable {
 
     mutating func record(
         identity: EntityReference,
-        previousModel: (any Persistable)?,
-        currentModel: (any Persistable)?
+        previousModel: PersistedModel?,
+        currentModel: PersistedModel?
     ) {
         let location = lookupLocation(for: identity)
         if location.found {
@@ -43,7 +43,7 @@ struct TransactionMutationJournal: Sendable {
         )
     }
 
-    func currentModels() -> [any Persistable] {
+    func currentModels() -> [PersistedModel] {
         entries.compactMap { $0.currentModel }
     }
 

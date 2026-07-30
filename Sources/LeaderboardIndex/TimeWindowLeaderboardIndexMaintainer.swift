@@ -574,7 +574,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         let rangeStart = windowSubspace.pack(Tuple(prefixElements))
         let rangeEnd = try strinc(rangeStart)
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
             limit: k,
@@ -661,7 +661,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             pk: pk
         )
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(targetKey),
             limit: 0,
@@ -688,7 +688,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         let range = metaSubspace.subspace("start").range()
         var windowIds: [Int64] = []
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: 0,
@@ -781,7 +781,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
 
         // Reverse iteration starts with the largest inverted score, which is the
         // lowest original score. The storage limit avoids materializing the window.
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
             limit: k,
@@ -922,7 +922,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             rangeEnd = rangeStart.appending(0xFF)
         }
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
             limit: 0,
@@ -1039,7 +1039,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         endElements.append(invertScore(score))
         let rangeEnd = windowSubspace.pack(Tuple(endElements))
 
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
             limit: 0,

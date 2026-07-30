@@ -19,7 +19,7 @@ struct TransactionComprehensiveTests {
     func multipleGetRangeInSingleTransaction() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(database: database)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup: Write 50 keys
         try await runner.run(configuration: .default) { tx in
@@ -62,7 +62,7 @@ struct TransactionComprehensiveTests {
     func hundredGetRangeCalls() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(database: database)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup: Write 100 keys
         try await runner.run(configuration: .default) { tx in
@@ -76,13 +76,16 @@ struct TransactionComprehensiveTests {
             var totalCount = 0
 
             for i in 0..<100 {
-                let sequence = tx.getRange(
+                var sequence = tx.rangeCursor(
                     from: .firstGreaterOrEqual([0, 2, UInt8(i % 256)]),
                     to: .firstGreaterOrEqual([0, 2, UInt8((i + 1) % 256)]),
-                    snapshot: true
+                    limit: 0,
+                    reverse: false,
+                    snapshot: true,
+                    streamingMode: .iterator
                 )
 
-                for try await _ in sequence {
+                while try await sequence.next() != nil {
                     totalCount += 1
                 }
             }
@@ -99,7 +102,7 @@ struct TransactionComprehensiveTests {
     func iteratorFullyConsumed() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(database: database)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         try await runner.run(configuration: .default) { tx in
             for i in 0..<10 {
@@ -123,7 +126,7 @@ struct TransactionComprehensiveTests {
     func iteratorPartiallyConsumed() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(database: database)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         try await runner.run(configuration: .default) { tx in
             for i in 0..<100 {
@@ -148,7 +151,7 @@ struct TransactionComprehensiveTests {
     func multipleConcurrentIterators() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(database: database)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         try await runner.run(configuration: .default) { tx in
             for i in 0..<20 {
@@ -187,7 +190,7 @@ struct TransactionComprehensiveTests {
     func snapshotReadDoesNotConflict() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(database: database)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup initial data
         try await runner.run(configuration: .default) { tx in
@@ -212,7 +215,7 @@ struct TransactionComprehensiveTests {
     func nonSnapshotReadAddsToConflictRange() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(database: database)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup initial data
         try await runner.run(configuration: .default) { tx in
@@ -239,7 +242,7 @@ struct TransactionComprehensiveTests {
     func scanThousandItems() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(database: database)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup: Write 1000 items
         try await runner.run(configuration: .default) { tx in
@@ -252,13 +255,16 @@ struct TransactionComprehensiveTests {
         // Test: Scan all 1000 items
         let count = try await runner.run(configuration: .default) { tx in
             var total = 0
-            let sequence = tx.getRange(
+            var sequence = tx.rangeCursor(
                 from: .firstGreaterOrEqual([0, 8]),
                 to: .firstGreaterOrEqual([0, 9]),
-                snapshot: true
+                limit: 0,
+                reverse: false,
+                snapshot: true,
+                streamingMode: .iterator
             )
 
-            for try await _ in sequence {
+            while try await sequence.next() != nil {
                 total += 1
             }
 
@@ -274,7 +280,7 @@ struct TransactionComprehensiveTests {
     func nestedGetRangeIteration() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(database: database)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup: 5 groups × 10 items
         try await runner.run(configuration: .default) { tx in
@@ -291,13 +297,16 @@ struct TransactionComprehensiveTests {
 
             for group in 0..<5 {
                 var itemCount = 0
-                let sequence = tx.getRange(
+                var sequence = tx.rangeCursor(
                     from: .firstGreaterOrEqual([0, 9, UInt8(group)]),
                     to: .firstGreaterOrEqual([0, 9, UInt8(group + 1)]),
-                    snapshot: true
+                    limit: 0,
+                    reverse: false,
+                    snapshot: true,
+                    streamingMode: .iterator
                 )
 
-                for try await _ in sequence {
+                while try await sequence.next() != nil {
                     itemCount += 1
                 }
 
@@ -319,7 +328,7 @@ struct TransactionComprehensiveTests {
     func commitSucceedsAfterMultipleGetRange() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(database: database)
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Write initial data
         try await runner.run(configuration: .default) { tx in
@@ -334,14 +343,17 @@ struct TransactionComprehensiveTests {
                 let start = batch * 2
                 let end = start + 3
 
-                let sequence = tx.getRange(
+                var sequence = tx.rangeCursor(
                     from: .firstGreaterOrEqual([0, 10, UInt8(start)]),
                     to: .firstGreaterOrEqual([0, 10, UInt8(end)]),
-                    snapshot: true
+                    limit: 0,
+                    reverse: false,
+                    snapshot: true,
+                    streamingMode: .iterator
                 )
 
                 var count = 0
-                for try await _ in sequence {
+                while try await sequence.next() != nil {
                     count += 1
                 }
 

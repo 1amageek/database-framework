@@ -300,7 +300,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
             let rows = try result.items.map { entity in
                 try IndexReadRow.materializing(
-                    any: entity.item,
+                    entity.item,
                     annotations: [
                         PolymorphicRowAnnotation.typeName: .string(entity.typeName),
                         PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
@@ -334,7 +334,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
             let rows = try results.map { result in
                 try IndexReadRow.materializing(
-                    any: result.entity.item,
+                    result.entity.item,
                     annotations: [
                         PolymorphicRowAnnotation.typeName: .string(result.entity.typeName),
                         PolymorphicRowAnnotation.typeCode: .int64(result.entity.typeCode),
@@ -357,7 +357,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         )
         let rows = try results.map { entity in
             try IndexReadRow.materializing(
-                any: entity.item,
+                entity.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(entity.typeName),
                     PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
@@ -925,7 +925,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     ) async throws -> [[any TupleElement]] {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()
-        let sequence = try await transaction.collectRange(
+        let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,

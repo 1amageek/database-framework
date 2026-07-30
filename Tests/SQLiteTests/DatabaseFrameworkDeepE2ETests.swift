@@ -129,7 +129,7 @@ private enum DeepE2EError: Error {
 
 private func deepE2ETemporarySQLiteContainer(
     for schema: Schema,
-    persistableTypes: [any Persistable.Type],
+    entityRuntimes: [EntityRuntimeRegistration],
     authorizationPolicies: [AuthorizationPolicyHandler] = [],
     security: SecurityConfiguration = .disabled
 ) async throws -> (DBContainer, URL) {
@@ -141,7 +141,7 @@ private func deepE2ETemporarySQLiteContainer(
         for: schema,
         path: databasePath,
         runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            persistableTypes: persistableTypes,
+            entityRuntimes: entityRuntimes,
             authorizationPolicies: authorizationPolicies
         ),
         security: security
@@ -225,7 +225,7 @@ struct DatabaseFrameworkDeepE2ETests {
         let schema = try Schema(entities: [try DeepE2EIndexedTicket.schemaEntity], version: .init(1, 0, 0))
         let (container, directory) = try await deepE2ETemporarySQLiteContainer(
             for: schema,
-            persistableTypes: [DeepE2EIndexedTicket.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2EIndexedTicket.self)]
         )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
 
@@ -345,7 +345,7 @@ struct DatabaseFrameworkDeepE2ETests {
         let schema = try Schema(entities: [try DeepE2EIndexedTicket.schemaEntity], version: .init(1, 0, 0))
         let (container, directory) = try await deepE2ETemporarySQLiteContainer(
             for: schema,
-            persistableTypes: [DeepE2EIndexedTicket.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2EIndexedTicket.self)]
         )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
 
@@ -417,10 +417,7 @@ struct DatabaseFrameworkDeepE2ETests {
         )
         let (container, directory) = try await deepE2ETemporarySQLiteContainer(
             for: schema,
-            persistableTypes: [
-                DeepE2ECustomer.self,
-                DeepE2ERelationshipOrder.self,
-            ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2ECustomer.self), try DatabaseFrameworkRuntime.entity(DeepE2ERelationshipOrder.self)]
         )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
 
@@ -491,7 +488,7 @@ struct DatabaseFrameworkDeepE2ETests {
         let schema = try Schema(entities: [try DeepE2ESecureTenantDocument.schemaEntity], version: .init(1, 0, 0))
         let (container, directory) = try await deepE2ETemporarySQLiteContainer(
             for: schema,
-            persistableTypes: [DeepE2ESecureTenantDocument.self],
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2ESecureTenantDocument.self)],
             authorizationPolicies: [
                 AuthorizationPolicyHandler(DeepE2ESecureTenantDocument.self)
             ],
@@ -546,7 +543,7 @@ struct DatabaseFrameworkDeepE2ETests {
             Issue.record("Expected stale-owner delete to be denied")
         } catch let error as SecurityError {
             #expect(error.operation == .delete)
-            #expect(error.resourceID == original.id)
+            #expect(error.resource?.id == .string(original.id))
             #expect(error.userID == "alice")
         }
 
@@ -554,7 +551,7 @@ struct DatabaseFrameworkDeepE2ETests {
             for: schema,
             path: directory.appendingPathComponent("database.sqlite").path,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DeepE2ESecureTenantDocument.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2ESecureTenantDocument.self)]
             ),
             security: .disabled
         )
@@ -597,7 +594,7 @@ struct DatabaseFrameworkDeepE2ETests {
         let schema = try Schema(entities: [try DeepE2EIndexedTicket.schemaEntity], version: .init(1, 0, 0))
         let (container, directory) = try await deepE2ETemporarySQLiteContainer(
             for: schema,
-            persistableTypes: [DeepE2EIndexedTicket.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2EIndexedTicket.self)]
         )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
 
@@ -691,7 +688,7 @@ struct DatabaseFrameworkDeepE2ETests {
         let schema = try Schema(entities: [try DeepE2EIndexedTicket.schemaEntity], version: .init(1, 0, 0))
         let (container, directory) = try await deepE2ETemporarySQLiteContainer(
             for: schema,
-            persistableTypes: [DeepE2EIndexedTicket.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2EIndexedTicket.self)]
         )
         defer { deepE2ERemoveTemporaryDirectory(directory) }
 

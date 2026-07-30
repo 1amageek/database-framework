@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 @testable import DatabaseEngine
 import DatabaseRuntime
 import DatabaseTypes
@@ -29,8 +30,12 @@ struct DatabaseIndexMaintenanceRuntimeTests {
             container: firstContainer,
             subspace: entitySubspace
         )
-        let initiallyReadable = try await firstContainer.engine
-            .withTransaction(configuration: .readOnly) { transaction in
+        let initiallyReadable = try await StorageTransactionExecutor(
+            engine: firstContainer.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
                 try await longLivedStateReader.state(
                     of: "catalog_value",
                     transaction: transaction
@@ -65,8 +70,12 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         }
         #expect(firstSlice.completedWorkUnits == 1)
         #expect(!firstSlice.isComplete)
-        let stateObservedByLongLivedReader = try await firstContainer.engine
-            .withTransaction(configuration: .readOnly) { transaction in
+        let stateObservedByLongLivedReader = try await StorageTransactionExecutor(
+            engine: firstContainer.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
                 try await longLivedStateReader.state(
                     of: "catalog_value",
                     transaction: transaction
@@ -241,9 +250,9 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 entities: [CatalogPartitionedEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .init(backend: .custom(engine)),
+            configuration: .testing(backend: .custom(engine)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [CatalogPartitionedEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .disabled
         )

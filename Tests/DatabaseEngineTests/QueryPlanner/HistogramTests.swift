@@ -6,7 +6,12 @@
 import Testing
 import TestHeartbeat
 import Foundation
+import DatabaseTypes
 @testable import DatabaseEngine
+
+private let histogramTimestamp = Timestamp(
+    secondsSinceUnixEpoch: 1_700_000_000
+)
 
 @Suite("Histogram Tests", .heartbeat)
 struct HistogramTests {
@@ -42,7 +47,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 100,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             // Query for range "M" to "Z" should be roughly 50%
@@ -71,7 +77,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 100,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             // Query for "user_mmm" to "user_zzz"
@@ -103,7 +110,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 100,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             let selectivity = histogram.estimateRangeSelectivity(
@@ -137,7 +145,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 100,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             // Query 25 to 75 should be 50%
@@ -163,7 +172,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 1000,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             // Query 0.1 to 0.3 should be 20%
@@ -193,7 +203,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 100,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             // Query for first 50 days
@@ -219,7 +230,8 @@ struct HistogramTests {
             let histogram = Histogram(
                 buckets: [],
                 totalCount: 0,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             let selectivity = histogram.estimateRangeSelectivity(
@@ -244,7 +256,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 100,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             let selectivity = histogram.estimateRangeSelectivity(
@@ -270,7 +283,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 100,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             let selectivity = histogram.estimateRangeSelectivity(
@@ -295,7 +309,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 80,
-                nullCount: 20
+                nullCount: 20,
+                timestamp: histogramTimestamp
             )
 
             let nullSel = histogram.estimateNullSelectivity(isNull: true)
@@ -323,7 +338,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 1000,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             // Selectivity for equality = (bucket.count / totalCount) / distinctCount
@@ -345,7 +361,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 1000,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             let selectivity = histogram.estimateEqualsSelectivity(value: .int64(200))
@@ -389,7 +406,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 1000,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             // Query spanning all buckets should be 100%
@@ -423,7 +441,8 @@ struct HistogramTests {
                     )
                 ],
                 totalCount: 1000,
-                nullCount: 0
+                nullCount: 0,
+                timestamp: histogramTimestamp
             )
 
             // Query for 0-50 should use interpolation to get ~50%
@@ -451,7 +470,8 @@ struct HistogramTests {
                 )
             ],
             totalCount: 1000,
-            nullCount: 0
+            nullCount: 0,
+            timestamp: histogramTimestamp
         )
     }
 }

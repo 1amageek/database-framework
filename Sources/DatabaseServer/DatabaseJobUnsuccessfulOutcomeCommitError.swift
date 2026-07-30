@@ -19,6 +19,6 @@ public struct DatabaseJobUnsuccessfulOutcomeCommitError:
     }
 
     public var description: String {
-        "Persistent job unsuccessful outcome commit failed for \(jobID): \(underlyingError)"
+        "Persistent job unsuccessful outcome commit failed for \(jobID)"
     }
 }

@@ -31,7 +31,7 @@ struct StorageInvariantTests {
 
             // Create container for components that need it
             let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
-            let container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Player.self]), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]), security: .disabled)
 
             let tracker = UniquenessViolationTracker(container: container, metadataSubspace: metadataSubspace)
             let indexName = "unique_clearFirst_idx"
@@ -127,11 +127,11 @@ struct StorageInvariantTests {
             let blobCount = try await database.withTransaction { tx in
                 let blobBase = blobsSubspace.subspace(Tuple([key]))
                 let (b, e) = blobBase.range()
-                var count = 0
-                for try await _ in tx.getRange(begin: b, end: e, snapshot: true) {
-                    count += 1
-                }
-                return count
+                return try await tx.collectRange(
+                    begin: b,
+                    end: e,
+                    snapshot: true
+                ).count
             }
 
             #expect(blobCount == 0)
@@ -175,11 +175,11 @@ struct StorageInvariantTests {
             let blobCount = try await database.withTransaction { tx in
                 let blobBase = blobsSubspace.subspace(Tuple([key]))
                 let (b, e) = blobBase.range()
-                var count = 0
-                for try await _ in tx.getRange(begin: b, end: e, snapshot: true) {
-                    count += 1
-                }
-                return count
+                return try await tx.collectRange(
+                    begin: b,
+                    end: e,
+                    snapshot: true
+                ).count
             }
 
             #expect(blobCount == 0)
@@ -213,14 +213,17 @@ struct StorageInvariantTests {
                 }
 
                 // Allow up to 2 calls because AsyncKVSequence may prefetch the next batch.
-                let limiting = LimitingTransaction(wrapping: tx, maxCollectCalls: 2)
+                let limiting = LimitingTransaction(
+                    wrapping: tx,
+                    maximumRangeCursorCount: 2
+                )
                 let storage = ItemStorage(transaction: limiting, blobsSubspace: blobsSubspace, configuration: .v1)
                 let (b, e) = itemsSubspace.range()
 
                 var it = storage.scan(begin: b, end: e, snapshot: false, limit: 0, reverse: false).makeAsyncIterator()
                 let first = try await it.next()
                 #expect(first != nil)
-                #expect(limiting.callCountValue <= 2)
+                #expect(limiting.openedRangeCursorCount <= 2)
             }
 
             // Cleanup

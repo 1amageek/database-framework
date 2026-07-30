@@ -56,7 +56,10 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds,
                 prepare: {
-                    let workMeter = DatabaseWorkMeter(budget: request.budget)
+                    let workMeter = DatabaseWorkMeter(
+                        budget: request.budget,
+                        monotonicClock: context.container.monotonicClock
+                    )
                     let preparedChanges = try entityMutationExecutor.prepare(
                         changes,
                         preconditions: request.preconditions,

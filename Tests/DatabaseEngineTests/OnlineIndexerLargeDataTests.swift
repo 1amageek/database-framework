@@ -44,7 +44,7 @@ struct OnlineIndexerLargeDataTests {
 
             // Create container with Player schema
             let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
-            self.container = try await DBContainer.open(for: schema, configuration: .init(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [Player.self]), security: .disabled)
+            self.container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]), security: .disabled)
         }
 
         func cleanup() async throws {
@@ -74,11 +74,11 @@ struct OnlineIndexerLargeDataTests {
         func countIndexEntries(indexName: String) async throws -> Int {
             try await database.withTransaction { tx in
                 let range = indexSubspace.subspace(indexName).range()
-                var count = 0
-                for try await _ in tx.getRange(begin: range.begin, end: range.end, snapshot: true) {
-                    count += 1
-                }
-                return count
+                return try await tx.collectRange(
+                    begin: range.begin,
+                    end: range.end,
+                    snapshot: true
+                ).count
             }
         }
     }

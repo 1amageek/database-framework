@@ -123,8 +123,8 @@ extension DBConfiguration: CustomDebugStringConvertible {
         case .fdb:
             backendDesc = "fdb"
         #endif
-        case .custom(let engine):
-            backendDesc = "custom(\(type(of: engine)))"
+        case .custom:
+            backendDesc = "custom"
         }
         let indexConfigCount = indexConfigurations.count
         return "DBConfiguration(name: \(nameDesc), backend: \(backendDesc), indexConfigs: \(indexConfigCount), itemEncoding: \(itemStorage.encoding))"

@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseRuntime
 import DatabaseEngine
 @testable import DatabaseServer
@@ -186,8 +187,11 @@ struct DatabaseServerRuntimeTests {
             for: command.stateID,
             as: DatabaseEndpointEntity.self
         )
-        let mutationState = try await container.engine.withTransaction(
-            configuration: .readOnly
+        let mutationState = try await StorageTransactionExecutor(
+            engine: container.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             (
                 try await stateStore.currentLogicalVersion(
@@ -213,11 +217,11 @@ struct DatabaseServerRuntimeTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(
+            configuration: DBConfiguration.testing(
                 backend: .custom(InMemoryEngine())
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseEndpointEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .disabled
         )
@@ -322,7 +326,8 @@ struct DatabaseServerRuntimeTests {
             }
             let stored = try await context.transaction.fetch(
                 DatabaseEndpointEntity.self,
-                identifiedBy: stateID
+                identifiedBy: stateID,
+                consistency: .serializable
             )
             let current = stored?.priority ?? 0
             guard current < Int(UInt8.max) else {

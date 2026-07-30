@@ -35,7 +35,9 @@ struct DatabaseExecutionTimeoutTests {
 private struct FixedTimeoutClock: StorageMonotonicClock {
     let now: StorageInstant
 
-    func sleep(until deadline: StorageInstant) async throws {}
+    func sleep(
+        until deadline: StorageInstant
+    ) async throws(StorageClockError) {}
 }
 
 private final class TimeoutOperationCounter: Sendable {

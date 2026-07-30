@@ -301,4 +301,10 @@ enum SPARQLRetainedBindings: ~Copyable, Sendable {
 struct SPARQLSharedBindingOwnership: ~Copyable, Sendable {
     let retained: SPARQLRetainedBindings
     let snapshot: SPARQLSharedBindingSnapshot
+
+    /// Transfers the current evaluation's retained view while releasing the
+    /// companion snapshot handle owned by this fan-out transition.
+    consuming func takeRetainedBindings() -> SPARQLRetainedBindings {
+        consume retained
+    }
 }

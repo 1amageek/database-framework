@@ -70,7 +70,7 @@ struct SPARQLDebugTests {
         )
 
         // Clean up directory BEFORE creating container to avoid stale state
-        
+
         if try await database.namespaceExists(path: ["test", "debug_rdf"]) {
             try await database.removeNamespace(path: ["test", "debug_rdf"])
         }
@@ -78,12 +78,9 @@ struct SPARQLDebugTests {
         // Create container and ensure indexes are ready AFTER cleanup
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
+            configuration: .testing(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    DebugEdge.self,
-                    DebugRDFStatement.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DebugEdge.self), try DatabaseFrameworkRuntime.entity(DebugRDFStatement.self)]
             ),
             security: .disabled
         )
@@ -174,7 +171,7 @@ struct SPARQLDebugTests {
         )
 
         // Clean up directory BEFORE creating container to avoid stale state
-        
+
         if try await database.namespaceExists(path: ["test", "debug_edge"]) {
             try await database.removeNamespace(path: ["test", "debug_edge"])
         }
@@ -182,12 +179,9 @@ struct SPARQLDebugTests {
         // Create container and ensure indexes are ready AFTER cleanup
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .init(backend: .custom(database)),
+            configuration: .testing(backend: .custom(database)),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [
-                    DebugEdge.self,
-                    DebugRDFStatement.self,
-                ]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DebugEdge.self), try DatabaseFrameworkRuntime.entity(DebugRDFStatement.self)]
             ),
             security: .disabled
         )
@@ -236,11 +230,11 @@ struct SPARQLDebugTests {
 
         print("✓ GraphPropertyScanner storedFieldNames: \(indexDescriptor.storedFieldNames)")
 
-        var edgeCount = 0
-        var propertiesFound = false
-
-        try await database.withTransaction { transaction in
-            let stream = scanner.scanEdges(
+        let (edgeCount, propertiesFound) = try await database.withTransaction {
+            transaction in
+            var edgeCount = 0
+            var propertiesFound = false
+            let scan = scanner.scanEdges(
                 from: .identifier(alice),
                 edge: "knows",
                 to: nil,
@@ -249,7 +243,8 @@ struct SPARQLDebugTests {
                 transaction: transaction
             )
 
-            for try await scannedEdge in stream {
+            var cursor = scan.makeCursor()
+            while let scannedEdge = try await cursor.next() {
                 edgeCount += 1
                 print("✓ Scanned edge: from=\(scannedEdge.source), to=\(scannedEdge.target)")
                 print("✓ Properties: \(scannedEdge.properties)")
@@ -264,6 +259,7 @@ struct SPARQLDebugTests {
                     print("✗ Score property not found in: \(scannedEdge.properties.keys)")
                 }
             }
+            return (edgeCount, propertiesFound)
         }
 
         print("✓ Total edges scanned: \(edgeCount)")

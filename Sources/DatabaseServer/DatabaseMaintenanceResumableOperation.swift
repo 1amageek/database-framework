@@ -102,14 +102,14 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             )
         case .compact:
             guard let compaction = context.databaseTransaction.storageAccess
-                as? any StorageCompactionTransaction else {
+                .compaction else {
                 throw DatabaseMaintenanceRuntimeError.compactionUnavailable
             }
             let effectiveWorkUnits = min(
                 context.maximumSliceWorkUnits,
                 request.budget.maximumWorkUnits,
                 runtimeLimits.maximumWorkUnits,
-                compaction.compactionLimits.maximumWorkUnitsPerSlice
+                compaction.limits.maximumWorkUnitsPerSlice
             )
             guard effectiveWorkUnits > 0 else {
                 throw DatabaseMaintenanceRuntimeError.invalidInvocation(
@@ -295,21 +295,21 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             .compaction(backendContinuation)
         ):
             guard let compaction = context.databaseTransaction.storageAccess
-                as? any StorageCompactionTransaction else {
+                .compaction else {
                 throw DatabaseMaintenanceRuntimeError.compactionUnavailable
             }
             let effectiveWorkUnits = min(
                 maximumWorkUnits,
                 planWorkUnits,
                 runtimeLimits.maximumWorkUnits,
-                compaction.compactionLimits.maximumWorkUnitsPerSlice
+                compaction.limits.maximumWorkUnitsPerSlice
             )
             guard effectiveWorkUnits > 0 else {
                 throw DatabaseMaintenanceRuntimeError.invalidInvocation(
                     "Compaction has no executable work budget"
                 )
             }
-            let result = try await compaction.stageCompactionSlice(
+            let result = try await compaction.stageSlice(
                 maximumWorkUnits: effectiveWorkUnits,
                 continuation: backendContinuation.map {
                     StorageCompactionContinuation(

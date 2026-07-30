@@ -1,4 +1,5 @@
 import DatabaseKit
+import TestSupport
 import DatabaseEngine
 import DatabaseRuntime
 @testable import DatabaseServer
@@ -27,8 +28,12 @@ struct DatabaseMutationStateStoreTests {
                     transaction: transaction
                 )
             }
-        let currentVersion = try await storeContext.container.engine
-            .withTransaction(configuration: .readOnly) { transaction in
+        let currentVersion = try await StorageTransactionExecutor(
+            engine: storeContext.container.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
                 try await storeContext.stateStore.currentLogicalVersion(
                     transaction: transaction
                 )
@@ -342,9 +347,9 @@ struct DatabaseMutationStateStoreTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                persistableTypes: [DatabaseEndpointEntity.self]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .disabled
         )
@@ -410,8 +415,11 @@ struct DatabaseMutationStateStoreTests {
         from storeContext: MutationStateStoreContext,
         limits: DatabaseWireLimits = .default
     ) async throws -> DatabaseIdempotencyEntry? {
-        try await storeContext.container.engine.withTransaction(
-            configuration: .readOnly
+        try await StorageTransactionExecutor(
+            engine: storeContext.container.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             try await storeContext.stateStore.idempotencyEntry(
                 for: storeContext.key,
@@ -424,8 +432,11 @@ struct DatabaseMutationStateStoreTests {
     private func storedChunks(
         in storeContext: MutationStateStoreContext
     ) async throws -> [(ByteString, ByteString)] {
-        try await storeContext.container.engine.withTransaction(
-            configuration: .readOnly
+        try await StorageTransactionExecutor(
+            engine: storeContext.container.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
         ) { transaction in
             let range = storeContext.chunks.range()
             return try await transaction.collectRange(

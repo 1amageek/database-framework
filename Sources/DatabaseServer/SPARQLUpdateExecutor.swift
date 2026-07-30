@@ -404,6 +404,7 @@ struct SPARQLUpdateExecutor: Sendable {
         let detectionLimit = try mutationDetectionLimit()
         let executor = SPARQLQueryExecutor(
             database: context.container.engine,
+            wallClock: context.container.wallClock,
             datasetScanner: graphStore,
             readMode: .serializable,
             datasetScope: try SPARQLDatasetExecutionScope(dataset),

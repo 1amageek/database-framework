@@ -47,7 +47,7 @@ reflection.
 
 ~~~swift
 let runtime = try DatabaseFrameworkRuntime.configuration(
-    persistableTypes: [Post.self],
+    entityRuntimes: [try DatabaseFrameworkRuntime.entity(Post.self)],
     authorizationPolicies: [AuthorizationPolicyHandler(Post.self)]
 )
 ~~~
@@ -71,6 +71,8 @@ DBContainer installs the security delegate when security is enabled:
 let container = try await DBContainer.open(
     for: schema,
     configuration: configuration,
+    monotonicClock: applicationMonotonicClock,
+    wallClock: applicationWallClock,
     runtimeConfiguration: runtime,
     security: .enabled()
 )

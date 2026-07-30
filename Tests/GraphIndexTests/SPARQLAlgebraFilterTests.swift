@@ -3,6 +3,7 @@ import DatabaseEngine
 import DatabaseWire
 @testable import GraphIndex
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("SPARQL algebra filter semantics")
@@ -39,7 +40,7 @@ struct SPARQLAlgebraFilterTests {
             ("lateral", .lateral(empty, empty)),
         ]
 
-        let executor = makeExecutor()
+        let executor = try makeExecutor()
         for (name, pattern) in patterns {
             let result = try await executor.execute(
                 pattern: .filter(pattern, .alwaysFalse),
@@ -92,9 +93,12 @@ struct SPARQLAlgebraFilterTests {
         #expect(result.0.isEmpty)
     }
 
-    private func makeExecutor() -> SPARQLQueryExecutor {
+    private func makeExecutor() throws -> SPARQLQueryExecutor {
         SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            wallClock: FixedTestWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 0)
+            ),
             sources: []
         )
     }
@@ -105,7 +109,8 @@ struct SPARQLAlgebraFilterTests {
                 maximumRows: 1_000,
                 maximumWorkUnits: 10_000,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
     }
 

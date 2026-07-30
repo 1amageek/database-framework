@@ -31,7 +31,10 @@ struct ScalarUInt64IndexRuntimeTests {
                 index: index,
                 subspace: indexSubspace,
                 idExpression: FieldKeyExpression(fieldName: "id"),
-                configurations: []
+                configurations: [],
+                wallClock: FixedScalarIndexWallClock(
+                    now: Timestamp(secondsSinceUnixEpoch: 0)
+                )
             )
 
         var keys: [ByteString] = []
@@ -92,6 +95,10 @@ struct ScalarUInt64IndexRuntimeTests {
         )
         #expect(keys.count == 1)
     }
+}
+
+private struct FixedScalarIndexWallClock: WallClock {
+    let now: Timestamp
 }
 
 @Persistable

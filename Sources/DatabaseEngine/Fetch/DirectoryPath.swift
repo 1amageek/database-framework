@@ -193,7 +193,7 @@ public struct AnyDirectoryPath: Sendable {
         self.partitions = try path.canonicalPartitions()
     }
 
-    public init(for type: any Persistable.Type) throws {
+    public init<Model: Persistable>(for type: Model.Type) throws {
         guard !type.hasDynamicDirectory else {
             throw DirectoryPathError.dynamicFieldsRequired(
                 typeName: type.persistableType,

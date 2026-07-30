@@ -226,7 +226,8 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
         let range = layers.aggregated.range()
         var scannedGroups = 0
         var scannedBytes = 0
-        try await transaction.forEachInRange(
+        try await TransactionRangeIteration.forEach(
+            in: transaction,
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: maximumScanGroups + 1,
@@ -593,7 +594,8 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
         let range = layers.aggregated.range()
         var scannedGroups = 0
         var scannedBytes = 0
-        try await transaction.forEachInRange(
+        try await TransactionRangeIteration.forEach(
+            in: transaction,
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: maximumScanGroups + 1,

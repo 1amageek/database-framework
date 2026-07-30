@@ -5,7 +5,7 @@ public struct DatabaseResumableOperationContext: Sendable {
     public let jobID: DatabaseTypes.UUID
     public let completedWorkUnitsBeforeSlice: UInt64
     public let request: DatabaseCommandRequestContext
-    public let transaction: any DatabaseTransactionWriting
+    public let transaction: DatabaseTransaction
 
     package let databaseTransaction: DatabaseTransaction
     package let operationContext: DatabaseOperationContext

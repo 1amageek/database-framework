@@ -32,8 +32,8 @@ struct RoundTripDemoTests {
         let schema = try Schema(entities: [try DemoItem.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [DemoItem.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DemoItem.self)]),
             security: .disabled,
         )
     }
@@ -53,13 +53,17 @@ struct RoundTripDemoTests {
             item.value = 42
             item.tags = ["swift", "fdb", "demo"]
 
-            try await tx.save(item)
+            try await tx.save(item, precondition: .notExists)
             print("✅ CREATE: id=\(itemId), name=\(item.name), value=\(item.value)")
         }
 
         // 2. READ
         try await context.withTransaction { tx in
-            let fetched = try await tx.fetch(DemoItem.self, identifiedBy: itemId)
+            let fetched = try await tx.fetch(
+                DemoItem.self,
+                identifiedBy: itemId,
+                consistency: .serializable
+            )
             #expect(fetched != nil)
             #expect(fetched?.name == "テストアイテム")
             #expect(fetched?.value == 42)
@@ -69,7 +73,11 @@ struct RoundTripDemoTests {
 
         // 3. UPDATE
         try await context.withTransaction { tx in
-            guard var updated = try await tx.fetch(DemoItem.self, identifiedBy: itemId) else {
+            guard var updated = try await tx.fetch(
+                DemoItem.self,
+                identifiedBy: itemId,
+                consistency: .serializable
+            ) else {
                 Issue.record("Item not found for update")
                 return
             }
@@ -77,13 +85,17 @@ struct RoundTripDemoTests {
             updated.value = 100
             updated.tags.append("updated")
 
-            try await tx.save(updated)
+            try await tx.save(updated, precondition: .exists)
             print("✅ UPDATE: name=\(updated.name), value=\(updated.value)")
         }
 
         // 3.1 READ after UPDATE
         try await context.withTransaction { tx in
-            let fetched = try await tx.fetch(DemoItem.self, identifiedBy: itemId)
+            let fetched = try await tx.fetch(
+                DemoItem.self,
+                identifiedBy: itemId,
+                consistency: .serializable
+            )
             #expect(fetched?.name == "更新されたアイテム")
             #expect(fetched?.value == 100)
             #expect(fetched?.tags.contains("updated") == true)
@@ -98,7 +110,11 @@ struct RoundTripDemoTests {
 
         // 4.1 READ after DELETE (should be nil)
         try await context.withTransaction { tx in
-            let fetched = try await tx.fetch(DemoItem.self, identifiedBy: itemId)
+            let fetched = try await tx.fetch(
+                DemoItem.self,
+                identifiedBy: itemId,
+                consistency: .serializable
+            )
             #expect(fetched == nil)
             print("✅ READ after DELETE: nil (正常に削除されました)")
         }

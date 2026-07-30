@@ -87,8 +87,8 @@ struct SPARQLExecutionOrderTests {
         )
         return try await DBContainer.open(
             testing: schema,
-            configuration: .init(backend: .custom(database)),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(persistableTypes: [ExecOrderEdge.self]),
+            configuration: .testing(backend: .custom(database)),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(ExecOrderEdge.self)]),
             security: .disabled,
         )
     }
@@ -411,7 +411,10 @@ struct SPARQLExecutionOrderTests {
         let b1 = VariableBinding().binding("?x", to: .string("C"))
         let b2 = VariableBinding().binding("?x", to: .string("A"))
         let b3 = VariableBinding().binding("?x", to: .string("B"))
-        let workMeter = DatabaseWorkMeter(budget: .init())
+        let workMeter = DatabaseWorkMeter(
+            budget: .init(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
 
         let sorted = try BindingSorter.sort(
             [b1, b2, b3],
@@ -428,7 +431,10 @@ struct SPARQLExecutionOrderTests {
         let b1 = VariableBinding().binding("?x", to: .int64(1))
         let b2 = VariableBinding().binding("?x", to: .int64(3))
         let b3 = VariableBinding().binding("?x", to: .int64(2))
-        let workMeter = DatabaseWorkMeter(budget: .init())
+        let workMeter = DatabaseWorkMeter(
+            budget: .init(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
 
         let sorted = try BindingSorter.sort(
             [b1, b2, b3],
@@ -446,7 +452,10 @@ struct SPARQLExecutionOrderTests {
         let b2 = VariableBinding().binding("?x", to: .null)
         let b3 = VariableBinding().binding("?x", to: .string("A"))
         let b4 = VariableBinding()  // unbound
-        let workMeter = DatabaseWorkMeter(budget: .init())
+        let workMeter = DatabaseWorkMeter(
+            budget: .init(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
 
         let sorted = try BindingSorter.sort(
             [b1, b2, b3, b4],
@@ -468,7 +477,10 @@ struct SPARQLExecutionOrderTests {
         let b1 = VariableBinding().binding("?x", to: .string("B"))
         let b2 = VariableBinding()  // unbound
         let b3 = VariableBinding().binding("?x", to: .string("A"))
-        let workMeter = DatabaseWorkMeter(budget: .init())
+        let workMeter = DatabaseWorkMeter(
+            budget: .init(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
 
         let sorted = try BindingSorter.sort(
             [b1, b2, b3],
@@ -495,7 +507,10 @@ struct SPARQLExecutionOrderTests {
         let b4 = VariableBinding()
             .binding("?dept", to: .string("A"))
             .binding("?name", to: .string("Charlie"))
-        let workMeter = DatabaseWorkMeter(budget: .init())
+        let workMeter = DatabaseWorkMeter(
+            budget: .init(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
 
         let sorted = try BindingSorter.sort(
             [b1, b2, b3, b4],

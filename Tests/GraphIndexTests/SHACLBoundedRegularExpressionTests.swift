@@ -4,6 +4,7 @@ import DatabaseWire
 import DatabaseKit
 import StorageKit
 import TestHeartbeat
+import TestSupport
 import Testing
 @testable import GraphIndex
 
@@ -173,13 +174,20 @@ struct SHACLBoundedRegularExpressionTests {
         value: RDFTerm
     ) async throws -> SHACLValidationReport {
         let engine = InMemoryEngine()
-        let executor = SPARQLQueryExecutor(database: engine, sources: [])
+        let executor = SPARQLQueryExecutor(
+            database: engine,
+            wallClock: FixedTestWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 0)
+            ),
+            sources: []
+        )
         let budget = SHACLValidationWorkBudget(
             budget: ExecutionBudget(
                 maximumRows: 1_000,
                 maximumWorkUnits: 50_000_000,
                 timeoutMilliseconds: 60_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
         let shapes = SHACLShapesGraph(
             iri: "urn:test:bounded-patterns",

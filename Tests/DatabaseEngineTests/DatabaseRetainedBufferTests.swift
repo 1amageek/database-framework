@@ -2,6 +2,7 @@ import DatabaseKit
 import DatabaseTypes
 import DatabaseWire
 import Synchronization
+import TestSupport
 import Testing
 @testable import DatabaseEngine
 
@@ -497,7 +498,8 @@ struct DatabaseRetainedBufferTests {
                 maximumIntermediateRows: 5,
                 maximumIntermediateBytes: 16_384,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
 
         do {
@@ -531,7 +533,8 @@ struct DatabaseRetainedBufferTests {
                 maximumIntermediateRows: 10,
                 maximumIntermediateBytes: 16_384,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
         var builder = try DatabaseRetainedRDFGraphBuilder(workMeter: meter)
         for identifier in 1...3 {
@@ -558,7 +561,8 @@ struct DatabaseRetainedBufferTests {
                 maximumIntermediateRows: rows,
                 maximumIntermediateBytes: bytes,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
     }
 

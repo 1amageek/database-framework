@@ -5,33 +5,9 @@ import StorageKit
 @testable import DatabaseEngine
 @testable import BitmapIndex
 
-private struct BitmapTransitionItem: Persistable {
-    typealias ID = String
-
+@Persistable
+private struct BitmapTransitionItem {
     var id: String
-
-    static var persistableType: String { "BitmapTransitionItem" }
-    static var allFields: [String] { ["id"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        member == "id" ? id : nil
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BitmapTransitionItem, Value>) -> String {
-        "id"
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BitmapTransitionItem>) -> String {
-        "id"
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        "id"
-    }
 }
 
 @Suite("Bitmap value transition contract")

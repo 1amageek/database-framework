@@ -146,11 +146,11 @@ public final class DatabaseContext: Sendable {
     /// Net mutation staged for one persisted identity before `save()`.
     internal enum PendingMutation: Sendable {
         case save(
-            model: any Persistable,
+            model: PersistedModel,
             precondition: WritePrecondition
         )
         case delete(
-            model: any Persistable,
+            model: PersistedModel,
             precondition: WritePrecondition
         )
 
@@ -165,15 +165,15 @@ public final class DatabaseContext: Sendable {
 
     private enum StagedMutationIntent: Sendable {
         case save(
-            model: any Persistable,
+            model: PersistedModel,
             precondition: WritePrecondition
         )
         case delete(
-            model: any Persistable,
+            model: PersistedModel,
             precondition: WritePrecondition
         )
 
-        var model: any Persistable {
+        var model: PersistedModel {
             switch self {
             case .save(let model, _), .delete(let model, _):
                 return model
@@ -325,11 +325,7 @@ public final class DatabaseContext: Sendable {
 
             switch mutation {
             case .save(let model, _):
-                let persisted = try PersistedModel(
-                    entity: T.persistableType,
-                    fields: model.persistedFields()
-                )
-                return (try persisted.decode(as: T.self), false)
+                return (try model.decode(as: T.self), false)
             case .delete:
                 return (nil, true)
             }
@@ -366,7 +362,13 @@ public final class DatabaseContext: Sendable {
         _ model: T,
         precondition: WritePrecondition = .notExists
     ) throws {
-        try stage(.save(model: model, precondition: precondition))
+        try stage(
+            identity: EntityReferenceEncoder.encode(model),
+            intent: .save(
+                model: PersistedModel(model),
+                precondition: precondition
+            )
+        )
     }
 
     /// Stage a write that may create or replace the persisted value.
@@ -374,7 +376,13 @@ public final class DatabaseContext: Sendable {
         _ model: T,
         precondition: WritePrecondition = .none
     ) throws {
-        try stage(.save(model: model, precondition: precondition))
+        try stage(
+            identity: EntityReferenceEncoder.encode(model),
+            intent: .save(
+                model: PersistedModel(model),
+                precondition: precondition
+            )
+        )
     }
 
     /// Stage an update that requires a persisted value.
@@ -382,7 +390,13 @@ public final class DatabaseContext: Sendable {
         _ model: T,
         precondition: WritePrecondition = .exists
     ) throws {
-        try stage(.save(model: model, precondition: precondition))
+        try stage(
+            identity: EntityReferenceEncoder.encode(model),
+            intent: .save(
+                model: PersistedModel(model),
+                precondition: precondition
+            )
+        )
     }
 
     /// Stage a delete that requires a persisted value.
@@ -390,12 +404,21 @@ public final class DatabaseContext: Sendable {
         _ model: T,
         precondition: WritePrecondition = .exists
     ) throws {
-        try stage(.delete(model: model, precondition: precondition))
+        try stage(
+            identity: EntityReferenceEncoder.encode(model),
+            intent: .delete(
+                model: PersistedModel(model),
+                precondition: precondition
+            )
+        )
     }
 
-    private func stage(_ intent: StagedMutationIntent) throws {
+    private func stage(
+        identity: EntityReference,
+        intent: StagedMutationIntent
+    ) throws {
         let stagedMutation = StagedMutation(
-            identity: try EntityReferenceEncoder.encode(intent.model),
+            identity: identity,
             intent: intent
         )
         let shouldScheduleAutosave = try stateLock.withLock {
@@ -1034,11 +1057,12 @@ public final class DatabaseContext: Sendable {
     ) -> [PersistableMutation] {
         var result: [PersistableMutation] = []
         result.reserveCapacity(mutations.count)
-        mutations.forEach { mutation in
+        mutations.forEach { identity, mutation in
             switch mutation {
             case .save(let model, let precondition):
                 result.append(
                     .save(
+                        identity: identity,
                         model: model,
                         precondition: precondition
                     )
@@ -1046,6 +1070,7 @@ public final class DatabaseContext: Sendable {
             case .delete(let model, let precondition):
                 result.append(
                     .delete(
+                        identity: identity,
                         model: model,
                         precondition: precondition
                     )
@@ -1206,15 +1231,12 @@ public enum DatabaseContextError: Error, Sendable, Equatable, CustomStringConver
 
     /// A `WritePrecondition` was violated at commit time.
     ///
-    /// - `typeName`: `Persistable.persistableType` of the offending model.
-    /// - `idDescription`: String form of the primary key (for diagnostics only — the raw
-    ///   id bytes are intentionally not exposed to avoid leaking binary key material).
+    /// - `identity`: Typed logical identity of the offending model.
     /// - `precondition`: The precondition that failed.
     /// - `reason`: Human-readable explanation (e.g. "row already exists",
     ///   "row not found", "stored version mismatch").
     case preconditionFailed(
-        typeName: String,
-        idDescription: String,
+        identity: EntityReference,
         precondition: WritePrecondition,
         reason: String
     )
@@ -1231,8 +1253,8 @@ public enum DatabaseContextError: Error, Sendable, Equatable, CustomStringConver
             return "DatabaseContextError: Save operation identifier space is exhausted"
         case .invalidSaveState:
             return "DatabaseContextError: Save lifecycle state is inconsistent"
-        case .preconditionFailed(let typeName, let idDescription, let precondition, let reason):
-            return "DatabaseContextError: Precondition \(precondition) failed for \(typeName) id=\(idDescription): \(reason)"
+        case .preconditionFailed(let identity, let precondition, let reason):
+            return "DatabaseContextError: Precondition \(precondition) failed for \(identity.entity): \(reason)"
         }
     }
 }
@@ -1400,7 +1422,7 @@ extension DatabaseContext: CustomStringConvertible {
         let stateDescription = stateLock.withLock { state in
             var saves = 0
             var deletes = 0
-            state.pending.forEach { mutation in
+            state.pending.forEach { _, mutation in
                 switch mutation {
                 case .save:
                     saves += 1
@@ -1459,14 +1481,16 @@ extension DatabaseContext {
     /// // Fetch all documents
     /// let docs = try await context.fetchPolymorphic(Document.self)
     ///
-    /// for doc in docs {
-    ///     switch doc {
-    ///     case let article as Article:
+    /// for snapshot in docs {
+    ///     switch snapshot.entity {
+    ///     case Article.persistableType:
+    ///         let article = try snapshot.decode(as: Article.self)
     ///         print("Article: \(article.content)")
-    ///     case let report as Report:
+    ///     case Report.persistableType:
+    ///         let report = try snapshot.decode(as: Report.self)
     ///         print("Report: \(report.data.count) bytes")
     ///     default:
-    ///         print("Unknown type")
+    ///         throw PolymorphicQueryError.unknownType(snapshot.entity)
     ///     }
     /// }
     /// ```
@@ -1476,7 +1500,7 @@ extension DatabaseContext {
     /// - Throws: Error if no types are found or if fetch fails
     public func fetchPolymorphic<P: Polymorphable>(
         _ protocolType: P.Type
-    ) async throws -> [any Persistable] {
+    ) async throws -> [PersistedModel] {
         guard let group = container.schema.polymorphicGroup(
             identifier: P.polymorphableType
         ) else {
@@ -1498,7 +1522,7 @@ extension DatabaseContext {
     public func fetchPolymorphic<P: Polymorphable>(
         _ protocolType: P.Type,
         id: String
-    ) async throws -> (any Persistable)? {
+    ) async throws -> PersistedModel? {
         guard let group = container.schema.polymorphicGroup(
             identifier: P.polymorphableType
         ) else {

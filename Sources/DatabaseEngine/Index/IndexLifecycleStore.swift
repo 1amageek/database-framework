@@ -209,7 +209,7 @@ public final class IndexLifecycleStore: Sendable {
         entityRange: (begin: ByteString, end: ByteString),
         transaction: any TransactionAccess
     ) async throws {
-        let sourceRows = try await transaction.collectRange(
+        let sourceRows = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(entityRange.begin),
             to: .firstGreaterOrEqual(entityRange.end),
             limit: 1,
@@ -296,7 +296,7 @@ public final class IndexLifecycleStore: Sendable {
             }
 
             if sourceIsEmpty == nil {
-                let sourceRows = try await transaction.collectRange(
+                let sourceRows = try await TransactionRangeCollection.collect(using: transaction,
                     from: .firstGreaterOrEqual(entityRange.begin),
                     to: .firstGreaterOrEqual(entityRange.end),
                     limit: 1,
@@ -340,7 +340,7 @@ public final class IndexLifecycleStore: Sendable {
             )
             guard let storedBytes else {
                 if sourceIsEmpty == nil {
-                    let sourceRows = try await transaction.collectRange(
+                    let sourceRows = try await TransactionRangeCollection.collect(using: transaction,
                         from: .firstGreaterOrEqual(entityRange.begin),
                         to: .firstGreaterOrEqual(entityRange.end),
                         limit: 1,

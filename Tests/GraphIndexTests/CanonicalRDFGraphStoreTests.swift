@@ -5,6 +5,7 @@ import DatabaseKit
 import StorageKit
 import TestHeartbeat
 import Testing
+import TestSupport
 @testable import GraphIndex
 
 @Suite("Canonical RDF graph store", .heartbeat)
@@ -20,7 +21,7 @@ struct CanonicalRDFGraphStoreTests {
         let graph = try RDFGraphName(iri: "https://example.com/graph/empty")
         let quad = try makeQuad(graph: graph)
 
-        _ = try await engine.withTransaction(configuration: .batch) { transaction in
+        _ = try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             let meter = makeMeter()
             try await store.createGraph(
                 graph,
@@ -90,7 +91,7 @@ struct CanonicalRDFGraphStoreTests {
             iri: "https://example.com/graph/missing-evaluation"
         )
 
-        _ = try await engine.withTransaction(configuration: .batch) { transaction in
+        _ = try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             try await store.createGraph(
                 empty,
                 transaction: transaction,
@@ -100,6 +101,7 @@ struct CanonicalRDFGraphStoreTests {
 
         let executor = SPARQLQueryExecutor(
             database: engine,
+            wallClock: FixedTestWallClock(),
             datasetScanner: store
         )
         let (emptyBindings, _) = try await executor.execute(
@@ -135,7 +137,7 @@ struct CanonicalRDFGraphStoreTests {
         let graph = try RDFGraphName(iri: "https://example.com/graph/indexes")
         let quad = try makeQuad(graph: graph)
 
-        _ = try await engine.withTransaction(configuration: .batch) { transaction in
+        _ = try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             let inserted = try await store.insert(
                 quad,
                 transaction: transaction,
@@ -152,7 +154,7 @@ struct CanonicalRDFGraphStoreTests {
         )
         #expect(insertedPhysicalKeyCount == 6)
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             let deleted = try await store.delete(
                 quad,
                 transaction: transaction,
@@ -172,7 +174,7 @@ struct CanonicalRDFGraphStoreTests {
         )
         #expect(deletedPhysicalKeyCount == 0)
 
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             let graphs = try await store.namedGraphs(
                 limit: nil,
                 readMode: .snapshot,
@@ -193,7 +195,7 @@ struct CanonicalRDFGraphStoreTests {
         let secondQuad = try makeQuad(graph: second, suffix: "second")
         let defaultQuad = try makeQuad(graph: nil, suffix: "default")
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             let meter = makeMeter()
             let insertedFirst = try await store.insert(
                 firstQuad,
@@ -236,7 +238,7 @@ struct CanonicalRDFGraphStoreTests {
             #expect(droppedSecond == 1)
         }
 
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             let meter = makeMeter()
             let graphs = try await store.namedGraphs(
                 limit: nil,
@@ -277,7 +279,7 @@ struct CanonicalRDFGraphStoreTests {
         let first = try RDFGraphName(iri: "https://example.com/graph/a")
         let second = try RDFGraphName(iri: "https://example.com/graph/b")
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             let meter = makeMeter()
             let insertedFirst = try await store.insert(
                 try makeQuad(graph: first, suffix: "a"),
@@ -348,7 +350,7 @@ struct CanonicalRDFGraphStoreTests {
         )
         let defaultQuad = try makeQuad(graph: nil, suffix: "default-range")
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             let meter = makeMeter()
             let insertedIRI = try await store.insert(
                 try makeQuad(graph: iriGraph, suffix: "iri-range"),
@@ -391,7 +393,7 @@ struct CanonicalRDFGraphStoreTests {
             engine: engine
         )
         #expect(remainingPhysicalKeyCount == 6)
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             let meter = makeMeter()
             let defaultResult = try await store.scan(
                 subject: nil,
@@ -451,7 +453,7 @@ struct CanonicalRDFGraphStoreTests {
             graph: graph
         )
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             do {
                 _ = try await store.insert(
                     oversizedQuad,
@@ -474,7 +476,7 @@ struct CanonicalRDFGraphStoreTests {
             engine: engine
         )
         #expect(physicalKeysAfterFailure == 0)
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             let catalogs = try await store.namedGraphs(
                 limit: nil,
                 readMode: .snapshot,
@@ -492,13 +494,14 @@ struct CanonicalRDFGraphStoreTests {
         let store = CanonicalRDFGraphStore(rootSubspace: root)
         let graph = try RDFGraphName(iri: "https://example.com/graph/budget")
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             let meter = DatabaseWorkMeter(
                 budget: ExecutionBudget(
                     maximumRows: 10,
                     maximumWorkUnits: 4,
                     timeoutMilliseconds: 30_000
-                )
+                ),
+                monotonicClock: TestProcessMonotonicClock()
             )
             do {
                 _ = try await store.insert(
@@ -522,7 +525,7 @@ struct CanonicalRDFGraphStoreTests {
             engine: engine
         )
         #expect(physicalKeysAfterFailure == 0)
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             let catalogs = try await store.namedGraphs(
                 limit: nil,
                 readMode: .snapshot,
@@ -543,7 +546,7 @@ struct CanonicalRDFGraphStoreTests {
         )
         let quad = try makeQuad(graph: graph, suffix: "delete-budget")
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             let inserted = try await store.insert(
                 quad,
                 transaction: transaction,
@@ -554,13 +557,14 @@ struct CanonicalRDFGraphStoreTests {
                 graphCreated: true
             ))
         }
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             let meter = DatabaseWorkMeter(
                 budget: ExecutionBudget(
                     maximumRows: 10,
                     maximumWorkUnits: 4,
                     timeoutMilliseconds: 30_000
-                )
+                ),
+                monotonicClock: TestProcessMonotonicClock()
             )
             do {
                 _ = try await store.delete(
@@ -584,7 +588,7 @@ struct CanonicalRDFGraphStoreTests {
             engine: engine
         )
         #expect(physicalKeysAfterFailure == 6)
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             let result = try await store.scan(
                 subject: nil,
                 predicate: nil,
@@ -613,12 +617,12 @@ struct CanonicalRDFGraphStoreTests {
             baseSubspace: root.subspace(Int64(1))
         )
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             try RDFQuadIndexWritePlan(quad: quad).forEachEntry { entry in
                 try transaction.setValue([], for: physicalCodec.encode(entry))
             }
         }
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             do {
                 _ = try await store.insert(
                     quad,
@@ -636,7 +640,7 @@ struct CanonicalRDFGraphStoreTests {
             engine: engine
         )
         #expect(physicalKeys == 6)
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             let catalogs = try await store.namedGraphs(
                 limit: nil,
                 readMode: .snapshot,
@@ -658,14 +662,14 @@ struct CanonicalRDFGraphStoreTests {
         let storedQuad = try makeQuad(graph: graph, suffix: "stored")
         let candidateQuad = try makeQuad(graph: graph, suffix: "candidate")
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             try writePhysicalQuad(
                 storedQuad,
                 root: root,
                 transaction: transaction
             )
         }
-        _ = try await engine.withTransaction(configuration: .batch) { transaction in
+        _ = try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             await #expect(
                 throws: RDFGraphStoreError.missingCatalogForStoredQuad(graph)
             ) {
@@ -691,14 +695,14 @@ struct CanonicalRDFGraphStoreTests {
         let storedQuad = try makeQuad(graph: graph, suffix: "stored")
         let absentQuad = try makeQuad(graph: graph, suffix: "absent")
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             try writePhysicalQuad(
                 storedQuad,
                 root: root,
                 transaction: transaction
             )
         }
-        _ = try await engine.withTransaction(configuration: .batch) { transaction in
+        _ = try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             await #expect(
                 throws: RDFGraphStoreError.missingCatalogForStoredQuad(graph)
             ) {
@@ -722,14 +726,14 @@ struct CanonicalRDFGraphStoreTests {
             iri: "https://example.com/graph/orphaned-create"
         )
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             try writePhysicalQuad(
                 try makeQuad(graph: graph, suffix: "stored"),
                 root: root,
                 transaction: transaction
             )
         }
-        _ = try await engine.withTransaction(configuration: .batch) { transaction in
+        _ = try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             await #expect(
                 throws: RDFGraphStoreError.missingCatalogForStoredQuad(graph)
             ) {
@@ -741,7 +745,7 @@ struct CanonicalRDFGraphStoreTests {
             }
         }
 
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             let graphs = try await store.namedGraphs(
                 limit: nil,
                 readMode: .snapshot,
@@ -759,7 +763,7 @@ struct CanonicalRDFGraphStoreTests {
         let graph = try RDFGraphName(iri: "https://example.com/graph/rollback")
 
         await #expect(throws: ExpectedFailure.self) {
-            try await engine.withTransaction(configuration: .batch) { transaction in
+            try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
                 _ = try await store.insert(
                     try makeQuad(graph: graph),
                     transaction: transaction,
@@ -769,7 +773,7 @@ struct CanonicalRDFGraphStoreTests {
             }
         }
 
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             let graphs = try await store.namedGraphs(
                 limit: nil,
                 readMode: .snapshot,
@@ -801,11 +805,11 @@ struct CanonicalRDFGraphStoreTests {
             subspace: root.subspace(Int64(2))
         )
 
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .batch, clock: TestProcessMonotonicClock()) { transaction in
             try transaction.setValue([2], for: codec.key(for: graph))
         }
 
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             await #expect(throws: RDFGraphStoreError.invalidCatalogMarker) {
                 _ = try await store.namedGraphs(
                     limit: nil,
@@ -832,7 +836,8 @@ struct CanonicalRDFGraphStoreTests {
                 maximumRows: 10_000,
                 maximumWorkUnits: 100_000,
                 timeoutMilliseconds: 30_000
-            )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
         )
     }
 
@@ -861,7 +866,7 @@ struct CanonicalRDFGraphStoreTests {
         root: Subspace,
         engine: InMemoryEngine
     ) async throws -> Int {
-        try await engine.withTransaction(configuration: .default) { transaction in
+        try await StorageTransactionExecutor(engine: engine).withTransaction(configuration: .default, clock: TestProcessMonotonicClock()) { transaction in
             let range = root.subspace(Int64(1)).range()
             var count = 0
             try await transaction.forEachInRange(

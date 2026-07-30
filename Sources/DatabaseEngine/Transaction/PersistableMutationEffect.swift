@@ -11,12 +11,12 @@ public enum PersistableMutationKind: Sendable, Equatable {
 public struct PersistableMutationEffect: Sendable {
     public let kind: PersistableMutationKind
     public let identity: EntityReference
-    public let model: (any Persistable)?
+    public let model: PersistedModel?
 
     package init(
         kind: PersistableMutationKind,
         identity: EntityReference,
-        model: (any Persistable)?
+        model: PersistedModel?
     ) {
         self.kind = kind
         self.identity = identity

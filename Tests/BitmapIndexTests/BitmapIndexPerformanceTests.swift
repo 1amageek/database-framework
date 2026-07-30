@@ -579,13 +579,19 @@ struct BitmapIndexFDBPerformanceTests {
         let ctx = try await BitmapBenchmarkContext(testName: "update")
 
         // Setup: Insert 100 entities
-        var products = (0..<100).map { i in
+        let products = (0..<100).map { i in
             BitmapBenchmarkProduct(
                 id: "product-\(i)",
                 category: "category-0",
                 brand: "brand-\(i % 10)",
                 status: "active"
             )
+        }
+
+        let updatedProducts = products.map { product in
+            var updatedProduct = product
+            updatedProduct.category = "category-1"
+            return updatedProduct
         }
 
         try await ctx.database.withTransaction { transaction in
@@ -607,18 +613,12 @@ struct BitmapIndexFDBPerformanceTests {
         // Benchmark: Update category for all products
         let (updateMs, _) = try await benchmark("Update 100 entities") {
             try await ctx.database.withTransaction { transaction in
-                for i in 0..<100 {
-                    let oldProduct = products[i]
-                    var newProduct = oldProduct
-                    newProduct.category = "category-1"
-
+                for (oldProduct, newProduct) in zip(products, updatedProducts) {
                     try await ctx.maintainer.updateIndex(
                         oldItem: oldProduct,
                         newItem: newProduct,
                         transaction: transaction
                     )
-
-                    products[i] = newProduct
                 }
             }
         }
