@@ -62,11 +62,20 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-types.git",
-            from: "26.0729.3"
+            from: "26.0730.0"
         ),
-        .package(path: "../database-kit"),
-        .package(path: "../swift-hnsw"),
-        .package(path: "../storage-kit"),
+        .package(
+            url: "https://github.com/1amageek/database-kit.git",
+            from: "26.0730.0"
+        ),
+        .package(
+            url: "https://github.com/1amageek/swift-hnsw.git",
+            from: "1.0.2"
+        ),
+        .package(
+            url: "https://github.com/1amageek/storage-kit.git",
+            from: "26.0730.0"
+        ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
