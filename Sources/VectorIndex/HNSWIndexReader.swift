@@ -1,4 +1,5 @@
 import StorageKit
+import SwiftHNSW
 
 struct HNSWIndexReader: Sendable {
     private let storage: HNSWIndexStorage
