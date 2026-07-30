@@ -5,7 +5,9 @@ import DatabaseTypes
 import GraphIndex
 import OntologyIndex
 import QueryAST
+#if DATABASE_SERVER_RELATIONSHIPS
 import RelationshipIndex
+#endif
 import StorageKit
 
 public protocol DatabaseErrorMapper: Sendable {
@@ -341,12 +343,14 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 retryability: .never
             )
         }
+        #if DATABASE_SERVER_RELATIONSHIPS
         if let relationshipError = error as? RelationshipError {
             return Self.map(relationshipError)
         }
         if let referenceError = error as? RelationshipReferenceError {
             return Self.map(referenceError)
         }
+        #endif
         if let storageError = error as? StorageError {
             let retryability: OperationRetryability
             switch storageError.retryDisposition {
@@ -1010,6 +1014,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         )
     }
 
+    #if DATABASE_SERVER_RELATIONSHIPS
     private static func map(
         _ error: RelationshipError
     ) -> RemoteOperationError {
@@ -1099,6 +1104,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             retryability: .never
         )
     }
+    #endif
 
     private static func map(
         _ error: DatabaseJobRuntimeError

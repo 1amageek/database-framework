@@ -54,10 +54,39 @@ let package = Package(
         .executable(name: "database", targets: ["DatabaseCLI"]),
     ],
     traits: [
-        .default(enabledTraits: ["FoundationDB"]),
+        .default(enabledTraits: ["FoundationDB", "AllRuntimeFeatures"]),
         .trait(name: "FoundationDB"),
         .trait(name: "SQLite"),
         .trait(name: "PostgreSQL"),
+        .trait(
+            name: "AllRuntimeFeatures",
+            enabledTraits: [
+                "ScalarIndexes",
+                "VectorIndexes",
+                "FullTextIndexes",
+                "SpatialIndexes",
+                "RankIndexes",
+                "BitmapIndexes",
+                "VersionIndexes",
+                "PermutedIndexes",
+                "GraphIndexes",
+                "AggregationIndexes",
+                "LeaderboardIndexes",
+                "Relationships",
+            ]
+        ),
+        .trait(name: "ScalarIndexes"),
+        .trait(name: "VectorIndexes"),
+        .trait(name: "FullTextIndexes"),
+        .trait(name: "SpatialIndexes"),
+        .trait(name: "RankIndexes"),
+        .trait(name: "BitmapIndexes"),
+        .trait(name: "VersionIndexes"),
+        .trait(name: "PermutedIndexes"),
+        .trait(name: "GraphIndexes", enabledTraits: ["ScalarIndexes"]),
+        .trait(name: "AggregationIndexes"),
+        .trait(name: "LeaderboardIndexes"),
+        .trait(name: "Relationships"),
     ],
     dependencies: [
         .package(
@@ -154,18 +183,104 @@ let package = Package(
             name: "DatabaseRuntime",
             dependencies: [
                 "DatabaseEngine",
-                "ScalarIndex",
-                "VectorIndex",
-                "FullTextIndex",
-                "SpatialIndex",
-                "RankIndex",
-                "BitmapIndex",
-                "VersionIndex",
-                "PermutedIndex",
-                "GraphIndex",
-                "AggregationIndex",
-                "LeaderboardIndex",
-                "RelationshipIndex",
+                .target(
+                    name: "ScalarIndex",
+                    condition: .when(traits: ["ScalarIndexes"])
+                ),
+                .target(
+                    name: "VectorIndex",
+                    condition: .when(traits: ["VectorIndexes"])
+                ),
+                .target(
+                    name: "FullTextIndex",
+                    condition: .when(traits: ["FullTextIndexes"])
+                ),
+                .target(
+                    name: "SpatialIndex",
+                    condition: .when(traits: ["SpatialIndexes"])
+                ),
+                .target(
+                    name: "RankIndex",
+                    condition: .when(traits: ["RankIndexes"])
+                ),
+                .target(
+                    name: "BitmapIndex",
+                    condition: .when(traits: ["BitmapIndexes"])
+                ),
+                .target(
+                    name: "VersionIndex",
+                    condition: .when(traits: ["VersionIndexes"])
+                ),
+                .target(
+                    name: "PermutedIndex",
+                    condition: .when(traits: ["PermutedIndexes"])
+                ),
+                .target(
+                    name: "GraphIndex",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
+                .target(
+                    name: "AggregationIndex",
+                    condition: .when(traits: ["AggregationIndexes"])
+                ),
+                .target(
+                    name: "LeaderboardIndex",
+                    condition: .when(traits: ["LeaderboardIndexes"])
+                ),
+                .target(
+                    name: "RelationshipIndex",
+                    condition: .when(traits: ["Relationships"])
+                ),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_RUNTIME_SCALAR_INDEXES",
+                    .when(traits: ["ScalarIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_VECTOR_INDEXES",
+                    .when(traits: ["VectorIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_FULL_TEXT_INDEXES",
+                    .when(traits: ["FullTextIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_SPATIAL_INDEXES",
+                    .when(traits: ["SpatialIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_RANK_INDEXES",
+                    .when(traits: ["RankIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_BITMAP_INDEXES",
+                    .when(traits: ["BitmapIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_VERSION_INDEXES",
+                    .when(traits: ["VersionIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_PERMUTED_INDEXES",
+                    .when(traits: ["PermutedIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_GRAPH_INDEXES",
+                    .when(traits: ["GraphIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_AGGREGATION_INDEXES",
+                    .when(traits: ["AggregationIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_LEADERBOARD_INDEXES",
+                    .when(traits: ["LeaderboardIndexes"])
+                ),
+                .define(
+                    "DATABASE_RUNTIME_RELATIONSHIPS",
+                    .when(traits: ["Relationships"])
+                ),
             ]
         ),
         .target(
@@ -352,12 +467,21 @@ let package = Package(
                 "DatabaseRuntime",
                 "GraphIndex",
                 "OntologyIndex",
-                "RelationshipIndex",
+                .target(
+                    name: "RelationshipIndex",
+                    condition: .when(traits: ["Relationships"])
+                ),
                 "QueryAST",
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_RELATIONSHIPS",
+                    .when(traits: ["Relationships"])
+                ),
             ]
         ),
         .target(

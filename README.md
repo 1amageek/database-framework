@@ -102,6 +102,14 @@ index modules selected by the active traits. Individual products such as
 DatabaseEngine and VectorIndex are available when smaller dependency graphs
 are preferred.
 
+DatabaseRuntime selects its index and relationship capabilities with SwiftPM
+traits. `AllRuntimeFeatures` is enabled by default. Embedded applications should
+pass an explicit trait set so unused implementations never enter the target
+dependency graph. `GraphIndexes`, for example, includes the scalar support
+required by graph execution without linking vector, full-text, aggregation, or
+leaderboard indexes. Runtime bootstrap still validates the compiled composition
+against the application schema and fails when a required capability is absent.
+
 ## Quick Start
 
 The model and application code are backend-neutral:

@@ -66,6 +66,43 @@ Full database-framework Embedded WASM reactor
 host storage adapter
 ~~~
 
+### Runtime Feature Selection
+
+The package exposes database runtime capabilities through SwiftPM traits. A
+trait changes the target dependency graph before compilation; it is not a
+runtime flag. Consequently, an application-specific Embedded reactor links only
+the index implementations and runtime registrations selected by its dependency
+traits.
+
+| Trait | Runtime capability |
+|---|---|
+| `ScalarIndexes` | scalar and composite indexes |
+| `VectorIndexes` | vector maintainers and polymorphic readers |
+| `FullTextIndexes` | full-text and autocomplete indexes |
+| `SpatialIndexes` | spatial indexes |
+| `RankIndexes` | rank indexes and readers |
+| `BitmapIndexes` | bitmap indexes and readers |
+| `VersionIndexes` | version indexes and readers |
+| `PermutedIndexes` | permuted indexes and readers |
+| `GraphIndexes` | property graph, RDF, and SPARQL; enables `ScalarIndexes` |
+| `AggregationIndexes` | count, numeric, distinct, and percentile indexes |
+| `LeaderboardIndexes` | time-window leaderboard indexes |
+| `Relationships` | relationship mutation maintenance and typed remote error mapping |
+| `AllRuntimeFeatures` | every runtime capability above |
+
+`AllRuntimeFeatures` is enabled by default for the standard all-in-one runtime.
+Applications that provide an explicit trait set replace that default. For
+example, a graph application can select `GraphIndexes` and `Relationships`
+without linking vector, full-text, aggregation, or leaderboard implementations.
+
+Feature selection never weakens runtime validation. The selected providers,
+readers, logical-source executors, and mutation maintainers are still assembled
+into one container-scoped `DatabaseRuntimeConfiguration`. During bootstrap,
+schema validation rejects every declared index or relationship whose required
+runtime capability is absent. Unsupported declarations therefore fail before
+the container serves requests; they do not fall back to scans or no-op
+maintenance.
+
 ## Value and Ownership Contract
 
 - FieldValue and its primitive members come from database-types. Framework-local
