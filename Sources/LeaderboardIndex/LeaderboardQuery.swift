@@ -3,11 +3,6 @@
 //
 // Provides DatabaseContext extension and query builder for leaderboard operations.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -393,7 +388,8 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
             window: indexKind.window,
-            windowCount: indexKind.windowCount
+            windowCount: indexKind.windowCount,
+            wallClock: queryContext.context.container.wallClock
         )
     }
 

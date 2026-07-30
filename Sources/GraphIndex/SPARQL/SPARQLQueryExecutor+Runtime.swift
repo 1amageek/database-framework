@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -13,6 +8,7 @@ extension SPARQLQueryExecutor {
     public func withOntology(_ context: OntologyContext?) -> Self {
         Self(
             database: database,
+            wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
             datasetScope: datasetScope,
@@ -42,6 +38,7 @@ extension SPARQLQueryExecutor {
     func scoped(to datasetScope: SPARQLDatasetExecutionScope) -> Self {
         Self(
             database: database,
+            wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
             datasetScope: datasetScope,
@@ -54,6 +51,7 @@ extension SPARQLQueryExecutor {
     func requestScoped(by workMeter: DatabaseWorkMeter) throws -> Self {
         Self(
             database: database,
+            wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
             datasetScope: datasetScope,
@@ -62,6 +60,7 @@ extension SPARQLQueryExecutor {
             propertyPathConfiguration: propertyPathConfiguration,
             workMeter: workMeter,
             expressionContext: try SPARQLQueryExpressionContext(
+                now: wallClock.now,
                 functionRegistry: functionRegistry,
                 workMeter: workMeter
             ),
@@ -83,6 +82,7 @@ extension SPARQLQueryExecutor {
         }
         return Self(
             database: database,
+            wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
             datasetScope: datasetScope,
@@ -100,6 +100,7 @@ extension SPARQLQueryExecutor {
 
     init(
         database: any StorageEngine,
+        wallClock: any WallClock,
         datasetScanner: any RDFDatasetScanner,
         readMode: RDFDatasetReadMode,
         datasetScope: SPARQLDatasetExecutionScope,
@@ -112,6 +113,7 @@ extension SPARQLQueryExecutor {
         nestedExpressionStatistics: SPARQLNestedExpressionStatistics?
     ) {
         self.database = database
+        self.wallClock = wallClock
         self.datasetScanner = datasetScanner
         self.readMode = readMode
         self.datasetScope = datasetScope

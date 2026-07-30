@@ -12,9 +12,14 @@ enum VectorReadParameter {
 }
 
 public enum VectorReadExecutors {
-    public static var indexExecutor: any IndexReadExecutor { VectorReadExecutor() }
     public static var polymorphicIndexExecutor: any PolymorphicIndexReadExecutor {
         PolymorphicVectorReadExecutor()
+    }
+
+    public static func register<Model: Persistable>(
+        with definition: inout EntityRuntimeDefinition<Model>
+    ) throws(DatabaseRuntimeConfigurationError) {
+        try definition.register(VectorReadExecutor())
     }
 }
 
@@ -22,6 +27,8 @@ private enum VectorReadError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
     case indexNotFound(String)
+    case duplicateFetchedEntity(ByteString)
+    case missingFetchedEntity(ByteString)
 }
 
 private struct VectorReadExecutor: IndexReadExecutor {
@@ -135,22 +142,6 @@ private struct PolymorphicVectorPlaceholder: Persistable {
         member == "id" ? id : nil
     }
 
-    static func fieldName<Value>(for keyPath: KeyPath<PolymorphicVectorPlaceholder, Value>) -> String {
-        if keyPath == \PolymorphicVectorPlaceholder.id { return "id" }
-        return "\(keyPath)"
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<PolymorphicVectorPlaceholder>) -> String {
-        if keyPath == \PolymorphicVectorPlaceholder.id { return "id" }
-        return "\(keyPath)"
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<PolymorphicVectorPlaceholder> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
 }
 
 private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
@@ -214,7 +205,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         let baseIndexSubspace = polySubspace
             .subspace(SubspaceKey.indexes)
             .subspace(indexScan.indexName)
-        let indexSubspace = resolvedIndexSubspace(
+        let indexSubspace = try resolvedIndexSubspace(
             baseIndexSubspace: baseIndexSubspace,
             context: context,
             indexName: indexScan.indexName
@@ -267,12 +258,8 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         )
 
         let configs = context.container.indexConfigurations[indexName] ?? []
-        let vectorConfig = configs.first { config in
-            type(of: config).kindIdentifier
-                == VectorIndexSpecification.identifier
-        } as? VectorIndexRuntimeConfiguration
-
-        let algorithm = vectorConfig?.algorithm ?? .flat
+        let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs)
+        let algorithm = runtimePolicy?.algorithm ?? .flat
 
         switch algorithm {
         case .flat:
@@ -355,23 +342,26 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         selectQuery: SelectQuery,
         options: ReadExecutionContext
     ) throws -> IndexReadResult {
-        var entityByID: [String: PolymorphicEntity] = [:]
+        var entityByID: [ByteString: PolymorphicEntity] = [:]
         entityByID.reserveCapacity(entities.count)
         for entity in entities {
-            let identifier = try entity.item.persistableIdentifierTuple()
-            let key = stableKey(
-                try PolymorphicIdentifierKey.tuple(
-                    for: type(of: entity.item),
-                    identifier: identifier
-                )
-            )
+            let key = entity.polymorphicIdentifier.pack()
+            guard entityByID[key] == nil else {
+                throw VectorReadError.duplicateFetchedEntity(key)
+            }
             entityByID[key] = entity
         }
 
-        let orderedResults: [(entity: PolymorphicEntity, distance: Double)] = results.compactMap { result -> (entity: PolymorphicEntity, distance: Double)? in
-            let key = stableKey(Tuple(result.primaryKey))
-            guard let entity = entityByID[key] else { return nil }
-            return (entity: entity, distance: result.distance)
+        var orderedResults: [(entity: PolymorphicEntity, distance: Double)] = []
+        orderedResults.reserveCapacity(results.count)
+        for result in results {
+            let key = Tuple(result.primaryKey).pack()
+            guard let entity = entityByID[key] else {
+                throw VectorReadError.missingFetchedEntity(key)
+            }
+            orderedResults.append(
+                (entity: entity, distance: result.distance)
+            )
         }
 
         let rows = try orderedResults.map { result in
@@ -459,23 +449,13 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         baseIndexSubspace: Subspace,
         context: DatabaseContext,
         indexName: String
-    ) -> Subspace {
+    ) throws -> Subspace {
         let configs = context.container.indexConfigurations[indexName] ?? []
-        guard let vectorConfig = configs.first(where: {
-            type(of: $0).kindIdentifier
-                == VectorIndexSpecification.identifier
-        }) as? VectorIndexRuntimeConfiguration,
-        let subspaceKey = vectorConfig.subspaceKey else {
+        guard let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs),
+              let subspaceKey = runtimePolicy.subspaceKey else {
             return baseIndexSubspace
         }
         return baseIndexSubspace.subspace(subspaceKey)
-    }
-
-    private func stableKey(_ tuple: Tuple) -> String {
-        let packed = tuple.pack()
-        return QueryLiteralEncoding.base64(
-            packed
-        )
     }
 
     private func requireString(

@@ -14,7 +14,7 @@ struct SPARQLRegexCompiler {
 
     mutating func compile(
         _ node: SPARQLRegexParser.Node
-    ) throws -> SPARQLRegexNFA {
+    ) throws(SPARQLRegularExpression.Error) -> SPARQLRegexNFA {
         let requiredStateCount = try SPARQLRegularExpression.checkedAdd(
             1,
             stateCost(of: node),
@@ -34,7 +34,7 @@ struct SPARQLRegexCompiler {
     private mutating func compile(
         _ node: SPARQLRegexParser.Node,
         continuingAt continuation: Int
-    ) throws -> Int {
+    ) throws(SPARQLRegularExpression.Error) -> Int {
         switch node {
         case .empty:
             return continuation
@@ -82,7 +82,7 @@ struct SPARQLRegexCompiler {
         minimum: Int,
         maximum: Int?,
         continuingAt continuation: Int
-    ) throws -> Int {
+    ) throws(SPARQLRegularExpression.Error) -> Int {
         if maximum == 0 {
             return continuation
         }
@@ -113,7 +113,7 @@ struct SPARQLRegexCompiler {
 
     private func stateCost(
         of node: SPARQLRegexParser.Node
-    ) throws -> Int {
+    ) throws(SPARQLRegularExpression.Error) -> Int {
         switch node {
         case .empty:
             return 0
@@ -188,7 +188,7 @@ struct SPARQLRegexCompiler {
         }
     }
 
-    private mutating func append(_ state: SPARQLRegexNFA.State) throws -> Int {
+    private mutating func append(_ state: SPARQLRegexNFA.State) throws(SPARQLRegularExpression.Error) -> Int {
         _ = try SPARQLRegularExpression.checkedIncrement(
             states.count,
             name: "nfaStates",

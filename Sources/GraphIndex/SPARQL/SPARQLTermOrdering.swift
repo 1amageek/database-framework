@@ -1,16 +1,12 @@
 import DatabaseKit
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
+import OntologyIndex
 
 enum SPARQLTermOrdering {
     static func compare(
         _ left: FieldValue,
         _ right: FieldValue
-    ) throws -> ComparisonResult {
+    ) throws(SPARQLExpressionEvaluationError) -> SPARQLComparisonOrder {
         if case .rdfTerm(let leftTerm) = left,
            case .rdfTerm(let rightTerm) = right {
             return try compare(leftTerm, rightTerm)
@@ -20,18 +16,18 @@ enum SPARQLTermOrdering {
            let comparison = leftNumeric.compare(to: rightNumeric) {
             return comparison
         }
-        if left == right { return .orderedSame }
-        return left < right ? .orderedAscending : .orderedDescending
+        if left == right { return .same }
+        return left < right ? .ascending : .descending
     }
 
     static func compare(
         _ left: RDFTerm,
         _ right: RDFTerm
-    ) throws -> ComparisonResult {
+    ) throws(SPARQLExpressionEvaluationError) -> SPARQLComparisonOrder {
         let leftRank = rank(left)
         let rightRank = rank(right)
         if leftRank != rightRank {
-            return leftRank < rightRank ? .orderedAscending : .orderedDescending
+            return leftRank < rightRank ? .ascending : .descending
         }
 
         switch (left, right) {
@@ -41,15 +37,21 @@ enum SPARQLTermOrdering {
             return compareStrings(lhs.rawValue, rhs.rawValue)
 
         case (.literal(let lhs), .literal(let rhs)):
-            switch try SPARQLValueComparator().compare(lhs, rhs) {
-            case .less: return .orderedAscending
-            case .equal: return .orderedSame
-            case .greater: return .orderedDescending
+            let comparison: SPARQLValueComparison
+            do throws(XSDValidationFailure) {
+                comparison = try SPARQLValueComparator().compare(lhs, rhs)
+            } catch let failure {
+                throw mapValidationFailure(failure)
+            }
+            switch comparison {
+            case .less: return .ascending
+            case .equal: return .same
+            case .greater: return .descending
             case .unordered, .typeError:
                 if lhs.annotation != rhs.annotation {
                     return lhs.annotation < rhs.annotation
-                        ? .orderedAscending
-                        : .orderedDescending
+                        ? .ascending
+                        : .descending
                 }
                 return compareStrings(lhs.lexicalForm, rhs.lexicalForm)
             }
@@ -59,12 +61,12 @@ enum SPARQLTermOrdering {
             .tripleTerm(let rightSubject, let rightPredicate, let rightObject)
         ):
             let subject = try compare(leftSubject.term, rightSubject.term)
-            if subject != .orderedSame { return subject }
+            if subject != .same { return subject }
             let predicate = try compare(
                 leftPredicate.term,
                 rightPredicate.term
             )
-            if predicate != .orderedSame { return predicate }
+            if predicate != .same { return predicate }
             return try compare(leftObject, rightObject)
 
         default:
@@ -86,9 +88,26 @@ enum SPARQLTermOrdering {
     private static func compareStrings(
         _ left: String,
         _ right: String
-    ) -> ComparisonResult {
-        if left < right { return .orderedAscending }
-        if left > right { return .orderedDescending }
-        return .orderedSame
+    ) -> SPARQLComparisonOrder {
+        if left < right { return .ascending }
+        if left > right { return .descending }
+        return .same
+    }
+
+    private static func mapValidationFailure(
+        _ failure: XSDValidationFailure
+    ) -> SPARQLExpressionEvaluationError {
+        switch failure {
+        case .resourceLimitExceeded(let resource, let limit, let actual):
+            return .resourceLimitExceeded(
+                stage: resource,
+                required: UInt64(max(0, actual)),
+                maximum: UInt64(max(0, limit))
+            )
+        case .invalidLexicalForm, .unsupportedDatatype:
+            return .typeError(failure.description)
+        case .invalidRestriction:
+            return .runtimeInvariant(failure.description)
+        }
     }
 }

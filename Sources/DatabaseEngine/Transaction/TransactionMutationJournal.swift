@@ -44,7 +44,7 @@ struct TransactionMutationJournal: Sendable {
     }
 
     func currentModels() -> [any Persistable] {
-        entries.compactMap(\.currentModel)
+        entries.compactMap { $0.currentModel }
     }
 
     func persistedEffects() -> [PersistableMutationEffect] {

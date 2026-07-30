@@ -3,11 +3,6 @@
 //
 // Provides community detection for graph indexes.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -87,6 +82,10 @@ private struct SeededRandomNumberGenerator: RandomNumberGenerator {
 /// }
 /// ```
 public final class CommunityDetector: Sendable {
+    private enum WorkLimited<Value: Sendable>: Sendable {
+        case value(Value)
+        case incomplete(LimitReason)
+    }
 
     // MARK: - Properties
 
@@ -136,7 +135,7 @@ public final class CommunityDetector: Sendable {
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: CommunityResult with node assignments
     public func detect(edgeLabel: GraphIdentity? = nil) async throws -> CommunityResult {
-        let startTime = MonotonicClock.now()
+        let startTime = snapshot.clock.now()
 
         // Step 1: Collect all nodes
         let collection = try await collectAllNodes(edgeLabel: edgeLabel)
@@ -147,7 +146,7 @@ public final class CommunityDetector: Sendable {
             return CommunityResult(
                 assignments: [:],
                 iterations: 0,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                 isComplete: false,
                 limitReason: limitReason
             )
@@ -157,7 +156,7 @@ public final class CommunityDetector: Sendable {
             return CommunityResult(
                 assignments: [:],
                 iterations: 0,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -199,14 +198,15 @@ public final class CommunityDetector: Sendable {
             // Processing order is randomized to prevent bias.
             for node in shuffled {
                 let newLabel: GraphIdentity?
-                do {
-                    newLabel = try computeSingleNodeUpdate(
+                switch try computeSingleNodeUpdate(
                         node: node,
                         currentLabels: labels,
                         graph: graph,
                         rng: &seededRNG
-                    )
-                } catch CommunityDetectionError.incomplete(let reason) {
+                    ) {
+                case .value(let value):
+                    newLabel = value
+                case .incomplete(let reason):
                     limitReason = reason
                     break iterationLoop
                 }
@@ -220,12 +220,13 @@ public final class CommunityDetector: Sendable {
 
         // Step 4: Apply minimum community size filter if needed
         if limitReason == nil && configuration.minCommunitySize > 1 {
-            do {
-                labels = try applyMinCommunitySize(
+            switch try applyMinCommunitySize(
                     labels: labels,
                     graph: graph
-                )
-            } catch CommunityDetectionError.incomplete(let reason) {
+                ) {
+            case .value(let filteredLabels):
+                labels = filteredLabels
+            case .incomplete(let reason):
                 limitReason = reason
             }
         }
@@ -239,12 +240,13 @@ public final class CommunityDetector: Sendable {
         // Step 6: Optionally compute modularity
         var modularity: Double? = nil
         if limitReason == nil && configuration.computeModularity {
-            do {
-                modularity = try computeModularity(
+            switch try computeModularity(
                     labels: labels,
                     graph: graph
-                )
-            } catch CommunityDetectionError.incomplete(let reason) {
+                ) {
+            case .value(let value):
+                modularity = value
+            case .incomplete(let reason):
                 modularity = nil
                 limitReason = reason
             }
@@ -261,7 +263,7 @@ public final class CommunityDetector: Sendable {
             assignments: labels,
             communities: communities,
             iterations: iteration,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             modularity: modularity,
             isComplete: converged,
             limitReason: finalLimitReason
@@ -301,10 +303,12 @@ public final class CommunityDetector: Sendable {
             var nextFrontier: Set<GraphIdentity> = []
 
             for currentNode in frontier {
-                let neighbors = try getNeighbors(
-                    of: currentNode,
-                    graph: graph
-                )
+                let neighbors: Set<GraphIdentity>
+                switch try getNeighbors(of: currentNode, graph: graph) {
+                case .value(let value): neighbors = value
+                case .incomplete(let reason):
+                    throw CommunityDetectionError.incomplete(reason)
+                }
                 for neighbor in neighbors where !neighborhood.contains(neighbor) {
                     nextFrontier.insert(neighbor)
                     neighborhood.insert(neighbor)
@@ -344,7 +348,12 @@ public final class CommunityDetector: Sendable {
             }
 
             for n in shuffledNeighborhood {
-                let neighbors = try getNeighbors(of: n, graph: graph)
+                let neighbors: Set<GraphIdentity>
+                switch try getNeighbors(of: n, graph: graph) {
+                case .value(let value): neighbors = value
+                case .incomplete(let reason):
+                    throw CommunityDetectionError.incomplete(reason)
+                }
 
                 var labelCounts: [GraphIdentity: Int] = [:]
                 for neighbor in neighbors where neighborhood.contains(neighbor) {
@@ -438,10 +447,14 @@ public final class CommunityDetector: Sendable {
         currentLabels: [GraphIdentity: GraphIdentity],
         graph: MaterializedGraphSnapshot,
         rng: inout SeededRandomNumberGenerator?
-    ) throws -> GraphIdentity? {
-        let neighbors = try getNeighbors(of: node, graph: graph)
+    ) throws -> WorkLimited<GraphIdentity?> {
+        let neighbors: Set<GraphIdentity>
+        switch try getNeighbors(of: node, graph: graph) {
+        case .value(let value): neighbors = value
+        case .incomplete(let reason): return .incomplete(reason)
+        }
 
-        guard !neighbors.isEmpty else { return nil }
+        guard !neighbors.isEmpty else { return .value(nil) }
 
         // Count label frequencies among neighbors
         var labelCounts: [GraphIdentity: Int] = [:]
@@ -485,36 +498,36 @@ public final class CommunityDetector: Sendable {
             newLabel = selected
         }
 
-        return newLabel
+        return .value(newLabel)
     }
 
     /// Get all neighbors of a node (both directions) using GraphEdgeScanner
     private func getNeighbors(
         of nodeID: GraphIdentity,
         graph: MaterializedGraphSnapshot
-    ) throws -> Set<GraphIdentity> {
+    ) throws -> WorkLimited<Set<GraphIdentity>> {
         var neighbors: Set<GraphIdentity> = []
 
-        try requireWork()
+        if let reason = try workLimitReason() { return .incomplete(reason) }
         for edgeInfo in graph.outgoingNeighbors(of: nodeID) {
-            try requireWork()
+            if let reason = try workLimitReason() { return .incomplete(reason) }
             neighbors.insert(edgeInfo.target)
         }
 
-        try requireWork()
+        if let reason = try workLimitReason() { return .incomplete(reason) }
         for edgeInfo in graph.incomingNeighbors(of: nodeID) {
-            try requireWork()
+            if let reason = try workLimitReason() { return .incomplete(reason) }
             neighbors.insert(edgeInfo.source)
         }
 
-        return neighbors
+        return .value(neighbors)
     }
 
     /// Apply minimum community size filter by merging small communities
     private func applyMinCommunitySize(
         labels: [GraphIdentity: GraphIdentity],
         graph: MaterializedGraphSnapshot
-    ) throws -> [GraphIdentity: GraphIdentity] {
+    ) throws -> WorkLimited<[GraphIdentity: GraphIdentity]> {
         var result = labels
 
         // Build community sizes
@@ -538,7 +551,11 @@ public final class CommunityDetector: Sendable {
             }
             guard smallCommunities[label] != nil else { continue }
 
-            let neighbors = try getNeighbors(of: node, graph: graph)
+            let neighbors: Set<GraphIdentity>
+            switch try getNeighbors(of: node, graph: graph) {
+            case .value(let value): neighbors = value
+            case .incomplete(let reason): return .incomplete(reason)
+            }
             var neighborLabels: [GraphIdentity: Int] = [:]
 
             for neighbor in neighbors {
@@ -566,7 +583,7 @@ public final class CommunityDetector: Sendable {
             }
         }
 
-        return result
+        return .value(result)
     }
 
     /// Compute modularity score for the community assignment using GraphEdgeScanner
@@ -576,13 +593,13 @@ public final class CommunityDetector: Sendable {
     private func computeModularity(
         labels: [GraphIdentity: GraphIdentity],
         graph: MaterializedGraphSnapshot
-    ) throws -> Double {
+    ) throws -> WorkLimited<Double> {
         var totalEdges = 0
         var degrees: [GraphIdentity: Int] = [:]
         var inCommunityEdges = 0
 
         for edge in graph.edges {
-            try requireWork()
+            if let reason = try workLimitReason() { return .incomplete(reason) }
             let source = edge.source
             let target = edge.target
             totalEdges += 1
@@ -597,7 +614,7 @@ public final class CommunityDetector: Sendable {
             }
         }
 
-        guard totalEdges > 0 else { return 0 }
+        guard totalEdges > 0 else { return .value(0) }
 
         let m = Double(totalEdges)
 
@@ -630,22 +647,25 @@ public final class CommunityDetector: Sendable {
 
         let modularity = (Double(inCommunityEdges) / (2.0 * m)) - (expectedInCommunity / (2.0 * m))
 
-        return modularity
+        return .value(modularity)
     }
 
     private func consumeWork(_ units: UInt64 = 1) throws -> Bool {
         try workBudget?.consume(units) ?? true
     }
 
-    private func requireWork(_ units: UInt64 = 1) throws {
+    private func workLimitReason(
+        _ units: UInt64 = 1
+    ) throws -> LimitReason? {
         guard try consumeWork(units) else {
             guard let reason = workBudget?.limitReason else {
                 throw CommunityDetectionError.inconsistentState(
                     "work budget rejected work without a limit reason"
                 )
             }
-            throw CommunityDetectionError.incomplete(reason)
+            return reason
         }
+        return nil
     }
 }
 

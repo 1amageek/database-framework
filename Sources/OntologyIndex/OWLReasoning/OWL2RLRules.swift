@@ -5,11 +5,6 @@
 //
 // Reference: W3C OWL 2 RL Profile https://www.w3.org/TR/owl2-profiles/#OWL_2_RL
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 /// OWL 2 RL Rule identifier
 ///
@@ -17,7 +12,7 @@ import Foundation
 /// Rule names follow the W3C naming convention.
 ///
 /// **Reference**: https://www.w3.org/TR/owl2-profiles/#Reasoning_in_OWL_2_RL_and_RDF_Graphs_using_Rules
-public enum OWL2RLRule: String, Codable, Sendable, CaseIterable {
+public enum OWL2RLRule: String, Sendable, CaseIterable {
 
     // MARK: - Equality Rules (eq-*)
 

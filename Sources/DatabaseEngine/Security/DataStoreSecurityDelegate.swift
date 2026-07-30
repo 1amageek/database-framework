@@ -1,44 +1,33 @@
 import DatabaseKit
+import StorageKit
 
 /// Authorizes database operations before their observable effects occur.
 public protocol DataStoreSecurityDelegate: Sendable {
-    func evaluateList<Model: Persistable>(
-        type: Model.Type,
+    func evaluateList(
+        entity: String,
         limit: Int?,
         offset: Int?,
         orderBy: [String]?
     ) throws
 
     func evaluateGet(
-        _ resource: borrowing any Persistable
+        _ resource: borrowing PersistedModel
     ) throws
 
     func evaluateCreate(
-        _ resource: borrowing any Persistable
+        _ resource: borrowing PersistedModel
     ) throws
 
     func evaluateUpdate(
-        _ resource: borrowing any Persistable,
-        newResource: borrowing any Persistable
+        _ resource: borrowing PersistedModel,
+        newResource: borrowing PersistedModel
     ) throws
 
     func evaluateDelete(
-        _ resource: borrowing any Persistable
+        _ resource: borrowing PersistedModel
     ) throws
 
     func requireAdmin(operation: String, targetType: String) throws
-}
-
-extension DataStoreSecurityDelegate {
-    /// Authorizes every result without converting denial into an empty or
-    /// partial successful response.
-    func evaluateReadResults<Model: Persistable>(
-        _ resources: borrowing [Model]
-    ) throws {
-        for index in resources.indices {
-            try evaluateGet(resources[index])
-        }
-    }
 }
 
 /// Request-scoped authorization state supplied by the authenticated
@@ -84,8 +73,8 @@ public final class RequestSecurityPolicyDelegate:
         configuration.isEnabled && !isAdmin
     }
 
-    public func evaluateList<Model: Persistable>(
-        type: Model.Type,
+    public func evaluateList(
+        entity: String,
         limit: Int?,
         offset: Int?,
         orderBy: [String]?
@@ -97,13 +86,13 @@ public final class RequestSecurityPolicyDelegate:
               offset.map({ $0 >= 0 }) ?? true else {
             throw denial(
                 operation: .list,
-                entity: Model.persistableType,
+                entity: entity,
                 reason: "Query limit and offset must be nonnegative"
             )
         }
         let handler = try registeredHandler(
             operation: .list,
-            entity: Model.persistableType
+            entity: entity
         )
         let query = SecurityQuery(
             limit: limit.map(UInt64.init),
@@ -113,101 +102,105 @@ public final class RequestSecurityPolicyDelegate:
         guard handler.permitsQuery(query, context: context) else {
             throw denial(
                 operation: .list,
-                entity: Model.persistableType,
+                entity: entity,
                 reason: "The registered policy denied the query"
             )
         }
     }
 
     public func evaluateGet(
-        _ resource: borrowing any Persistable
+        _ resource: borrowing PersistedModel
     ) throws {
         guard shouldEvaluate else {
             return
         }
-        let entity = type(of: resource).persistableType
+        let entity = resource.entity
         let handler = try registeredHandler(
             operation: .get,
             entity: entity,
-            resourceID: String(describing: resource.id)
+            resourceID: nil
         )
-        guard try handler.permitsRead(resource, context: context) else {
+        let decision = try handler.permitsRead(resource, context: context)
+        guard decision.isPermitted else {
             throw denial(
                 operation: .get,
                 entity: entity,
                 reason: "The registered policy denied the read",
-                resourceID: String(describing: resource.id)
+                resourceID: decision.resourceID
             )
         }
     }
 
     public func evaluateCreate(
-        _ resource: borrowing any Persistable
+        _ resource: borrowing PersistedModel
     ) throws {
         guard shouldEvaluate else {
             return
         }
-        let entity = type(of: resource).persistableType
+        let entity = resource.entity
         let handler = try registeredHandler(
             operation: .create,
             entity: entity,
-            resourceID: String(describing: resource.id)
+            resourceID: nil
         )
-        guard try handler.permitsCreate(resource, context: context) else {
+        let decision = try handler.permitsCreate(resource, context: context)
+        guard decision.isPermitted else {
             throw denial(
                 operation: .create,
                 entity: entity,
                 reason: "The registered policy denied the create",
-                resourceID: String(describing: resource.id)
+                resourceID: decision.resourceID
             )
         }
     }
 
     public func evaluateUpdate(
-        _ resource: borrowing any Persistable,
-        newResource: borrowing any Persistable
+        _ resource: borrowing PersistedModel,
+        newResource: borrowing PersistedModel
     ) throws {
         guard shouldEvaluate else {
             return
         }
-        let entity = type(of: newResource).persistableType
+        let entity = newResource.entity
         let handler = try registeredHandler(
             operation: .update,
             entity: entity,
-            resourceID: String(describing: newResource.id)
+            resourceID: nil
         )
-        guard try handler.permitsUpdate(
+        let decision = try handler.permitsUpdate(
             from: resource,
             to: newResource,
             context: context
-        ) else {
+        )
+        guard decision.isPermitted else {
             throw denial(
                 operation: .update,
                 entity: entity,
                 reason: "The registered policy denied the update",
-                resourceID: String(describing: newResource.id)
+                resourceID: decision.resourceID
             )
         }
     }
 
     public func evaluateDelete(
-        _ resource: borrowing any Persistable
+        _ resource: borrowing PersistedModel
     ) throws {
         guard shouldEvaluate else {
             return
         }
-        let entity = type(of: resource).persistableType
+        let entity = resource.entity
         let handler = try registeredHandler(
             operation: .delete,
             entity: entity,
-            resourceID: String(describing: resource.id)
+            resourceID: nil
         )
-        guard try handler.permitsDelete(resource, context: context) else {
+        let decision = try handler.permitsDelete(resource, context: context)
+        guard decision.isPermitted else {
             throw denial(
                 operation: .delete,
                 entity: entity,
                 reason: "The registered policy denied the delete",
-                resourceID: String(describing: resource.id)
+                resourceID: decision.resourceID
             )
         }
     }
@@ -264,28 +257,28 @@ public final class DisabledSecurityDelegate:
 {
     public init() {}
 
-    public func evaluateList<Model: Persistable>(
-        type: Model.Type,
+    public func evaluateList(
+        entity: String,
         limit: Int?,
         offset: Int?,
         orderBy: [String]?
     ) throws {}
 
     public func evaluateGet(
-        _ resource: borrowing any Persistable
+        _ resource: borrowing PersistedModel
     ) throws {}
 
     public func evaluateCreate(
-        _ resource: borrowing any Persistable
+        _ resource: borrowing PersistedModel
     ) throws {}
 
     public func evaluateUpdate(
-        _ resource: borrowing any Persistable,
-        newResource: borrowing any Persistable
+        _ resource: borrowing PersistedModel,
+        newResource: borrowing PersistedModel
     ) throws {}
 
     public func evaluateDelete(
-        _ resource: borrowing any Persistable
+        _ resource: borrowing PersistedModel
     ) throws {}
 
     public func requireAdmin(

@@ -7,14 +7,8 @@
 // all the information needed for the target index.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
-import Metrics
 import Synchronization
 
 // MARK: - IndexSourceCompatibility
@@ -105,11 +99,11 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
 
     // MARK: - Metrics
 
-    private let itemsIndexedCounter: Counter
-    private let batchesProcessedCounter: Counter
-    private let batchDurationTimer: Metrics.Timer
-    private let errorsCounter: Counter
-    private let dataFetchesCounter: Counter
+    private let itemsIndexedCounter: DatabaseMetricCounter
+    private let batchesProcessedCounter: DatabaseMetricCounter
+    private let batchDurationTimer: DatabaseMetricTimer
+    private let errorsCounter: DatabaseMetricCounter
+    private let dataFetchesCounter: DatabaseMetricCounter
 
     // MARK: - State
 
@@ -163,23 +157,24 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
             ("target_index", targetIndex.name)
         ]
 
-        self.itemsIndexedCounter = Counter(
+        let metrics = container.configuration.metrics
+        self.itemsIndexedCounter = metrics.counter(
             label: "database_index_from_index_items_total",
             dimensions: baseDimensions
         )
-        self.batchesProcessedCounter = Counter(
+        self.batchesProcessedCounter = metrics.counter(
             label: "database_index_from_index_batches_total",
             dimensions: baseDimensions
         )
-        self.batchDurationTimer = Metrics.Timer(
+        self.batchDurationTimer = metrics.timer(
             label: "database_index_from_index_batch_duration_seconds",
             dimensions: baseDimensions
         )
-        self.errorsCounter = Counter(
+        self.errorsCounter = metrics.counter(
             label: "database_index_from_index_errors_total",
             dimensions: baseDimensions
         )
-        self.dataFetchesCounter = Counter(
+        self.dataFetchesCounter = metrics.counter(
             label: "database_index_from_index_data_fetches_total",
             dimensions: baseDimensions
         )
@@ -282,14 +277,14 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
             let batchSize = throttler.currentBatchSize
-            let batchStart = MonotonicClock.now()
+            let batchStart = container.monotonicClock.now
 
             do {
                 // Capture current rangeSet state before transaction
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: ByteString? = nil
 
@@ -297,6 +292,8 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     let sequence = try await transaction.collectRange(
                         from: .firstGreaterOrEqual(bounds.begin),
                         to: .firstGreaterOrEqual(bounds.end),
+                        limit: 0,
+                        reverse: false,
                         snapshot: false,
                         streamingMode: .iterator
                     )
@@ -351,19 +348,19 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     try rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
                 }
 
-                let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
+                let batchDuration = DatabaseMonotonicMeasurement.nanoseconds(
+                    from: batchStart,
+                    to: container.monotonicClock.now
+                )
                 throttler.recordSuccess(itemCount: itemsInBatch, durationNs: batchDuration)
-                batchDurationTimer.recordNanoseconds(Int64(batchDuration))
+                batchDurationTimer.recordNanoseconds(batchDuration)
                 batchesProcessedCounter.increment()
                 itemsIndexedCounter.increment(by: itemsInBatch)
 
             } catch {
                 errorsCounter.increment()
-                throttler.recordFailure(error: error)
-
-                if !throttler.isRetryable(error) {
-                    throw error
-                }
+                throttler.recordFailure()
+                throw error
             }
 
             try await throttler.waitBeforeNextBatch()
@@ -389,14 +386,14 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
             let batchSize = throttler.currentBatchSize
-            let batchStart = MonotonicClock.now()
+            let batchStart = container.monotonicClock.now
 
             do {
                 // Capture current rangeSet state before transaction
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, dataFetches, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, dataFetches, lastProcessedKey) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: ByteString? = nil
                     var dataFetches = 0
@@ -405,6 +402,8 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     let sequence = try await transaction.collectRange(
                         from: .firstGreaterOrEqual(bounds.begin),
                         to: .firstGreaterOrEqual(bounds.end),
+                        limit: 0,
+                        reverse: false,
                         snapshot: false,
                         streamingMode: .iterator
                     )
@@ -484,19 +483,19 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                 // Update metrics outside transaction
                 self.dataFetchesCounter.increment(by: dataFetches)
 
-                let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
+                let batchDuration = DatabaseMonotonicMeasurement.nanoseconds(
+                    from: batchStart,
+                    to: container.monotonicClock.now
+                )
                 throttler.recordSuccess(itemCount: itemsInBatch, durationNs: batchDuration)
-                batchDurationTimer.recordNanoseconds(Int64(batchDuration))
+                batchDurationTimer.recordNanoseconds(batchDuration)
                 batchesProcessedCounter.increment()
                 itemsIndexedCounter.increment(by: itemsInBatch)
 
             } catch {
                 errorsCounter.increment()
-                throttler.recordFailure(error: error)
-
-                if !throttler.isRetryable(error) {
-                    throw error
-                }
+                throttler.recordFailure()
+                throw error
             }
 
             try await throttler.waitBeforeNextBatch()
@@ -558,7 +557,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress() async throws -> RangeSet? {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let bytes = try await transaction.getValue(for: self.progressKey) else {
                 return nil
             }
@@ -571,7 +570,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     }
 
     private func clearProgress() async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clear(key: self.progressKey)
         }
     }
@@ -579,7 +578,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Index Management
 
     private func clearTargetIndex() async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             let targetRange = self.indexSubspace.subspace(self.targetIndex.name).range()
             try transaction.clearRange(beginKey: targetRange.begin, endKey: targetRange.end)
         }
@@ -605,14 +604,17 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
 
         // Collect sample using reservoir sampling
         // Move reservoir and itemsSeen inside transaction to avoid Sendable capture issues
-        let reservoir: [(key: ByteString, value: ByteString)] = try await container.engine.withTransaction(configuration: .batch) { transaction in
+        let reservoir: [(key: ByteString, value: ByteString)] = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             var reservoir: [(key: ByteString, value: ByteString)] = []
             var itemsSeen = 0
 
             let sequence = try await transaction.collectRange(
                 from: KeySelector.firstGreaterOrEqual(sourceRange.begin),
                 to: KeySelector.firstGreaterOrEqual(sourceRange.end),
-                snapshot: true
+                limit: 0,
+                reverse: false,
+                snapshot: true,
+                streamingMode: .wantAll
             )
 
             for (key, value) in sequence {
@@ -648,7 +650,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
             let batchEnd = min(batchStart + verifyBatchSize, reservoir.count)
             let batch = Array(reservoir[batchStart..<batchEnd])
 
-            let (batchMissing, batchVerified) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+            let (batchMissing, batchVerified) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                 var batchMissingCount = 0
                 var batchVerifiedCount = 0
 

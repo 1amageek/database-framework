@@ -9,11 +9,6 @@
 // RDF source. This permits joins and property paths to cross physical indexes
 // while retaining one transaction snapshot and one active named graph.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
@@ -262,9 +257,12 @@ public struct FederatedSPARQLBuilder: Sendable {
             queryContext: queryContext
         )
 
-        let startTime = MonotonicClock.now()
+        let startTime = queryContext.graphClock.now()
         let projectedVars = resolveProjection()
-        let workMeter = DatabaseWorkMeter(budget: budget)
+        let workMeter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: queryContext.context.container.monotonicClock
+        )
 
         if sources.isEmpty {
             return SPARQLResult(
@@ -367,9 +365,11 @@ public struct FederatedSPARQLBuilder: Sendable {
             pushdownLimit = nil
         }
 
-        return try await engine.withTransaction(configuration: .default) { sharedTxn in
+        return try await StorageTransactionExecutor(engine: engine)
+            .withTransaction { sharedTxn in
             let executor = SPARQLQueryExecutor(
                 database: engine,
+                wallClock: queryContext.context.container.wallClock,
                 sources: sources
             )
             return try await executor.executeInTransaction(
@@ -438,6 +438,6 @@ public struct FederatedSPARQLBuilder: Sendable {
     }
 
     private func elapsed(since start: MonotonicTimestamp) -> UInt64 {
-        MonotonicClock.now().uptimeNanoseconds - start.uptimeNanoseconds
+        queryContext.graphClock.now().uptimeNanoseconds - start.uptimeNanoseconds
     }
 }

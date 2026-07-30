@@ -4,11 +4,6 @@
 // Maintains graph edge indexes using configurable storage strategies.
 // Supports adjacency (2-index), tripleStore (3-index), and hexastore (6-index).
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
@@ -412,7 +407,7 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
             throw GraphIndexError.invalidFieldType(
                 fieldName: fieldName,
                 expectedType: "String",
-                actualType: String(describing: value)
+                actualType: GraphValueSemanticName.field(value)
             )
         }
         return string

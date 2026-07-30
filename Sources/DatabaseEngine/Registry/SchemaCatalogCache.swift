@@ -1,10 +1,6 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import Synchronization
 import DatabaseKit
+import StorageKit
 
 /// Thread-safe cache for Schema.Entity entries with TTL
 ///
@@ -21,7 +17,7 @@ public final class SchemaCatalogCache: Sendable {
 
     private struct CachedEntities: Sendable {
         let entities: [Schema.Entity]
-        let timestamp: UInt64  // Unix timestamp in milliseconds
+        let insertedAt: StorageInstant
     }
 
     private struct State: Sendable {
@@ -29,16 +25,21 @@ public final class SchemaCatalogCache: Sendable {
     }
 
     private let state: Mutex<State>
-    private let ttlMilliseconds: UInt64
+    private let timeToLive: Duration
+    private let monotonicClock: any StorageMonotonicClock
 
     // MARK: - Initialization
 
     /// Initialize the cache
     ///
     /// - Parameter ttlSeconds: Time-to-live in seconds (default: 300 = 5 minutes)
-    public init(ttlSeconds: Int = 300) {
+    public init(
+        timeToLive: Duration = .seconds(300),
+        monotonicClock: any StorageMonotonicClock
+    ) {
         self.state = Mutex(State())
-        self.ttlMilliseconds = UInt64(ttlSeconds) * 1000
+        self.timeToLive = timeToLive
+        self.monotonicClock = monotonicClock
     }
 
     // MARK: - Public API
@@ -52,10 +53,9 @@ public final class SchemaCatalogCache: Sendable {
                 return nil
             }
 
-            let now = currentTimestamp()
-            let age = now - cached.timestamp
+            let age = cached.insertedAt.duration(to: monotonicClock.now)
 
-            if age > ttlMilliseconds {
+            if age > timeToLive {
                 // Expired - clear cache
                 state.cached = nil
                 return nil
@@ -72,7 +72,7 @@ public final class SchemaCatalogCache: Sendable {
         state.withLock { state in
             state.cached = CachedEntities(
                 entities: entities,
-                timestamp: currentTimestamp()
+                insertedAt: monotonicClock.now
             )
         }
     }
@@ -86,12 +86,5 @@ public final class SchemaCatalogCache: Sendable {
         state.withLock { state in
             state.cached = nil
         }
-    }
-
-    // MARK: - Helper Methods
-
-    /// Get current timestamp in milliseconds
-    private func currentTimestamp() -> UInt64 {
-        UInt64(Date().timeIntervalSince1970 * 1000)
     }
 }

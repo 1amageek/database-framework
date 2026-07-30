@@ -82,7 +82,7 @@ struct SPARQLConstructTemplateInstantiator {
             guard case .rdfTerm(let rdfTerm) = try literal
                 .toSPARQLFieldValue() else {
                 throw SPARQLQueryError.invalidRDFTerm(
-                    String(describing: literal)
+                    literal.description
                 )
             }
             resolved = rdfTerm
@@ -197,7 +197,7 @@ struct SPARQLConstructTemplateInstantiator {
                 return nil
             }
             throw SPARQLQueryError.invalidRDFTerm(
-                String(describing: resolved)
+                resolved.description
             )
         }
         return resolved
@@ -213,7 +213,7 @@ struct SPARQLConstructTemplateInstantiator {
             return .blankNode(identifier)
         case .literal, .tripleTerm:
             throw SPARQLQueryError.invalidRDFTerm(
-                String(describing: term)
+                term.description
             )
         }
     }
@@ -223,7 +223,7 @@ struct SPARQLConstructTemplateInstantiator {
     ) throws -> RDFPredicateIRI {
         guard case .iri(let iri) = term else {
             throw SPARQLQueryError.invalidRDFTerm(
-                String(describing: term)
+                term.description
             )
         }
         return RDFPredicateIRI(iri)

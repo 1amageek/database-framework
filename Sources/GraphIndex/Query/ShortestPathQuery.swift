@@ -3,11 +3,6 @@
 //
 // Provides DatabaseContext extension and fluent query builder for shortest path queries.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -261,7 +256,10 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
 
         return try await queryContext.withTransaction { transaction in
             let finder = ShortestPathFinder(
-                snapshot: GraphReadSnapshot(transaction: transaction),
+                snapshot: GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: queryContext.context.container.monotonicClock
+            ),
                 subspace: resolvedIndex.indexSubspace,
                 strategy: resolvedIndex.metadata.strategy,
                 configuration: config
@@ -303,7 +301,10 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
 
         return try await queryContext.withTransaction { transaction in
             let finder = ShortestPathFinder(
-                snapshot: GraphReadSnapshot(transaction: transaction),
+                snapshot: GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: queryContext.context.container.monotonicClock
+            ),
                 subspace: resolvedIndex.indexSubspace,
                 strategy: resolvedIndex.metadata.strategy,
                 configuration: config

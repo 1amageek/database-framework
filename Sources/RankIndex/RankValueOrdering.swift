@@ -42,20 +42,25 @@ enum RankValueOrdering {
         default:
             throw RankValueError.nonNumericField(
                 fieldName: fieldName,
-                actualType: String(reflecting: fieldValue)
+                actualType: fieldTypeName(fieldValue)
             )
         }
     }
 
     /// Encodes the identifier once and retains the owned bytes throughout sort.
     /// The byte order is the same order used by rank index keys.
-    static func identifierKey<ID>(for identifier: ID) throws -> ByteString {
+    static func identifierKey<ID: PersistableIdentifier>(
+        for identifier: ID
+    ) throws -> ByteString {
         do {
-            let element = try TupleEncoder.encode(identifier)
-            return Tuple(element).pack()
+            return try PersistableIdentifierKeyCodec.tuple(
+                for: identifier
+            ).pack()
         } catch {
             throw RankValueError.invalidIdentifier(
-                actualType: String(reflecting: ID.self)
+                actualType: identifierTypeName(
+                    ID.persistableIdentifierType
+                )
             )
         }
     }
@@ -85,7 +90,7 @@ enum RankValueOrdering {
             guard let comparison = left.compare(to: right) else {
                 throw RankValueError.nonNumericField(
                     fieldName: "rank",
-                    actualType: "\(String(reflecting: left)), \(String(reflecting: right))"
+                    actualType: "\(fieldTypeName(left)), \(fieldTypeName(right))"
                 )
             }
 
@@ -106,5 +111,59 @@ enum RankValueOrdering {
             }
         }
         return result
+    }
+
+    private static func identifierTypeName(
+        _ type: PersistableIdentifierType
+    ) -> String {
+        switch type {
+        case .bool: return "Bool"
+        case .int8: return "Int8"
+        case .int16: return "Int16"
+        case .int32: return "Int32"
+        case .int64: return "Int64"
+        case .uint8: return "UInt8"
+        case .uint16: return "UInt16"
+        case .uint32: return "UInt32"
+        case .uint64: return "UInt64"
+        case .string: return "String"
+        case .bytes: return "ByteString"
+        case .uuid: return "UUID"
+        case .composite: return "CompositeIdentifier"
+        }
+    }
+
+    private static func fieldTypeName(_ value: FieldValue) -> String {
+        switch value {
+        case .null: return "Null"
+        case .bool: return "Bool"
+        case .int8: return "Int8"
+        case .int16: return "Int16"
+        case .int32: return "Int32"
+        case .int64: return "Int64"
+        case .uint8: return "UInt8"
+        case .uint16: return "UInt16"
+        case .uint32: return "UInt32"
+        case .uint64: return "UInt64"
+        case .float32: return "Float32"
+        case .float64: return "Float64"
+        case .decimal: return "Decimal"
+        case .string: return "String"
+        case .bytes: return "ByteString"
+        case .date: return "CivilDate"
+        case .time: return "CivilTime"
+        case .dateTime: return "CivilDateTime"
+        case .timestamp: return "Timestamp"
+        case .timeSpan: return "TimeSpan"
+        case .calendarPeriod: return "CalendarPeriod"
+        case .geographicPoint: return "GeographicPoint"
+        case .geographicPosition: return "GeographicPosition"
+        case .vector: return "Vector"
+        case .uuid: return "UUID"
+        case .array: return "Array"
+        case .object: return "FieldObject"
+        case .reference: return "EntityReference"
+        case .rdfTerm: return "RDFTerm"
+        }
     }
 }

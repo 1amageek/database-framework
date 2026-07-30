@@ -3,11 +3,6 @@
 //
 // Executes graph patterns against hexastore indexes.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -29,6 +24,7 @@ public struct SPARQLQueryExecutor: Sendable {
     // MARK: - Properties
 
     let database: any StorageEngine
+    let wallClock: any WallClock
     let datasetScanner: any RDFDatasetScanner
     let readMode: RDFDatasetReadMode
     let propertyPathConfiguration: ExecutionPropertyPathConfiguration
@@ -97,6 +93,7 @@ public struct SPARQLQueryExecutor: Sendable {
     /// Initialize with an abstract scanner for one logical RDF dataset.
     public init(
         database: any StorageEngine,
+        wallClock: any WallClock,
         datasetScanner: any RDFDatasetScanner,
         readMode: RDFDatasetReadMode = .snapshot,
         datasetScope: SPARQLDatasetExecutionScope = .implicit,
@@ -105,6 +102,7 @@ public struct SPARQLQueryExecutor: Sendable {
         propertyPathConfiguration: ExecutionPropertyPathConfiguration = .default
     ) {
         self.database = database
+        self.wallClock = wallClock
         self.datasetScanner = datasetScanner
         self.readMode = readMode
         self.datasetScope = datasetScope
@@ -120,6 +118,7 @@ public struct SPARQLQueryExecutor: Sendable {
     /// Initialize with canonical physical RDF dataset sources.
     public init(
         database: any StorageEngine,
+        wallClock: any WallClock,
         sources: [RDFDatasetSource],
         readMode: RDFDatasetReadMode = .snapshot,
         datasetScope: SPARQLDatasetExecutionScope = .implicit,
@@ -129,6 +128,7 @@ public struct SPARQLQueryExecutor: Sendable {
     ) {
         self.init(
             database: database,
+            wallClock: wallClock,
             datasetScanner: IndexedRDFDatasetScanner(sources: sources),
             readMode: readMode,
             datasetScope: datasetScope,

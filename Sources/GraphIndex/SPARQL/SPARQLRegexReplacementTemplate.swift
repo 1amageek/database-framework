@@ -13,7 +13,7 @@ struct SPARQLRegexReplacementTemplate {
         captureGroupCount: Int,
         tokenLimit: Int,
         byteLimit: Int
-    ) throws {
+    ) throws(SPARQLRegularExpression.Error) {
         _ = try SPARQLRegularExpression.checkedUTF8ByteCount(
             source,
             name: "replacementUTF8Bytes",
@@ -109,7 +109,7 @@ struct SPARQLRegexReplacementTemplate {
         match: SPARQLRegexNFA.Match,
         input: String,
         to output: inout SPARQLRegexOutputBuilder
-    ) throws {
+    ) throws(SPARQLRegularExpression.Error) {
         for token in tokens {
             switch token {
             case .literal(let range):
@@ -126,7 +126,7 @@ struct SPARQLRegexReplacementTemplate {
         _ token: Token,
         to tokens: inout [Token],
         limit: Int
-    ) throws {
+    ) throws(SPARQLRegularExpression.Error) {
         _ = try SPARQLRegularExpression.checkedIncrement(
             tokens.count,
             name: "replacementTokens",

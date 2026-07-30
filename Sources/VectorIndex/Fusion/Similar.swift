@@ -260,7 +260,10 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var results: [(pk: Tuple, distance: Double)] = []

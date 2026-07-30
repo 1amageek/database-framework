@@ -19,7 +19,7 @@ struct ResolvedEntityReference: Sendable {
             throw DatabaseMutationError.unknownEntity(identity.entity)
         }
         guard let persistableType = container.runtimeConfiguration
-            .persistableTypes.type(named: entity.name) else {
+            .entityRuntimes.modelType(named: entity.name) else {
             throw DatabaseMutationError.entityHasNoPersistableType(identity.entity)
         }
         let id: Tuple
@@ -58,7 +58,7 @@ struct ResolvedEntityReference: Sendable {
         let partition: AnyDirectoryPath?
         do {
             partition = try CanonicalPartitionBinding.makeAnyBinding(
-                for: persistableType,
+                for: entity,
                 partitions: identity.partitions
             )
         } catch CanonicalReadError.invalidPartition(_, let reason) {

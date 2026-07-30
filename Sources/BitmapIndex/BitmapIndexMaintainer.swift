@@ -4,11 +4,6 @@
 // Provides efficient set operations on low-cardinality fields using Roaring Bitmaps.
 // Reference: Lemire et al., "Roaring Bitmaps", 2016
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes

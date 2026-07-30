@@ -2,11 +2,6 @@
 // VectorIndex - In-memory cache for loaded HNSW graph snapshots
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import Synchronization
 import SwiftHNSW

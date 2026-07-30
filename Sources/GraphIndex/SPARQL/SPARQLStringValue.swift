@@ -59,7 +59,7 @@ struct SPARQLStringValue: Sendable, Equatable {
         Self(lexicalForm: lexicalForm, kind: kind)
     }
 
-    func fieldValue() throws -> FieldValue {
+    func fieldValue() -> FieldValue {
         switch kind {
         case .string:
             return .rdfTerm(

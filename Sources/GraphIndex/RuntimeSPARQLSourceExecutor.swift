@@ -22,8 +22,9 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             requested: options.consistency,
             default: .serializable
         )
-        return try await context.container.engine.withTransaction(
-            configuration: execution.transactionConfiguration
+        return try await context.container.transactionExecutor.withTransaction(
+            configuration: execution.transactionConfiguration,
+            clock: context.container.monotonicClock
         ) { transaction in
             let runtime = try await makeRuntime(
                 context: context,
@@ -195,36 +196,12 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> RDFDatasetSource? {
-        guard let type = context.container.runtimeConfiguration
-            .persistableTypes.type(named: resolution.entity.name) else {
-            throw CanonicalReadError.unsupportedSource(
-                "RDF dataset entity '\(resolution.entity.name)' has no compiled runtime type"
-            )
-        }
-        return try await projectedSource(
-            context: context,
-            type: type,
-            resolution: resolution,
-            partitions: partitions,
-            transaction: transaction
-        )
-    }
-
-    private func projectedSource<T: Persistable>(
-        context: DatabaseContext,
-        type: T.Type,
-        resolution: RDFDatasetReadResolution,
-        partitions: FieldObject,
-        transaction: any TransactionAccess
-    ) async throws -> RDFDatasetSource? {
-        let queryContext = try context.indexQueryContext.withPartitions(
-            partitions,
-            for: type
-        )
+        let queryContext = context.indexQueryContext
         guard let indexSubspace = try await queryContext
             .readableIndexSubspace(
                 named: resolution.indexDescriptor.name,
-                for: type,
+                forEntityName: resolution.entity.name,
+                partitions: partitions,
                 transaction: transaction
             ) else {
             return nil
@@ -246,6 +223,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     ) throws -> SPARQLQueryExecutor {
         SPARQLQueryExecutor(
             database: context.container.engine,
+            wallClock: context.container.wallClock,
             datasetScanner: scanner,
             datasetScope: try SPARQLDatasetExecutionScope(dataset),
             functionRegistry: functionRegistry

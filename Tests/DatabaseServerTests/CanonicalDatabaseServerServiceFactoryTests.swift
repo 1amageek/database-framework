@@ -2,6 +2,7 @@ import DatabaseKit
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseServer
+import DatabaseServerFoundation
 import DatabaseWire
 import StorageKit
 import Testing

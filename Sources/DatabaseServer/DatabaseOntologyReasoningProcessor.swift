@@ -51,7 +51,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             transaction: transaction
         ).sorted()
         for identifier in identifiers where identifier != document.ontology {
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             if try await depends(
                 ontology: identifier,
                 on: document.ontology,
@@ -78,7 +78,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             transaction: transaction
         ).sorted()
         for identifier in identifiers where identifier != ontology {
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             try work.consume()
             guard let metadata = try await ontologyStore.getMetadata(
                 ontologyIRI: identifier,
@@ -132,7 +132,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         var queue = explicit.sorted()
         var cursor = 0
         while cursor < queue.count {
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             try work.consume()
             let triple = queue[cursor]
             cursor += 1
@@ -235,7 +235,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         var queue: [(resource: String, depth: UInt32)] = [(resource, 0)]
         var queueIndex = 0
         while queueIndex < queue.count {
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             let current = queue[queueIndex]
             queueIndex += 1
             guard current.depth < maximumDepth else { continue }
@@ -409,7 +409,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             )
         }
         guard visited.insert(ontology).inserted else { return }
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         try work.consume()
         let document = try await loadDocument(
             ontology,
@@ -466,7 +466,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         var queue = [root]
         var index = 0
         while index < queue.count {
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             let identifier = queue[index]
             index += 1
             guard visited.insert(identifier).inserted else { continue }

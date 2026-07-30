@@ -45,10 +45,6 @@ enum RankReadResultAssembler {
     }
 
     private static func entityKey(for entity: PolymorphicEntity) throws -> ByteString {
-        let identifier = try entity.item.persistableIdentifierTuple()
-        return try PolymorphicIdentifierKey.tuple(
-            for: type(of: entity.item),
-            identifier: identifier
-        ).pack()
+        entity.polymorphicIdentifier.pack()
     }
 }

@@ -3,18 +3,18 @@ import DatabaseTypes
 
 /// A decoded polymorphic row returned from a logical polymorphic query.
 public struct PolymorphicQueryResult: Sendable {
-    public let item: any Persistable
+    public let model: PersistedModel
     public let typeName: String
     public let typeCode: Int64
     public let row: QueryRow
 
     public init(
-        item: any Persistable,
+        model: PersistedModel,
         typeName: String,
         typeCode: Int64,
         row: QueryRow
     ) {
-        self.item = item
+        self.model = model
         self.typeName = typeName
         self.typeCode = typeCode
         self.row = row
@@ -23,8 +23,10 @@ public struct PolymorphicQueryResult: Sendable {
     public var fields: [String: FieldValue] { row.fields }
     public var annotations: [String: FieldValue] { row.annotations }
 
-    public func item<Concrete: Persistable>(as type: Concrete.Type) -> Concrete? {
-        item as? Concrete
+    public func decode<Concrete: Persistable>(
+        as type: Concrete.Type
+    ) throws -> Concrete {
+        try model.decode(as: type)
     }
 }
 
@@ -244,35 +246,23 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
             throw PolymorphicQueryError.missingTypeName
         }
 
-        guard context.container.schema.entity(named: typeName) != nil,
-              let runtimeType = context.container.runtimeConfiguration
-                .persistableTypes.type(named: typeName) else {
+        guard let entity = context.container.schema.entity(named: typeName) else {
             throw PolymorphicQueryError.unknownType(typeName)
         }
 
-        let item = try decodeItem(row, as: runtimeType)
+        let model = try QueryRowCodec.persistedModel(
+            from: row,
+            entity: entity
+        )
         let typeCode = row.annotations[PolymorphicRowAnnotation.typeCode]?.int64Value
             ?? Member.typeCode(for: typeName)
 
         return PolymorphicQueryResult(
-            item: item,
+            model: model,
             typeName: typeName,
             typeCode: typeCode,
             row: row
         )
-    }
-
-    private func decodeItem(
-        _ row: QueryRow,
-        as type: any Persistable.Type
-    ) throws -> any Persistable {
-        func decodeConcreteItem<Concrete: Persistable>(
-            _ concreteType: Concrete.Type
-        ) throws -> any Persistable {
-            try QueryRowCodec.decode(row, as: concreteType)
-        }
-
-        return try _openExistential(type, do: decodeConcreteItem)
     }
 
     /// Resolve a shared index name from polymorphic group metadata.

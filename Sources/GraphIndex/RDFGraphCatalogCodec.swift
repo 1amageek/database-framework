@@ -22,7 +22,7 @@ package struct RDFGraphCatalogCodec: Sendable {
         for graph: RDFGraphName
     ) throws -> ByteString {
         let plan: RDFTermStorageEncoding
-        do {
+        do throws(RDFTermStorageError) {
             plan = try RDFTermStorageFormat.encodingPlan(
                 graph.term,
                 role: .graphName
@@ -47,17 +47,17 @@ package struct RDFGraphCatalogCodec: Sendable {
             )
         }
         let key: ByteString
-        do {
+        do throws(RDFTermStorageError) {
             key = try subspace.pack(
                 encodedTupleByteCount: tupleByteCount
-            ) { (sink: inout TupleEncodingSink) throws in
+            ) { (sink: inout TupleEncodingSink) throws(RDFTermStorageError) in
                 sink.writeByte(TupleTypeCode.bytes.rawValue)
                 var rdfSink = RDFSink(tupleSink: sink)
                 try RDFTermStorageFormat.encode(plan, into: &rdfSink)
                 sink = rdfSink.tupleSink
                 sink.writeByte(0)
             }
-        } catch let error as RDFTermStorageError {
+        } catch let error {
             throw RDFGraphStoreError.invalidTermEncoding(error)
         }
         guard key.count <= databaseMaximumKeySize else {

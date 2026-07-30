@@ -1,11 +1,6 @@
 // FieldValue+TupleElement.swift
 // Conversion between Core.FieldValue and FoundationDB TupleElement
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseTypes
 import DatabaseKit

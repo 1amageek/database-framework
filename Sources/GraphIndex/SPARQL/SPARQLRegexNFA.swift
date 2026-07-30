@@ -138,7 +138,7 @@ struct SPARQLRegexNFA: Sendable {
         from searchStart: String.Index,
         budget: inout SPARQLRegexWorkBudget,
         scratch: inout Scratch
-    ) throws -> Match? {
+    ) throws(SPARQLRegularExpression.Error) -> Match? {
         scratch.resetLists()
         var position = searchStart
         var candidate: Match?
@@ -226,7 +226,7 @@ struct SPARQLRegexNFA: Sendable {
     private func firstAcceptedThreadOffset(
         _ threads: [Thread],
         budget: inout SPARQLRegexWorkBudget
-    ) throws -> Int? {
+    ) throws(SPARQLRegularExpression.Error) -> Int? {
         for offset in threads.indices {
             try budget.consume(1)
             if case .accept = states[threads[offset].stateIndex] {
@@ -245,7 +245,7 @@ struct SPARQLRegexNFA: Sendable {
         generation: Int,
         stack: inout [Thread],
         budget: inout SPARQLRegexWorkBudget
-    ) throws {
+    ) throws(SPARQLRegularExpression.Error) {
         stack.append(initialThread)
         while var thread = stack.popLast() {
             try budget.consume(1)

@@ -1,11 +1,18 @@
 import DatabaseEngine
 import DatabaseWire
+import StorageKit
 
 public final class SHACLValidationWorkBudget: Sendable {
     public let workMeter: DatabaseWorkMeter
 
-    public init(budget: ExecutionBudget) {
-        self.workMeter = DatabaseWorkMeter(budget: budget)
+    public init(
+        budget: ExecutionBudget,
+        monotonicClock: any StorageMonotonicClock
+    ) {
+        self.workMeter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: monotonicClock
+        )
     }
 
     public init(workMeter: DatabaseWorkMeter) {

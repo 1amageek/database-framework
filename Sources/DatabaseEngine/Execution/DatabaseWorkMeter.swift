@@ -1,4 +1,5 @@
 import DatabaseWire
+import StorageKit
 import Synchronization
 
 public final class DatabaseWorkMeter: Sendable {
@@ -13,27 +14,17 @@ public final class DatabaseWorkMeter: Sendable {
 
     public let budget: ExecutionBudget
 
-    private let now: @Sendable () -> ContinuousClock.Instant
-    private let deadline: ContinuousClock.Instant
+    private let monotonicClock: any StorageMonotonicClock
+    private let deadline: StorageInstant
     private let state = Mutex(State())
 
-    public init(budget: ExecutionBudget) {
-        let clock = ContinuousClock()
-        let start = clock.now
-        self.budget = budget
-        self.now = { clock.now }
-        self.deadline = start.advanced(
-            by: .milliseconds(Int64(budget.timeoutMilliseconds))
-        )
-    }
-
-    package init(
+    public init(
         budget: ExecutionBudget,
-        now: @escaping @Sendable () -> ContinuousClock.Instant
+        monotonicClock: any StorageMonotonicClock
     ) {
         self.budget = budget
-        self.now = now
-        self.deadline = now().advanced(
+        self.monotonicClock = monotonicClock
+        self.deadline = monotonicClock.now.advanced(
             by: .milliseconds(Int64(budget.timeoutMilliseconds))
         )
     }
@@ -53,7 +44,7 @@ public final class DatabaseWorkMeter: Sendable {
     }
 
     public func checkpoint(at stage: DatabaseWorkStage) throws {
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         try checkDeadline(at: stage)
     }
 
@@ -79,7 +70,7 @@ public final class DatabaseWorkMeter: Sendable {
         at stage: DatabaseWorkStage = .indexScan
     ) throws -> Int {
         try state.withLock { state in
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             try checkDeadline(at: stage)
             let remaining = budget.maximumWorkUnits - state.consumedWorkUnits
             let withSentinel = remaining == UInt64.max
@@ -131,7 +122,7 @@ public final class DatabaseWorkMeter: Sendable {
         at stage: DatabaseWorkStage
     ) throws {
         try state.withLock { state in
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             try checkDeadline(at: stage)
             let maximumRows = UInt64(budget.maximumIntermediateRows)
             guard rows <= maximumRows - state.retainedIntermediateRows else {
@@ -170,7 +161,7 @@ public final class DatabaseWorkMeter: Sendable {
         at stage: DatabaseWorkStage
     ) throws {
         try state.withLock { state in
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             try checkDeadline(at: stage)
             guard rows <= budget.maximumRows - state.consumedRows else {
                 throw DatabaseWorkLimitError.maximumRows(
@@ -195,7 +186,7 @@ public final class DatabaseWorkMeter: Sendable {
     }
 
     private func checkDeadline(at stage: DatabaseWorkStage) throws {
-        guard now() < deadline else {
+        guard monotonicClock.now < deadline else {
             throw DatabaseWorkLimitError.deadline(stage: stage)
         }
     }

@@ -3,15 +3,11 @@
 //
 // Provides the DatabaseContext extension and entry point for SPARQL queries.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
 import DatabaseWire
+import StorageKit
 
 // MARK: - SPARQL Entry Point
 
@@ -210,10 +206,14 @@ extension DatabaseContext {
 
         let executor = SPARQLQueryExecutor(
             database: container.engine,
+            wallClock: container.wallClock,
             sources: [source],
             datasetScope: datasetScope
         )
-        let workMeter = DatabaseWorkMeter(budget: budget)
+        let workMeter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: container.monotonicClock
+        )
 
         // Determine projected variables
         let projectedVars: [String]
@@ -228,7 +228,7 @@ extension DatabaseContext {
             }
             projectedVars = Array(allVariables).sorted()
         }
-        let startTime = MonotonicClock.now()
+        let startTime = indexQueryContext.graphClock.now()
 
         let hasOrderBy = !orderBy.isEmpty
         let needsAllResults = hasOrderBy || distinct
@@ -276,7 +276,7 @@ extension DatabaseContext {
             }
         }
 
-        let endTime = MonotonicClock.now()
+        let endTime = indexQueryContext.graphClock.now()
         stats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
         let resultCount = projected.count
@@ -325,16 +325,20 @@ extension DatabaseContext {
         )
         let executor = SPARQLQueryExecutor(
             database: container.engine,
+            wallClock: container.wallClock,
             sources: [source],
             datasetScope: datasetScope
         )
-        let workMeter = DatabaseWorkMeter(budget: budget)
-        let startTime = MonotonicClock.now()
+        let workMeter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: container.monotonicClock
+        )
+        let startTime = indexQueryContext.graphClock.now()
         var (bindings, statistics) = try await executor.execute(
             selectPlan: plan,
             workMeter: workMeter
         )
-        statistics.durationNs = MonotonicClock.now().uptimeNanoseconds
+        statistics.durationNs = indexQueryContext.graphClock.now().uptimeNanoseconds
             - startTime.uptimeNanoseconds
 
         guard let outputRows = UInt32(exactly: bindings.count) else {

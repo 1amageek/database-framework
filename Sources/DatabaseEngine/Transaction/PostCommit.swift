@@ -4,13 +4,7 @@
 // Reference: FDB Record Layer PostCommit
 // Provides callbacks that execute after successful transaction commit.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
-import StorageKitSystemClock
 import Synchronization
 
 // MARK: - PostCommit Protocol
@@ -65,12 +59,17 @@ public struct PostCommitResult: Sendable {
     public let success: Bool
 
     /// Duration of execution
-    public let duration: TimeInterval
+    public let duration: Duration
 
     /// Error if failed
     public let error: Error?
 
-    public init(name: String, success: Bool, duration: TimeInterval, error: Error? = nil) {
+    public init(
+        name: String,
+        success: Bool,
+        duration: Duration,
+        error: Error? = nil
+    ) {
         self.name = name
         self.success = success
         self.duration = duration
@@ -122,23 +121,6 @@ public struct PostCommitAction: PostCommit {
     }
 }
 
-/// Fire-and-forget post-commit (errors are ignored)
-public struct FireAndForgetPostCommit: PostCommit {
-    private let inner: any PostCommit
-
-    public init(_ inner: any PostCommit) {
-        self.inner = inner
-    }
-
-    public func run() async throws {
-        do {
-            try await inner.run()
-        } catch {
-            // Silently ignore errors
-        }
-    }
-}
-
 /// Delayed post-commit that waits before executing
 public struct DelayedPostCommit: PostCommit {
     private let inner: any PostCommit
@@ -148,7 +130,7 @@ public struct DelayedPostCommit: PostCommit {
     public init(
         _ inner: any PostCommit,
         delay: Duration,
-        clock: any StorageMonotonicClock = SystemStorageClock()
+        clock: any StorageMonotonicClock
     ) {
         precondition(delay >= .zero, "Post-commit delay must not be negative")
         self.inner = inner
@@ -173,7 +155,7 @@ public struct RetryingPostCommit: PostCommit {
         _ inner: any PostCommit,
         maxAttempts: Int = 3,
         backoffMs: Int = 100,
-        clock: any StorageMonotonicClock = SystemStorageClock()
+        clock: any StorageMonotonicClock
     ) {
         precondition(maxAttempts > 0, "Post-commit retry count must be positive")
         precondition(backoffMs >= 0, "Post-commit backoff must not be negative")
@@ -232,16 +214,13 @@ public struct RetryingPostCommit: PostCommit {
 public struct CompositePostCommit: PostCommit {
     private let hooks: [any PostCommit]
     private let runConcurrently: Bool
-    private let logger: DatabaseLogger
 
     public init(
         hooks: [any PostCommit],
-        runConcurrently: Bool = false,
-        logger: DatabaseLogger = .disabled
+        runConcurrently: Bool = false
     ) {
         self.hooks = hooks
         self.runConcurrently = runConcurrently
-        self.logger = logger
     }
 
     public func run() async throws {
@@ -249,17 +228,13 @@ public struct CompositePostCommit: PostCommit {
             // Best-effort: log per-hook failures but never propagate them, so that
             // one failing observational hook does not cancel its peers. See type
             // docstring for the full contract.
-            let logger = logger
-            await withTaskGroup(of: Void.self) { group in
+            try await withThrowingTaskGroup(of: Void.self) { group in
                 for hook in hooks {
                     group.addTask {
-                        do {
-                            try await hook.run()
-                        } catch {
-                            logger.error("post-commit hook failed: \(error)")
-                        }
+                        try await hook.run()
                     }
                 }
+                try await group.waitForAll()
             }
         } else {
             for hook in hooks {
@@ -277,20 +252,22 @@ public struct CompositePostCommit: PostCommit {
 /// after successful transaction commit.
 public final class PostCommitRegistry: Sendable {
     private let hooks: Mutex<[NamedPostCommit]>
+    private let monotonicClock: any StorageMonotonicClock
 
-    public init() {
+    public init(monotonicClock: any StorageMonotonicClock) {
+        self.monotonicClock = monotonicClock
         self.hooks = Mutex([])
     }
 
     /// Add a post-commit hook
     public func add(
         _ hook: any PostCommit,
-        name: String? = nil,
+        name: String,
         priority: Int = 100,
         runConcurrently: Bool = true
     ) {
         let named = NamedPostCommit(
-            name: name ?? "postcommit_\(UUID().uuidString.prefix(8))",
+            name: name,
             hook: hook,
             priority: priority,
             runConcurrently: runConcurrently
@@ -300,7 +277,7 @@ public final class PostCommitRegistry: Sendable {
 
     /// Add an application-defined post-commit action.
     public func add(
-        name: String? = nil,
+        name: String,
         priority: Int = 100,
         runConcurrently: Bool = true,
         _ action: @escaping @Sendable () async throws -> Void
@@ -344,7 +321,7 @@ public final class PostCommitRegistry: Sendable {
                 }
 
                 var collected: [PostCommitResult] = []
-                for await result in group {
+                while let result = await group.next() {
                     collected.append(result)
                 }
                 return collected
@@ -356,14 +333,14 @@ public final class PostCommitRegistry: Sendable {
     }
 
     private func executeHook(_ named: NamedPostCommit) async -> PostCommitResult {
-        let startTime = Date()
+        let startTime = monotonicClock.now
 
         do {
             try await named.hook.run()
-            let duration = Date().timeIntervalSince(startTime)
+            let duration = startTime.duration(to: monotonicClock.now)
             return PostCommitResult(name: named.name, success: true, duration: duration)
         } catch {
-            let duration = Date().timeIntervalSince(startTime)
+            let duration = startTime.duration(to: monotonicClock.now)
             return PostCommitResult(name: named.name, success: false, duration: duration, error: error)
         }
     }

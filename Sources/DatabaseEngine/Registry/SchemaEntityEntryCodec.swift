@@ -314,7 +314,8 @@ enum SchemaEntityEntryCodec {
                 try write(count, into: &writer)
             case .keepForDuration(let duration):
                 writer.writeUInt8(2)
-                writer.writeDouble(duration)
+                writer.writeInt64(duration.seconds)
+                writer.writeUInt32(duration.nanoseconds)
             }
         case .countUpdates: writer.writeUInt8(7)
         case .countNotNull: writer.writeUInt8(8)
@@ -801,9 +802,22 @@ enum SchemaEntityEntryCodec {
                     )
                 )
             case 2:
-                return .version(
-                    strategy: .keepForDuration(try reader.readDouble())
-                )
+                let seconds = try reader.readInt64()
+                let nanoseconds = try reader.readUInt32()
+                do {
+                    return .version(
+                        strategy: .keepForDuration(
+                            try TimeSpan(
+                                seconds: seconds,
+                                nanoseconds: nanoseconds
+                            )
+                        )
+                    )
+                } catch {
+                    throw SchemaEntityEntryCodecError.invalidDefinition(
+                        "Invalid version retention duration"
+                    )
+                }
             case let tag:
                 throw SchemaEntityEntryCodecError.invalidMetadataTag(tag)
             }

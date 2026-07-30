@@ -25,7 +25,7 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
         quads: [RDFQuad],
         workBudget: SHACLValidationWorkBudget
     ) throws {
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         try workBudget.consume(UInt64(quads.count), at: .storageRow)
         _ = try decodeShapes(graph: graph, quads: quads)
     }

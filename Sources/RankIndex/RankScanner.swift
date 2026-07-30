@@ -8,11 +8,6 @@
 // `reverse: true, limit: k` yields the top-k highest scores in O(k).
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -128,7 +123,8 @@ struct RankScanner {
             to: .firstGreaterOrEqual(range.end),
             limit: limit,
             reverse: reverse,
-            snapshot: true
+            snapshot: true,
+            streamingMode: .iterator
         )
     }
 

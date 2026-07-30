@@ -1,17 +1,6 @@
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-
-#if canImport(FoundationEssentials)
-private typealias TupleUUID = FoundationEssentials.UUID
-#else
-private typealias TupleUUID = Foundation.UUID
-#endif
 
 /// Resolves every model and wire identifier through one canonical storage-key path.
 public enum PersistableIdentifierKeyCodec {
@@ -93,16 +82,16 @@ public enum PersistableIdentifierKeyCodec {
             throw .invalidTupleElementCount(actual: identifier.count)
         }
 
-        let element: any TupleElement
+        let value: TupleValue
         do {
-            element = try identifier.element(at: 0)
+            value = try identifier.value(at: 0)
         } catch {
             throw .invalidTupleElementCount(actual: identifier.count)
         }
 
         var componentCount = 0
         return try decodeNode(
-            element,
+            value,
             expectedType: expectedType,
             depth: 0,
             componentCount: &componentCount,
@@ -111,7 +100,7 @@ public enum PersistableIdentifierKeyCodec {
     }
 
     private static func decodeNode(
-        _ element: any TupleElement,
+        _ value: TupleValue,
         expectedType: PersistableIdentifierType,
         depth: Int,
         componentCount: inout Int,
@@ -126,18 +115,9 @@ public enum PersistableIdentifierKeyCodec {
         }
         componentCount = nextCount
 
-        if let canonical = element as? PersistableIdentifierTupleElement {
-            try validate(
-                canonical.value,
-                expectedType: expectedType,
-                limits: limits
-            )
-            return canonical.value
-        }
-
         switch expectedType {
         case .bool:
-            guard let value = element as? Bool else {
+            guard case .boolean(let value) = value else {
                 throw .invalidTupleValue(expected: expectedType)
             }
             return .bool(value)
@@ -145,7 +125,7 @@ public enum PersistableIdentifierKeyCodec {
         case .int8:
             return .int8(
                 try signedInteger(
-                    element,
+                    value,
                     expectedType: expectedType,
                     as: Int8.self
                 )
@@ -153,7 +133,7 @@ public enum PersistableIdentifierKeyCodec {
         case .int16:
             return .int16(
                 try signedInteger(
-                    element,
+                    value,
                     expectedType: expectedType,
                     as: Int16.self
                 )
@@ -161,13 +141,13 @@ public enum PersistableIdentifierKeyCodec {
         case .int32:
             return .int32(
                 try signedInteger(
-                    element,
+                    value,
                     expectedType: expectedType,
                     as: Int32.self
                 )
             )
         case .int64:
-            guard let value = element as? Int64 else {
+            guard case .signedInteger(let value) = value else {
                 throw .invalidTupleValue(expected: expectedType)
             }
             return .int64(value)
@@ -175,7 +155,7 @@ public enum PersistableIdentifierKeyCodec {
         case .uint8:
             return .uint8(
                 try unsignedInteger(
-                    element,
+                    value,
                     expectedType: expectedType,
                     as: UInt8.self
                 )
@@ -183,7 +163,7 @@ public enum PersistableIdentifierKeyCodec {
         case .uint16:
             return .uint16(
                 try unsignedInteger(
-                    element,
+                    value,
                     expectedType: expectedType,
                     as: UInt16.self
                 )
@@ -191,58 +171,41 @@ public enum PersistableIdentifierKeyCodec {
         case .uint32:
             return .uint32(
                 try unsignedInteger(
-                    element,
+                    value,
                     expectedType: expectedType,
                     as: UInt32.self
                 )
             )
         case .uint64:
-            if let value = element as? UInt64 {
+            if case .unsignedInteger(let value) = value {
                 return .uint64(value)
             }
-            guard let value = element as? Int64, value >= 0 else {
+            guard case .signedInteger(let value) = value, value >= 0 else {
                 throw .invalidTupleValue(expected: expectedType)
             }
             return .uint64(UInt64(value))
 
         case .string:
-            guard let value = element as? String else {
+            guard case .string(let value) = value else {
                 throw .invalidTupleValue(expected: expectedType)
             }
             return .string(value)
 
         case .bytes:
-            guard let value = element as? ByteString else {
+            guard case .bytes(let value) = value else {
                 throw .invalidTupleValue(expected: expectedType)
             }
             return .bytes(value)
 
         case .uuid:
-            guard let value = element as? TupleUUID else {
+            guard case .uuid(let value) = value else {
                 throw .invalidTupleValue(expected: expectedType)
             }
-            let bytes = value.uuid
-            var high = UInt64(bytes.0) << 56
-            high |= UInt64(bytes.1) << 48
-            high |= UInt64(bytes.2) << 40
-            high |= UInt64(bytes.3) << 32
-            high |= UInt64(bytes.4) << 24
-            high |= UInt64(bytes.5) << 16
-            high |= UInt64(bytes.6) << 8
-            high |= UInt64(bytes.7)
-            var low = UInt64(bytes.8) << 56
-            low |= UInt64(bytes.9) << 48
-            low |= UInt64(bytes.10) << 40
-            low |= UInt64(bytes.11) << 32
-            low |= UInt64(bytes.12) << 24
-            low |= UInt64(bytes.13) << 16
-            low |= UInt64(bytes.14) << 8
-            low |= UInt64(bytes.15)
-            return .uuid(DatabaseTypes.UUID(high: high, low: low))
+            return .uuid(value)
 
         case .composite(let expectedComponents):
             guard !expectedComponents.isEmpty else {
-            throw .invalidTupleValue(expected: expectedType)
+                throw .invalidTupleValue(expected: expectedType)
             }
             guard depth < limits.maximumCompositeDepth else {
                 throw .compositeDepthExceeded(
@@ -250,7 +213,7 @@ public enum PersistableIdentifierKeyCodec {
                     maximum: limits.maximumCompositeDepth
                 )
             }
-            guard let tuple = element as? Tuple,
+            guard case .nested(let tuple) = value,
                   tuple.count == expectedComponents.count else {
                 throw .invalidTupleValue(expected: expectedType)
             }
@@ -258,9 +221,9 @@ public enum PersistableIdentifierKeyCodec {
             var components: [ReferenceIdentifier] = []
             components.reserveCapacity(expectedComponents.count)
             for index in expectedComponents.indices {
-                let component: any TupleElement
+                let component: TupleValue
                 do {
-                    component = try tuple.element(at: index)
+                    component = try tuple.value(at: index)
                 } catch {
                     throw .invalidTupleValue(expected: expectedType)
                 }
@@ -279,11 +242,11 @@ public enum PersistableIdentifierKeyCodec {
     }
 
     private static func signedInteger<Value: FixedWidthInteger & SignedInteger>(
-        _ element: any TupleElement,
+        _ element: TupleValue,
         expectedType: PersistableIdentifierType,
         as type: Value.Type
     ) throws(PersistableIdentifierKeyError) -> Value {
-        guard let encoded = element as? Int64,
+        guard case .signedInteger(let encoded) = element,
               let value = Value(exactly: encoded) else {
             throw .invalidTupleValue(expected: expectedType)
         }
@@ -293,15 +256,15 @@ public enum PersistableIdentifierKeyCodec {
     private static func unsignedInteger<
         Value: FixedWidthInteger & UnsignedInteger
     >(
-        _ element: any TupleElement,
+        _ element: TupleValue,
         expectedType: PersistableIdentifierType,
         as type: Value.Type
     ) throws(PersistableIdentifierKeyError) -> Value {
-        if let encoded = element as? UInt64,
+        if case .unsignedInteger(let encoded) = element,
            let value = Value(exactly: encoded) {
             return value
         }
-        guard let encoded = element as? Int64,
+        guard case .signedInteger(let encoded) = element,
               encoded >= 0,
               let value = Value(exactly: encoded) else {
             throw .invalidTupleValue(expected: expectedType)

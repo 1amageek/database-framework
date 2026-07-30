@@ -8,26 +8,24 @@ public struct DatabaseRuntimeConfiguration: Sendable {
     public let logicalSourceExecutors: LogicalSourceExecutorRegistry
     public let persistableMutationMaintainers: [any PersistableMutationMaintainer]
     public let authorizationPolicies: AuthorizationPolicyRegistry
-    public let persistableTypes: PersistableTypeRegistry
+    public let entityRuntimes: EntityRuntimeRegistry
 
     public init(
-        indexMaintainerProviders: [any IndexMaintainerProvider] = [],
-        indexReadExecutors: [any IndexReadExecutor] = [],
+        indexMaintainerProviderDescriptors: [
+            IndexMaintainerProviderDescriptor
+        ] = [],
         polymorphicIndexReadExecutors: [any PolymorphicIndexReadExecutor] = [],
-        fusionReadExecutors: [any FusionReadExecutor] = [],
         graphTableSourceExecutor: (any GraphTableSourceExecutor)? = nil,
         sparqlSourceExecutor: (any SPARQLSourceExecutor)? = nil,
         persistableMutationMaintainers: [any PersistableMutationMaintainer] = [],
-        persistableTypes: [any Persistable.Type] = [],
+        entityRuntimes: [EntityRuntimeRegistration] = [],
         authorizationPolicies: [AuthorizationPolicyHandler] = []
     ) throws(DatabaseRuntimeConfigurationError) {
         self.indexMaintainerProviders = try IndexMaintainerProviderRegistry(
-            providers: indexMaintainerProviders
+            descriptors: indexMaintainerProviderDescriptors
         )
         self.readExecutors = try ReadExecutorRegistry(
-            indexExecutors: indexReadExecutors,
-            polymorphicIndexExecutors: polymorphicIndexReadExecutors,
-            fusionExecutors: fusionReadExecutors
+            polymorphicIndexExecutors: polymorphicIndexReadExecutors
         )
         self.logicalSourceExecutors = LogicalSourceExecutorRegistry(
             graphTableExecutor: graphTableSourceExecutor,
@@ -36,8 +34,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         self.authorizationPolicies = try AuthorizationPolicyRegistry(
             handlers: authorizationPolicies
         )
-        self.persistableTypes = try PersistableTypeRegistry(
-            types: persistableTypes
+        self.entityRuntimes = try EntityRuntimeRegistry(
+            registrations: entityRuntimes
         )
         var maintainerIdentifiers = Set<String>()
         for maintainer in persistableMutationMaintainers {
@@ -54,12 +52,13 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         schema: Schema
     ) throws(DatabaseRuntimeConfigurationError) {
         for entity in schema.entities {
-            guard persistableTypes.type(named: entity.name) != nil else {
+            guard let entityRuntime = entityRuntimes.registration(named: entity.name) else {
                 throw .missingCompiledEntityType(entityName: entity.name)
             }
             try validateMaintainerProviders(
                 source: .entity(entity.name),
-                descriptors: entity.indexDescriptors
+                descriptors: entity.indexDescriptors,
+                entityRuntime: entityRuntime
             )
             for maintained in entity.relationships {
                 guard persistableMutationMaintainers.contains(where: {
@@ -75,7 +74,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         }
         for group in schema.polymorphicGroups {
             for memberTypeName in group.memberTypeNames {
-                guard let memberType = persistableTypes.type(
+                guard let memberRuntime = entityRuntimes.registration(
                     named: memberTypeName
                 ) else {
                     throw .missingCompiledPolymorphicMemberType(
@@ -85,9 +84,9 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 }
                 try validateMaintainerProviders(
                     source: .polymorphicGroup(group.identifier),
-                    descriptors: schema.polymorphicIndexDescriptors(
+                        descriptors: schema.polymorphicIndexDescriptors(
                         identifier: group.identifier,
-                        memberType: memberType
+                        memberTypeName: memberRuntime.entity.name
                     )
                 )
             }
@@ -102,7 +101,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             } catch {
                 throw .invalidPersistableMutationMaintainerSchema(
                     identifier: maintainer.identifier,
-                    reason: String(describing: error)
+                    reason: "maintainer schema validation failed"
                 )
             }
         }
@@ -110,10 +109,11 @@ public struct DatabaseRuntimeConfiguration: Sendable {
 
     private func validateMaintainerProviders(
         source: DatabaseRuntimeIndexRequirementSource,
-        descriptors: [IndexDescriptor]
+        descriptors: [IndexDescriptor],
+        entityRuntime: EntityRuntimeRegistration? = nil
     ) throws(DatabaseRuntimeConfigurationError) {
         for descriptor in descriptors {
-            guard let requirements = indexMaintainerProviders.runtimeRequirements(
+            guard let requirements = entityRuntime?.runtimeRequirements(
                 for: descriptor.kindIdentifier
             ) else {
                 throw .missingIndexMaintainerProvider(
@@ -127,7 +127,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 indexName: descriptor.name,
                 kindIdentifier: descriptor.kindIdentifier,
                 requiresUniqueness: descriptor.isUnique,
-                requirements: requirements
+                requirements: requirements,
+                entityRuntime: entityRuntime
             )
         }
     }
@@ -185,9 +186,10 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         indexName: String,
         kindIdentifier: String,
         requiresUniqueness: Bool,
-        requirements: IndexRuntimeRequirements
+        requirements: IndexRuntimeRequirements,
+        entityRuntime: EntityRuntimeRegistration? = nil
     ) throws(DatabaseRuntimeConfigurationError) {
-        guard indexMaintainerProviders.contains(
+        guard entityRuntime != nil || indexMaintainerProviders.contains(
             kindIdentifier: kindIdentifier
         ) else {
             throw .missingIndexMaintainerProvider(
@@ -196,10 +198,20 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 kindIdentifier: kindIdentifier
             )
         }
-        if requiresUniqueness,
-           indexMaintainerProviders.supportsUniquenessConstraints(
-               for: kindIdentifier
-           ) != true {
+        if let entityRuntime,
+           !entityRuntime.hasIndexProvider(for: kindIdentifier) {
+            throw .missingIndexMaintainerProvider(
+                source: source,
+                indexName: indexName,
+                kindIdentifier: kindIdentifier
+            )
+        }
+        let supportsUniqueness = entityRuntime?
+            .supportsUniquenessConstraints(for: kindIdentifier)
+            ?? indexMaintainerProviders.supportsUniquenessConstraints(
+                for: kindIdentifier
+            )
+        if requiresUniqueness, supportsUniqueness != true {
             throw .missingIndexUniquenessSupport(
                 source: source,
                 indexName: indexName,
@@ -209,7 +221,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         switch source {
         case .entity:
             if requirements.requiresEntityReadExecutor,
-               readExecutors.indexExecutor(for: kindIdentifier) == nil {
+               entityRuntime?.hasIndexReader(for: kindIdentifier) != true {
                 throw .missingIndexReadExecutor(
                     source: source,
                     indexName: indexName,

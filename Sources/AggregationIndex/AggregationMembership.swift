@@ -23,8 +23,14 @@ func incrementAggregationMembership(
     maximumScanBytes: Int,
     transaction: any TransactionAccess
 ) async throws -> Bool {
-    let storedMember = try await transaction.getValue(for: key)
-    let storedMetadata = try await transaction.getValue(for: metadataKey)
+    let storedMember = try await transaction.getValue(
+        for: key,
+        snapshot: false
+    )
+    let storedMetadata = try await transaction.getValue(
+        for: metadataKey,
+        snapshot: false
+    )
 
     if let storedMember {
         let current = try decodeAggregationMembershipCount(storedMember)
@@ -104,8 +110,14 @@ func decrementAggregationMembership(
     maximumScanBytes: Int,
     transaction: any TransactionAccess
 ) async throws -> Bool {
-    let storedMember = try await transaction.getValue(for: key)
-    let storedMetadata = try await transaction.getValue(for: metadataKey)
+    let storedMember = try await transaction.getValue(
+        for: key,
+        snapshot: false
+    )
+    let storedMetadata = try await transaction.getValue(
+        for: metadataKey,
+        snapshot: false
+    )
     guard let storedMember else {
         throw AggregationStorageError.negativeCount(-1)
     }

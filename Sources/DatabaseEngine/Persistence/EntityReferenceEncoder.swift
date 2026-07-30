@@ -3,29 +3,30 @@ import DatabaseTypes
 
 /// Encodes a compiled model's complete storage identity into the canonical value model.
 public enum EntityReferenceEncoder {
-    public static func encode<Model: Persistable>(
-        _ model: borrowing Model
+    public static func encode(
+        _ model: borrowing any Persistable
     ) throws -> EntityReference {
+        let modelType = type(of: model)
         let identifier = model.persistableIdentifierValue
         do {
             try PersistableIdentifierKeyCodec.validate(
                 identifier,
-                expectedType: Model.persistableIdentifierType
+                expectedType: modelType.persistableIdentifierType
             )
         } catch {
             throw EntityReferenceEncodingError.identifierNotRepresentable(
-                entity: Model.persistableType
+                entity: modelType.persistableType
             )
         }
         var partitions: [(key: String, value: FieldValue)] = []
-        partitions.reserveCapacity(Model.directoryFieldNames.count)
+        partitions.reserveCapacity(modelType.directoryFieldNames.count)
 
-        for component in Model.directoryPathComponents {
+        for component in modelType.directoryPathComponents {
             guard case .dynamicField(let name) = component else { continue }
-            guard let schema = Model.fieldSchemas.first(where: { $0.name == name }),
+            guard let schema = modelType.fieldSchemas.first(where: { $0.name == name }),
                   schema.fieldNumber > 0 else {
                 throw EntityReferenceEncodingError.invalidCompiledSchema(
-                    entity: Model.persistableType,
+                    entity: modelType.persistableType,
                     reason: "dynamic partition field '\(name)' is missing from fieldSchemas"
                 )
             }
@@ -37,13 +38,13 @@ public enum EntityReferenceEncoder {
                 for: field
             ) else {
                 throw EntityReferenceEncodingError.invalidCompiledSchema(
-                    entity: Model.persistableType,
+                    entity: modelType.persistableType,
                     reason: "dynamic partition field '\(name)' was not emitted by the compiled model adapter"
                 )
             }
             guard encodedValue != .null else {
                 throw EntityReferenceEncodingError.invalidCompiledSchema(
-                    entity: Model.persistableType,
+                    entity: modelType.persistableType,
                     reason: "dynamic partition field '\(name)' cannot be null"
                 )
             }
@@ -53,15 +54,15 @@ public enum EntityReferenceEncoder {
         let partitionObject: FieldObject
         do {
             partitionObject = try FieldObject(partitions)
-        } catch let error {
+        } catch {
             throw EntityReferenceEncodingError.invalidCompiledSchema(
-                entity: Model.persistableType,
-                reason: String(describing: error)
+                entity: modelType.persistableType,
+                reason: "partition object construction failed"
             )
         }
 
         return try EntityReference(
-            entity: Model.persistableType,
+            entity: modelType.persistableType,
             id: identifier,
             partitions: partitionObject
         )

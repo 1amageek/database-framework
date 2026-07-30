@@ -3,11 +3,6 @@
 //
 // Provides DatabaseContext extension for PageRank and Community Detection.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -222,7 +217,10 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
 
         return try await queryContext.withTransaction { transaction in
             let computer = PageRankComputer(
-                snapshot: GraphReadSnapshot(transaction: transaction),
+                snapshot: GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: queryContext.context.container.monotonicClock
+            ),
                 subspace: resolvedIndex.indexSubspace,
                 strategy: resolvedIndex.metadata.strategy,
                 configuration: configuration
@@ -246,7 +244,10 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
 
         return try await queryContext.withTransaction { transaction in
             let computer = PageRankComputer(
-                snapshot: GraphReadSnapshot(transaction: transaction),
+                snapshot: GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: queryContext.context.container.monotonicClock
+            ),
                 subspace: resolvedIndex.indexSubspace,
                 strategy: resolvedIndex.metadata.strategy,
                 configuration: configuration
@@ -356,7 +357,10 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
 
         return try await queryContext.withTransaction { transaction in
             let detector = CommunityDetector(
-                snapshot: GraphReadSnapshot(transaction: transaction),
+                snapshot: GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: queryContext.context.container.monotonicClock
+            ),
                 subspace: resolvedIndex.indexSubspace,
                 strategy: resolvedIndex.metadata.strategy,
                 configuration: configuration
@@ -382,7 +386,10 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
 
         let identities = try await queryContext.withTransaction { transaction in
             let detector = CommunityDetector(
-                snapshot: GraphReadSnapshot(transaction: transaction),
+                snapshot: GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: queryContext.context.container.monotonicClock
+            ),
                 subspace: resolvedIndex.indexSubspace,
                 strategy: resolvedIndex.metadata.strategy,
                 configuration: configuration

@@ -5,11 +5,6 @@
 // Efficiently fetches multiple entities by batching primary key lookups.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import Synchronization
@@ -232,7 +227,8 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                 )
 
                 do {
-                    for try await pk in primaryKeys {
+                    var primaryKeyIterator = primaryKeys.makeAsyncIterator()
+                    while let pk = try await primaryKeyIterator.next() {
                         batch.append(pk)
 
                         if batch.count >= configuration.batchSize {
@@ -295,7 +291,8 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                 )
 
                 do {
-                    for try await (key, _) in indexEntries {
+                    var indexEntryIterator = indexEntries.makeAsyncIterator()
+                    while let (key, _) = try await indexEntryIterator.next() {
                         // Extract primary key from index entry
                         if let pk = try extractPrimaryKey(
                             from: key,
@@ -478,7 +475,7 @@ public final class PrefetchingBatchFetcher<Item: Persistable>: Sendable {
             // Start new prefetch
             state.prefetchKeys = primaryKeys
             state.prefetchTask = Task {
-                try await self.container.engine.withTransaction(configuration: .batch) { transaction in
+                try await self.container.transactionExecutor.withTransaction(configuration: .batch, clock: self.container.monotonicClock) { transaction in
                     return try await self.baseFetcher.fetch(
                         primaryKeys: primaryKeys,
                         transaction: transaction

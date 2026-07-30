@@ -57,73 +57,59 @@ public struct GraphTableRow: Sendable {
 /// Executor for SQL/PGQ GRAPH_TABLE queries
 ///
 /// Converts SQL/PGQ match patterns to GraphPropertyScanner calls with property filtering.
-public struct GraphTableExecutor<T: Persistable>: Sendable {
-    private let queryContext: IndexQueryContext
+public struct GraphTableExecutor: Sendable {
     private let graphTableSource: GraphTableSource
-    private let transactionConfiguration: TransactionConfiguration
+    private let indexDescriptor: IndexDescriptor
+    private let indexSubspace: Subspace
 
     public init(
-        queryContext: IndexQueryContext,
-        graphTableSource: GraphTableSource,
-        transactionConfiguration: TransactionConfiguration = .default
+        indexDescriptor: IndexDescriptor,
+        indexSubspace: Subspace,
+        graphTableSource: GraphTableSource
     ) {
-        self.queryContext = queryContext
+        self.indexDescriptor = indexDescriptor
+        self.indexSubspace = indexSubspace
         self.graphTableSource = graphTableSource
-        self.transactionConfiguration = transactionConfiguration
-    }
-
-    public init(
-        container: DBContainer,
-        graphTableSource: GraphTableSource,
-        transactionConfiguration: TransactionConfiguration = .default
-    ) {
-        self.init(
-            queryContext: IndexQueryContext(context: DatabaseContext(container: container)),
-            graphTableSource: graphTableSource,
-            transactionConfiguration: transactionConfiguration
-        )
     }
 
     /// Execute GRAPH_TABLE query and return matching rows
-    public func execute() async throws -> [GraphTableRow] {
+    public func execute(
+        transaction: any TransactionAccess
+    ) async throws -> [GraphTableRow] {
         let steps = try extractSteps(from: graphTableSource.matchPattern)
         guard !steps.isEmpty else {
             throw GraphTableError.invalidGraphPattern("No edge patterns found in MATCH clause")
         }
 
-        let indexDescriptor = try findGraphIndex()
         let metadata = try PropertyGraphIndexMetadata(
             canonical: indexDescriptor.kind
         )
-        let indexSubspace = try await queryContext.indexSubspace(for: T.self).subspace(indexDescriptor.name)
         let scanner = GraphPropertyScanner(
             indexSubspace: indexSubspace,
             strategy: metadata.strategy,
             storedFieldNames: indexDescriptor.storedFieldNames
         )
 
-        return try await queryContext.withTransaction(configuration: transactionConfiguration) { transaction in
-            var states: [MatchState] = [MatchState()]
+        var states: [MatchState] = [MatchState()]
 
-            for step in steps {
-                states = try await extend(
-                    states: states,
-                    with: step,
-                    scanner: scanner,
-                    strategy: metadata.strategy,
-                    transaction: transaction
-                )
-                if states.isEmpty {
-                    return []
-                }
+        for step in steps {
+            states = try await extend(
+                states: states,
+                with: step,
+                scanner: scanner,
+                strategy: metadata.strategy,
+                transaction: transaction
+            )
+            if states.isEmpty {
+                return []
             }
-
-            let rows = try states.map(makeRow)
-            guard let filter = graphTableSource.matchPattern.where else {
-                return rows
-            }
-            return try rows.filter { try evaluateBoolean(filter, fields: $0.fields) }
         }
+
+        let rows = try states.map(makeRow)
+        guard let filter = graphTableSource.matchPattern.where else {
+            return rows
+        }
+        return try rows.filter { try evaluateBoolean(filter, fields: $0.fields) }
     }
 
     // MARK: - Pattern Evaluation
@@ -268,7 +254,8 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
                     transaction: transaction
                 )
 
-                for try await edge in stream {
+                var edgeCursor = stream.makeCursor()
+                while let edge = try await edgeCursor.next() {
                     let (leftID, rightID) = try endpointIDs(
                         for: edge,
                         orientation: orientation
@@ -747,20 +734,6 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         try literal.toFieldValue()
     }
 
-    // MARK: - Index Resolution
-
-    /// Find graph index for the given type
-    private func findGraphIndex() throws -> IndexDescriptor {
-        let descriptors = try T.indexDescriptors
-
-        for descriptor in descriptors where descriptor.kindIdentifier == "graph" {
-            return descriptor
-        }
-
-        throw GraphTableError.indexNotFound(
-            "No property-graph index found for type \(T.self)"
-        )
-    }
 }
 
 // MARK: - DatabaseContext Extension
@@ -791,10 +764,28 @@ extension DatabaseContext {
         _ type: T.Type,
         source: GraphTableSource
     ) async throws -> [GraphTableRow] {
-        let executor = GraphTableExecutor<T>(
-            container: container,
-            graphTableSource: source
-        )
-        return try await executor.execute()
+        guard let descriptor = try T.indexDescriptors.first(
+            where: { $0.kindIdentifier == "graph" }
+        ) else {
+            throw GraphTableError.indexNotFound(
+                "No property-graph index found for entity \(T.persistableType)"
+            )
+        }
+        let queryContext = indexQueryContext
+        return try await queryContext.withTransaction { transaction in
+            guard let indexSubspace = try await queryContext
+                .readableIndexSubspace(
+                    named: descriptor.name,
+                    for: T.self,
+                    transaction: transaction
+                ) else {
+                return []
+            }
+            return try await GraphTableExecutor(
+                indexDescriptor: descriptor,
+                indexSubspace: indexSubspace,
+                graphTableSource: source
+            ).execute(transaction: transaction)
+        }
     }
 }

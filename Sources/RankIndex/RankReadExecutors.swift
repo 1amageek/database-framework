@@ -18,9 +18,14 @@ enum RankReadParameter {
 }
 
 public enum RankReadExecutors {
-    public static var indexExecutor: any IndexReadExecutor { RankReadExecutor() }
     public static var polymorphicIndexExecutor: any PolymorphicIndexReadExecutor {
         PolymorphicRankReadExecutor()
+    }
+
+    public static func register<Model: Persistable>(
+        with definition: inout EntityRuntimeDefinition<Model>
+    ) throws(DatabaseRuntimeConfigurationError) {
+        try definition.register(RankReadExecutor())
     }
 }
 

@@ -3,11 +3,6 @@
 //
 // Provides IndexRuntimeConfiguration implementation for explicit vector index layouts.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
@@ -16,20 +11,6 @@ import DatabaseTypes
 
 /// Runtime behavior shared by every typed vector index configuration.
 ///
-/// **Usage during vector maintainer construction**:
-/// ```swift
-/// if let config = matchingConfig as? VectorIndexRuntimeConfiguration {
-///     switch config.algorithm { ... }
-/// }
-/// ```
-protocol VectorIndexRuntimeConfiguration: IndexRuntimeConfiguration {
-    /// Vector search algorithm selection
-    var algorithm: VectorAlgorithm { get }
-
-    /// Subspace key for data isolation (inherited from IndexRuntimeConfiguration)
-    var subspaceKey: String? { get }
-}
-
 // MARK: - Vector Index Configuration
 
 /// Runtime configuration for a declared vector index.
@@ -81,7 +62,7 @@ protocol VectorIndexRuntimeConfiguration: IndexRuntimeConfiguration {
 /// - Development/testing
 ///
 public struct VectorIndexConfiguration<Model: Persistable>:
-    VectorIndexRuntimeConfiguration {
+    IndexRuntimeConfiguration {
     /// Must match the canonical vector index identifier.
     public static var kindIdentifier: String { "vector" }
 
@@ -101,6 +82,31 @@ public struct VectorIndexConfiguration<Model: Persistable>:
     /// When specified, creates a separate subspace for this configuration's data.
     /// Useful for maintaining multiple algorithm variants (e.g., "hnsw", "flat").
     public let subspaceKey: String?
+
+    public var executionOptions: FieldObject {
+        get throws {
+            var fields: [(key: String, value: FieldValue)] = []
+            switch algorithm {
+            case .flat:
+                fields.append(("algorithm", .string("flat")))
+            case .hnsw(let parameters):
+                fields.append(("algorithm", .string("hnsw")))
+                fields.append(("efConstruction", .int64(Int64(parameters.efConstruction))))
+                fields.append(("efSearch", .int64(Int64(parameters.efSearch))))
+                fields.append(("m", .int64(Int64(parameters.m))))
+            case .ivf(let parameters):
+                fields.append(("algorithm", .string("ivf")))
+                fields.append(("kmeansIterations", .int64(Int64(parameters.kmeansIterations))))
+                fields.append(("nlist", .int64(Int64(parameters.nlist))))
+                fields.append(("nprobe", .int64(Int64(parameters.nprobe))))
+            case .pq(let parameters):
+                fields.append(("algorithm", .string("pq")))
+                fields.append(("m", .int64(Int64(parameters.m))))
+                fields.append(("niter", .int64(Int64(parameters.niter))))
+            }
+            return try FieldObject(fields)
+        }
+    }
 
     // MARK: - Initialization
 
@@ -226,7 +232,7 @@ public enum VectorAlgorithm: Sendable {
 /// - `.default`: Balanced (m=16, efConstruction=200, efSearch=50)
 /// - `.highRecall`: Better quality (m=32, efConstruction=400, efSearch=100)
 /// - `.fast`: Faster build (m=8, efConstruction=100, efSearch=30)
-public struct VectorHNSWParameters: Sendable, Codable, Hashable {
+public struct VectorHNSWParameters: Sendable, Hashable {
     /// Maximum bi-directional links per node per layer
     public let m: Int
 
@@ -299,7 +305,7 @@ public struct VectorHNSWParameters: Sendable, Codable, Hashable {
 /// - `.fast`: Faster search (nlist=256, nprobe=5)
 ///
 /// **Reference**: Jégou et al., "Product Quantization for Nearest Neighbor Search", 2011
-public struct VectorIVFParameters: Sendable, Codable, Hashable {
+public struct VectorIVFParameters: Sendable, Hashable {
     /// Number of clusters (inverted lists)
     public let nlist: Int
 
@@ -371,7 +377,7 @@ public struct VectorIVFParameters: Sendable, Codable, Hashable {
 /// - `.highAccuracy`: Better accuracy (m=16)
 ///
 /// **Reference**: Jégou et al., "Product Quantization for Nearest Neighbor Search", 2011
-public struct VectorPQParameters: Sendable, Codable, Hashable {
+public struct VectorPQParameters: Sendable, Hashable {
     /// Number of subquantizers
     ///
     /// Must divide vector dimensions evenly.

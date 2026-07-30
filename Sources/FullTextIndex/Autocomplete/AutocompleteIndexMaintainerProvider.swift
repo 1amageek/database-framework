@@ -11,7 +11,8 @@ public struct AutocompleteIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration]
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
         let configuration = try AutocompleteIndexConfiguration(
             metadata: index.kind

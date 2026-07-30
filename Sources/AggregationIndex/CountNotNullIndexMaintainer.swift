@@ -5,11 +5,6 @@
 // Reference: FDB Record Layer COUNT_NOT_NULL index type
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit

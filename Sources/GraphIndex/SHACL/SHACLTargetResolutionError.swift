@@ -8,7 +8,7 @@ public enum SHACLTargetResolutionError: Error, Sendable, Equatable,
     public var description: String {
         switch self {
         case .implicitClassRequiresIRI(let identifier):
-            return "An implicit-class SHACL shape requires an IRI identifier, got \(String(describing: identifier))"
+            return "An implicit-class SHACL shape requires an IRI identifier, got \(identifier?.description ?? "nil")"
         }
     }
 }

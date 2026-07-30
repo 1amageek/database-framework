@@ -18,10 +18,10 @@ public enum PolymorphicIdentifierKey {
         for modelType: any Persistable.Type,
         identifier: Tuple
     ) throws(PolymorphicIdentifierKeyError) -> Tuple {
-        let polymorphicType = try requirePolymorphicType(modelType)
+        try requirePolymorphicMembership(modelType)
         try validateModelIdentifier(identifier, for: modelType)
         return Tuple(
-            polymorphicType.typeCode(for: modelType.persistableType)
+            PolymorphicTypeCode.value(for: modelType.persistableType)
         ).appending(identifier)
     }
 
@@ -33,20 +33,18 @@ public enum PolymorphicIdentifierKey {
             throw .invalidElementCount(actual: tuple.count)
         }
 
-        let polymorphicType = try requirePolymorphicType(modelType)
-        let actualTypeCode: Int64
+        try requirePolymorphicMembership(modelType)
+        let typeCodeValue: TupleValue
         do {
-            guard let value = try tuple.element(at: 0) as? Int64 else {
-                throw PolymorphicIdentifierKeyError.invalidTypeCode
-            }
-            actualTypeCode = value
-        } catch let error as PolymorphicIdentifierKeyError {
-            throw error
+            typeCodeValue = try tuple.value(at: 0)
         } catch {
             throw .invalidTypeCode
         }
+        guard case .signedInteger(let actualTypeCode) = typeCodeValue else {
+            throw .invalidTypeCode
+        }
 
-        let expectedTypeCode = polymorphicType.typeCode(
+        let expectedTypeCode = PolymorphicTypeCode.value(
             for: modelType.persistableType
         )
         guard actualTypeCode == expectedTypeCode else {
@@ -68,13 +66,12 @@ public enum PolymorphicIdentifierKey {
         )
     }
 
-    private static func requirePolymorphicType(
+    private static func requirePolymorphicMembership(
         _ modelType: any Persistable.Type
-    ) throws(PolymorphicIdentifierKeyError) -> any Polymorphable.Type {
-        guard let polymorphicType = modelType as? any Polymorphable.Type else {
+    ) throws(PolymorphicIdentifierKeyError) {
+        guard modelType.polymorphicMembership != nil else {
             throw .modelIsNotPolymorphic(typeName: modelType.persistableType)
         }
-        return polymorphicType
     }
 
     private static func validateModelIdentifier(

@@ -7,7 +7,6 @@
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
-import Metrics
 import Synchronization
 
 /// Mutual online index builder
@@ -90,11 +89,11 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
     // MARK: - Metrics
 
-    private let itemsIndexedCounter: Counter
-    private let batchesProcessedCounter: Counter
-    private let batchDurationTimer: Metrics.Timer
-    private let errorsCounter: Counter
-    private let mutualPairsCounter: Counter
+    private let itemsIndexedCounter: DatabaseMetricCounter
+    private let batchesProcessedCounter: DatabaseMetricCounter
+    private let batchDurationTimer: DatabaseMetricTimer
+    private let errorsCounter: DatabaseMetricCounter
+    private let mutualPairsCounter: DatabaseMetricCounter
 
     // MARK: - Initialization
 
@@ -180,23 +179,24 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
             ("reverse_index", reverseIndex.name)
         ]
 
-        self.itemsIndexedCounter = Counter(
+        let metrics = container.configuration.metrics
+        self.itemsIndexedCounter = metrics.counter(
             label: "database_mutual_indexer_items_indexed_total",
             dimensions: baseDimensions
         )
-        self.batchesProcessedCounter = Counter(
+        self.batchesProcessedCounter = metrics.counter(
             label: "database_mutual_indexer_batches_processed_total",
             dimensions: baseDimensions
         )
-        self.batchDurationTimer = Metrics.Timer(
+        self.batchDurationTimer = metrics.timer(
             label: "database_mutual_indexer_batch_duration_seconds",
             dimensions: baseDimensions
         )
-        self.errorsCounter = Counter(
+        self.errorsCounter = metrics.counter(
             label: "database_mutual_indexer_errors_total",
             dimensions: baseDimensions
         )
-        self.mutualPairsCounter = Counter(
+        self.mutualPairsCounter = metrics.counter(
             label: "database_mutual_indexer_pairs_created_total",
             dimensions: baseDimensions
         )
@@ -288,14 +288,14 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
-            let batchStartTime = MonotonicClock.now()
+            let batchStartTime = container.monotonicClock.now
 
             do {
                 // Capture current rangeSet state before transaction
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                     var itemsInBatch = 0
                     var pairsInBatch = 0
                     var lastProcessedKey: ByteString? = nil
@@ -316,7 +316,8 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                     var batchEntries: [(item: Item, id: Tuple)] = []
                     batchEntries.reserveCapacity(self.batchSize)
 
-                    for try await (key, data) in scanSequence {
+                    var iterator = scanSequence.makeAsyncIterator()
+                    while let (key, data) = try await iterator.next() {
                         // Deserialize item from decompressed data
                         let item: Item = try DataAccess.deserialize(data)
                         let id = try itemTypeSubspace.unpack(key)
@@ -376,8 +377,11 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 }
 
                 // Record metrics
-                let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
-                batchDurationTimer.recordNanoseconds(Int64(batchDuration))
+                let batchDuration = DatabaseMonotonicMeasurement.nanoseconds(
+                    from: batchStartTime,
+                    to: container.monotonicClock.now
+                )
+                batchDurationTimer.recordNanoseconds(batchDuration)
                 batchesProcessedCounter.increment()
                 itemsIndexedCounter.increment(by: itemsInBatch * 2)  // Both directions
                 mutualPairsCounter.increment(by: pairsInBatch)
@@ -411,7 +415,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         let forwardSubspace = indexSubspace.subspace(forwardIndex.name)
         let reverseSubspace = indexSubspace.subspace(reverseIndex.name)
 
-        let inconsistencies: [(forward: Tuple, reverse: Tuple)] = try await container.engine.withTransaction(configuration: .batch) { transaction in
+        let inconsistencies: [(forward: Tuple, reverse: Tuple)] = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             var inconsistencies: [(forward: Tuple, reverse: Tuple)] = []
 
             let forwardRange = forwardSubspace.range()
@@ -422,6 +426,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 from: .firstGreaterOrEqual(forwardRange.begin),
                 to: .firstGreaterOrEqual(forwardRange.end),
                 limit: sampleLimit,
+                reverse: false,
                 snapshot: true,
                 streamingMode: .iterator
             )
@@ -460,7 +465,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress(key: ByteString) async throws -> RangeSet? {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -475,7 +480,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     private func clearProgress() async throws {
         let forwardKey = self.forwardProgressKey
         let reverseKey = self.reverseProgressKey
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clear(key: forwardKey)
             try transaction.clear(key: reverseKey)
         }
@@ -485,7 +490,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
     private func clearIndexData(for index: Index) async throws {
         let indexRange = self.indexSubspace.subspace(index.name).range()
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }
     }
@@ -617,13 +622,16 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         let seq1 = try await transaction.collectRange(
             from: .firstGreaterOrEqual(range1.begin),
             to: .firstGreaterOrEqual(range1.end),
+            limit: 0,
+            reverse: false,
             snapshot: true,
             streamingMode: .wantAll
         )
 
         for (key, _) in seq1 {
             let tuple = try indexSpace.unpack(key)
-            if tuple.count >= 2, let otherId = tuple[1] as? String {
+            if tuple.count >= 2,
+               case .string(let otherId) = try tuple.value(at: 1) {
                 results.append(otherId)
             }
         }
@@ -634,6 +642,8 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         let seq2 = try await transaction.collectRange(
             from: .firstGreaterOrEqual(fullRange.begin),
             to: .firstGreaterOrEqual(fullRange.end),
+            limit: 0,
+            reverse: false,
             snapshot: true,
             streamingMode: .wantAll
         )
@@ -641,8 +651,8 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         for (key, _) in seq2 {
             let tuple = try indexSpace.unpack(key)
             if tuple.count >= 2,
-               let firstId = tuple[0] as? String,
-               let secondId = tuple[1] as? String,
+               case .string(let firstId) = try tuple.value(at: 0),
+               case .string(let secondId) = try tuple.value(at: 1),
                secondId == entityId && firstId != entityId {
                 results.append(firstId)
             }

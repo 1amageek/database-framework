@@ -4,11 +4,6 @@
 // Reference: FoundationDB transaction options
 // https://apple.github.io/foundationdb/api-general.html#transaction-options
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 
 // MARK: - TransactionPriority
@@ -18,7 +13,7 @@ import StorageKit
 /// Controls how the transaction is scheduled relative to other transactions.
 ///
 /// **Reference**: FDB transaction options `prioritySystemImmediate`, `priorityBatch`
-public enum TransactionPriority: String, Sendable, Hashable, Codable {
+public enum TransactionPriority: String, Sendable, Hashable {
     /// Default priority - normal transaction processing
     case `default`
 
@@ -43,7 +38,7 @@ public enum TransactionPriority: String, Sendable, Hashable, Codable {
 /// Controls the priority of read operations within a transaction.
 ///
 /// **Reference**: FDB transaction options `readPriorityLow`, `readPriorityHigh`
-public enum ReadPriority: String, Sendable, Hashable, Codable {
+public enum ReadPriority: String, Sendable, Hashable {
     /// Normal read priority (default)
     case normal
 
@@ -260,7 +255,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
         maxRetryDelay: 5000,
         priority: .batch,
         readPriority: .low,
-        cachePolicy: .stale(60)
+        cachePolicy: .stale(.seconds(60))
     )
 
     /// Read-only configuration

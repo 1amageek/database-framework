@@ -3,18 +3,20 @@ import DatabaseEngine
 import DatabaseTypes
 
 /// Dataset-dependent expression resolution supplied by the query executor.
-/// The resolver must use the caller's transaction and active graph.
+/// Thrown failures retain their original execution-domain type. SPARQL
+/// expression failures travel through the outcome value.
 struct SPARQLRuntimeExpressionResolver: Sendable {
-    let exists: @Sendable (SelectQuery, VariableBinding) async throws -> Bool
+    let exists: @Sendable (
+        SelectQuery,
+        VariableBinding
+    ) async throws -> SPARQLExpressionEvaluationOutcome<Bool>
     let function: @Sendable (
         String,
         [FieldValue],
         VariableBinding
-    ) async throws -> FieldValue
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
 }
 
-/// Evaluates the canonical QueryIR expression tree without erasing dataset
-/// operations into synchronous closures.
 struct SPARQLRuntimeExpressionEvaluator: Sendable {
     private enum BooleanOutcome {
         case value(Bool)
@@ -26,13 +28,17 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
         binding: VariableBinding,
         resolver: SPARQLRuntimeExpressionResolver
     ) async throws -> Bool {
-        do {
-            return try ExpressionEvaluator.effectiveBooleanValue(
-                await evaluate(plan, binding: binding, resolver: resolver)
-            )
-        } catch let error as SPARQLExpressionEvaluationError
-            where error.isSPARQLEvaluationError {
-            return false
+        switch try await evaluate(plan, binding: binding, resolver: resolver) {
+        case .value(let value):
+            switch effectiveBooleanValue(value) {
+            case .value(let boolean): return boolean
+            case .expressionError(let error):
+                if error.isSPARQLEvaluationError { return false }
+                throw error
+            }
+        case .expressionError(let error):
+            if error.isSPARQLEvaluationError { return false }
+            throw error
         }
     }
 
@@ -40,95 +46,77 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
         _ plan: SPARQLExpressionPlan,
         binding: VariableBinding,
         resolver: SPARQLRuntimeExpressionResolver
-    ) async throws -> FieldValue {
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
         guard plan.requiresDataset
                 || plan.usesExtensionFunction
                 || plan.volatility != .immutable else {
-            return try ExpressionEvaluator.evaluate(
-                plan.expression,
-                binding: binding
-            )
+            return evaluateImmediate(plan.expression, binding: binding)
         }
-        return try await evaluateDatasetExpression(
+        return try await evaluateExpression(
             plan.expression,
             binding: binding,
             resolver: resolver
         )
     }
 
-    private static func evaluateDatasetExpression(
+    private static func evaluateExpression(
         _ expression: Expression,
         binding: VariableBinding,
         resolver: SPARQLRuntimeExpressionResolver
-    ) async throws -> FieldValue {
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
         switch expression {
         case .exists(let query):
-            let result = try await resolver.exists(query, binding)
-            return try ExpressionEvaluator.evaluate(
-                .literal(.bool(result)),
-                binding: binding
-            )
+            switch try await resolver.exists(query, binding) {
+            case .value(let result):
+                return canonicalBoolean(result, binding: binding)
+            case .expressionError(let error):
+                return .expressionError(error)
+            }
 
         case .and(let lhs, let rhs):
             return try await evaluateLogicalAnd(
-                lhs,
-                rhs,
-                binding: binding,
-                resolver: resolver
+                lhs, rhs, binding: binding, resolver: resolver
             )
-
         case .or(let lhs, let rhs):
             return try await evaluateLogicalOr(
-                lhs,
-                rhs,
-                binding: binding,
-                resolver: resolver
+                lhs, rhs, binding: binding, resolver: resolver
             )
-
         case .not(let operand):
-            let value = try await evaluateExpression(
-                operand,
-                binding: binding,
-                resolver: resolver
-            )
-            return try ExpressionEvaluator.evaluate(
-                .literal(
-                    .bool(!ExpressionEvaluator.effectiveBooleanValue(value))
-                ),
-                binding: binding
-            )
+            switch try await booleanOutcome(
+                operand, binding: binding, resolver: resolver
+            ) {
+            case .value(let value):
+                return canonicalBoolean(!value, binding: binding)
+            case .expressionError(let error):
+                return .expressionError(error)
+            }
 
         case .caseWhen(let pairs, let elseResult):
             for pair in pairs {
-                let condition = try await evaluateExpression(
-                    pair.condition,
-                    binding: binding,
-                    resolver: resolver
-                )
-                if try ExpressionEvaluator.effectiveBooleanValue(condition) {
+                switch try await booleanOutcome(
+                    pair.condition, binding: binding, resolver: resolver
+                ) {
+                case .value(true):
                     return try await evaluateExpression(
-                        pair.result,
-                        binding: binding,
-                        resolver: resolver
+                        pair.result, binding: binding, resolver: resolver
                     )
+                case .value(false):
+                    continue
+                case .expressionError(let error):
+                    return .expressionError(error)
                 }
             }
             if let elseResult {
                 return try await evaluateExpression(
-                    elseResult,
-                    binding: binding,
-                    resolver: resolver
+                    elseResult, binding: binding, resolver: resolver
                 )
             }
-            return .null
+            return .value(.null)
 
         case .coalesce(let expressions):
             return try await evaluateCoalesce(
-                expressions,
-                binding: binding,
-                resolver: resolver
+                expressions, binding: binding, resolver: resolver
             )
-
         case .inList(let operand, let values):
             return try await evaluateInList(
                 operand,
@@ -137,7 +125,6 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
                 binding: binding,
                 resolver: resolver
             )
-
         case .notInList(let operand, let values):
             return try await evaluateInList(
                 operand,
@@ -150,30 +137,26 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
         case .function(let call)
             where TextSearch.isEqualIgnoringASCIICase(call.name, "IF"):
             guard call.arguments.count == 3 else {
-                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(
-                    call.name
-                )
+                return .expressionError(.invalidFunctionArguments(call.name))
             }
-            let condition = try await evaluateExpression(
-                call.arguments[0],
-                binding: binding,
-                resolver: resolver
+            let condition = try await booleanOutcome(
+                call.arguments[0], binding: binding, resolver: resolver
             )
-            let branch = try ExpressionEvaluator.effectiveBooleanValue(condition)
-                ? call.arguments[1]
-                : call.arguments[2]
-            return try await evaluateExpression(
-                branch,
-                binding: binding,
-                resolver: resolver
-            )
+            switch condition {
+            case .value(let value):
+                return try await evaluateExpression(
+                    value ? call.arguments[1] : call.arguments[2],
+                    binding: binding,
+                    resolver: resolver
+                )
+            case .expressionError(let error):
+                return .expressionError(error)
+            }
 
         case .function(let call)
             where TextSearch.isEqualIgnoringASCIICase(call.name, "COALESCE"):
             return try await evaluateCoalesce(
-                call.arguments,
-                binding: binding,
-                resolver: resolver
+                call.arguments, binding: binding, resolver: resolver
             )
 
         case .function(let call):
@@ -181,8 +164,8 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
             do {
                 identifier = try SPARQLFunctionIdentifier.resolve(call.name)
             } catch {
-                throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                    "function \(call.name)"
+                return .expressionError(
+                    .unsupportedExpression("function \(call.name)")
                 )
             }
             switch identifier {
@@ -192,62 +175,34 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
                 var arguments: [FieldValue] = []
                 arguments.reserveCapacity(call.arguments.count)
                 for argument in call.arguments {
-                    arguments.append(
-                        try await evaluateExpression(
-                            argument,
-                            binding: binding,
-                            resolver: resolver
-                        )
-                    )
+                    switch try await evaluateExpression(
+                        argument, binding: binding, resolver: resolver
+                    ) {
+                    case .value(let value): arguments.append(value)
+                    case .expressionError(let error):
+                        return .expressionError(error)
+                    }
                 }
-                return try await resolver.function(
-                    call.name,
-                    arguments,
-                    binding
-                )
+                return try await resolver.function(call.name, arguments, binding)
             case .builtIn, .datatypeConstructor:
-                let lowered = try await lowerImmediateOperands(
-                    expression,
-                    binding: binding,
-                    resolver: resolver
-                )
-                return try ExpressionEvaluator.evaluate(
-                    lowered,
-                    binding: binding
+                return try await evaluateLowered(
+                    expression, binding: binding, resolver: resolver
                 )
             }
 
         case .subquery, .inSubquery:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                String(describing: expression)
+            return .expressionError(
+                .unsupportedExpression(
+                    SPARQLExpressionSemanticName.describe(expression)
+                )
             )
-
         case .literal, .variable, .bound:
-            return try ExpressionEvaluator.evaluate(
-                expression,
-                binding: binding
-            )
-
+            return evaluateImmediate(expression, binding: binding)
         default:
-            let lowered = try await lowerImmediateOperands(
-                expression,
-                binding: binding,
-                resolver: resolver
+            return try await evaluateLowered(
+                expression, binding: binding, resolver: resolver
             )
-            return try ExpressionEvaluator.evaluate(lowered, binding: binding)
         }
-    }
-
-    private static func evaluateExpression(
-        _ expression: Expression,
-        binding: VariableBinding,
-        resolver: SPARQLRuntimeExpressionResolver
-    ) async throws -> FieldValue {
-        try await evaluateDatasetExpression(
-            expression,
-            binding: binding,
-            resolver: resolver
-        )
     }
 
     private static func evaluateLogicalAnd(
@@ -255,33 +210,28 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
         _ rhs: Expression,
         binding: VariableBinding,
         resolver: SPARQLRuntimeExpressionResolver
-    ) async throws -> FieldValue {
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
         let left = try await booleanOutcome(
-            lhs,
-            binding: binding,
-            resolver: resolver
+            lhs, binding: binding, resolver: resolver
         )
         if case .value(false) = left {
-            return try canonicalBoolean(false, binding: binding)
+            return canonicalBoolean(false, binding: binding)
         }
-
         let right = try await booleanOutcome(
-            rhs,
-            binding: binding,
-            resolver: resolver
+            rhs, binding: binding, resolver: resolver
         )
         switch (left, right) {
         case (.value(true), .value(let value)):
-            return try canonicalBoolean(value, binding: binding)
+            return canonicalBoolean(value, binding: binding)
         case (.value(true), .expressionError(let error)):
-            throw error
+            return .expressionError(error)
         case (.expressionError, .value(false)):
-            return try canonicalBoolean(false, binding: binding)
+            return canonicalBoolean(false, binding: binding)
         case (.expressionError(let error), .value(true)),
              (.expressionError(let error), .expressionError):
-            throw error
+            return .expressionError(error)
         case (.value(false), _):
-            return try canonicalBoolean(false, binding: binding)
+            return canonicalBoolean(false, binding: binding)
         }
     }
 
@@ -290,33 +240,28 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
         _ rhs: Expression,
         binding: VariableBinding,
         resolver: SPARQLRuntimeExpressionResolver
-    ) async throws -> FieldValue {
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
         let left = try await booleanOutcome(
-            lhs,
-            binding: binding,
-            resolver: resolver
+            lhs, binding: binding, resolver: resolver
         )
         if case .value(true) = left {
-            return try canonicalBoolean(true, binding: binding)
+            return canonicalBoolean(true, binding: binding)
         }
-
         let right = try await booleanOutcome(
-            rhs,
-            binding: binding,
-            resolver: resolver
+            rhs, binding: binding, resolver: resolver
         )
         switch (left, right) {
         case (.value(false), .value(let value)):
-            return try canonicalBoolean(value, binding: binding)
+            return canonicalBoolean(value, binding: binding)
         case (.value(false), .expressionError(let error)):
-            throw error
+            return .expressionError(error)
         case (.expressionError, .value(true)):
-            return try canonicalBoolean(true, binding: binding)
+            return canonicalBoolean(true, binding: binding)
         case (.expressionError(let error), .value(false)),
              (.expressionError(let error), .expressionError):
-            throw error
+            return .expressionError(error)
         case (.value(true), _):
-            return try canonicalBoolean(true, binding: binding)
+            return canonicalBoolean(true, binding: binding)
         }
     }
 
@@ -325,15 +270,15 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
         binding: VariableBinding,
         resolver: SPARQLRuntimeExpressionResolver
     ) async throws -> BooleanOutcome {
-        do {
-            let value = try await evaluateExpression(
-                expression,
-                binding: binding,
-                resolver: resolver
-            )
-            return try .value(ExpressionEvaluator.effectiveBooleanValue(value))
-        } catch let error as SPARQLExpressionEvaluationError
-            where error.isSPARQLEvaluationError {
+        switch try await evaluateExpression(
+            expression, binding: binding, resolver: resolver
+        ) {
+        case .value(let value):
+            switch effectiveBooleanValue(value) {
+            case .value(let boolean): return .value(boolean)
+            case .expressionError(let error): return .expressionError(error)
+            }
+        case .expressionError(let error):
             return .expressionError(error)
         }
     }
@@ -342,22 +287,22 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
         _ expressions: [Expression],
         binding: VariableBinding,
         resolver: SPARQLRuntimeExpressionResolver
-    ) async throws -> FieldValue {
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
         for expression in expressions {
-            do {
-                let value = try await evaluateExpression(
-                    expression,
-                    binding: binding,
-                    resolver: resolver
-                )
-                if value != .null { return value }
-            } catch let error as SPARQLExpressionEvaluationError
-                where error.isSPARQLEvaluationError {
+            switch try await evaluateExpression(
+                expression, binding: binding, resolver: resolver
+            ) {
+            case .value(let value) where value != .null:
+                return .value(value)
+            case .value:
                 continue
+            case .expressionError(let error):
+                if error.isSPARQLEvaluationError { continue }
+                return .expressionError(error)
             }
         }
-        throw SPARQLExpressionEvaluationError.typeError(
-            "COALESCE has no expression without an error"
+        return .expressionError(
+            .typeError("COALESCE has no expression without an error")
         )
     }
 
@@ -367,228 +312,299 @@ struct SPARQLRuntimeExpressionEvaluator: Sendable {
         negated: Bool,
         binding: VariableBinding,
         resolver: SPARQLRuntimeExpressionResolver
-    ) async throws -> FieldValue {
-        let left = try await evaluateExpression(
-            operand,
-            binding: binding,
-            resolver: resolver
-        )
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
+        let left: FieldValue
+        switch try await evaluateExpression(
+            operand, binding: binding, resolver: resolver
+        ) {
+        case .value(let value): left = value
+        case .expressionError(let error): return .expressionError(error)
+        }
         var firstError: SPARQLExpressionEvaluationError?
         for candidate in values {
-            do {
-                let right = try await evaluateExpression(
-                    candidate,
-                    binding: binding,
-                    resolver: resolver
-                )
-                if try ExpressionEvaluator.equalFieldValues(left, right) {
-                    return try canonicalBoolean(!negated, binding: binding)
+            let right: FieldValue
+            switch try await evaluateExpression(
+                candidate, binding: binding, resolver: resolver
+            ) {
+            case .value(let value): right = value
+            case .expressionError(let error):
+                if error.isSPARQLEvaluationError {
+                    if firstError == nil { firstError = error }
+                    continue
                 }
-            } catch let error as SPARQLExpressionEvaluationError
-                where error.isSPARQLEvaluationError {
-                if firstError == nil { firstError = error }
+                return .expressionError(error)
+            }
+            switch fieldValuesEqual(left, right) {
+            case .value(true):
+                return canonicalBoolean(!negated, binding: binding)
+            case .value(false):
+                continue
+            case .expressionError(let error):
+                if error.isSPARQLEvaluationError {
+                    if firstError == nil { firstError = error }
+                } else {
+                    return .expressionError(error)
+                }
             }
         }
-        if let firstError { throw firstError }
-        return try canonicalBoolean(negated, binding: binding)
+        if let firstError { return .expressionError(firstError) }
+        return canonicalBoolean(negated, binding: binding)
     }
 
-    /// Lowers only the immediate operands after each operand has been evaluated.
-    /// This preserves lazy control-flow at the outer node and keeps RDF terms
-    /// intact through Literal.rdfTerm.
+    private static func evaluateLowered(
+        _ expression: Expression,
+        binding: VariableBinding,
+        resolver: SPARQLRuntimeExpressionResolver
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
+        switch try await lowerImmediateOperands(
+            expression, binding: binding, resolver: resolver
+        ) {
+        case .value(let lowered):
+            return evaluateImmediate(lowered, binding: binding)
+        case .expressionError(let error):
+            return .expressionError(error)
+        }
+    }
+
     private static func lowerImmediateOperands(
         _ expression: Expression,
         binding: VariableBinding,
         resolver: SPARQLRuntimeExpressionResolver
-    ) async throws -> Expression {
-        func lowered(_ child: Expression) async throws -> Expression {
-            let value = try await evaluateExpression(
-                child,
-                binding: binding,
-                resolver: resolver
-            )
-            return try literalExpression(value)
+    ) async throws -> SPARQLExpressionEvaluationOutcome<Expression> {
+        func lowered(
+            _ child: Expression
+        ) async throws -> SPARQLExpressionEvaluationOutcome<Expression> {
+            switch try await evaluateExpression(
+                child, binding: binding, resolver: resolver
+            ) {
+            case .value(let value): return literalExpression(value)
+            case .expressionError(let error): return .expressionError(error)
+            }
+        }
+
+        func binary(
+            _ lhs: Expression,
+            _ rhs: Expression,
+            _ make: (Expression, Expression) -> Expression
+        ) async throws -> SPARQLExpressionEvaluationOutcome<Expression> {
+            let left: Expression
+            switch try await lowered(lhs) {
+            case .value(let value): left = value
+            case .expressionError(let error): return .expressionError(error)
+            }
+            let right: Expression
+            switch try await lowered(rhs) {
+            case .value(let value): right = value
+            case .expressionError(let error): return .expressionError(error)
+            }
+            return .value(make(left, right))
+        }
+
+        func unary(
+            _ value: Expression,
+            _ make: (Expression) -> Expression
+        ) async throws -> SPARQLExpressionEvaluationOutcome<Expression> {
+            switch try await lowered(value) {
+            case .value(let loweredValue): return .value(make(loweredValue))
+            case .expressionError(let error): return .expressionError(error)
+            }
         }
 
         switch expression {
-        case .add(let lhs, let rhs):
-            return try await .add(lowered(lhs), lowered(rhs))
-        case .subtract(let lhs, let rhs):
-            return try await .subtract(lowered(lhs), lowered(rhs))
-        case .multiply(let lhs, let rhs):
-            return try await .multiply(lowered(lhs), lowered(rhs))
-        case .divide(let lhs, let rhs):
-            return try await .divide(lowered(lhs), lowered(rhs))
-        case .modulo(let lhs, let rhs):
-            return try await .modulo(lowered(lhs), lowered(rhs))
-        case .equal(let lhs, let rhs):
-            return try await .equal(lowered(lhs), lowered(rhs))
-        case .notEqual(let lhs, let rhs):
-            return try await .notEqual(lowered(lhs), lowered(rhs))
-        case .lessThan(let lhs, let rhs):
-            return try await .lessThan(lowered(lhs), lowered(rhs))
-        case .lessThanOrEqual(let lhs, let rhs):
-            return try await .lessThanOrEqual(lowered(lhs), lowered(rhs))
-        case .greaterThan(let lhs, let rhs):
-            return try await .greaterThan(lowered(lhs), lowered(rhs))
-        case .greaterThanOrEqual(let lhs, let rhs):
-            return try await .greaterThanOrEqual(lowered(lhs), lowered(rhs))
-        case .nullIf(let lhs, let rhs):
-            return try await .nullIf(lowered(lhs), lowered(rhs))
-
-        case .negate(let value):
-            return try await .negate(lowered(value))
-        case .isNull(let value):
-            return try await .isNull(lowered(value))
-        case .isNotNull(let value):
-            return try await .isNotNull(lowered(value))
+        case .add(let lhs, let rhs): return try await binary(lhs, rhs, Expression.add)
+        case .subtract(let lhs, let rhs): return try await binary(lhs, rhs, Expression.subtract)
+        case .multiply(let lhs, let rhs): return try await binary(lhs, rhs, Expression.multiply)
+        case .divide(let lhs, let rhs): return try await binary(lhs, rhs, Expression.divide)
+        case .modulo(let lhs, let rhs): return try await binary(lhs, rhs, Expression.modulo)
+        case .equal(let lhs, let rhs): return try await binary(lhs, rhs, Expression.equal)
+        case .notEqual(let lhs, let rhs): return try await binary(lhs, rhs, Expression.notEqual)
+        case .lessThan(let lhs, let rhs): return try await binary(lhs, rhs, Expression.lessThan)
+        case .lessThanOrEqual(let lhs, let rhs): return try await binary(lhs, rhs, Expression.lessThanOrEqual)
+        case .greaterThan(let lhs, let rhs): return try await binary(lhs, rhs, Expression.greaterThan)
+        case .greaterThanOrEqual(let lhs, let rhs): return try await binary(lhs, rhs, Expression.greaterThanOrEqual)
+        case .nullIf(let lhs, let rhs): return try await binary(lhs, rhs, Expression.nullIf)
+        case .negate(let value): return try await unary(value, Expression.negate)
+        case .isNull(let value): return try await unary(value, Expression.isNull)
+        case .isNotNull(let value): return try await unary(value, Expression.isNotNull)
+        case .isTriple(let value): return try await unary(value, Expression.isTriple)
+        case .subject(let value): return try await unary(value, Expression.subject)
+        case .predicate(let value): return try await unary(value, Expression.predicate)
+        case .object(let value): return try await unary(value, Expression.object)
         case .like(let value, let pattern):
-            return try await .like(lowered(value), pattern: pattern)
+            return try await unary(value) { .like($0, pattern: pattern) }
         case .regex(let value, let pattern, let flags):
-            return try await .regex(lowered(value), pattern: pattern, flags: flags)
+            return try await unary(value) { .regex($0, pattern: pattern, flags: flags) }
         case .cast(let value, let targetType):
-            return try await .cast(lowered(value), targetType: targetType)
-        case .isTriple(let value):
-            return try await .isTriple(lowered(value))
-        case .subject(let value):
-            return try await .subject(lowered(value))
-        case .predicate(let value):
-            return try await .predicate(lowered(value))
-        case .object(let value):
-            return try await .object(lowered(value))
-
+            return try await unary(value) { .cast($0, targetType: targetType) }
         case .between(let value, let low, let high):
-            return try await .between(
-                lowered(value),
-                low: lowered(low),
-                high: lowered(high)
-            )
-
+            let loweredValue: Expression
+            switch try await lowered(value) {
+            case .value(let result): loweredValue = result
+            case .expressionError(let error): return .expressionError(error)
+            }
+            let loweredLow: Expression
+            switch try await lowered(low) {
+            case .value(let result): loweredLow = result
+            case .expressionError(let error): return .expressionError(error)
+            }
+            let loweredHigh: Expression
+            switch try await lowered(high) {
+            case .value(let result): loweredHigh = result
+            case .expressionError(let error): return .expressionError(error)
+            }
+            return .value(.between(loweredValue, low: loweredLow, high: loweredHigh))
         case .function(let call):
             var arguments: [Expression] = []
             arguments.reserveCapacity(call.arguments.count)
             for argument in call.arguments {
-                arguments.append(try await lowered(argument))
+                switch try await lowered(argument) {
+                case .value(let value): arguments.append(value)
+                case .expressionError(let error): return .expressionError(error)
+                }
             }
-            return .function(
-                FunctionCall(
-                    name: call.name,
-                    arguments: arguments,
-                    distinct: call.distinct
+            return .value(
+                .function(
+                    FunctionCall(
+                        name: call.name,
+                        arguments: arguments,
+                        distinct: call.distinct
+                    )
                 )
             )
-
         case .triple(let subject, let predicate, let object):
-            return try await .triple(
-                subject: lowered(subject),
-                predicate: lowered(predicate),
-                object: lowered(object)
+            let loweredSubject: Expression
+            switch try await lowered(subject) {
+            case .value(let value): loweredSubject = value
+            case .expressionError(let error): return .expressionError(error)
+            }
+            let loweredPredicate: Expression
+            switch try await lowered(predicate) {
+            case .value(let value): loweredPredicate = value
+            case .expressionError(let error): return .expressionError(error)
+            }
+            let loweredObject: Expression
+            switch try await lowered(object) {
+            case .value(let value): loweredObject = value
+            case .expressionError(let error): return .expressionError(error)
+            }
+            return .value(
+                .triple(
+                    subject: loweredSubject,
+                    predicate: loweredPredicate,
+                    object: loweredObject
+                )
             )
-
         case .literal, .column, .variable, .parameter, .bound,
              .aggregate, .subquery, .exists, .inSubquery,
              .and, .or, .not, .caseWhen, .coalesce, .inList, .notInList:
-            throw SPARQLExpressionEvaluationError.runtimeInvariant(
-                "dataset expression lowering reached an invalid outer node"
+            return .expressionError(
+                .runtimeInvariant(
+                    "dataset expression lowering reached an invalid outer node"
+                )
             )
         }
     }
 
-    private static func literalExpression(_ value: FieldValue) throws -> Expression {
-        .literal(try literal(value))
+    private static func literalExpression(
+        _ value: FieldValue
+    ) -> SPARQLExpressionEvaluationOutcome<Expression> {
+        switch literal(value) {
+        case .value(let literal): return .value(.literal(literal))
+        case .expressionError(let error): return .expressionError(error)
+        }
     }
 
-    private static func literal(_ value: FieldValue) throws -> Literal {
+    private static func literal(
+        _ value: FieldValue
+    ) -> SPARQLExpressionEvaluationOutcome<Literal> {
         switch value {
-        case .null:
-            return .null
-        case .string(let value):
-            return .string(value)
-        case .int8(let value):
-            return .int(Int64(value))
-        case .int16(let value):
-            return .int(Int64(value))
-        case .int32(let value):
-            return .int(Int64(value))
-        case .int64(let value):
-            return .int(value)
-        case .uint8(let value):
-            return .uint(UInt64(value))
-        case .uint16(let value):
-            return .uint(UInt64(value))
-        case .uint32(let value):
-            return .uint(UInt64(value))
-        case .uint64(let value):
-            return .uint(value)
-        case .float32(let value):
-            return .double(Double(value))
-        case .float64(let value):
-            return .double(value)
-        case .decimal(let value):
-            return .decimal(value)
-        case .bool(let value):
-            return .bool(value)
-        case .bytes(let value):
-            return .binary(value)
-        case .date(let value):
-            return .date(value)
-        case .timestamp(let value):
-            return .timestamp(value)
-        case .uuid(let value):
-            return .uuid(value)
+        case .null: return .value(.null)
+        case .string(let value): return .value(.string(value))
+        case .int8(let value): return .value(.int(Int64(value)))
+        case .int16(let value): return .value(.int(Int64(value)))
+        case .int32(let value): return .value(.int(Int64(value)))
+        case .int64(let value): return .value(.int(value))
+        case .uint8(let value): return .value(.uint(UInt64(value)))
+        case .uint16(let value): return .value(.uint(UInt64(value)))
+        case .uint32(let value): return .value(.uint(UInt64(value)))
+        case .uint64(let value): return .value(.uint(value))
+        case .float32(let value): return .value(.double(Double(value)))
+        case .float64(let value): return .value(.double(value))
+        case .decimal(let value): return .value(.decimal(value))
+        case .bool(let value): return .value(.bool(value))
+        case .bytes(let value): return .value(.binary(value))
+        case .date(let value): return .value(.date(value))
+        case .timestamp(let value): return .value(.timestamp(value))
+        case .uuid(let value): return .value(.uuid(value))
         case .array(let values):
             var literals: [Literal] = []
             literals.reserveCapacity(values.count)
             for element in values {
-                literals.append(try literal(element))
+                switch literal(element) {
+                case .value(let value): literals.append(value)
+                case .expressionError(let error): return .expressionError(error)
+                }
             }
-            return .array(literals)
-        case .object:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "object field value cannot be represented as a query literal"
-            )
-        case .reference:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "reference field value cannot be represented as a query literal"
-            )
-        case .time:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "time field value cannot be represented as a query literal"
-            )
-        case .dateTime:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "civil date-time field value cannot be represented as a query literal"
-            )
-        case .timeSpan:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "time-span field value cannot be represented as a query literal"
-            )
-        case .calendarPeriod:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "calendar-period field value cannot be represented as a query literal"
-            )
-        case .geographicPoint:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "geographic point cannot be represented as a query literal"
-            )
-        case .geographicPosition:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "geographic position cannot be represented as a query literal"
-            )
-        case .vector:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "vector field value cannot be represented as a query literal"
-            )
-        case .rdfTerm(let term):
-            return .rdfTerm(term)
+            return .value(.array(literals))
+        case .rdfTerm(let term): return .value(.rdfTerm(term))
+        case .object: return unsupportedLiteral("object field value")
+        case .reference: return unsupportedLiteral("reference field value")
+        case .time: return unsupportedLiteral("time field value")
+        case .dateTime: return unsupportedLiteral("civil date-time field value")
+        case .timeSpan: return unsupportedLiteral("time-span field value")
+        case .calendarPeriod: return unsupportedLiteral("calendar-period field value")
+        case .geographicPoint: return unsupportedLiteral("geographic point")
+        case .geographicPosition: return unsupportedLiteral("geographic position")
+        case .vector: return unsupportedLiteral("vector field value")
         }
+    }
+
+    private static func unsupportedLiteral(
+        _ name: String
+    ) -> SPARQLExpressionEvaluationOutcome<Literal> {
+        .expressionError(
+            .unsupportedExpression("\(name) cannot be represented as a query literal")
+        )
     }
 
     private static func canonicalBoolean(
         _ value: Bool,
         binding: VariableBinding
-    ) throws -> FieldValue {
-        try ExpressionEvaluator.evaluate(.literal(.bool(value)), binding: binding)
+    ) -> SPARQLExpressionEvaluationOutcome<FieldValue> {
+        evaluateImmediate(.literal(.bool(value)), binding: binding)
     }
 
+    private static func evaluateImmediate(
+        _ expression: Expression,
+        binding: VariableBinding
+    ) -> SPARQLExpressionEvaluationOutcome<FieldValue> {
+        do throws(SPARQLExpressionEvaluationError) {
+            return .value(
+                try ExpressionEvaluator.evaluate(expression, binding: binding)
+            )
+        } catch let error {
+            return .expressionError(error)
+        }
+    }
+
+    private static func effectiveBooleanValue(
+        _ value: FieldValue
+    ) -> SPARQLExpressionEvaluationOutcome<Bool> {
+        do throws(SPARQLExpressionEvaluationError) {
+            return .value(try ExpressionEvaluator.effectiveBooleanValue(value))
+        } catch let error {
+            return .expressionError(error)
+        }
+    }
+
+    private static func fieldValuesEqual(
+        _ left: FieldValue,
+        _ right: FieldValue
+    ) -> SPARQLExpressionEvaluationOutcome<Bool> {
+        do throws(SPARQLExpressionEvaluationError) {
+            return .value(try ExpressionEvaluator.equalFieldValues(left, right))
+        } catch let error {
+            return .expressionError(error)
+        }
+    }
 }

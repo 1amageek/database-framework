@@ -26,7 +26,10 @@ struct AutocompleteIndexReader: Sendable {
         let entries = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
         for (key, value) in entries {
             guard prefixSubspace.contains(key) else { break }
@@ -64,7 +67,10 @@ struct AutocompleteIndexReader: Sendable {
         let entries = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
         for (key, value) in entries {
             guard termsSubspace.contains(key) else { break }

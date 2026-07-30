@@ -243,7 +243,11 @@ public struct OntologyContextAPI: Sendable {
         guard let ontology = try await get(iri: iri) else {
             throw OntologyError.notFound(iri)
         }
-        return OWLReasoner(ontology: ontology, configuration: configuration)
+        return OWLReasoner(
+            ontology: ontology,
+            clock: context.container.monotonicClock,
+            configuration: configuration
+        )
     }
 
     // MARK: - Query Operations

@@ -4,11 +4,6 @@
 // Maintains score-ordered entries and an atomic entry count for rank queries.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -44,7 +39,10 @@ import StorageKit
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: SubspaceIndexMaintainer {
+public struct RankIndexMaintainer<
+    Item: Persistable,
+    Score: IndexNumericValue & TupleDecodable
+>: SubspaceIndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression
@@ -190,7 +188,10 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(scorePrefixEnd),
             to: .firstGreaterOrEqual(rangeEnd),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var count: Int64 = 0
@@ -299,15 +300,17 @@ public struct RankIndexMaintainer<Item: Persistable, Score: IndexNumericValue>: 
 
         // Extract score as Score type (type-safe)
         let score = try TupleDecoder.decode(scoreValues[0], as: Score.self)
-        if let value = score as? Double, !value.isFinite {
+        switch score.fieldValue {
+        case .float32(let value) where !value.isFinite:
             throw RankIndexMaintenanceError.unorderedFloatingPoint(
                 indexName: index.name
             )
-        }
-        if let value = score as? Float, !value.isFinite {
+        case .float64(let value) where !value.isFinite:
             throw RankIndexMaintenanceError.unorderedFloatingPoint(
                 indexName: index.name
             )
+        default:
+            break
         }
 
         // Extract primary key

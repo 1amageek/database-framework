@@ -1,28 +1,35 @@
 import DatabaseKit
 
-/// Immutable container-scoped lookup for compiled model types.
-public struct PersistableTypeRegistry: Sendable {
-    private let typesByEntityName: [String: any Persistable.Type]
+/// Immutable container-scoped lookup for statically bound entity runtimes.
+public struct EntityRuntimeRegistry: Sendable {
+    private let registrationsByEntityName: [String: EntityRuntimeRegistration]
 
     init(
-        types: [any Persistable.Type]
+        registrations: [EntityRuntimeRegistration]
     ) throws(DatabaseRuntimeConfigurationError) {
-        var registered: [String: any Persistable.Type] = [:]
-        registered.reserveCapacity(types.count)
-        for type in types {
-            guard registered[type.persistableType] == nil else {
+        var registered: [String: EntityRuntimeRegistration] = [:]
+        registered.reserveCapacity(registrations.count)
+        for registration in registrations {
+            let entityName = registration.entity.name
+            guard registered[entityName] == nil else {
                 throw .duplicatePersistableType(
-                    entityName: type.persistableType
+                    entityName: entityName
                 )
             }
-            registered[type.persistableType] = type
+            registered[entityName] = registration
         }
-        self.typesByEntityName = registered
+        self.registrationsByEntityName = registered
     }
 
-    public func type(
+    public func registration(
+        named entityName: String
+    ) -> EntityRuntimeRegistration? {
+        registrationsByEntityName[entityName]
+    }
+
+    func modelType(
         named entityName: String
     ) -> (any Persistable.Type)? {
-        typesByEntityName[entityName]
+        registrationsByEntityName[entityName]?.modelType
     }
 }

@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 public enum FullTextStorageError: Error, Sendable, CustomStringConvertible, Equatable {
     case corruptedPosting(term: String)

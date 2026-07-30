@@ -7,11 +7,6 @@
 // Reference: Consolidates duplicate conversion logic from
 // FlatVectorIndexMaintainer, HNSWIndexMaintainer, IVFIndexMaintainer, PQIndexMaintainer
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseMath
 import DatabaseTypes
 import StorageKit

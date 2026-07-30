@@ -5,11 +5,6 @@
 // Provides comprehensive metrics for transaction operations.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import Synchronization
 
@@ -55,11 +50,13 @@ public struct TransactionMetrics: Sendable, CustomStringConvertible {
     /// Number of retries
     public var retryCount: Int = 0
 
-    /// Transaction start time
-    public var startTime: Date = Date()
+    /// Monotonic instant at which observation began.
+    public var startTime: StorageInstant = StorageInstant(
+        durationSinceReference: .zero
+    )
 
-    /// Transaction end time
-    public var endTime: Date?
+    /// Monotonic instant at which observation ended.
+    public var endTime: StorageInstant?
 
     /// Time to get read version (nanoseconds)
     public var getReadVersionNanos: UInt64?
@@ -67,15 +64,8 @@ public struct TransactionMetrics: Sendable, CustomStringConvertible {
     /// Time to commit (nanoseconds)
     public var commitNanos: UInt64?
 
-    /// Total duration in seconds
-    public var duration: TimeInterval {
-        (endTime ?? Date()).timeIntervalSince(startTime)
-    }
-
     /// Duration in nanoseconds
-    public var durationNanos: UInt64 {
-        UInt64(duration * 1_000_000_000)
-    }
+    public var durationNanos: UInt64 = 0
 
     public var description: String {
         """
@@ -86,7 +76,7 @@ public struct TransactionMetrics: Sendable, CustomStringConvertible {
           Scanned KVs: \(scannedKeyValueCount)
           Committed: \(committed), Rolled back: \(rolledBack)
           Retries: \(retryCount)
-          Duration: \(DatabaseTextFormatting.fixedDecimal(duration * 1000, fractionDigits: 3))ms
+          Duration: \(DatabaseTextFormatting.fixedDecimal(Double(durationNanos) / 1_000_000, fractionDigits: 3))ms
         """
     }
 
@@ -154,6 +144,9 @@ public final class InstrumentedTransaction: Sendable {
     /// Optional StoreTimer for automatic export
     private let timer: StoreTimer?
 
+    /// Monotonic time source shared with the owning transaction runner.
+    private let monotonicClock: any StorageMonotonicClock
+
     // MARK: - Initialization
 
     /// Creates instrumented storage access.
@@ -161,10 +154,17 @@ public final class InstrumentedTransaction: Sendable {
     /// - Parameters:
     ///   - transaction: The storage access to observe.
     ///   - timer: Optional StoreTimer to export metrics on commit
-    public init(wrapping transaction: any TransactionAccess, timer: StoreTimer? = nil) {
+    public init(
+        wrapping transaction: any TransactionAccess,
+        monotonicClock: any StorageMonotonicClock,
+        timer: StoreTimer? = nil
+    ) {
         self.transaction = transaction
+        self.monotonicClock = monotonicClock
         self.timer = timer
-        self.state = Mutex(TransactionMetrics())
+        var metrics = TransactionMetrics()
+        metrics.startTime = monotonicClock.now
+        self.state = Mutex(metrics)
         self.pendingWrites = Mutex(PendingWrites())
     }
 
@@ -177,9 +177,12 @@ public final class InstrumentedTransaction: Sendable {
 
     /// Get a value and record metrics
     public func getValue(for key: ByteString, snapshot: Bool = false) async throws -> ByteString? {
-        let startTime = MonotonicClock.now()
+        let startTime = monotonicClock.now
         let result = try await transaction.getValue(for: key, snapshot: snapshot)
-        let elapsed = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+        let elapsed = DatabaseMonotonicMeasurement.nanoseconds(
+            from: startTime,
+            to: monotonicClock.now
+        )
 
         state.withLock { state in
             state.readCount += 1
@@ -291,10 +294,15 @@ public final class InstrumentedTransaction: Sendable {
     /// commit/retry policy.
     func recordExternalCommit(commitNanos: UInt64) {
         let pending = pendingWrites.withLock { $0 }
+        let endTime = monotonicClock.now
 
         state.withLock { state in
             state.committed = true
-            state.endTime = Date()
+            state.endTime = endTime
+            state.durationNanos = DatabaseMonotonicMeasurement.nanoseconds(
+                from: state.startTime,
+                to: endTime
+            )
             state.commitNanos = commitNanos
             state.writeCount += pending.count
             state.bytesWritten += pending.bytes
@@ -307,9 +315,14 @@ public final class InstrumentedTransaction: Sendable {
 
     /// Record cancellation completed by the external transaction runner.
     func recordExternalCancellation() {
+        let endTime = monotonicClock.now
         state.withLock { state in
             state.rolledBack = true
-            state.endTime = Date()
+            state.endTime = endTime
+            state.durationNanos = DatabaseMonotonicMeasurement.nanoseconds(
+                from: state.startTime,
+                to: endTime
+            )
         }
     }
 
@@ -324,9 +337,12 @@ public final class InstrumentedTransaction: Sendable {
 
     /// Get read version and record timing
     public func getReadVersion() async throws -> Int64 {
-        let startTime = MonotonicClock.now()
+        let startTime = monotonicClock.now
         let version = try await transaction.getReadVersion()
-        let elapsed = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+        let elapsed = DatabaseMonotonicMeasurement.nanoseconds(
+            from: startTime,
+            to: monotonicClock.now
+        )
 
         state.withLock { state in
             state.getReadVersionNanos = elapsed
@@ -355,7 +371,10 @@ public final class InstrumentedTransaction: Sendable {
 
     /// Set transaction option with string value
     public func setOption(to value: String, forOption option: TransactionOption) throws {
-        try transaction.setOption(to: value, forOption: option)
+        try transaction.setOption(
+            to: ByteString(utf8: value),
+            forOption: option
+        )
     }
 
     /// Storage capability for operations that do not require dedicated metrics.
@@ -366,7 +385,7 @@ public final class InstrumentedTransaction: Sendable {
 
 // MARK: - StorageEngine Extension
 
-extension StorageEngine {
+extension StorageTransactionExecutor {
     /// Execute a transaction with instrumentation
     ///
     /// Returns both the operation result and collected metrics.
@@ -387,11 +406,15 @@ extension StorageEngine {
     /// - Returns: Tuple of (operation result, transaction metrics)
     public func withInstrumentedTransaction<T: Sendable>(
         timer: StoreTimer? = nil,
+        clock: any StorageMonotonicClock,
         _ operation: @escaping @Sendable (InstrumentedTransaction) async throws -> T
     ) async throws -> (result: T, metrics: TransactionMetrics) {
         let retryCount = Mutex<Int>(0)
         let current = Mutex<InstrumentedTransaction?>(nil)
-        let runner = TransactionRunner(database: self)
+        let runner = TransactionRunner(
+            transactionExecutor: self,
+            clock: clock
+        )
 
         let result = try await runner.run(
             configuration: .default,
@@ -406,7 +429,11 @@ extension StorageEngine {
                 current.withLock { $0 }?.recordExternalCommit(commitNanos: commitNanos)
             }
         ) { transaction in
-            let instrumented = InstrumentedTransaction(wrapping: transaction, timer: timer)
+            let instrumented = InstrumentedTransaction(
+                wrapping: transaction,
+                monotonicClock: clock,
+                timer: timer
+            )
             let retries = retryCount.withLock { $0 }
             for _ in 0..<retries {
                 instrumented.recordRetry()

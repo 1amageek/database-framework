@@ -1,11 +1,6 @@
 // HNSWPostFilterParameters.swift
 // VectorIndex - HNSW candidate oversampling and post-filter parameters
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 /// Controls candidate oversampling before an application predicate is evaluated.
 ///

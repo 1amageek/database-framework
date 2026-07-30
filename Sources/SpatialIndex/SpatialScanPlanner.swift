@@ -1,11 +1,6 @@
 // SpatialScanPlanner.swift
 // SpatialIndex - Backend-independent scan planning for spatial encodings
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseMath
 import DatabaseEngine

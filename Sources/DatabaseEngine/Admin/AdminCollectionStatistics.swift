@@ -1,6 +1,6 @@
 import DatabaseTypes
 
-public struct AdminCollectionStatistics: Sendable, Equatable {
+public struct AdminCollectionStatistics: Sendable {
     public let entityName: String
     public let documentCount: Int64
     public let storageByteCount: Int64

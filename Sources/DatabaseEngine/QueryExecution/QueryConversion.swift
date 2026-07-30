@@ -65,12 +65,8 @@ extension Query {
         if let partitionBinding {
             do {
                 partitions = try partitionBinding.canonicalPartitions()
-            } catch let error as DirectoryPathError {
-                throw .directory(error)
             } catch {
-                preconditionFailure(
-                    "DirectoryPath only emits DirectoryPathError"
-                )
+                throw .directory(error)
             }
         } else {
             partitions = FieldObject()

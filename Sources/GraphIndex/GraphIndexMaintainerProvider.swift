@@ -13,7 +13,8 @@ public struct GraphIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration]
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
         let metadata = try PropertyGraphIndexMetadata(canonical: index.kind)
         return try GraphIndexMaintainer<Item>(

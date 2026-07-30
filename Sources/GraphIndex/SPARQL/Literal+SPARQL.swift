@@ -1,14 +1,9 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 
 extension Literal {
     /// Converts a SPARQL term literal without erasing its RDF identity or datatype.
-    public func toSPARQLFieldValue() throws -> FieldValue {
+    public func toSPARQLFieldValue() throws(SPARQLLiteralConversionError) -> FieldValue {
         switch self {
         case .null:
             throw SPARQLLiteralConversionError.nullTermUnsupported
@@ -31,7 +26,7 @@ extension Literal {
             )
         case .decimal(let decimal):
             let lexicalForm: String
-            do {
+            do throws(ExactDecimalLexicalError) {
                 lexicalForm = try decimal.decimalLexicalForm(
                     maximumUTF8Count: SPARQLExecutionLimits.maximumLiteralUTF8Count
                 )
@@ -84,11 +79,22 @@ extension Literal {
                 datatype: "urn:uuid"
             )
         case .iri(let value):
-            return .rdfTerm(.iri(try RDFIRI(value)))
+            do {
+                return .rdfTerm(.iri(try RDFIRI(value)))
+            } catch {
+                throw .invalidLexicalForm(value: value, datatype: "IRI")
+            }
         case .blankNode(let identifier):
-            return .rdfTerm(
-                .blankNode(try RDFBlankNodeIdentifier(identifier))
-            )
+            do {
+                return .rdfTerm(
+                    .blankNode(try RDFBlankNodeIdentifier(identifier))
+                )
+            } catch {
+                throw .invalidLexicalForm(
+                    value: identifier,
+                    datatype: "blank node identifier"
+                )
+            }
         case .typedLiteral(let value, let datatype):
             return try Self.rdfLiteral(value, datatype: datatype)
         case .langLiteral(let value, let language):
@@ -146,27 +152,26 @@ extension Literal {
     private static func rdfLiteral(
         _ lexicalForm: String,
         datatype: String
-    ) throws -> FieldValue {
+    ) throws(SPARQLLiteralConversionError) -> FieldValue {
+        let literal: RDFLiteral
         do {
-            let literal = try RDFLiteral(
+            literal = try RDFLiteral(
                 lexicalForm: lexicalForm,
                 datatype: datatype
             )
-            guard isValidKnownLexicalForm(literal) else {
-                throw SPARQLLiteralConversionError.invalidLexicalForm(
-                    value: lexicalForm,
-                    datatype: datatype
-                )
-            }
-            return .rdfTerm(.literal(literal))
-        } catch let error as SPARQLLiteralConversionError {
-            throw error
         } catch {
             throw SPARQLLiteralConversionError.invalidLexicalForm(
                 value: lexicalForm,
                 datatype: datatype
             )
         }
+        guard isValidKnownLexicalForm(literal) else {
+            throw SPARQLLiteralConversionError.invalidLexicalForm(
+                value: lexicalForm,
+                datatype: datatype
+            )
+        }
+        return .rdfTerm(.literal(literal))
     }
 
     private static func isValidKnownLexicalForm(

@@ -140,7 +140,7 @@ struct GraphPhysicalReadBudgetTests {
                 from: [.identifier("source-0"), .identifier("source-1")],
                 edgeLabel: .identifier("edge"),
                 transaction: recording
-            ).makeAsyncIterator()
+            ).makeCursor()
 
             let edge = try await iterator.next()
 
@@ -215,7 +215,7 @@ struct GraphPhysicalReadBudgetTests {
             var iterator = traverser.neighbors(
                 from: .identifier("source"),
                 edgeLabel: .identifier("edge")
-            ).makeAsyncIterator()
+            ).makeCursor()
 
             let edge = try await iterator.next()
 
@@ -290,7 +290,7 @@ struct GraphPhysicalReadBudgetTests {
             var iterator = traverser.traverse(
                 from: .identifier("source"),
                 edgeLabel: .identifier("edge")
-            ).makeAsyncIterator()
+            ).makeCursor()
 
             #expect(try await iterator.next()?.node == .identifier("source"))
             #expect(try await iterator.next()?.node == .identifier("target-0"))
@@ -324,7 +324,7 @@ struct GraphPhysicalReadBudgetTests {
             var iterator = traverser.neighbors(
                 from: .identifier("source"),
                 edgeLabel: .identifier("edge")
-            ).makeAsyncIterator()
+            ).makeCursor()
 
             #expect(try await iterator.next()?.target == .identifier("target-0"))
             do {
@@ -483,9 +483,9 @@ struct GraphPhysicalReadBudgetTests {
     }
 
     private func firstEdge(
-        _ sequence: GraphEdgeSequence
+        _ sequence: GraphEdgeScan
     ) async throws -> EdgeInfo? {
-        var iterator = sequence.makeAsyncIterator()
+        var iterator = sequence.makeCursor()
         return try await iterator.next()
     }
 

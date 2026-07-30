@@ -1,11 +1,6 @@
 /// GraphTableError.swift
 /// Error types for SQL/PGQ GRAPH_TABLE operations
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 /// Errors that can occur during GRAPH_TABLE execution
 public enum GraphTableError: Error, Sendable {

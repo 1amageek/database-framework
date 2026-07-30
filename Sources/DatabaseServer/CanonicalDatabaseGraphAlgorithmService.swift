@@ -34,8 +34,10 @@ public struct CanonicalDatabaseGraphAlgorithmService: DatabaseGraphAlgorithmServ
         }
 
         let source = try await sourceResolver.resolve(request.source)
-        let fullResponse = try await context.container.engine.withTransaction(
-            configuration: .default
+        let fullResponse = try await context.container.transactionExecutor
+            .withTransaction(
+            configuration: .default,
+            clock: context.container.monotonicClock
         ) { transaction in
             // The budget belongs to one transaction attempt. A storage retry must
             // restart both the snapshot and accounting from the same boundary.
@@ -47,6 +49,7 @@ public struct CanonicalDatabaseGraphAlgorithmService: DatabaseGraphAlgorithmServ
                 source: source,
                 snapshot: GraphReadSnapshot(
                     transaction: transaction,
+                    monotonicClock: context.container.monotonicClock,
                     workBudget: workBudget
                 ),
                 workBudget: workBudget,

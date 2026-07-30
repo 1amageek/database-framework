@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -52,13 +47,13 @@ extension SPARQLQueryExecutor {
                     combinedStats = combinedStats.merged(
                         with: rightResult.stats
                     )
-                    let shared = try (
+                    let sharedOwnership = try (
                         consume rightResult.bindings
-                    ).sharing(at: .joinCandidate)
-                    scanCache[signature] = try SPARQLSharedBindingSnapshot(
-                        shared: shared
+                    ).sharingForFanOut(
+                        at: .joinCandidate
                     )
-                    rightBindings = consume shared
+                    scanCache[signature] = sharedOwnership.snapshot
+                    rightBindings = consume sharedOwnership.retained
                 }
 
                 var anyMerged = false

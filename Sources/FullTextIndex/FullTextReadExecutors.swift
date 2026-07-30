@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
 import DatabaseTypes
 import DatabaseKit
@@ -24,9 +19,14 @@ enum FullTextReadParameter {
 }
 
 public enum FullTextReadExecutors {
-    public static var indexExecutor: any IndexReadExecutor { FullTextReadExecutor() }
     public static var polymorphicIndexExecutor: any PolymorphicIndexReadExecutor {
         PolymorphicFullTextReadExecutor()
+    }
+
+    public static func register<Model: Persistable>(
+        with definition: inout EntityRuntimeDefinition<Model>
+    ) throws(DatabaseRuntimeConfigurationError) {
+        try definition.register(FullTextReadExecutor())
     }
 }
 
@@ -35,6 +35,8 @@ private enum FullTextReadError: Error, Sendable {
     case invalidParameter(String)
     case invalidResultCount(field: String, count: Int64)
     case invalidExecutionPath(String)
+    case duplicateFetchedEntity(ByteString)
+    case missingFetchedEntity(ByteString)
 }
 
 private struct FullTextReadExecutor: IndexReadExecutor {
@@ -51,7 +53,10 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         let fieldName = try requireString(FullTextReadParameter.fieldName, from: indexScan.parameters)
         let terms = try requireStringArray(FullTextReadParameter.terms, from: indexScan.parameters)
         let matchMode = try decodeMatchMode(from: indexScan.parameters)
-        let limit = indexScan.parameters[FullTextReadParameter.limit].flatMap(\.int64Value).map(Int.init)
+        let limit = try optionalInteger(
+            FullTextReadParameter.limit,
+            from: indexScan.parameters
+        )
         let includeFacets = indexScan.parameters[FullTextReadParameter.includeFacets]?.boolValue ?? false
         let returnScores = indexScan.parameters[FullTextReadParameter.returnScores]?.boolValue ?? false
 
@@ -77,7 +82,10 @@ private struct FullTextReadExecutor: IndexReadExecutor {
 
         if includeFacets {
             let facetFields = try requireStringArray(FullTextReadParameter.facetFields, from: indexScan.parameters)
-            let facetLimit = indexScan.parameters[FullTextReadParameter.facetLimit].flatMap(\.int64Value).map(Int.init) ?? 10
+            let facetLimit = try optionalInteger(
+                FullTextReadParameter.facetLimit,
+                from: indexScan.parameters
+            ) ?? 10
             builder = builder.facets(
                 try facetFields.map { name in
                     guard let number = T.fieldNumber(for: name) else {
@@ -183,6 +191,20 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         return value
     }
 
+    private func optionalInteger(
+        _ name: String,
+        from parameters: [String: FieldValue]
+    ) throws -> Int? {
+        guard let value = parameters[name] else {
+            return nil
+        }
+        guard let integer = value.int64Value,
+              let result = Int(exactly: integer) else {
+            throw FullTextReadError.invalidParameter(name)
+        }
+        return result
+    }
+
     private func requireStringArray(
         _ key: String,
         from parameters: [String: FieldValue]
@@ -217,7 +239,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         let fieldName = try requireString(FullTextReadParameter.fieldName, from: indexScan.parameters)
         let terms = try requireStringArray(FullTextReadParameter.terms, from: indexScan.parameters)
         let matchMode = try decodeMatchMode(from: indexScan.parameters)
-        let limit = indexScan.parameters[FullTextReadParameter.limit].flatMap(\.int64Value).map(Int.init)
+        let limit = try optionalInteger(
+            FullTextReadParameter.limit,
+            from: indexScan.parameters
+        )
         let includeFacets = indexScan.parameters[FullTextReadParameter.includeFacets]?.boolValue ?? false
         let returnScores = indexScan.parameters[FullTextReadParameter.returnScores]?.boolValue ?? false
 
@@ -257,7 +282,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
 
         if includeFacets {
             let facetFields = try requireStringArray(FullTextReadParameter.facetFields, from: indexScan.parameters)
-            let facetLimit = indexScan.parameters[FullTextReadParameter.facetLimit].flatMap(\.int64Value).map(Int.init) ?? 10
+            let facetLimit = try optionalInteger(
+                FullTextReadParameter.facetLimit,
+                from: indexScan.parameters
+            ) ?? 10
             let result = try await executeFacetedSearch(
                 context: context,
                 group: group,
@@ -444,13 +472,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         var entityByID: [ByteString: PolymorphicEntity] = [:]
         entityByID.reserveCapacity(entities.count)
         for entity in entities {
-            let identifier = try entity.item.persistableIdentifierTuple()
-            let key = stableKey(
-                try PolymorphicIdentifierKey.tuple(
-                    for: type(of: entity.item),
-                    identifier: identifier
-                )
-            )
+            let key = stableKey(entity.polymorphicIdentifier)
+            guard entityByID[key] == nil else {
+                throw FullTextReadError.duplicateFetchedEntity(key)
+            }
             entityByID[key] = entity
         }
 
@@ -459,7 +484,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         for result in scoredResults {
             let key = stableKey(result.id)
             guard let entity = entityByID[key] else {
-                continue
+                throw FullTextReadError.missingFetchedEntity(key)
             }
             combined.append((entity: entity, score: result.score))
         }
@@ -903,7 +928,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var results: [[any TupleElement]] = []
@@ -940,20 +968,39 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return result
     }
 
+    private func optionalInteger(
+        _ name: String,
+        from parameters: [String: FieldValue]
+    ) throws -> Int? {
+        guard let value = parameters[name] else {
+            return nil
+        }
+        guard let integer = value.int64Value,
+              let result = Int(exactly: integer) else {
+            throw FullTextReadError.invalidParameter(name)
+        }
+        return result
+    }
+
     private func facetValues(
         fieldName: String,
         from entity: PolymorphicEntity,
         context: DatabaseContext
     ) throws -> [String] {
-        guard let type = context.container.runtimeConfiguration
-            .persistableTypes.type(named: entity.typeName),
-              let fieldNumber = type.fieldNumber(for: fieldName) else {
+        guard let registration = context.container.runtimeConfiguration
+            .entityRuntimes.registration(named: entity.typeName),
+              let fieldSchema = registration.entity.fieldMapByName[
+                fieldName
+              ] else {
             throw FullTextReadError.invalidParameter(fieldName)
         }
         return try FullTextFieldValueExtractor.strings(
             from: entity.item,
             entity: entity.typeName,
-            field: FieldIdentity(name: fieldName, number: fieldNumber)
+            field: FieldIdentity(
+                name: fieldSchema.name,
+                number: fieldSchema.fieldNumber
+            )
         )
     }
 

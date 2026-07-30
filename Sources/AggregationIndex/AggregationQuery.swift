@@ -1,11 +1,6 @@
 // AggregationQuery.swift
 // AggregationIndex - Query extension for aggregation operations
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
 import DatabaseTypes
 import DatabaseKit

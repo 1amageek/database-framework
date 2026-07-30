@@ -1,5 +1,6 @@
 import DatabaseTypes
 import DatabaseKit
+import DatabaseWire
 
 /// Iteratively measures retained RDF graph payload before allocation.
 final class DatabaseRDFQuadFootprintMeter {

@@ -1,11 +1,7 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
+import StorageKit
 
 public enum GraphTableReadExecutors {
     public static var sourceExecutor: any GraphTableSourceExecutor {
@@ -31,58 +27,31 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
                 )
             )
         }
-        guard let type = context.container.runtimeConfiguration
-            .persistableTypes.type(named: resolution.entity.name) else {
-            throw CanonicalReadError.unsupportedSource(
-                "Property graph entity '\(resolution.entity.name)' has no compiled runtime type"
-            )
-        }
-
-        return try await execute(
-            context: context,
-            type: type,
-            graphTableSource: graphTableSource,
-            options: options,
-            partitions: partitions
-        )
-    }
-
-    private func execute(
-        context: DatabaseContext,
-        type: any Persistable.Type,
-        graphTableSource: GraphTableSource,
-        options: ReadExecutionContext,
-        partitions: FieldObject
-    ) async throws -> [QueryRow] {
-        try await _execute(
-            context: context,
-            type: type,
-            graphTableSource: graphTableSource,
-            options: options,
-            partitions: partitions
-        )
-    }
-
-    private func _execute<T: Persistable>(
-        context: DatabaseContext,
-        type: T.Type,
-        graphTableSource: GraphTableSource,
-        options: ReadExecutionContext,
-        partitions: FieldObject
-    ) async throws -> [QueryRow] {
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .snapshot
         )
-        let queryContext = try context.indexQueryContext.withPartitions(partitions, for: type)
-        let executor = GraphTableExecutor<T>(
-            queryContext: queryContext,
-            graphTableSource: graphTableSource,
-            transactionConfiguration: execution.transactionConfiguration
-        )
-
-        return try await executor.execute().map { row in
-            QueryRow(fields: row.fields)
+        let queryContext = context.indexQueryContext
+        return try await queryContext.withTransaction(
+            configuration: execution.transactionConfiguration
+        ) { transaction in
+            guard let indexSubspace = try await queryContext
+                .readableIndexSubspace(
+                    named: resolution.indexDescriptor.name,
+                    forEntityName: resolution.entity.name,
+                    partitions: partitions,
+                    transaction: transaction
+                ) else {
+                return []
+            }
+            let rows = try await GraphTableExecutor(
+                indexDescriptor: resolution.indexDescriptor,
+                indexSubspace: indexSubspace,
+                graphTableSource: graphTableSource
+            ).execute(transaction: transaction)
+            return rows.map { row in
+                QueryRow(fields: row.fields)
+            }
         }
     }
 }

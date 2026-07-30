@@ -4,11 +4,6 @@
 // Reference: FDB Record Layer StandardIndexMaintainer.java
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/StandardIndexMaintainer.java
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import DatabaseTypes
@@ -48,7 +43,7 @@ public struct UniquenessViolation: Sendable, Equatable {
     public let primaryKeys: [ByteString]
 
     /// When the violation was first detected
-    public let detectedAt: Date
+    public let detectedAt: Timestamp
 
     // MARK: - Initialization
 
@@ -57,7 +52,7 @@ public struct UniquenessViolation: Sendable, Equatable {
         persistableType: String,
         valueKey: ByteString,
         primaryKeys: [ByteString],
-        detectedAt: Date = Date()
+        detectedAt: Timestamp
     ) {
         self.indexName = indexName
         self.persistableType = persistableType
@@ -72,7 +67,9 @@ public struct UniquenessViolation: Sendable, Equatable {
     ///
     /// - Returns: Array of tuple element descriptions
     public func unpackedValue() throws -> [String] {
-        try Tuple.unpack(from: valueKey).map { String(describing: $0) }
+        try Tuple.unpack(from: valueKey).map {
+            TupleElementSemanticName.describe($0)
+        }
     }
 
     /// Human-readable description of the duplicate value
@@ -80,7 +77,7 @@ public struct UniquenessViolation: Sendable, Equatable {
         do {
             return try unpackedValue().joined(separator: ", ")
         } catch {
-            return "<invalid tuple: \(error)>"
+            return "<invalid tuple>"
         }
     }
 
@@ -100,9 +97,11 @@ extension UniquenessViolation: CustomStringConvertible {
     public var description: String {
         let pkDescriptions: [String]
         do {
-            pkDescriptions = try unpackedPrimaryKeys().map { String(describing: $0) }
+            pkDescriptions = try unpackedPrimaryKeys().map {
+                DatabaseTextFormatting.lowercaseHex($0.pack())
+            }
         } catch {
-            pkDescriptions = ["<invalid tuple: \(error)>"]
+            pkDescriptions = ["<invalid tuple>"]
         }
         return """
         UniquenessViolation(
@@ -172,7 +171,7 @@ public struct UniquenessViolationError: Error, Sendable, CustomStringConvertible
             if case .string(let text) = value {
                 return text
             }
-            return String(describing: value)
+            return TupleElementSemanticName.describe(value)
         }
             .joined(separator: ", ")
     }

@@ -4,11 +4,6 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseMath
 
 /// Parameters for IVF (Inverted File Index) algorithm
@@ -45,7 +40,7 @@ import DatabaseMath
 /// - Training time: O(n × nlist × iterations)
 /// - Insert time: O(nlist) for centroid lookup
 /// - Query time: O(nprobe × n/nlist) on average
-public struct IVFParameters: Sendable, Codable, Hashable {
+public struct IVFParameters: Sendable, Hashable {
     /// Number of clusters (inverted lists)
     ///
     /// **Guidelines**:

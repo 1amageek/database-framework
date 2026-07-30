@@ -1,11 +1,6 @@
 // TypeResolver.swift
 // DatabaseEngine - Type resolution from Schema
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 
 /// Resolves persisted type names to schema entities.

@@ -1,11 +1,6 @@
 // CachePolicy.swift
 // DatabaseEngine - Cache policy for read operations
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 /// Cache policy for read operations
 ///
@@ -46,8 +41,8 @@ public enum CachePolicy: Sendable, Hashable {
 
     /// Use cached read version only if younger than specified duration
     ///
-    /// - Parameter seconds: Maximum staleness in seconds
-    case stale(TimeInterval)
+    /// - Parameter maximumAge: Maximum accepted cache age.
+    case stale(Duration)
 }
 
 extension CachePolicy: CustomStringConvertible {
@@ -57,8 +52,8 @@ extension CachePolicy: CustomStringConvertible {
             return "CachePolicy.server"
         case .cached:
             return "CachePolicy.cached"
-        case .stale(let seconds):
-            return "CachePolicy.stale(\(Int(seconds))s)"
+        case .stale:
+            return "CachePolicy.stale"
         }
     }
 }

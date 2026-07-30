@@ -5,11 +5,6 @@
 // Reference: FDB Record Layer TIME_WINDOW_LEADERBOARD index type
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseMath
 import DatabaseEngine
@@ -21,6 +16,7 @@ public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConver
     case missingScoreValue(indexName: String, fieldName: String)
     case malformedWindowMetadataKey(indexName: String)
     case malformedWindowIdentifier(indexName: String)
+    case malformedScoreEntry(indexName: String)
 
     public var description: String {
         switch self {
@@ -34,6 +30,8 @@ public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConver
             return "Time-window leaderboard '\(indexName)' has a malformed window metadata key"
         case .malformedWindowIdentifier(let indexName):
             return "Time-window leaderboard '\(indexName)' has a non-Int64 window identifier"
+        case .malformedScoreEntry(let indexName):
+            return "Time-window leaderboard '\(indexName)' has a malformed score entry"
         }
     }
 }
@@ -100,6 +98,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     /// Number of windows to keep
     public let windowCount: Int
 
+    /// Clock used to select the active leaderboard window.
+    public let wallClock: any WallClock
+
     // Subspaces
     private var windowSubspace: Subspace { subspace.subspace("window") }
     private var metaSubspace: Subspace { subspace.subspace("meta") }
@@ -112,13 +113,15 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         subspace: Subspace,
         idExpression: KeyExpression,
         window: LeaderboardWindowType,
-        windowCount: Int
+        windowCount: Int,
+        wallClock: any WallClock
     ) {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
         self.window = window
         self.windowCount = windowCount
+        self.wallClock = wallClock
     }
 
     // MARK: - IndexMaintainer
@@ -132,8 +135,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         newItem: Item?,
         transaction: any TransactionAccess
     ) async throws {
-        let now = Date()
-        let currentWindowId = windowId(for: now)
+        let currentWindowId = currentWindowId()
 
         // Get primary keys
         let oldPK: Tuple? = try oldItem.map { try DataAccess.extractId(from: $0, using: idExpression) }
@@ -242,8 +244,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             return
         }
 
-        let now = Date()
-        let currentWindowId = windowId(for: now)
+        let currentWindowId = currentWindowId()
 
         try await insertEntry(
             pk: id,
@@ -273,8 +274,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             return []
         }
 
-        let now = Date()
-        let currentWindowId = windowId(for: now)
+        let currentWindowId = currentWindowId()
 
         return [try makeWindowEntryKey(
             windowId: currentWindowId,
@@ -286,10 +286,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
 
     // MARK: - Private Helpers
 
-    /// Calculate window ID from a date
-    private func windowId(for date: Date) -> Int64 {
-        let timestamp = Int64(date.timeIntervalSince1970)
-        return timestamp / Int64(window.durationSeconds)
+    /// Calculates the active window from the injected database clock.
+    private func currentWindowId() -> Int64 {
+        wallClock.now.secondsSinceUnixEpoch / Int64(window.durationSeconds)
     }
 
     /// Invert score for descending order storage
@@ -430,7 +429,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
     private func corruptedPositionError(pk: Tuple) -> TimeWindowLeaderboardIndexError {
         TimeWindowLeaderboardIndexError.corruptedPosition(
             indexName: index.name,
-            primaryKey: Data(pk.pack()).base64EncodedString()
+            primaryKey: QueryLiteralEncoding.base64(pk.pack())
         )
     }
 
@@ -539,8 +538,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         grouping: [any TupleElement]? = nil,
         transaction: any TransactionAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
-        let now = Date()
-        let currentWindowId = windowId(for: now)
+        let currentWindowId = currentWindowId()
 
         return try await getTopK(
             k: k,
@@ -579,7 +577,10 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
-            snapshot: true
+            limit: k,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var results: [(pk: Tuple, score: Int64)] = []
@@ -595,9 +596,12 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             let groupingCount = grouping?.count ?? 0
             let invertedScoreIndex = 1 + groupingCount
 
-            guard let invertedScore = keyTuple[invertedScoreIndex] as? Int64 else {
-                continue
+            guard let invertedScoreElement = keyTuple[invertedScoreIndex] else {
+                throw TimeWindowLeaderboardIndexError.malformedScoreEntry(
+                    indexName: index.name
+                )
             }
+            let invertedScore = try decodeInt64(invertedScoreElement)
 
             // Reverse the inversion (same formula is self-inverse)
             let unsigned = UInt64(bitPattern: invertedScore)
@@ -630,8 +634,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         grouping: [any TupleElement]? = nil,
         transaction: any TransactionAccess
     ) async throws -> Int? {
-        let now = Date()
-        let currentWindowId = windowId(for: now)
+        let currentWindowId = currentWindowId()
 
         // Get current position
         let posKey = posSubspace.pack(pk)
@@ -661,7 +664,10 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(targetKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var rank = 1
@@ -685,7 +691,10 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in sequence {
@@ -730,8 +739,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         grouping: [any TupleElement]? = nil,
         transaction: any TransactionAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
-        let now = Date()
-        let currentWindowId = windowId(for: now)
+        let currentWindowId = currentWindowId()
 
         return try await getBottomK(
             k: k,
@@ -743,9 +751,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
 
     /// Get bottom K entries (lowest scores) in a specific window
     ///
-    /// **Performance**: O(n) where n is total entries in the window.
-    /// The index is optimized for top-K queries (descending score order).
-    /// For bottom-K, we scan and keep a sliding window of the K lowest scores.
+    /// **Performance**: O(k) using a reverse range scan over the ordered index.
     ///
     /// - Parameters:
     ///   - k: Number of entries to return
@@ -773,17 +779,19 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             rangeEnd = rangeStart.appending(0xFF)
         }
 
-        // Forward iteration - collect all entries, then return last K
-        // Since scores are stored inverted, forward scan gives highest scores first
-        // So we collect all and take the tail (lowest scores)
+        // Reverse iteration starts with the largest inverted score, which is the
+        // lowest original score. The storage limit avoids materializing the window.
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
-            snapshot: true
+            limit: k,
+            reverse: true,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
-        // Use a sliding window to keep only the last K entries (lowest scores)
-        var allEntries: [(pk: Tuple, score: Int64)] = []
+        var results: [(pk: Tuple, score: Int64)] = []
+        results.reserveCapacity(min(k, sequence.count))
 
         for (key, _) in sequence {
             guard windowSubspace.contains(key) else { break }
@@ -793,9 +801,12 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             let groupingCount = grouping?.count ?? 0
             let invertedScoreIndex = 1 + groupingCount
 
-            guard let invertedScore = keyTuple[invertedScoreIndex] as? Int64 else {
-                continue
+            guard let invertedScoreElement = keyTuple[invertedScoreIndex] else {
+                throw TimeWindowLeaderboardIndexError.malformedScoreEntry(
+                    indexName: index.name
+                )
             }
+            let invertedScore = try decodeInt64(invertedScoreElement)
 
             // Reverse the inversion
             let unsigned = UInt64(bitPattern: invertedScore)
@@ -809,12 +820,10 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
                 }
             }
 
-            allEntries.append((pk: Tuple(pkElements), score: score))
+            results.append((pk: Tuple(pkElements), score: score))
         }
 
-        // Return last K entries (lowest scores), reversed to ascending order
-        let bottomK = Array(allEntries.suffix(k))
-        return bottomK.reversed()
+        return results
     }
 
     // MARK: - Percentile Queries
@@ -836,8 +845,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         grouping: [any TupleElement]? = nil,
         transaction: any TransactionAccess
     ) async throws -> Int64? {
-        let now = Date()
-        let currentWindowId = windowId(for: now)
+        let currentWindowId = currentWindowId()
 
         return try await getPercentile(
             percentile,
@@ -917,7 +925,10 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var count = 0
@@ -963,8 +974,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         grouping: [any TupleElement]? = nil,
         transaction: any TransactionAccess
     ) async throws -> Int? {
-        let now = Date()
-        let currentWindowId = windowId(for: now)
+        let currentWindowId = currentWindowId()
 
         // Get current position
         let posKey = posSubspace.pack(pk)
@@ -1032,7 +1042,10 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var distinctScores = Set<Int64>()
@@ -1043,9 +1056,12 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             guard windowSubspace.contains(key) else { break }
 
             let keyTuple = try windowSubspace.unpack(key)
-            guard let invertedScore = keyTuple[invertedScoreIndex] as? Int64 else {
-                continue
+            guard let invertedScoreElement = keyTuple[invertedScoreIndex] else {
+                throw TimeWindowLeaderboardIndexError.malformedScoreEntry(
+                    indexName: index.name
+                )
             }
+            let invertedScore = try decodeInt64(invertedScoreElement)
 
             // Reverse the inversion
             let unsigned = UInt64(bitPattern: invertedScore)

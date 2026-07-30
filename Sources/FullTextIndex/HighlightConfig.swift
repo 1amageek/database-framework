@@ -3,11 +3,6 @@
 //
 // Reference: Elasticsearch Highlighting, Lucene Highlighter
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 // MARK: - HighlightConfig
 
@@ -103,7 +98,7 @@ public struct HighlightConfig: Sendable, Hashable {
 // MARK: - HighlighterType
 
 /// Type of highlighter algorithm
-public enum HighlighterType: String, Sendable, Hashable, Codable {
+public enum HighlighterType: String, Sendable, Hashable {
     /// Unified highlighter (default, best for most cases)
     ///
     /// Uses term vectors or re-analysis for highlighting.
@@ -265,7 +260,7 @@ public struct ScoreExplanation: Sendable, Hashable {
 /// Scoring model for relevance calculation
 ///
 /// **Reference**: Lucene Similarity, BM25
-public enum ScoringModel: String, Sendable, Hashable, Codable {
+public enum ScoringModel: String, Sendable, Hashable {
     /// BM25 (default in modern search engines)
     ///
     /// Probabilistic model with good performance on short queries.

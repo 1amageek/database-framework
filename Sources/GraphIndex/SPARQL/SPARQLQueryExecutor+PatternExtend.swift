@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -54,13 +49,23 @@ extension SPARQLQueryExecutor {
                             "BIND target is already bound: \(variable)"
                         )
                 }
-                do {
-                    let value = try await evaluateCanonicalExpression(
+                let evaluatedValue: FieldValue?
+                switch try await evaluateCanonicalExpression(
                         expression,
                         binding: binding,
                         transaction: transaction,
                         activeGraph: activeGraph
-                    )
+                    ) {
+                case .value(let value):
+                    evaluatedValue = value
+                case .expressionError(let evaluationError):
+                    if evaluationError.isSPARQLEvaluationError {
+                        evaluatedValue = nil
+                    } else {
+                        throw evaluationError
+                    }
+                }
+                if let value = evaluatedValue {
                     if value == .null {
                         try extended.append(
                             binding,
@@ -74,10 +79,9 @@ extension SPARQLQueryExecutor {
                             at: .projection
                         ) {
                         case .incompatible:
-                            throw SPARQLExpressionEvaluationError
-                                .runtimeInvariant(
-                                    "BIND preflight rejected an unbound target"
-                                )
+                            throw SPARQLExpressionEvaluationError.runtimeInvariant(
+                                "BIND preflight rejected an unbound target"
+                            )
                         case .admitted(let admission):
                             let output = binding.binding(
                                 variable,
@@ -89,8 +93,7 @@ extension SPARQLQueryExecutor {
                             )
                         }
                     }
-                } catch let error as SPARQLExpressionEvaluationError
-                    where error.isSPARQLEvaluationError {
+                } else {
                     try extended.append(
                         binding,
                         at: .projection

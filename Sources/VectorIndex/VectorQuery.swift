@@ -239,15 +239,12 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
         // Check for VectorIndexConfiguration
         let configs = queryContext.context.container.indexConfigurations[indexName] ?? []
-        let vectorConfig = configs.first { config in
-            type(of: config).kindIdentifier
-                == VectorIndexSpecification.identifier
-        } as? VectorIndexRuntimeConfiguration
+        let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs)
 
         // Get index subspace
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace: Subspace
-        if let subspaceKey = vectorConfig?.subspaceKey {
+        if let subspaceKey = runtimePolicy?.subspaceKey {
             indexSubspace = typeSubspace.subspace(indexName).subspace(subspaceKey)
         } else {
             indexSubspace = typeSubspace.subspace(indexName)
@@ -264,7 +261,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 storedFieldNames: indexDescriptor.storedFieldNames
             )
 
-            let algorithm = vectorConfig?.algorithm ?? .flat
+            let algorithm = runtimePolicy?.algorithm ?? .flat
 
             switch algorithm {
             case .hnsw(let hnswParams):
@@ -421,15 +418,12 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         // Find the vector index configuration to check if HNSW is configured
         // Configurations are stored in the container, keyed by index name
         let configs = queryContext.context.container.indexConfigurations[indexName] ?? []
-        let vectorConfig = configs.first { config in
-            type(of: config).kindIdentifier
-                == VectorIndexSpecification.identifier
-        } as? VectorIndexRuntimeConfiguration
+        let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs)
 
         // Get HNSW parameters if configured
         let hnswParams: VectorHNSWParameters
-        if let vectorConfig = vectorConfig {
-            switch vectorConfig.algorithm {
+        if let runtimePolicy {
+            switch runtimePolicy.algorithm {
             case .hnsw(let params):
                 hnswParams = params
             case .flat:
@@ -446,7 +440,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         // Build subspace
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace: Subspace
-        if let subspaceKey = vectorConfig?.subspaceKey {
+        if let subspaceKey = runtimePolicy?.subspaceKey {
             indexSubspace = typeSubspace.subspace(indexName).subspace(subspaceKey)
         } else {
             indexSubspace = typeSubspace.subspace(indexName)

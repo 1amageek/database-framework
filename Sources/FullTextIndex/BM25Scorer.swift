@@ -4,11 +4,6 @@
 // Reference: Robertson & Zaragoza, "The Probabilistic Relevance Framework: BM25 and Beyond"
 // Foundations and Trends in Information Retrieval, 2009
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseMath
 
 // MARK: - BM25 Statistics

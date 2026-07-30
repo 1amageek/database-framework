@@ -4,11 +4,6 @@
 // Provides exact nearest neighbor search using brute force linear scan.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -158,7 +153,10 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var heap = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
@@ -303,26 +301,6 @@ internal struct BinaryHeap<Element> {
 
     /// Returns the root element without removing it
     var top: Element? { elements.first }
-
-    /// Insert element maintaining heap property - O(log k)
-    mutating func insert(_ element: Element) {
-        if elements.count < maxSize {
-            elements.append(element)
-            siftUp(elements.count - 1)
-        } else if let rootElement = elements.first, comparator(element, rootElement) {
-            // Element should be closer to root than current root
-            // For max-heap with distance: new element has larger distance, don't insert
-            // For min-heap with distance: new element has smaller distance, replace root
-            // Actually for bounded k-NN with max-heap:
-            // - We want to keep k smallest distances
-            // - Root is the largest distance among k
-            // - If new distance < root distance, replace root
-            // So comparator should be > for max-heap, and we check !comparator
-        } else if let rootElement = elements.first, !comparator(rootElement, element) && rootElement as AnyObject !== element as AnyObject {
-            // For bounded heap: replace root if new element should be in heap
-            // This logic depends on use case - see replaceRoot method below
-        }
-    }
 
     /// Insert element, replacing root if heap is full and element qualifies
     /// For k-NN max-heap: replaces if new distance < root distance

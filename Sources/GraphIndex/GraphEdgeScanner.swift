@@ -86,7 +86,7 @@ public struct GraphEdgeScanner: Sendable {
         from source: GraphIdentity,
         edgeLabel: GraphIdentity?,
         transaction: any TransactionAccess
-    ) -> GraphEdgeSequence {
+    ) -> GraphEdgeScan {
         scan(
             source: source,
             target: nil,
@@ -99,7 +99,7 @@ public struct GraphEdgeScanner: Sendable {
         to target: GraphIdentity,
         edgeLabel: GraphIdentity?,
         transaction: any TransactionAccess
-    ) -> GraphEdgeSequence {
+    ) -> GraphEdgeScan {
         scan(
             source: nil,
             target: target,
@@ -111,7 +111,7 @@ public struct GraphEdgeScanner: Sendable {
     public func scanAllEdges(
         edgeLabel: GraphIdentity?,
         transaction: any TransactionAccess
-    ) -> GraphEdgeSequence {
+    ) -> GraphEdgeScan {
         scan(
             source: nil,
             target: nil,
@@ -124,7 +124,7 @@ public struct GraphEdgeScanner: Sendable {
         from sources: [GraphIdentity],
         edgeLabel: GraphIdentity?,
         transaction: any TransactionAccess
-    ) -> GraphEdgeBatchSequence {
+    ) -> GraphEdgeBatchScan {
         batchScan(
             identities: sources,
             direction: .outgoing,
@@ -137,7 +137,7 @@ public struct GraphEdgeScanner: Sendable {
         to targets: [GraphIdentity],
         edgeLabel: GraphIdentity?,
         transaction: any TransactionAccess
-    ) -> GraphEdgeBatchSequence {
+    ) -> GraphEdgeBatchScan {
         batchScan(
             identities: targets,
             direction: .incoming,
@@ -151,10 +151,12 @@ public struct GraphEdgeScanner: Sendable {
         transaction: any TransactionAccess
     ) async throws -> Set<GraphIdentity> {
         var nodes = Set<GraphIdentity>()
-        for try await edge in scanAllEdges(
+        let edgeSequence = scanAllEdges(
             edgeLabel: edgeLabel,
             transaction: transaction
-        ) {
+        )
+        var edgeCursor = edgeSequence.makeCursor()
+        while let edge = try await edgeCursor.next() {
             nodes.insert(edge.source)
             nodes.insert(edge.target)
         }
@@ -168,10 +170,12 @@ public struct GraphEdgeScanner: Sendable {
     ) async throws -> Set<GraphIdentity> {
         guard maxNodes > 0 else { return [] }
         var nodes = Set<GraphIdentity>()
-        for try await edge in scanAllEdges(
+        let edgeSequence = scanAllEdges(
             edgeLabel: edgeLabel,
             transaction: transaction
-        ) {
+        )
+        var edgeCursor = edgeSequence.makeCursor()
+        while let edge = try await edgeCursor.next() {
             nodes.insert(edge.source)
             if nodes.count >= maxNodes { break }
             nodes.insert(edge.target)
@@ -186,11 +190,13 @@ public struct GraphEdgeScanner: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [EdgeInfo] {
         var edges: [EdgeInfo] = []
-        for try await edge in scanOutgoing(
+        let edgeSequence = scanOutgoing(
             from: source,
             edgeLabel: edgeLabel,
             transaction: transaction
-        ) {
+        )
+        var edgeCursor = edgeSequence.makeCursor()
+        while let edge = try await edgeCursor.next() {
             edges.append(edge)
         }
         return edges
@@ -202,11 +208,13 @@ public struct GraphEdgeScanner: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [EdgeInfo] {
         var edges: [EdgeInfo] = []
-        for try await edge in scanIncoming(
+        let edgeSequence = scanIncoming(
             to: target,
             edgeLabel: edgeLabel,
             transaction: transaction
-        ) {
+        )
+        var edgeCursor = edgeSequence.makeCursor()
+        while let edge = try await edgeCursor.next() {
             edges.append(edge)
         }
         return edges
@@ -217,10 +225,12 @@ public struct GraphEdgeScanner: Sendable {
         transaction: any TransactionAccess,
         while shouldContinue: (EdgeInfo) throws -> Bool
     ) async throws {
-        for try await edge in scanAllEdges(
+        let edgeSequence = scanAllEdges(
             edgeLabel: edgeLabel,
             transaction: transaction
-        ) {
+        )
+        var edgeCursor = edgeSequence.makeCursor()
+        while let edge = try await edgeCursor.next() {
             if try !shouldContinue(edge) { break }
         }
     }
@@ -230,8 +240,8 @@ public struct GraphEdgeScanner: Sendable {
         target: GraphIdentity?,
         edgeLabel: GraphIdentity?,
         transaction: any TransactionAccess
-    ) -> GraphEdgeSequence {
-        GraphEdgeSequence(
+    ) -> GraphEdgeScan {
+        GraphEdgeScan(
             entries: scanEntries(
                 source: source,
                 target: target,
@@ -246,8 +256,8 @@ public struct GraphEdgeScanner: Sendable {
         target: GraphIdentity?,
         edgeLabel: GraphIdentity?,
         transaction: any TransactionAccess
-    ) -> GraphEdgeEntrySequence {
-        GraphEdgeEntrySequence(
+    ) -> GraphEdgeEntryScan {
+        GraphEdgeEntryScan(
             scanner: self,
             source: source,
             target: target,
@@ -261,7 +271,7 @@ public struct GraphEdgeScanner: Sendable {
         direction: Direction,
         edgeLabel: GraphIdentity?,
         transaction: any TransactionAccess
-    ) -> GraphEdgeBatchSequence {
+    ) -> GraphEdgeBatchScan {
         let identityPlan: GraphEdgeBatchIdentityPlan
         if requiresFullScanForBatch(edgeLabel: edgeLabel) {
             identityPlan = .fullScan(Set(identities))
@@ -285,7 +295,7 @@ public struct GraphEdgeScanner: Sendable {
             }
             identityPlan = .pointScans(orderedIdentities)
         }
-        return GraphEdgeBatchSequence(
+        return GraphEdgeBatchScan(
             scanner: self,
             identityPlan: identityPlan,
             direction: direction,
@@ -448,7 +458,7 @@ public struct GraphEdgeScanner: Sendable {
                 actual: identity.representation
             )
         }
-        do {
+        do throws(RDFTermStorageError) {
             return try RDFQuadIndexComponentWritePlan(
                 canonicalBytes: bytes,
                 role: role.databaseRole
@@ -802,10 +812,10 @@ public struct GraphEdgeScanner: Sendable {
     private func decodeIdentity(
         _ element: any TupleElement
     ) throws -> GraphIdentity {
-        guard let value = element as? String else {
+        guard case .string(let value) = element.tupleValue else {
             throw GraphIndexError.unexpectedElementType(
                 expected: "String",
-                actual: String(describing: type(of: element))
+                actual: GraphValueSemanticName.tuple(element)
             )
         }
         return .identifier(value)
@@ -818,21 +828,21 @@ public struct GraphEdgeScanner: Sendable {
         case .quadStore:
             throw GraphIndexError.invalidScanState
         case .namedGraphStore:
-            if let bytes = element as? ByteString, bytes.isEmpty {
+            if case .bytes(let bytes) = element.tupleValue, bytes.isEmpty {
                 return nil
             }
-            guard let value = element as? String else {
+            guard case .string(let value) = element.tupleValue else {
                 throw GraphIndexError.unexpectedElementType(
                     expected: "String or empty ByteString default-graph discriminator",
-                    actual: String(describing: type(of: element))
+                    actual: GraphValueSemanticName.tuple(element)
                 )
             }
             return .identifier(value)
         case .adjacency, .tripleStore, .hexastore:
-            guard let value = element as? String else {
+            guard case .string(let value) = element.tupleValue else {
                 throw GraphIndexError.unexpectedElementType(
                     expected: "String",
-                    actual: String(describing: type(of: element))
+                    actual: GraphValueSemanticName.tuple(element)
                 )
             }
             return .identifier(value)
@@ -840,28 +850,28 @@ public struct GraphEdgeScanner: Sendable {
     }
 }
 
-public struct GraphEdgeSequence: AsyncSequence, Sendable {
+public struct GraphEdgeScan: Sendable {
     public typealias Element = EdgeInfo
 
-    private let entries: GraphEdgeEntrySequence
+    private let entries: GraphEdgeEntryScan
 
-    package init(entries: GraphEdgeEntrySequence) {
+    package init(entries: GraphEdgeEntryScan) {
         self.entries = entries
     }
 
-    public func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(iterator: entries.makeAsyncIterator())
+    public func makeCursor() -> Cursor {
+        Cursor(entryCursor: entries.makeCursor())
     }
 
-    public struct AsyncIterator: AsyncIteratorProtocol {
-        private var iterator: GraphEdgeEntrySequence.AsyncIterator
+    public struct Cursor {
+        private var entryCursor: GraphEdgeEntryScan.Cursor
 
-        package init(iterator: GraphEdgeEntrySequence.AsyncIterator) {
-            self.iterator = iterator
+        package init(entryCursor: GraphEdgeEntryScan.Cursor) {
+            self.entryCursor = entryCursor
         }
 
         public mutating func next() async throws -> EdgeInfo? {
-            try await iterator.next()?.edge
+            try await entryCursor.next()?.edge
         }
     }
 }
@@ -884,7 +894,7 @@ fileprivate enum GraphEdgeBatchIdentityPlan: Sendable {
     }
 }
 
-public struct GraphEdgeBatchSequence: AsyncSequence, Sendable {
+public struct GraphEdgeBatchScan: Sendable {
     public typealias Element = EdgeInfo
 
     private let scanner: GraphEdgeScanner
@@ -907,8 +917,8 @@ public struct GraphEdgeBatchSequence: AsyncSequence, Sendable {
         self.transaction = transaction
     }
 
-    public func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(
+    public func makeCursor() -> Cursor {
+        Cursor(
             scanner: scanner,
             identityPlan: identityPlan,
             direction: direction,
@@ -917,14 +927,14 @@ public struct GraphEdgeBatchSequence: AsyncSequence, Sendable {
         )
     }
 
-    public struct AsyncIterator: AsyncIteratorProtocol {
+    public struct Cursor {
         private let scanner: GraphEdgeScanner
         private let identityPlan: GraphEdgeBatchIdentityPlan
         private let direction: GraphEdgeScanner.Direction
         private let edgeLabel: GraphIdentity?
         private let transaction: any TransactionAccess
         private var identityIndex = 0
-        private var activeIterator: GraphEdgeSequence.AsyncIterator?
+        private var activeCursor: GraphEdgeScan.Cursor?
         private var isFinished = false
 
         fileprivate init(
@@ -946,23 +956,23 @@ public struct GraphEdgeBatchSequence: AsyncSequence, Sendable {
                 isFinished = true
                 return nil
             }
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
 
             switch identityPlan {
             case .fullScan(let identitySet):
-                if activeIterator == nil {
-                    activeIterator = scanner.scanAllEdges(
+                if activeCursor == nil {
+                    activeCursor = scanner.scanAllEdges(
                         edgeLabel: edgeLabel,
                         transaction: transaction
-                    ).makeAsyncIterator()
+                    ).makeCursor()
                 }
-                while var iterator = activeIterator {
-                    activeIterator = nil
-                    guard let edge = try await iterator.next() else {
+                while var cursor = activeCursor {
+                    activeCursor = nil
+                    guard let edge = try await cursor.next() else {
                         isFinished = true
                         return nil
                     }
-                    activeIterator = iterator
+                    activeCursor = cursor
                     let identity = direction == .outgoing
                         ? edge.source
                         : edge.target
@@ -975,7 +985,7 @@ public struct GraphEdgeBatchSequence: AsyncSequence, Sendable {
 
             case .pointScans(let identities):
                 while identityIndex < identities.count {
-                    if activeIterator == nil {
+                    if activeCursor == nil {
                         let identity = identities[identityIndex]
                         let sequence = direction == .outgoing
                             ? scanner.scanOutgoing(
@@ -988,15 +998,15 @@ public struct GraphEdgeBatchSequence: AsyncSequence, Sendable {
                                 edgeLabel: edgeLabel,
                                 transaction: transaction
                             )
-                        activeIterator = sequence.makeAsyncIterator()
+                        activeCursor = sequence.makeCursor()
                     }
-                    guard var iterator = activeIterator else {
+                    guard var cursor = activeCursor else {
                         isFinished = true
                         return nil
                     }
-                    activeIterator = nil
-                    if let edge = try await iterator.next() {
-                        activeIterator = iterator
+                    activeCursor = nil
+                    if let edge = try await cursor.next() {
+                        activeCursor = cursor
                         return edge
                     }
                     identityIndex += 1
@@ -1020,7 +1030,7 @@ package struct GraphEdgePreparedScan: Sendable {
     package let end: ByteString
 }
 
-package struct GraphEdgeEntrySequence: AsyncSequence, Sendable {
+package struct GraphEdgeEntryScan: Sendable {
     package typealias Element = GraphEdgeEntry
 
     private let scanner: GraphEdgeScanner
@@ -1043,8 +1053,8 @@ package struct GraphEdgeEntrySequence: AsyncSequence, Sendable {
         self.transaction = transaction
     }
 
-    package func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(
+    package func makeCursor() -> Cursor {
+        Cursor(
             scanner: scanner,
             source: source,
             target: target,
@@ -1053,7 +1063,7 @@ package struct GraphEdgeEntrySequence: AsyncSequence, Sendable {
         )
     }
 
-    package struct AsyncIterator: AsyncIteratorProtocol {
+    package struct Cursor {
         private let scanner: GraphEdgeScanner
         private let source: GraphIdentity?
         private let target: GraphIdentity?
@@ -1080,7 +1090,7 @@ package struct GraphEdgeEntrySequence: AsyncSequence, Sendable {
 
         package mutating func next() async throws -> GraphEdgeEntry? {
             guard !isFinished else { return nil }
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             if cursor == nil {
                 let prepared = try scanner.prepareScan(
                     source: source,
@@ -1098,6 +1108,7 @@ package struct GraphEdgeEntrySequence: AsyncSequence, Sendable {
                     from: .firstGreaterOrEqual(prepared.begin),
                     to: .firstGreaterOrEqual(prepared.end),
                     limit: reservation?.limit ?? 0,
+                    reverse: false,
                     snapshot: true,
                     streamingMode: .iterator
                 )
@@ -1116,7 +1127,7 @@ package struct GraphEdgeEntrySequence: AsyncSequence, Sendable {
                 }
                 cursor = activeCursor
                 try reservation?.recordPhysicalRead()
-                try Task.checkCancellation()
+                try ensureDatabaseTaskIsActive()
                 let edge = try scanner.decodeEdge(
                     key,
                     ordering: preparedScan.ordering,

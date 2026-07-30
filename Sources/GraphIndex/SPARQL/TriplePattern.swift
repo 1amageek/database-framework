@@ -3,11 +3,6 @@
 //
 // Represents a single triple pattern (subject, predicate, object) in a query.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 /// A single triple pattern in a SPARQL-like query
 ///

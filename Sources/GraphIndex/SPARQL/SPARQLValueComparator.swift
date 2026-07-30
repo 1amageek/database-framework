@@ -25,7 +25,7 @@ struct SPARQLValueComparator: Sendable {
 
     func validateLexicalForm(
         _ literal: RDFLiteral
-    ) throws -> Bool {
+    ) throws(XSDValidationFailure) -> Bool {
         guard Self.supportsLexicalValidation(
             datatype: literal.datatypeIRI.rawValue
         ) else {
@@ -42,7 +42,7 @@ struct SPARQLValueComparator: Sendable {
     func compare(
         _ lhs: RDFLiteral,
         _ rhs: RDFLiteral
-    ) throws -> SPARQLValueComparison {
+    ) throws(XSDValidationFailure) -> SPARQLValueComparison {
         let lhsResult = try parse(lhs)
         let rhsResult = try parse(rhs)
         guard case .success(let lhsValue) = lhsResult,
@@ -86,10 +86,10 @@ struct SPARQLValueComparator: Sendable {
 
     private func parse(
         _ literal: RDFLiteral
-    ) throws -> ParseResult {
-        do {
+    ) throws(XSDValidationFailure) -> ParseResult {
+        do throws(XSDValidationFailure) {
             return .success(try parser.parse(literal))
-        } catch let failure as XSDValidationFailure {
+        } catch let failure {
             switch failure {
             case .invalidLexicalForm, .unsupportedDatatype:
                 return .typeError

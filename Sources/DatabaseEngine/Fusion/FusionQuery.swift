@@ -1,11 +1,6 @@
 // FusionQuery.swift
 // DatabaseEngine - Protocol for fusion-compatible queries
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 
 /// Protocol for queries that can participate in fusion operations

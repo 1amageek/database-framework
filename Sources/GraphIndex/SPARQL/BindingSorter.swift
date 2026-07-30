@@ -6,14 +6,10 @@
 //
 // Reference: W3C SPARQL 1.1 Query Language, Section 15 (Solution Sequences and Modifiers)
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
+import DatabaseWire
 
 /// A single ORDER BY sort key for VariableBinding sorting
 ///
@@ -192,11 +188,11 @@ public struct BindingSorter: Sendable {
                 )
 
                 switch result {
-                case .orderedSame:
+                case .same:
                     continue // Tie on this key, try next
-                case .orderedAscending:
+                case .ascending:
                     return key.ascending
-                case .orderedDescending:
+                case .descending:
                     return !key.ascending
                 }
             }
@@ -323,11 +319,11 @@ public struct BindingSorter: Sendable {
                     rhs,
                     nullsLast: key.nullsLast
                 ) {
-                case .orderedSame:
+                case .same:
                     continue
-                case .orderedAscending:
+                case .ascending:
                     return key.ascending
-                case .orderedDescending:
+                case .descending:
                     return !key.ascending
                 }
             }
@@ -385,11 +381,11 @@ public struct BindingSorter: Sendable {
                     rhs,
                     nullsLast: key.nullsLast
                 ) {
-                case .orderedSame:
+                case .same:
                     continue
-                case .orderedAscending:
+                case .ascending:
                     return key.ascending
-                case .orderedDescending:
+                case .descending:
                     return !key.ascending
                 }
             }
@@ -415,20 +411,20 @@ public struct BindingSorter: Sendable {
         _ lhs: FieldValue?,
         _ rhs: FieldValue?,
         nullsLast: Bool
-    ) throws -> ComparisonResult {
+    ) throws -> SPARQLComparisonOrder {
         switch (lhs, rhs) {
         case (.none, .none):
-            return .orderedSame
+            return .same
         case (.none, .some):
-            return nullsLast ? .orderedDescending : .orderedAscending
+            return nullsLast ? .descending : .ascending
         case (.some, .none):
-            return nullsLast ? .orderedAscending : .orderedDescending
+            return nullsLast ? .ascending : .descending
         case (.some(.null), .some(.null)):
-            return .orderedSame
+            return .same
         case (.some(.null), .some):
-            return nullsLast ? .orderedDescending : .orderedAscending
+            return nullsLast ? .descending : .ascending
         case (.some, .some(.null)):
-            return nullsLast ? .orderedAscending : .orderedDescending
+            return nullsLast ? .ascending : .descending
         case (.some(let l), .some(let r)):
             return try SPARQLTermOrdering.compare(l, r)
         }

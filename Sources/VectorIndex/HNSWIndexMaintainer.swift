@@ -5,11 +5,6 @@
 // SwiftHNSW library (https://github.com/1amageek/swift-hnsw).
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -36,6 +31,16 @@ private struct HNSWGraphMetadata: Sendable {
     let chunkSize: Int
     let chunkCount: Int
     let revision: Int64
+}
+
+private struct HNSWStoredArchive: HNSWArchiveBytes {
+    let bytes: ByteString
+
+    func withUnsafeBytes<Result>(
+        _ body: (UnsafeRawBufferPointer) throws -> Result
+    ) rethrows -> Result {
+        try bytes.withUnsafeBytes(body)
+    }
 }
 
 // MARK: - HNSW Parameters
@@ -680,8 +685,11 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         _ index: HNSWIndexF32,
         transaction: any TransactionAccess
     ) async throws {
-        let graphData = try index.serialize()
-        try await saveGraphSnapshot(graphData, transaction: transaction)
+        let archive = try index.serializedArchive()
+        try await saveGraphSnapshot(
+            ByteString(archive.bytes),
+            transaction: transaction
+        )
     }
 
     /// Load a cached search snapshot or construct one from the persisted graph.
@@ -718,18 +726,16 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Decode a persisted graph snapshot and surface corruption as a typed vector-index error.
     private func loadPersistedIndex(from graphBytes: ByteString) throws -> HNSWIndexF32 {
         do {
-            return try HNSWIndexF32.load(
-                from: dataRetaining(graphBytes),
+            return try HNSWIndexF32.restore(
+                from: HNSWStoredArchive(bytes: graphBytes),
                 dimensions: dimensions,
                 metric: metric.toHNSWMetric,
                 maxElements: 0
             )
-        } catch let error as HNSWError {
-            throw VectorIndexError.invalidStructure(
-                "Invalid HNSW graph snapshot: \(String(describing: error))"
-            )
         } catch {
-            throw VectorIndexError.invalidStructure("Invalid HNSW graph snapshot: \(error)")
+            throw VectorIndexError.invalidStructure(
+                "Invalid HNSW graph snapshot"
+            )
         }
     }
 
@@ -749,21 +755,17 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Save a graph snapshot as bounded chunks so backend value-size limits do not corrupt large graphs.
     private func saveGraphSnapshot(
-        _ graphData: Data,
+        _ graphBytes: ByteString,
         transaction: any TransactionAccess
     ) async throws {
         let chunkSize = hnswGraphSnapshotChunkSize
-        let byteCount = graphData.count
+        let byteCount = graphBytes.count
         let chunkCount = byteCount == 0
             ? 0
             : (byteCount + chunkSize - 1) / chunkSize
 
         let range = graphChunksSubspace.range()
         try transaction.clearRange(beginKey: range.begin, endKey: range.end)
-
-        let graphBytes = ByteString(
-            retaining: GraphSnapshotByteOwner(data: graphData)
-        )
 
         for chunkIndex in 0..<chunkCount {
             let start = chunkIndex * chunkSize
@@ -837,13 +839,12 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Decode persisted graph metadata.
     private func decodeGraphMetadata(_ metadata: ByteString) throws -> HNSWGraphMetadata {
-        let tuple = try Tuple.unpack(from: metadata)
+        let tuple = try Tuple(packed: metadata)
         guard tuple.count == 4 || tuple.count == 5,
-              let version = tuple[0] as? Int64,
-              let byteCountValue = tuple[1] as? Int64,
-              let chunkSizeValue = tuple[2] as? Int64,
-              let chunkCountValue = tuple[3] as? Int64
-        else {
+              case .signedInteger(let version) = try tuple.value(at: 0),
+              case .signedInteger(let byteCountValue) = try tuple.value(at: 1),
+              case .signedInteger(let chunkSizeValue) = try tuple.value(at: 2),
+              case .signedInteger(let chunkCountValue) = try tuple.value(at: 3) else {
             throw VectorIndexError.invalidStructure("Invalid HNSW graph snapshot metadata")
         }
 
@@ -853,7 +854,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         let revisionValue: Int64
         if tuple.count == 5 {
-            guard let value = tuple[4] as? Int64 else {
+            guard case .signedInteger(let value) = try tuple.value(at: 4) else {
                 throw VectorIndexError.invalidStructure("Invalid HNSW graph snapshot revision")
             }
             revisionValue = value
@@ -896,7 +897,10 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let entries = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var primaryKeysByLabel: [UInt64: Tuple] = [:]
@@ -904,11 +908,11 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         for (key, value) in entries {
             let labelTuple = try primaryKeysSubspace.unpack(key)
-            guard let labelValue = labelTuple[0] as? Int64 else {
+            guard case .signedInteger(let labelValue) = try labelTuple.value(at: 0),
+                  labelValue >= 0 else {
                 throw VectorIndexError.invalidStructure("Invalid HNSW primary-key label")
             }
-            let primaryKey = try Tuple.unpack(from: value)
-            primaryKeysByLabel[UInt64(labelValue)] = Tuple(primaryKey)
+            primaryKeysByLabel[UInt64(labelValue)] = try Tuple(packed: value)
         }
 
         return primaryKeysByLabel
@@ -923,7 +927,10 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 100_001,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .iterator
         )
 
         var count = 0
@@ -980,24 +987,6 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         try VectorConversion.bytesToUInt64(bytes)
     }
 
-    /// Creates a read-only Data view while retaining the ByteString owner.
-    private func dataRetaining(_ bytes: ByteString) -> Data {
-        guard !bytes.isEmpty else {
-            return Data()
-        }
-        return bytes.withUnsafeBytes { buffer in
-            guard let baseAddress = buffer.baseAddress else {
-                preconditionFailure("Non-empty graph bytes have no base address")
-            }
-            return Data(
-                bytesNoCopy: UnsafeMutableRawPointer(mutating: baseAddress),
-                count: buffer.count,
-                deallocator: .custom { _, _ in
-                    withExtendedLifetime(bytes) {}
-                }
-            )
-        }
-    }
 }
 
 // MARK: - VectorMetric Extension

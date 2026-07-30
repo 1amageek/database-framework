@@ -53,8 +53,18 @@ public struct DataAccess: Sendable {
         item: Item,
         expression: KeyExpression
     ) throws -> [any TupleElement] {
-        let visitor = DataAccessEvaluator(item: item)
-        return try expression.accept(visitor: visitor)
+        try expression.evaluate { fieldPath in
+            try extractField(from: item, keyPath: fieldPath)
+        }
+    }
+
+    public static func evaluate(
+        model: PersistedModel,
+        expression: KeyExpression
+    ) throws -> [any TupleElement] {
+        try expression.evaluate { fieldPath in
+            try extractField(from: model, keyPath: fieldPath)
+        }
     }
 
     /// Extract a field value through its compiled schema identity.
@@ -108,6 +118,39 @@ public struct DataAccess: Sendable {
         return [try value.toTupleElement()]
     }
 
+    public static func extractField(
+        from model: PersistedModel,
+        keyPath: String
+    ) throws -> [any TupleElement] {
+        let components = keyPath.split(
+            separator: ".",
+            omittingEmptySubsequences: false
+        )
+        guard let first = components.first,
+              !first.isEmpty,
+              var value = model.value(forFieldNamed: String(first)) else {
+            throw DataAccessError.fieldNotFound(
+                itemType: model.entity,
+                keyPath: keyPath
+            )
+        }
+        for component in components.dropFirst() {
+            guard !component.isEmpty,
+                  case .object(let object) = value,
+                  let nested = object[String(component)] else {
+                throw DataAccessError.fieldNotFound(
+                    itemType: model.entity,
+                    keyPath: keyPath
+                )
+            }
+            value = nested
+        }
+        if case .array(let values) = value {
+            return try FieldValue.toTupleElements(values)
+        }
+        return [try value.toTupleElement()]
+    }
+
     /// Resolve an item's canonical persistence identifier.
     ///
     /// - Parameters:
@@ -120,29 +163,28 @@ public struct DataAccess: Sendable {
         from item: Item,
         using idExpression: KeyExpression
     ) throws -> Tuple {
-        if let resolved = idExpression as? TupleKeyExpression {
-            if resolved.value.count == 1 {
+        if let resolved = idExpression.resolvedTuple {
+            if resolved.count == 1 {
                 _ = try PersistableIdentifierKeyCodec.value(
-                    from: resolved.value,
+                    from: resolved,
                     expectedType: Item.persistableIdentifierType
                 )
             } else {
                 try PolymorphicIdentifierKey.validate(
-                    resolved.value,
+                    resolved,
                     for: Item.self
                 )
             }
-            return resolved.value
+            return resolved
         }
 
-        if let field = idExpression as? FieldKeyExpression,
-           field.fieldName == "id" {
+        if idExpression.fieldPath == "id" {
             return try item.persistableIdentifierTuple()
         }
 
         throw DataAccessError.invalidIdentifierExpression(
             itemType: Item.persistableType,
-            actualType: String(reflecting: type(of: idExpression))
+            actualType: "unsupported identifier expression"
         )
     }
 
@@ -157,6 +199,10 @@ public struct DataAccess: Sendable {
         try PersistableStorageCodec.encode(item)
     }
 
+    public static func serialize(_ model: PersistedModel) throws -> ByteString {
+        try PersistableStorageCodec.encode(model)
+    }
+
     /// Deserialize canonical compiled-entity bytes.
     ///
     /// - Parameter bytes: The bytes to deserialize
@@ -166,95 +212,16 @@ public struct DataAccess: Sendable {
         try PersistableStorageCodec.decode(Item.self, from: bytes)
     }
 
-    /// Deserialize bytes to a type-erased Persistable using runtime type
-    ///
-    /// Used for polymorphic deserialization where the concrete type is known at runtime.
-    ///
-    /// - Parameters:
-    ///   - bytes: The bytes to deserialize
-    ///   - type: The concrete Persistable type to decode as
-    /// - Returns: Deserialized item (type-erased)
-    /// - Throws: Error if deserialization fails
-    public static func deserializeAny(
+    public static func deserializePersistedModel(
         _ bytes: ByteString,
-        as type: any Persistable.Type
-    ) throws -> any Persistable {
-        try PersistableStorageCodec.decodeAny(type, from: bytes)
-    }
-
-}
-
-// MARK: - DataAccessEvaluator
-
-/// Visitor that evaluates KeyExpressions using DataAccess
-///
-/// This visitor traverses a KeyExpression tree and extracts values from an item
-/// using DataAccess static methods.
-private struct DataAccessEvaluator<Item: Persistable>: KeyExpressionVisitor {
-    let item: Item
-
-    typealias Result = [any TupleElement]
-
-    func visitField(_ fieldName: String) throws -> [any TupleElement] {
-        return try DataAccess.extractField(from: item, keyPath: fieldName)
-    }
-
-    func visitConcatenate(_ expressions: [KeyExpression]) throws -> [any TupleElement] {
-        var result: [any TupleElement] = []
-        for expression in expressions {
-            let values = try expression.accept(visitor: self)
-            result.append(contentsOf: values)
-        }
-        return result
-    }
-
-    func visitLiteral(_ value: any TupleElement) throws -> [any TupleElement] {
-        return [value]
-    }
-
-    func visitTuple(_ value: Tuple) throws -> [any TupleElement] {
-        var elements: [any TupleElement] = []
-        for index in 0..<value.count {
-            if let element = value[index] {
-                elements.append(element)
-            }
-        }
-        return elements
-    }
-
-    func visitEmpty() throws -> [any TupleElement] {
-        return []
-    }
-
-    func visitNest(_ parentField: String, _ child: KeyExpression) throws -> [any TupleElement] {
-        // Build the full nested path by recursively flattening the expression
-        let fullPath = try buildNestedPath(
-            parentField: parentField,
-            child: child
-        )
-        return try DataAccess.extractField(from: item, keyPath: fullPath)
-    }
-
-    /// Build a dot-notation path from nested expressions
-    private func buildNestedPath(
-        parentField: String,
-        child: KeyExpression
-    ) throws -> String {
-        if let fieldExpr = child as? FieldKeyExpression {
-            return "\(parentField).\(fieldExpr.fieldName)"
-        }
-
-        if let nestExpr = child as? NestExpression {
-            let childPath = try buildNestedPath(
-                parentField: nestExpr.parentField,
-                child: nestExpr.child
-            )
-            return "\(parentField).\(childPath)"
-        }
-        throw DataAccessError.invalidNestedExpression(
-            actualType: String(describing: type(of: child))
+        expectedEntity: String? = nil
+    ) throws -> PersistedModel {
+        try PersistableStorageCodec.decodePersistedModel(
+            from: bytes,
+            expectedEntity: expectedEntity
         )
     }
+
 }
 
 // MARK: - Errors

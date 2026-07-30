@@ -3,11 +3,6 @@
 //
 // Represents filter conditions that can be applied to bindings.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
@@ -163,25 +158,25 @@ public indirect enum FilterExpression: Sendable {
             guard let v = binding[variable] else { return false }
             if Self.hasNull(v, value) { return false }
             guard let cmp = try Self.compare(v, value) else { return false }
-            return cmp == .orderedAscending
+            return cmp == .ascending
 
         case .lessThanOrEqual(let variable, let value):
             guard let v = binding[variable] else { return false }
             if Self.hasNull(v, value) { return false }
             guard let cmp = try Self.compare(v, value) else { return false }
-            return cmp != .orderedDescending
+            return cmp != .descending
 
         case .greaterThan(let variable, let value):
             guard let v = binding[variable] else { return false }
             if Self.hasNull(v, value) { return false }
             guard let cmp = try Self.compare(v, value) else { return false }
-            return cmp == .orderedDescending
+            return cmp == .descending
 
         case .greaterThanOrEqual(let variable, let value):
             guard let v = binding[variable] else { return false }
             if Self.hasNull(v, value) { return false }
             guard let cmp = try Self.compare(v, value) else { return false }
-            return cmp != .orderedAscending
+            return cmp != .ascending
 
         // Variable comparison uses the same typed numeric semantics.
         case .variableEquals(let var1, let var2):
@@ -295,7 +290,7 @@ public indirect enum FilterExpression: Sendable {
                     "numeric values are unordered"
                 )
             }
-            return comparison == .orderedSame
+            return comparison == .same
         }
         return left == right
     }
@@ -303,13 +298,13 @@ public indirect enum FilterExpression: Sendable {
     private static func compare(
         _ left: FieldValue,
         _ right: FieldValue
-    ) throws -> ComparisonResult? {
+    ) throws -> SPARQLComparisonOrder? {
         if case .rdfTerm(.literal(let leftLiteral)) = left,
            case .rdfTerm(.literal(let rightLiteral)) = right {
             switch try SPARQLValueComparator().compare(leftLiteral, rightLiteral) {
-            case .less: return .orderedAscending
-            case .equal: return .orderedSame
-            case .greater: return .orderedDescending
+            case .less: return .ascending
+            case .equal: return .same
+            case .greater: return .descending
             case .unordered, .typeError:
                 throw SPARQLExpressionEvaluationError.typeError(
                     "RDF literals are not order-comparable"
@@ -327,11 +322,11 @@ public indirect enum FilterExpression: Sendable {
         }
         switch left.compare(to: right) {
         case .lessThan:
-            return .orderedAscending
+            return .ascending
         case .equal:
-            return .orderedSame
+            return .same
         case .greaterThan:
-            return .orderedDescending
+            return .descending
         case nil:
             return nil
         }

@@ -151,40 +151,40 @@ enum SPARQLRetainedBindings: ~Copyable, Sendable {
         }
     }
 
-    /// Converts unique storage to immutable shared ownership without copying
-    /// the element buffer. Existing shared relations preserve their bounds.
-    consuming func sharing(
+    /// Creates the two ownership views required by a fan-out path without
+    /// copying the element buffer. The retained relation continues through the
+    /// current evaluation while the snapshot can be copied into a cache.
+    consuming func sharingForFanOut(
         at stage: DatabaseWorkStage
-    ) throws -> SPARQLRetainedBindings {
+    ) throws -> SPARQLSharedBindingOwnership {
         switch consume self {
         case .empty:
-            return .empty
+            return SPARQLSharedBindingOwnership(
+                retained: .empty,
+                snapshot: .empty
+            )
         case .unique(let storage):
             let admission = try storage.prepareToShare(at: stage)
-            return .shared(storage.share(using: admission))
+            let sharedStorage = storage.share(using: admission)
+            return SPARQLSharedBindingOwnership(
+                retained: .shared(sharedStorage),
+                snapshot: .shared(
+                    sharedStorage,
+                    visibleRange: 0..<sharedStorage.count
+                )
+            )
         case .shared(let storage):
-            return .shared(storage)
-        case .sharedSlice(let storage, let range):
-            return .sharedSlice(storage, range)
-        }
-    }
-
-    /// Returns a copyable shared owner and the exact visible range.
-    borrowing func sharedStorage() -> SPARQLSharedBindingStorage? {
-        switch self {
-        case .empty:
-            return nil
-        case .unique:
-            return nil
-        case .shared(let storage):
-            return SPARQLSharedBindingStorage(
-                storage: storage,
-                visibleRange: 0..<storage.count
+            return SPARQLSharedBindingOwnership(
+                retained: .shared(storage),
+                snapshot: .shared(
+                    storage,
+                    visibleRange: 0..<storage.count
+                )
             )
         case .sharedSlice(let storage, let range):
-            return SPARQLSharedBindingStorage(
-                storage: storage,
-                visibleRange: range
+            return SPARQLSharedBindingOwnership(
+                retained: .sharedSlice(storage, range),
+                snapshot: .shared(storage, visibleRange: range)
             )
         }
     }
@@ -298,7 +298,7 @@ enum SPARQLRetainedBindings: ~Copyable, Sendable {
     }
 }
 
-struct SPARQLSharedBindingStorage: Sendable {
-    let storage: DatabaseSharedRetainedArray<VariableBinding>
-    let visibleRange: Range<Int>
+struct SPARQLSharedBindingOwnership: ~Copyable, Sendable {
+    let retained: SPARQLRetainedBindings
+    let snapshot: SPARQLSharedBindingSnapshot
 }

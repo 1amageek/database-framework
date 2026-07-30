@@ -3,11 +3,6 @@
 //
 // Provides detailed information about why an operation was incomplete.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 // MARK: - LimitReason
 

@@ -1,15 +1,12 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
+
+import DatabaseTypes
 
 /// Version metadata associated with one side of a model diff.
 public struct VersionInfo: Sendable, Hashable {
     public let versionID: String
-    public let timestamp: Date?
+    public let timestamp: Timestamp?
 
-    public init(versionID: String, timestamp: Date?) {
+    public init(versionID: String, timestamp: Timestamp?) {
         self.versionID = versionID
         self.timestamp = timestamp
     }

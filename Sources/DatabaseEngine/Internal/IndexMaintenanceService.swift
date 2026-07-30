@@ -11,11 +11,6 @@
 // provider registered for each index type.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 
@@ -43,7 +38,6 @@ internal final class IndexMaintenanceService: Sendable {
     private let indexSubspace: Subspace
     private let logger: DatabaseLogger
     private let configurations: [any IndexRuntimeConfiguration]
-    private let maintainerProviders: IndexMaintainerProviderRegistry
 
     // MARK: - Initialization
 
@@ -51,13 +45,11 @@ internal final class IndexMaintenanceService: Sendable {
         indexLifecycleStore: IndexLifecycleStore,
         violationTracker: UniquenessViolationTracker,
         indexSubspace: Subspace,
-        maintainerProviders: IndexMaintainerProviderRegistry,
         configurations: [any IndexRuntimeConfiguration] = []
     ) {
         self.indexLifecycleStore = indexLifecycleStore
         self.violationTracker = violationTracker
         self.indexSubspace = indexSubspace
-        self.maintainerProviders = maintainerProviders
         self.configurations = configurations
         self.logger = indexLifecycleStore.container.configuration.logging.logger(
             label: "com.database.framework.index-maintenance"
@@ -65,85 +57,6 @@ internal final class IndexMaintenanceService: Sendable {
     }
 
     // MARK: - Public API
-
-    /// Update indexes for a model change (typed)
-    ///
-    /// Uses IndexMaintainerFactory protocol to delegate index maintenance to
-    /// the appropriate IndexMaintainer for each index type.
-    ///
-    /// - Parameters:
-    ///   - oldModel: Previous model state (nil for insert)
-    ///   - newModel: New model state (nil for delete)
-    ///   - id: Primary key tuple
-    ///   - transaction: Current FDB transaction
-    func updateIndexes<T: Persistable>(
-        oldModel: T?,
-        newModel: T?,
-        id: Tuple,
-        transaction: any TransactionAccess
-    ) async throws {
-        let indexDescriptors = try T.indexDescriptors
-        logger.trace("updateIndexes<\(T.persistableType)>: indexDescriptors.count=\(indexDescriptors.count)")
-        guard !indexDescriptors.isEmpty else { return }
-
-        // Batch fetch all index states for performance
-        let indexNames = indexDescriptors.map(\.name)
-        let indexStates = try await indexLifecycleStore.states(of: indexNames, transaction: transaction)
-
-        for descriptor in indexDescriptors {
-            // Check if index should be maintained based on its state
-            let state = indexStates[descriptor.name] ?? .disabled
-            logger.trace("updateIndexes: processing descriptor=\(descriptor.name), isUnique=\(descriptor.isUnique), state=\(state)")
-            guard state.shouldMaintain else {
-                logger.trace("Skipping index '\(descriptor.name)' maintenance (state: \(state))")
-                continue
-            }
-
-            let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
-
-            let index = Self.buildIndex(
-                from: descriptor,
-                persistableType: T.persistableType
-            )
-            // The caller already resolved the model identifier through
-            // PersistableIdentifierKeyCodec. Reusing that tuple keeps primary
-            // rows and index suffixes byte-identical for scalar and composite
-            // identifiers without re-encoding the persisted `id` field.
-            let idExpression = TupleKeyExpression(value: id)
-            let maintainer: any IndexMaintainer<T> = try maintainerProviders
-                .makeIndexMaintainer(
-                    index: index,
-                    subspace: indexSubspaceForIndex,
-                    idExpression: idExpression,
-                    configurations: configurations
-                )
-
-            if descriptor.isUnique, let newModel = newModel {
-                let uniquenessMaintainer: any IndexUniquenessMaintainer<T> =
-                    try maintainerProviders.makeIndexUniquenessMaintainer(
-                        index: index,
-                        subspace: indexSubspaceForIndex,
-                        idExpression: idExpression,
-                        configurations: configurations
-                    )
-                try await IndexUniquenessConstraint.enforce(
-                    index: index,
-                    item: newModel,
-                    id: id,
-                    state: state,
-                    maintainer: uniquenessMaintainer,
-                    violationTracker: violationTracker,
-                    transaction: transaction
-                )
-            }
-
-            try await maintainer.updateIndex(
-                oldItem: oldModel,
-                newItem: newModel,
-                transaction: transaction
-            )
-        }
-    }
 
     /// Update indexes for type-erased models
     ///
@@ -159,12 +72,14 @@ internal final class IndexMaintenanceService: Sendable {
     ///   - id: Primary key tuple
     ///   - transaction: Current FDB transaction
     func updateIndexesUntyped(
-        oldModel: (any Persistable)?,
-        newModel: (any Persistable)?,
+        runtime: EntityRuntimeRegistration,
+        oldModel: PersistedModel?,
+        newModel: PersistedModel?,
         id: Tuple,
         transaction: any TransactionAccess
     ) async throws {
         try await updateIndexesUntyped(
+            runtime: runtime,
             oldModel: oldModel,
             newModel: newModel,
             id: id,
@@ -175,68 +90,27 @@ internal final class IndexMaintenanceService: Sendable {
     }
 
     func updateIndexesUntyped(
-        oldModel: (any Persistable)?,
-        newModel: (any Persistable)?,
+        runtime: EntityRuntimeRegistration,
+        oldModel: PersistedModel?,
+        newModel: PersistedModel?,
         id: Tuple,
         descriptors: [IndexDescriptor]?,
         logicalTypeName: String?,
         transaction: any TransactionAccess
     ) async throws {
-        // Determine which model type we're working with
-        let modelType: any Persistable.Type
-        if let newModel = newModel {
-            modelType = type(of: newModel)
-        } else if let oldModel = oldModel {
-            modelType = type(of: oldModel)
-        } else {
-            return  // No model to process
-        }
-
-        let indexDescriptors: [IndexDescriptor]
-        if let descriptors {
-            indexDescriptors = descriptors
-        } else {
-            indexDescriptors = try modelType.indexDescriptors
-        }
-        guard !indexDescriptors.isEmpty else { return }
-
-        // Batch fetch all index states for performance
-        let indexNames = indexDescriptors.map(\.name)
-        let indexStates = try await indexLifecycleStore.states(of: indexNames, transaction: transaction)
-
-        for descriptor in indexDescriptors {
-            // Check if index should be maintained based on its state
-            let state = indexStates[descriptor.name] ?? .disabled
-            guard state.shouldMaintain else {
-                logger.trace("Skipping index '\(descriptor.name)' maintenance (state: \(state))")
-                continue
-            }
-
-            let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
-
-            let index = Self.buildIndex(
-                from: descriptor,
-                persistableType: logicalTypeName ?? modelType.persistableType
-            )
-            // The canonical identifier tuple is also the physical index
-            // suffix. Extracting `id` as a general FieldValue would produce a
-            // different tuple representation from the primary-row key.
-            let idExpression: KeyExpression = TupleKeyExpression(value: id)
-
-            try await Self.updateIndexWithProvider(
-                maintainerProviders: maintainerProviders,
-                violationTracker: violationTracker,
-                index: index,
-                subspace: indexSubspaceForIndex,
-                idExpression: idExpression,
-                configurations: configurations,
-                oldModel: oldModel,
-                newModel: newModel,
-                id: id,
-                state: state,
-                transaction: transaction
-            )
-        }
+        try await runtime.updateIndexes(
+            lifecycleStore: indexLifecycleStore,
+            violationTracker: violationTracker,
+            indexSubspace: indexSubspace,
+            configurations: configurations,
+            wallClock: indexLifecycleStore.container.wallClock,
+            oldModel: oldModel,
+            newModel: newModel,
+            id: id,
+            descriptors: descriptors,
+            logicalTypeName: logicalTypeName,
+            transaction: transaction
+        )
     }
 
     // MARK: - Private: Index Building
@@ -263,76 +137,6 @@ internal final class IndexMaintenanceService: Sendable {
             isUnique: descriptor.isUnique,
             storedFieldNames: descriptor.storedFieldNames
         )
-    }
-
-    /// Type-erased helper for updating an index through its registered provider.
-    ///
-    /// This method handles the type erasure required for `updateIndexesUntyped`.
-    /// Uses _openExistential for runtime type dispatch from existential to concrete type.
-    private static func updateIndexWithProvider(
-        maintainerProviders: IndexMaintainerProviderRegistry,
-        violationTracker: UniquenessViolationTracker,
-        index: Index,
-        subspace: Subspace,
-        idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration],
-        oldModel: (any Persistable)?,
-        newModel: (any Persistable)?,
-        id: Tuple,
-        state: IndexState,
-        transaction: any TransactionAccess
-    ) async throws {
-        // Determine the concrete model type
-        let modelType: any Persistable.Type
-        if let new = newModel {
-            modelType = type(of: new)
-        } else if let old = oldModel {
-            modelType = type(of: old)
-        } else {
-            return
-        }
-
-        // Dispatch the runtime model type to its registered index maintainer.
-        func updateConcreteIndex<T: Persistable>(_ type: T.Type) async throws {
-            let maintainer: any IndexMaintainer<T> = try maintainerProviders
-                .makeIndexMaintainer(
-                    index: index,
-                    subspace: subspace,
-                    idExpression: idExpression,
-                    configurations: configurations
-                )
-
-            // Safe cast - we derived modelType from the models so types will match
-            let typedOld = oldModel as? T
-            let typedNew = newModel as? T
-
-            if index.isUnique, let typedNew {
-                let uniquenessMaintainer: any IndexUniquenessMaintainer<T> =
-                    try maintainerProviders.makeIndexUniquenessMaintainer(
-                        index: index,
-                        subspace: subspace,
-                        idExpression: idExpression,
-                        configurations: configurations
-                    )
-                try await IndexUniquenessConstraint.enforce(
-                    index: index,
-                    item: typedNew,
-                    id: id,
-                    state: state,
-                    maintainer: uniquenessMaintainer,
-                    violationTracker: violationTracker,
-                    transaction: transaction
-                )
-            }
-
-            try await maintainer.updateIndex(
-                oldItem: typedOld,
-                newItem: typedNew,
-                transaction: transaction
-            )
-        }
-
-        try await _openExistential(modelType, do: updateConcreteIndex)
     }
 
     // MARK: - Static Utilities

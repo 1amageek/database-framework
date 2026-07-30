@@ -5,11 +5,6 @@
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -238,7 +233,14 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 .subspace(clusterId)
 
             let (begin, end) = listSubspace.range()
-            let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+            let sequence = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(begin),
+                to: .firstGreaterOrEqual(end),
+                limit: 0,
+                reverse: false,
+                snapshot: true,
+                streamingMode: .wantAll
+            )
 
             for (key, value) in sequence {
             let pkTuple: Tuple
@@ -375,7 +377,14 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [[Float]] {
         let centroidSubspace = subspace.subspace(SubspaceKey.centroids.rawValue)
         let (begin, end) = centroidSubspace.range()
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
+        )
 
         var centroids: [[Float]] = []
         for (_, value) in sequence {
@@ -392,9 +401,14 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionAccess
     ) async throws {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(metadata)
-        try transaction.setValue(ByteString(retaining: data), for: metadataKey)
+        let encoded = Tuple(
+            IVFMetadata.formatVersion,
+            Int64(metadata.nlist),
+            Int64(metadata.dimensions),
+            metadata.trained,
+            Int64(metadata.vectorCount)
+        ).pack()
+        try transaction.setValue(encoded, for: metadataKey)
     }
 
     /// Load metadata
@@ -405,9 +419,8 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         guard let data = try await transaction.getValue(for: metadataKey) else {
             return nil
         }
-        let decoder = JSONDecoder()
         do {
-            return try decoder.decode(IVFMetadata.self, from: Data(data))
+            return try IVFMetadata(packed: data)
         } catch {
             throw VectorIndexError.invalidStructure("Invalid IVF metadata")
         }
@@ -429,9 +442,47 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
 // MARK: - IVF Metadata
 
 /// Metadata for IVF index
-private struct IVFMetadata: Codable {
+private struct IVFMetadata: Sendable {
+    static let formatVersion: Int64 = 1
+
     let nlist: Int
     let dimensions: Int
     let trained: Bool
     let vectorCount: Int
+
+    init(
+        nlist: Int,
+        dimensions: Int,
+        trained: Bool,
+        vectorCount: Int
+    ) {
+        self.nlist = nlist
+        self.dimensions = dimensions
+        self.trained = trained
+        self.vectorCount = vectorCount
+    }
+
+    init(packed bytes: ByteString) throws {
+        let tuple = try Tuple(packed: bytes)
+        guard tuple.count == 5,
+              case .signedInteger(Self.formatVersion) = try tuple.value(at: 0),
+              case .signedInteger(let nlist) = try tuple.value(at: 1),
+              case .signedInteger(let dimensions) = try tuple.value(at: 2),
+              case .boolean(let trained) = try tuple.value(at: 3),
+              case .signedInteger(let vectorCount) = try tuple.value(at: 4),
+              let decodedNlist = Int(exactly: nlist),
+              let decodedDimensions = Int(exactly: dimensions),
+              let decodedVectorCount = Int(exactly: vectorCount),
+              decodedNlist > 0,
+              decodedDimensions > 0,
+              decodedVectorCount >= 0 else {
+            throw VectorIndexError.invalidStructure("Invalid IVF metadata")
+        }
+        self.init(
+            nlist: decodedNlist,
+            dimensions: decodedDimensions,
+            trained: trained,
+            vectorCount: decodedVectorCount
+        )
+    }
 }

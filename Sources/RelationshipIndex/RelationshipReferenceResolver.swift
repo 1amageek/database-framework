@@ -37,7 +37,7 @@ public struct RelationshipReferenceResolver: Sendable {
             )
         }
 
-        let fields = try PersistableFieldEncoder.encode(model)
+        let fields = try model.persistedFields()
         guard let relationshipField = fields.first(where: {
             $0.number == descriptor.propertyFieldNumber
                 && $0.name == descriptor.propertyName
@@ -120,7 +120,7 @@ public struct RelationshipReferenceResolver: Sendable {
         } catch {
             throw RelationshipReferenceError.invalidTargetPartition(
                 entity: identity.entity,
-                reason: String(describing: error)
+                reason: "partition does not match the compiled entity schema"
             )
         }
     }

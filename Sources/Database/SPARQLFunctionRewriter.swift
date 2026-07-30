@@ -261,7 +261,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
 
         // 4. Resolve type directory and index subspace
         guard let persistableType = context.container.runtimeConfiguration
-            .persistableTypes.type(named: entity.name) else {
+            .entityRuntimes.modelType(named: entity.name) else {
             throw SPARQLFunctionError.invalidGraphIndex(entity.name)
         }
         let typeDirectory = try await resolveTypeDirectory(persistableType)

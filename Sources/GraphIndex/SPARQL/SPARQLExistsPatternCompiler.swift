@@ -22,11 +22,9 @@ enum SPARQLExistsPatternCompiler {
                 )
             }
             return pattern
-        } catch let error as SPARQLExpressionCompilationError {
-            throw error
         } catch {
             throw SPARQLExpressionCompilationError.unsupportedExpression(
-                "EXISTS graph pattern: \(error)"
+                "EXISTS graph pattern conversion failed"
             )
         }
     }

@@ -7,11 +7,6 @@
 // Reference: W3C SHACL §3 (Validation)
 // https://www.w3.org/TR/shacl/#validation
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import DatabaseEngine

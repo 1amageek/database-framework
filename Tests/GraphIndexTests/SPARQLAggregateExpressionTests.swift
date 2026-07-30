@@ -27,10 +27,7 @@ struct SPARQLAggregateExpressionTests {
             ],
             evaluateExpression: { plan, binding in
                 evaluations.withLock { $0 += 1 }
-                return try ExpressionEvaluator.evaluate(
-                    plan.expression,
-                    binding: binding
-                )
+                return Self.expressionOutcome(plan, binding: binding)
             }
         )
 
@@ -182,10 +179,12 @@ struct SPARQLAggregateExpressionTests {
                 aggregate,
                 bindings: [VariableBinding(["?value": .int64(1)])],
                 evaluateExpression: { _, _ in
-                    throw SPARQLExpressionEvaluationError.resourceLimitExceeded(
-                        stage: "test",
-                        required: 2,
-                        maximum: 1
+                    return .expressionError(
+                        .resourceLimitExceeded(
+                            stage: "test",
+                            required: 2,
+                            maximum: 1
+                        )
                     )
                 }
             )
@@ -200,10 +199,7 @@ struct SPARQLAggregateExpressionTests {
             aggregate,
             bindings: bindings,
             evaluateExpression: { plan, binding in
-                try ExpressionEvaluator.evaluate(
-                    plan.expression,
-                    binding: binding
-                )
+                Self.expressionOutcome(plan, binding: binding)
             }
         )
     }
@@ -214,7 +210,7 @@ struct SPARQLAggregateExpressionTests {
         evaluateExpression: @escaping @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
     ) async throws -> FieldValue? {
         let workMeter = meter()
         var builder = try SPARQLRetainedBindingBuilder.make(
@@ -226,6 +222,7 @@ struct SPARQLAggregateExpressionTests {
             try builder.append(binding, at: .aggregateInput)
         }
         let expressionContext = try SPARQLQueryExpressionContext(
+            now: try Timestamp(secondsSinceUnixEpoch: 0),
             functionRegistry: .empty,
             workMeter: workMeter
         )
@@ -236,12 +233,18 @@ struct SPARQLAggregateExpressionTests {
             workMeter: workMeter,
             evaluateKey: evaluateExpression
         )
-        return try await aggregate.evaluate(
+        let outcome = try await aggregate.evaluate(
             groupIndex: 0,
             in: partition,
             workMeter: workMeter,
             evaluateExpression: evaluateExpression
         )
+        switch outcome {
+        case .value(let value):
+            return value
+        case .expressionError(let error):
+            throw error
+        }
     }
 
     private func meter() -> DatabaseWorkMeter {
@@ -261,5 +264,21 @@ struct SPARQLAggregateExpressionTests {
             return nil
         }
         return literal.lexicalForm
+    }
+
+    private static func expressionOutcome(
+        _ plan: SPARQLExpressionPlan,
+        binding: VariableBinding
+    ) -> SPARQLExpressionEvaluationOutcome<FieldValue> {
+        do throws(SPARQLExpressionEvaluationError) {
+            return .value(
+                try ExpressionEvaluator.evaluate(
+                    plan.expression,
+                    binding: binding
+                )
+            )
+        } catch let error {
+            return .expressionError(error)
+        }
     }
 }

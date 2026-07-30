@@ -7,11 +7,6 @@
 // Reference: W3C SHACL §2.1.3 (Targets)
 // https://www.w3.org/TR/shacl/#targets
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import DatabaseEngine

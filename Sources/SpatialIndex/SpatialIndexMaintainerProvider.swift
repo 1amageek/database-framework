@@ -12,7 +12,8 @@ public struct SpatialIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration]
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
         guard index.kind.identifier == kindIdentifier else {
             throw IndexMaintainerProviderError.kindMismatch(

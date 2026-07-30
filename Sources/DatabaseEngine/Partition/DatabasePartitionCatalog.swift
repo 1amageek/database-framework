@@ -6,18 +6,21 @@ import StorageKit
 package struct DatabasePartitionCatalog: Sendable {
     private static let maximumPageSize = 256
 
-    private let engine: any StorageEngine
+    private let transactionExecutor: StorageTransactionExecutor
+    private let clock: any StorageMonotonicClock
     private let entries: Subspace
     private let storageLimits: StorageFrameLimits
 
     package init(
         engine: any StorageEngine,
+        clock: any StorageMonotonicClock,
         storageLimits: StorageFrameLimits = .default
     ) async throws {
         let root = try await engine.resolveOrCreateNamespace(
             path: ["database-framework", "partition-catalog"]
         )
-        self.engine = engine
+        self.transactionExecutor = StorageTransactionExecutor(engine: engine)
+        self.clock = clock
         self.entries = root.subspace("entries")
         self.storageLimits = storageLimits
     }
@@ -26,7 +29,10 @@ package struct DatabasePartitionCatalog: Sendable {
         entity: String,
         partitions: FieldObject
     ) async throws {
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: clock
+        ) { transaction in
             try await register(
                 entity: entity,
                 partitions: partitions,
@@ -108,11 +114,15 @@ package struct DatabasePartitionCatalog: Sendable {
             begin = .firstGreaterOrEqual(range.begin)
         }
 
-        return try await engine.withTransaction(configuration: .batch) { transaction in
+        return try await transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: clock
+        ) { transaction in
             let rows = try await transaction.collectRange(
                 from: begin,
                 to: .firstGreaterOrEqual(range.end),
                 limit: limit + 1,
+                reverse: false,
                 snapshot: true,
                 streamingMode: .iterator
             )
@@ -151,22 +161,21 @@ package struct DatabasePartitionCatalog: Sendable {
         key: ByteString,
         bytes: ByteString
     ) throws -> DatabasePartitionCatalogEntry {
+        let entry: DatabasePartitionCatalogEntry
         do {
-            let entry = try StorageFrameCodec.decode(
+            entry = try StorageFrameCodec.decode(
                 DatabasePartitionCatalogEntry.self,
                 from: bytes,
                 limits: storageLimits
             )
-            try validate(entity: entry.entity, partitions: entry.partitions)
-            guard entryKey(entity: entry.entity, encodedEntry: bytes) == key else {
-                throw DatabasePartitionCatalogError.corruptedEntry
-            }
-            return entry
-        } catch let error as DatabasePartitionCatalogError {
-            throw error
         } catch {
             throw DatabasePartitionCatalogError.corruptedEntry
         }
+        try validate(entity: entry.entity, partitions: entry.partitions)
+        guard entryKey(entity: entry.entity, encodedEntry: bytes) == key else {
+            throw DatabasePartitionCatalogError.corruptedEntry
+        }
+        return entry
     }
 
     private func validate(

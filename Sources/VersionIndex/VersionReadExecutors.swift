@@ -1,11 +1,7 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
 import DatabaseTypes
 import DatabaseKit
+import StorageKit
 
 enum VersionReadParameter {
     static let primaryKey = "primaryKey"
@@ -14,9 +10,14 @@ enum VersionReadParameter {
 }
 
 public enum VersionReadExecutors {
-    public static var indexExecutor: any IndexReadExecutor { VersionReadExecutor() }
     public static var polymorphicIndexExecutor: any PolymorphicIndexReadExecutor {
         PolymorphicVersionReadExecutor()
+    }
+
+    public static func register<Model: Persistable>(
+        with definition: inout EntityRuntimeDefinition<Model>
+    ) throws(DatabaseRuntimeConfigurationError) {
+        try definition.register(VersionReadExecutor())
     }
 }
 
@@ -117,14 +118,13 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
             named: VersionReadParameter.primaryKey
         )
         let primaryKey = try primaryKeyValues.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
-        guard let typeCode = primaryKey.first as? Int64 else {
+        guard let firstPrimaryKey = primaryKey.first,
+              case .signedInteger(let typeCode) = firstPrimaryKey.tupleValue
+        else {
             throw VersionReadError.invalidParameter(VersionReadParameter.primaryKey)
         }
-        guard let runtimeType = resolveRuntimeType(
-            typeCode: typeCode,
-            group: group,
-            context: context
-        ) else {
+        let runtimesByTypeCode = try context.polymorphicTypeMap(for: group)
+        guard let runtime = runtimesByTypeCode[typeCode] else {
             throw VersionReadError.invalidParameter(VersionReadParameter.primaryKey)
         }
 
@@ -172,7 +172,8 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
                 ),
                 strategy: .keepAll,
                 subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id")
+                idExpression: FieldKeyExpression(fieldName: "id"),
+                wallClock: context.container.wallClock
             )
             return try await maintainer.getVersionHistory(
                 primaryKey: primaryKey,
@@ -185,8 +186,12 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
         results.reserveCapacity(rawResults.count)
         for result in rawResults {
             guard !result.data.isEmpty else { continue }
-            let item = try DataAccess.deserializeAny(result.data, as: runtimeType)
-            try context.container.securityDelegate?.evaluateGet(item)
+            let persistedModel = try DataAccess.deserializePersistedModel(
+                result.data,
+                expectedEntity: runtime.entity.name
+            )
+            let item = try runtime.decode(persistedModel)
+            try context.container.securityDelegate?.evaluateGet(persistedModel)
             results.append((result.version, item))
         }
 
@@ -194,7 +199,7 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
             try IndexReadRow.materializing(
                 any: result.item,
                 annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(runtimeType.persistableType),
+                    PolymorphicRowAnnotation.typeName: .string(runtime.entity.name),
                     PolymorphicRowAnnotation.typeCode: .int64(typeCode),
                     "version": .bytes(
                         result.version.bytes
@@ -205,21 +210,4 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 
-    private func resolveRuntimeType(
-        typeCode: Int64,
-        group: PolymorphicGroup,
-        context: DatabaseContext
-    ) -> (any Persistable.Type)? {
-        for typeName in group.memberTypeNames {
-            guard let type = context.container.runtimeConfiguration
-                    .persistableTypes.type(named: typeName),
-                  let polymorphicType = type as? any Polymorphable.Type else {
-                continue
-            }
-            if polymorphicType.typeCode(for: type.persistableType) == typeCode {
-                return type
-            }
-        }
-        return nil
-    }
 }

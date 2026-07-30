@@ -3,11 +3,6 @@
 //
 // Provides DatabaseContext extension and query builder following the standard pattern.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
@@ -254,13 +249,14 @@ public struct GraphQueryExecutor: Sendable {
     public func execute() async throws -> [GraphEdge] {
         let ordering = selectOptimalOrdering(strategy: strategy)
 
-        return try await database.withTransaction(configuration: .default) { transaction in
+        return try await StorageTransactionExecutor(engine: database)
+            .withTransaction { transaction in
             try await self.scanIndex(
                 ordering: ordering,
                 indexSubspace: self.indexSubspace,
                 transaction: transaction
             )
-        }
+            }
     }
 
     // MARK: - Private Methods
@@ -295,7 +291,10 @@ public struct GraphQueryExecutor: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: limitCount ?? 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in stream {
@@ -395,10 +394,10 @@ public struct GraphQueryExecutor: Sendable {
                 continue
             }
 
-            guard let stringValue = element as? String else {
+            guard case .string(let stringValue) = element.tupleValue else {
                 throw GraphIndexError.unexpectedElementType(
                     expected: "String",
-                    actual: String(describing: type(of: element))
+                    actual: GraphValueSemanticName.tuple(element)
                 )
             }
 
@@ -595,7 +594,10 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
 
         // Execute scan with property filters
         return try await queryContext.withTransaction { transaction in
-            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let snapshot = GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: queryContext.context.container.monotonicClock
+            )
             let scanner = GraphPropertyScanner(
                 indexSubspace: resolvedIndex.indexSubspace,
                 strategy: resolvedIndex.metadata.strategy,
@@ -613,7 +615,8 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
 
             var results: [GraphEdge] = []
             var count = 0
-            for try await edgeWithProps in stream {
+            var edgeCursor = stream.makeCursor()
+            while let edgeWithProps = try await edgeCursor.next() {
                 results.append(GraphEdge(
                     from: try edgeWithProps.source.requirePropertyGraphIdentifier(),
                     edge: try edgeWithProps.edgeLabel.requirePropertyGraphIdentifier(),

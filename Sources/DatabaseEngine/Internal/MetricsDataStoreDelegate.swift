@@ -1,6 +1,8 @@
-import Metrics
+import DatabaseKit
+import StorageKit
 
-/// Internal delegate that collects data store metrics using swift-metrics
+/// Internal delegate that collects data store metrics through the container's
+/// explicitly selected metrics destination.
 ///
 /// This delegate is the default implementation used by DatabaseDataStore.
 /// It emits operation counts and durations to the configured metrics backend.
@@ -21,95 +23,97 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
     // MARK: - Metrics
 
     // Operation counters
-    private let saveCounter: Counter
-    private let fetchCounter: Counter
-    private let deleteCounter: Counter
-    private let batchCounter: Counter
+    private let metrics: DatabaseMetricsConfiguration
+    private let saveCounter: DatabaseMetricCounter
+    private let fetchCounter: DatabaseMetricCounter
+    private let deleteCounter: DatabaseMetricCounter
+    private let batchCounter: DatabaseMetricCounter
 
     // Error counters
-    private let saveErrorCounter: Counter
-    private let fetchErrorCounter: Counter
-    private let deleteErrorCounter: Counter
-    private let batchErrorCounter: Counter
+    private let saveErrorCounter: DatabaseMetricCounter
+    private let fetchErrorCounter: DatabaseMetricCounter
+    private let deleteErrorCounter: DatabaseMetricCounter
+    private let batchErrorCounter: DatabaseMetricCounter
 
     // Timers
-    private let saveTimer: Metrics.Timer
-    private let fetchTimer: Metrics.Timer
-    private let deleteTimer: Metrics.Timer
-    private let batchTimer: Metrics.Timer
+    private let saveTimer: DatabaseMetricTimer
+    private let fetchTimer: DatabaseMetricTimer
+    private let deleteTimer: DatabaseMetricTimer
+    private let batchTimer: DatabaseMetricTimer
 
     // Item counters
-    private let itemsSavedCounter: Counter
-    private let itemsFetchedCounter: Counter
-    private let itemsDeletedCounter: Counter
+    private let itemsSavedCounter: DatabaseMetricCounter
+    private let itemsFetchedCounter: DatabaseMetricCounter
+    private let itemsDeletedCounter: DatabaseMetricCounter
 
     // MARK: - Initialization
 
-    init() {
+    init(metrics: DatabaseMetricsConfiguration) {
+        self.metrics = metrics
         // Initialize counters
-        self.saveCounter = Counter(
+        self.saveCounter = metrics.counter(
             label: "database_persistence_operations_total",
             dimensions: [("operation", "save"), ("status", "success")]
         )
-        self.fetchCounter = Counter(
+        self.fetchCounter = metrics.counter(
             label: "database_persistence_operations_total",
             dimensions: [("operation", "fetch"), ("status", "success")]
         )
-        self.deleteCounter = Counter(
+        self.deleteCounter = metrics.counter(
             label: "database_persistence_operations_total",
             dimensions: [("operation", "delete"), ("status", "success")]
         )
-        self.batchCounter = Counter(
+        self.batchCounter = metrics.counter(
             label: "database_persistence_operations_total",
             dimensions: [("operation", "batch"), ("status", "success")]
         )
 
         // Initialize error counters
-        self.saveErrorCounter = Counter(
+        self.saveErrorCounter = metrics.counter(
             label: "database_persistence_operations_total",
             dimensions: [("operation", "save"), ("status", "failure")]
         )
-        self.fetchErrorCounter = Counter(
+        self.fetchErrorCounter = metrics.counter(
             label: "database_persistence_operations_total",
             dimensions: [("operation", "fetch"), ("status", "failure")]
         )
-        self.deleteErrorCounter = Counter(
+        self.deleteErrorCounter = metrics.counter(
             label: "database_persistence_operations_total",
             dimensions: [("operation", "delete"), ("status", "failure")]
         )
-        self.batchErrorCounter = Counter(
+        self.batchErrorCounter = metrics.counter(
             label: "database_persistence_operations_total",
             dimensions: [("operation", "batch"), ("status", "failure")]
         )
 
         // Initialize timers
-        self.saveTimer = Metrics.Timer(
+        self.saveTimer = metrics.timer(
             label: "database_persistence_operation_duration_seconds",
             dimensions: [("operation", "save")]
         )
-        self.fetchTimer = Metrics.Timer(
+        self.fetchTimer = metrics.timer(
             label: "database_persistence_operation_duration_seconds",
             dimensions: [("operation", "fetch")]
         )
-        self.deleteTimer = Metrics.Timer(
+        self.deleteTimer = metrics.timer(
             label: "database_persistence_operation_duration_seconds",
             dimensions: [("operation", "delete")]
         )
-        self.batchTimer = Metrics.Timer(
+        self.batchTimer = metrics.timer(
             label: "database_persistence_operation_duration_seconds",
             dimensions: [("operation", "batch")]
         )
 
         // Initialize item counters
-        self.itemsSavedCounter = Counter(
+        self.itemsSavedCounter = metrics.counter(
             label: "database_persistence_items_total",
             dimensions: [("operation", "save")]
         )
-        self.itemsFetchedCounter = Counter(
+        self.itemsFetchedCounter = metrics.counter(
             label: "database_persistence_items_total",
             dimensions: [("operation", "fetch")]
         )
-        self.itemsDeletedCounter = Counter(
+        self.itemsDeletedCounter = metrics.counter(
             label: "database_persistence_items_total",
             dimensions: [("operation", "delete")]
         )
@@ -119,11 +123,11 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
     func didSave(itemType: String, count: Int, duration: UInt64) {
         saveCounter.increment()
-        saveTimer.recordNanoseconds(Int64(duration))
+        saveTimer.recordNanoseconds(duration)
         itemsSavedCounter.increment(by: count)
 
         // Record per-type counter
-        Counter(
+        metrics.counter(
             label: "database_persistence_items_by_type_total",
             dimensions: [("operation", "save"), ("item_type", itemType)]
         ).increment(by: count)
@@ -131,10 +135,10 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
     func didFailSave(itemType: String, error: Error, duration: UInt64) {
         saveErrorCounter.increment()
-        saveTimer.recordNanoseconds(Int64(duration))
+        saveTimer.recordNanoseconds(duration)
 
         // Record per-type error
-        Counter(
+        metrics.counter(
             label: "database_persistence_errors_total",
             dimensions: [("operation", "save"), ("item_type", itemType), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
@@ -142,11 +146,11 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
     func didFetch(itemType: String, count: Int, duration: UInt64) {
         fetchCounter.increment()
-        fetchTimer.recordNanoseconds(Int64(duration))
+        fetchTimer.recordNanoseconds(duration)
         itemsFetchedCounter.increment(by: count)
 
         // Record per-type counter
-        Counter(
+        metrics.counter(
             label: "database_persistence_items_by_type_total",
             dimensions: [("operation", "fetch"), ("item_type", itemType)]
         ).increment(by: count)
@@ -154,10 +158,10 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
     func didFailFetch(itemType: String, error: Error, duration: UInt64) {
         fetchErrorCounter.increment()
-        fetchTimer.recordNanoseconds(Int64(duration))
+        fetchTimer.recordNanoseconds(duration)
 
         // Record per-type error
-        Counter(
+        metrics.counter(
             label: "database_persistence_errors_total",
             dimensions: [("operation", "fetch"), ("item_type", itemType), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
@@ -165,11 +169,11 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
     func didDelete(itemType: String, count: Int, duration: UInt64) {
         deleteCounter.increment()
-        deleteTimer.recordNanoseconds(Int64(duration))
+        deleteTimer.recordNanoseconds(duration)
         itemsDeletedCounter.increment(by: count)
 
         // Record per-type counter
-        Counter(
+        metrics.counter(
             label: "database_persistence_items_by_type_total",
             dimensions: [("operation", "delete"), ("item_type", itemType)]
         ).increment(by: count)
@@ -177,10 +181,10 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
     func didFailDelete(itemType: String, error: Error, duration: UInt64) {
         deleteErrorCounter.increment()
-        deleteTimer.recordNanoseconds(Int64(duration))
+        deleteTimer.recordNanoseconds(duration)
 
         // Record per-type error
-        Counter(
+        metrics.counter(
             label: "database_persistence_errors_total",
             dimensions: [("operation", "delete"), ("item_type", itemType), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
@@ -188,17 +192,17 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
     func didExecuteBatch(insertCount: Int, deleteCount: Int, duration: UInt64) {
         batchCounter.increment()
-        batchTimer.recordNanoseconds(Int64(duration))
+        batchTimer.recordNanoseconds(duration)
         itemsSavedCounter.increment(by: insertCount)
         itemsDeletedCounter.increment(by: deleteCount)
     }
 
     func didFailBatch(error: Error, duration: UInt64) {
         batchErrorCounter.increment()
-        batchTimer.recordNanoseconds(Int64(duration))
+        batchTimer.recordNanoseconds(duration)
 
         // Record error type
-        Counter(
+        metrics.counter(
             label: "database_persistence_errors_total",
             dimensions: [("operation", "batch"), ("error_type", Self.metricsErrorType(for: error))]
         ).increment()
@@ -208,8 +212,8 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
     /// Extract a safe error type string for metrics
     static func metricsErrorType(for error: Error) -> String {
-        // Use type name to avoid exposing sensitive error details
-        let typeName = String(describing: type(of: error))
+        _ = error
+        let typeName = "operation_failure"
 
         // The label contract is ASCII-only and bounded. Iterating Unicode scalars
         // directly avoids loading a regular-expression engine for error reporting.

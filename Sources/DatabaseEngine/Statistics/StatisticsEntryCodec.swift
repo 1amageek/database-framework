@@ -1,11 +1,5 @@
 import DatabaseKit
 import DatabaseTypes
-import DatabaseTypesFoundation
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 
 public enum StatisticsEntryCodec {
@@ -38,7 +32,7 @@ public enum StatisticsEntryCodec {
             avgRowSize: try int(try reader.readInt64()),
             sampleSize: try int(try reader.readInt64()),
             sampleRate: try reader.readDouble(),
-            timestamp: try date(from: &reader)
+            timestamp: try timestamp(from: &reader)
         )
         try reader.ensureFullyRead()
         return value
@@ -69,7 +63,7 @@ public enum StatisticsEntryCodec {
             maxValue: try readOptionalFieldValue(from: &reader),
             mcv: try readOptionalMCV(from: &reader),
             histogram: try readOptionalHistogram(from: &reader),
-            timestamp: try date(from: &reader)
+            timestamp: try timestamp(from: &reader)
         )
         try reader.ensureFullyRead()
         return value
@@ -102,7 +96,7 @@ public enum StatisticsEntryCodec {
             distinctKeyCount: distinctKeyCount,
             avgEntriesPerKey: avgEntriesPerKey,
             sizeBytes: sizeBytes,
-            timestamp: try date(from: &reader)
+            timestamp: try timestamp(from: &reader)
         )
         try reader.ensureFullyRead()
         return value
@@ -160,7 +154,7 @@ public enum StatisticsEntryCodec {
             avgL2Norm: avgL2Norm,
             stdDevL2Norm: stdDevL2Norm,
             normBuckets: normBuckets,
-            timestamp: try date(from: &reader)
+            timestamp: try timestamp(from: &reader)
         )
         try reader.ensureFullyRead()
         return value
@@ -213,7 +207,7 @@ public enum StatisticsEntryCodec {
             avgDocLength: avgDocLength,
             uniqueTerms: uniqueTerms,
             topTerms: topTerms,
-            timestamp: try date(from: &reader)
+            timestamp: try timestamp(from: &reader)
         )
         try reader.ensureFullyRead()
         return value
@@ -279,7 +273,7 @@ public enum StatisticsEntryCodec {
             cellCount: cellCount,
             avgCellDensity: avgCellDensity,
             hotCells: hotCells,
-            timestamp: try date(from: &reader)
+            timestamp: try timestamp(from: &reader)
         )
         try reader.ensureFullyRead()
         return value
@@ -378,7 +372,7 @@ public enum StatisticsEntryCodec {
         }
         return MostCommonValues(
             entries: entries,
-            timestamp: try date(from: &reader)
+            timestamp: try timestamp(from: &reader)
         )
     }
 
@@ -435,27 +429,21 @@ public enum StatisticsEntryCodec {
             totalCount: try reader.readInt64(),
             nullCount: try reader.readInt64(),
             distinctCount: try reader.readInt64(),
-            timestamp: try date(from: &reader)
+            timestamp: try timestamp(from: &reader)
         )
     }
 
     private static func writeTimestamp(
-        _ date: Date,
+        _ timestamp: Timestamp,
         into writer: inout StorageFrameEncoder
     ) throws {
-        let timestamp: Timestamp
-        do {
-            timestamp = try Timestamp(date)
-        } catch {
-            throw StatisticsStorageError.invalidTimestamp
-        }
         writer.writeInt64(timestamp.secondsSinceUnixEpoch)
         writer.writeUInt32(timestamp.nanoseconds)
     }
 
-    private static func date(
+    private static func timestamp(
         from reader: inout StorageFrameDecoder
-    ) throws -> Date {
+    ) throws -> Timestamp {
         let seconds = try reader.readInt64()
         let nanoseconds = try reader.readUInt32()
         let timestamp: Timestamp
@@ -467,7 +455,7 @@ public enum StatisticsEntryCodec {
         } catch {
             throw StatisticsStorageError.invalidTimestamp
         }
-        return Date(timestamp)
+        return timestamp
     }
 
     private static func int64(_ value: Int) throws -> Int64 {

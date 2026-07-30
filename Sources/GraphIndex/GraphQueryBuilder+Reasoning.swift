@@ -13,11 +13,6 @@
 //
 // Reference: Horrocks & Sattler (2007), Section 3 — role hierarchy semantics
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -425,9 +420,13 @@ public struct ReasoningQueryResult<T: Sendable>: Sendable {
         public let explicitCount: Int
         public let inferredCount: Int
         public let totalCount: Int
-        public let inferenceTime: TimeInterval
+        public let inferenceTime: Duration
 
-        public init(explicitCount: Int, inferredCount: Int, inferenceTime: TimeInterval) {
+        public init(
+            explicitCount: Int,
+            inferredCount: Int,
+            inferenceTime: Duration
+        ) {
             self.explicitCount = explicitCount
             self.inferredCount = inferredCount
             self.totalCount = explicitCount + inferredCount

@@ -131,7 +131,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             entity: entity
         )
         let slice = try await DatabaseEntityIndexSliceExecutor.run(
-            for: target.persistableType,
+            for: target.entityRuntime,
             container: container,
             storeSubspace: target.subspace,
             index: index,
@@ -308,21 +308,20 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         ) else {
             return nil
         }
+        let state: DatabaseIndexRebuildState
         do {
-            let state = try StorageFrameCodec.decode(
+            state = try StorageFrameCodec.decode(
                 DatabaseIndexRebuildState.self,
                 from: bytes,
                 limits: storageLimits
             )
-            guard state.entity == entity, state.index == index else {
-                throw DatabaseIndexRebuildError.corruptedRebuildState
-            }
-            return state
-        } catch let error as DatabaseIndexRebuildError {
-            throw error
         } catch {
             throw DatabaseIndexRebuildError.corruptedRebuildState
         }
+        guard state.entity == entity, state.index == index else {
+            throw DatabaseIndexRebuildError.corruptedRebuildState
+        }
+        return state
     }
 
     private func resolveTarget(
@@ -336,8 +335,8 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         }) else {
             throw DatabaseIndexRebuildError.entityNotFound(entityName)
         }
-        guard let persistableType = container.runtimeConfiguration
-            .persistableTypes.type(named: entityName) else {
+        guard let entityRuntime = container.runtimeConfiguration
+            .entityRuntimes.registration(named: entityName) else {
             throw DatabaseIndexRebuildError.compiledTypeMissing(entityName)
         }
         guard let descriptor = entity.indexDescriptors.first(where: {
@@ -349,27 +348,27 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             )
         }
         let binding = try CanonicalPartitionBinding.makeAnyBinding(
-            for: persistableType,
+            for: entity,
             partitions: partitions
         )
         let subspace: Subspace
         switch directoryAccess {
         case .create(let transaction):
             subspace = try await container.resolveDirectory(
-                for: persistableType,
+                for: entity,
                 path: binding,
                 transaction: transaction
             )
         case .open(let transaction):
             subspace = try await container.openDirectory(
-                for: persistableType,
+                for: entity,
                 path: binding,
                 transaction: transaction
             )
         }
         return Target(
             entity: entityName,
-            persistableType: persistableType,
+            entityRuntime: entityRuntime,
             descriptor: descriptor,
             partitions: binding?.canonicalPartitions() ?? FieldObject(),
             subspace: subspace
@@ -408,7 +407,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
 
     private struct Target {
         let entity: String
-        let persistableType: any Persistable.Type
+        let entityRuntime: EntityRuntimeRegistration
         let descriptor: IndexDescriptor
         let partitions: FieldObject
         let subspace: Subspace

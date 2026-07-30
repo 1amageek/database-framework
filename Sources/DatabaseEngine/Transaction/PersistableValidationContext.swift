@@ -29,7 +29,7 @@ public struct PersistableValidationContext: ~Copyable, Sendable {
     ) async throws -> (any Persistable)? {
         try scope.enter()
         do {
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             let model = try await transaction.fetchPersistedModel(
                 identifiedBy: identity,
                 within: operationID

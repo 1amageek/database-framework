@@ -3,11 +3,6 @@
 //
 // Simplified S2 implementation for spatial indexing.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseMath
 
 /// S2 Geometry encoding for geographic coordinates

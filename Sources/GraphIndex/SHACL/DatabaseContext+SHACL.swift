@@ -7,11 +7,6 @@
 // Reference: W3C SHACL https://www.w3.org/TR/shacl/
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import DatabaseEngine
@@ -158,7 +153,10 @@ public struct SHACLContextAPI: Sendable {
                 throw SHACLError.ontologyNotFound(ontIRI)
             }
             configuredEntailmentContext = OWLGraphEntailment(
-                reasoner: OWLReasoner(ontology: ontology)
+                reasoner: OWLReasoner(
+                    ontology: ontology,
+                    clock: context.container.monotonicClock
+                )
             )
             configuredOntologyContext = OntologyContext(
                 ontology: ontology
@@ -168,7 +166,10 @@ public struct SHACLContextAPI: Sendable {
             configuredOntologyContext = nil
         }
 
-        let workBudget = SHACLValidationWorkBudget(budget: budget)
+        let workBudget = SHACLValidationWorkBudget(
+            budget: budget,
+            monotonicClock: context.container.monotonicClock
+        )
         return try await context.indexQueryContext.withTransaction { transaction in
             let entailmentContext: (any SHACLEntailmentContext)?
             let ontologyContext: OntologyContext?
@@ -248,7 +249,10 @@ public struct SHACLContextAPI: Sendable {
         }
 
         let executor = try await buildExecutor(for: type)
-        let workBudget = SHACLValidationWorkBudget(budget: budget)
+        let workBudget = SHACLValidationWorkBudget(
+            budget: budget,
+            monotonicClock: context.container.monotonicClock
+        )
         return try await context.indexQueryContext.withTransaction { transaction in
             let targetResolver = SHACLTargetResolver(
                 executor: executor,
@@ -328,7 +332,7 @@ public struct SHACLContextAPI: Sendable {
             try RDFDatasetIndexSelection(descriptor: $0)
         }
         guard candidates.count == 1 else {
-            throw SHACLError.graphIndexNotFound(String(describing: T.self))
+            throw SHACLError.graphIndexNotFound(T.persistableType)
         }
         let selection = candidates[0]
 
@@ -342,6 +346,7 @@ public struct SHACLContextAPI: Sendable {
 
         return SPARQLQueryExecutor(
             database: context.container.engine,
+            wallClock: context.container.wallClock,
             sources: [source],
             ontologyContext: ontologyContext
         )

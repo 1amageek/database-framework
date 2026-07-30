@@ -1,9 +1,4 @@
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 internal protocol HashBytesConvertible {
     func appendHashBytes(to stream: inout MurmurHash3.Stream)
@@ -48,13 +43,6 @@ extension Bool: HashBytesConvertible {
     @usableFromInline
     func appendHashBytes(to stream: inout MurmurHash3.Stream) {
         stream.update(byte: self ? 1 : 0)
-    }
-}
-
-extension Data: HashBytesConvertible {
-    @usableFromInline
-    func appendHashBytes(to stream: inout MurmurHash3.Stream) {
-        stream.update(self)
     }
 }
 

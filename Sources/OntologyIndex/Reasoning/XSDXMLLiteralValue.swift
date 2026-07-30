@@ -20,7 +20,7 @@ package struct XSDXMLLiteralValue: Sendable {
     package init(
         lexicalForm: String,
         limits: XSDValidationLimits
-    ) throws {
+    ) throws(ParseFailure) {
         var parser = Parser(source: lexicalForm, limits: limits)
         nodes = try parser.parse()
         comparisonWorkLimit = limits.maxXMLComparisonWork
@@ -48,7 +48,9 @@ package struct XSDXMLLiteralValue: Sendable {
         } catch let failure as ComparisonFailure {
             return .failure(failure)
         } catch {
-            preconditionFailure("Validated XML token comparison failed: \(error)")
+            preconditionFailure(
+                "Validated XML token comparison failed unexpectedly"
+            )
         }
     }
 
@@ -188,7 +190,7 @@ package struct XSDXMLLiteralValue: Sendable {
         let source: Substring
         let mode: Mode
 
-        func validate() throws {
+        func validate() throws(ParseFailure) {
             var decoder = Decoder(source: source, mode: mode)
             while try decoder.next() != nil {}
         }
@@ -214,7 +216,7 @@ package struct XSDXMLLiteralValue: Sendable {
             }
         }
 
-        func isEqual(to constant: String) throws -> Bool {
+        func isEqual(to constant: String) throws(ParseFailure) -> Bool {
             var lhs = Decoder(source: source, mode: mode)
             var rhs = constant.unicodeScalars.makeIterator()
             while true {
@@ -227,7 +229,22 @@ package struct XSDXMLLiteralValue: Sendable {
             }
         }
 
-        func isEmpty() throws -> Bool {
+        func isEqualForParsing(
+            to other: TextView
+        ) throws(ParseFailure) -> Bool {
+            var lhs = Decoder(source: source, mode: mode)
+            var rhs = Decoder(source: other.source, mode: other.mode)
+            while true {
+                switch (try lhs.next(), try rhs.next()) {
+                case (nil, nil): return true
+                case (.some(let left), .some(let right)) where left == right:
+                    continue
+                default: return false
+                }
+            }
+        }
+
+        func isEmpty() throws(ParseFailure) -> Bool {
             var decoder = Decoder(source: source, mode: mode)
             return try decoder.next() == nil
         }
@@ -306,7 +323,7 @@ package struct XSDXMLLiteralValue: Sendable {
                 index = scalars.startIndex
             }
 
-            mutating func next() throws -> Unicode.Scalar? {
+            mutating func next() throws(ParseFailure) -> Unicode.Scalar? {
                 guard index != scalars.endIndex else { return nil }
                 let scalar = scalars[index]
                 scalars.formIndex(after: &index)
@@ -328,7 +345,7 @@ package struct XSDXMLLiteralValue: Sendable {
                 return scalar
             }
 
-            private mutating func decodeReference() throws -> Unicode.Scalar {
+            private mutating func decodeReference() throws(ParseFailure) -> Unicode.Scalar {
                 guard index != scalars.endIndex else {
                     throw ParseFailure.invalid(reason: "unterminated XML reference")
                 }
@@ -357,7 +374,7 @@ package struct XSDXMLLiteralValue: Sendable {
                 )
             }
 
-            private mutating func decodeCharacterReference() throws -> Unicode.Scalar {
+            private mutating func decodeCharacterReference() throws(ParseFailure) -> Unicode.Scalar {
                 var radix: UInt32 = 10
                 if index != scalars.endIndex,
                    scalars[index].value == 0x78 {
@@ -435,7 +452,7 @@ package struct XSDXMLLiteralValue: Sendable {
             index = source.startIndex
         }
 
-        mutating func parse() throws -> [Node] {
+        mutating func parse() throws(ParseFailure) -> [Node] {
             guard XSDUnicodeRules.allXMLCharacters(source) else {
                 throw ParseFailure.invalid(
                     reason: "XML literal contains a character outside XML Char"
@@ -462,7 +479,7 @@ package struct XSDXMLLiteralValue: Sendable {
             return nodes
         }
 
-        private mutating func parseCharacterData() throws {
+        private mutating func parseCharacterData() throws(ParseFailure) {
             let start = index
             while index != source.endIndex, source[index] != "<" {
                 if source[index...].hasPrefix("]]>") {
@@ -482,7 +499,7 @@ package struct XSDXMLLiteralValue: Sendable {
             }
         }
 
-        private mutating func parseComment() throws {
+        private mutating func parseComment() throws(ParseFailure) {
             advanceASCII("<!--")
             let start = index
             while index != source.endIndex,
@@ -503,7 +520,7 @@ package struct XSDXMLLiteralValue: Sendable {
             try append(.comment(view))
         }
 
-        private mutating func parseCDATA() throws {
+        private mutating func parseCDATA() throws(ParseFailure) {
             advanceASCII("<![CDATA[")
             let start = index
             while index != source.endIndex,
@@ -519,7 +536,7 @@ package struct XSDXMLLiteralValue: Sendable {
             try append(.cdata(view))
         }
 
-        private mutating func parseProcessingInstruction() throws {
+        private mutating func parseProcessingInstruction() throws(ParseFailure) {
             advanceASCII("<?")
             let target = try parseName(allowsColon: true)
             if asciiCaseInsensitiveEqual(target, "xml") {
@@ -549,7 +566,7 @@ package struct XSDXMLLiteralValue: Sendable {
             try append(.processingInstruction(target: target, data: data))
         }
 
-        private mutating func parseStartElement() throws {
+        private mutating func parseStartElement() throws(ParseFailure) {
             advanceASCII("<")
             let name = try parseQualifiedName()
             var rawAttributes: [RawAttribute] = []
@@ -629,7 +646,7 @@ package struct XSDXMLLiteralValue: Sendable {
             }
         }
 
-        private mutating func parseEndElement() throws {
+        private mutating func parseEndElement() throws(ParseFailure) {
             advanceASCII("</")
             let name = try parseQualifiedName()
             _ = skipWhitespace()
@@ -646,7 +663,7 @@ package struct XSDXMLLiteralValue: Sendable {
             try append(.endElement)
         }
 
-        private mutating func parseAttributeValue() throws -> TextView {
+        private mutating func parseAttributeValue() throws(ParseFailure) -> TextView {
             guard index != source.endIndex,
                   source[index] == "\"" || source[index] == "'" else {
                 throw ParseFailure.invalid(
@@ -677,7 +694,7 @@ package struct XSDXMLLiteralValue: Sendable {
 
         private mutating func installNamespaceDeclarations(
             _ attributes: [RawAttribute]
-        ) throws {
+        ) throws(ParseFailure) {
             let initialBindingCount = namespaceBindings.count
             for attribute in attributes {
                 let declarationPrefix: Substring?
@@ -724,7 +741,7 @@ package struct XSDXMLLiteralValue: Sendable {
         private mutating func validateNamespaceDeclaration(
             prefix: Substring?,
             namespace: TextView
-        ) throws {
+        ) throws(ParseFailure) {
             if let prefix,
                TextView.exactlyEqual(prefix, "xmlns"[...]) {
                 throw ParseFailure.invalid(
@@ -761,7 +778,7 @@ package struct XSDXMLLiteralValue: Sendable {
 
         private mutating func resolveElementName(
             _ name: QualifiedName
-        ) throws -> ResolvedName {
+        ) throws(ParseFailure) -> ResolvedName {
             let resolvedNamespace: TextView?
             if let prefix = name.prefix {
                 resolvedNamespace = try requiredNamespace(for: prefix)
@@ -777,7 +794,7 @@ package struct XSDXMLLiteralValue: Sendable {
 
         private mutating func resolveAttributes(
             _ rawAttributes: [RawAttribute]
-        ) throws -> [Attribute] {
+        ) throws(ParseFailure) -> [Attribute] {
             var result: [Attribute] = []
             result.reserveCapacity(rawAttributes.count)
             for raw in rawAttributes {
@@ -829,7 +846,7 @@ package struct XSDXMLLiteralValue: Sendable {
 
         private mutating func requiredNamespace(
             for prefix: Substring
-        ) throws -> TextView {
+        ) throws(ParseFailure) -> TextView {
             if TextView.exactlyEqual(prefix, "xml"[...]) {
                 return TextView(source: Self.xmlNamespace[...], mode: .raw)
             }
@@ -843,7 +860,7 @@ package struct XSDXMLLiteralValue: Sendable {
 
         private mutating func namespace(
             for prefix: Substring?
-        ) throws -> TextView? {
+        ) throws(ParseFailure) -> TextView? {
             for binding in namespaceBindings.reversed() {
                 if try optionalNamesAreEqual(binding.prefix, prefix) {
                     try consumeParsingWork(
@@ -861,7 +878,7 @@ package struct XSDXMLLiteralValue: Sendable {
         private mutating func qualifiedNamesAreEqual(
             _ lhs: QualifiedName,
             _ rhs: QualifiedName
-        ) throws -> Bool {
+        ) throws(ParseFailure) -> Bool {
             guard try optionalNamesAreEqual(lhs.prefix, rhs.prefix) else {
                 return false
             }
@@ -871,7 +888,7 @@ package struct XSDXMLLiteralValue: Sendable {
         private mutating func expandedNamesAreEqual(
             _ lhs: ResolvedName,
             _ rhs: ResolvedName
-        ) throws -> Bool {
+        ) throws(ParseFailure) -> Bool {
             guard try namesAreEqual(lhs.localName, rhs.localName) else {
                 return false
             }
@@ -882,8 +899,7 @@ package struct XSDXMLLiteralValue: Sendable {
                 try consumeParsingWork(
                     lhs.source.utf8.count + rhs.source.utf8.count
                 )
-                var budget = ComparisonBudget(limit: Int.max)
-                return try lhs.isEqual(to: rhs, budget: &budget)
+                return try lhs.isEqualForParsing(to: rhs)
             default:
                 return false
             }
@@ -892,7 +908,7 @@ package struct XSDXMLLiteralValue: Sendable {
         private mutating func optionalNamesAreEqual(
             _ lhs: Substring?,
             _ rhs: Substring?
-        ) throws -> Bool {
+        ) throws(ParseFailure) -> Bool {
             switch (lhs, rhs) {
             case (nil, nil):
                 return true
@@ -906,12 +922,12 @@ package struct XSDXMLLiteralValue: Sendable {
         private mutating func namesAreEqual(
             _ lhs: Substring,
             _ rhs: Substring
-        ) throws -> Bool {
+        ) throws(ParseFailure) -> Bool {
             try consumeParsingWork(lhs.utf8.count + rhs.utf8.count)
             return TextView.exactlyEqual(lhs, rhs)
         }
 
-        private mutating func consumeParsingWork(_ amount: Int) throws {
+        private mutating func consumeParsingWork(_ amount: Int) throws(ParseFailure) {
             let (actual, overflow) = parsingWork.addingReportingOverflow(amount)
             guard !overflow, actual <= limits.maxXMLParsingWork else {
                 throw ParseFailure.resource(
@@ -923,7 +939,7 @@ package struct XSDXMLLiteralValue: Sendable {
             parsingWork = actual
         }
 
-        private mutating func parseQualifiedName() throws -> QualifiedName {
+        private mutating func parseQualifiedName() throws(ParseFailure) -> QualifiedName {
             let name = try parseName(allowsColon: true)
             guard let separator = name.firstIndex(of: ":") else {
                 return QualifiedName(prefix: nil, localName: name)
@@ -942,7 +958,7 @@ package struct XSDXMLLiteralValue: Sendable {
 
         private mutating func parseName(
             allowsColon: Bool
-        ) throws -> Substring {
+        ) throws(ParseFailure) -> Substring {
             let start = index
             let scalars = source.unicodeScalars
             guard index != source.endIndex,
@@ -973,7 +989,7 @@ package struct XSDXMLLiteralValue: Sendable {
             return index != start
         }
 
-        private mutating func append(_ node: Node) throws {
+        private mutating func append(_ node: Node) throws(ParseFailure) {
             guard nodes.count < limits.maxXMLNodes else {
                 throw ParseFailure.resource(
                     name: "xmlNodes",

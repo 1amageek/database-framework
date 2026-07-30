@@ -4,11 +4,6 @@
 // Reference: Levenshtein Automata
 // http://blog.notdot.net/2010/07/Damn-Cool-Algorithms-Levenshtein-Automata
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 // MARK: - FuzzyMatcher
 

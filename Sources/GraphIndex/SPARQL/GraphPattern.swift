@@ -3,11 +3,6 @@
 //
 // Represents composed graph patterns following SPARQL algebra.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 /// Represents a graph pattern that can be composed
 ///
@@ -129,7 +124,7 @@ public indirect enum ExecutionPattern: Sendable {
         case .graph(let selector, let pattern):
             return selector.variables.union(pattern.outputVariables)
         case .groupBy(_, let grouping, let aggregates, _):
-            var result = Set(grouping.keys.lazy.map(\.outputVariable))
+            var result = Set(grouping.keys.lazy.map { $0.outputVariable })
             for agg in aggregates {
                 result.insert(agg.alias)
             }

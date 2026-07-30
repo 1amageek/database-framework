@@ -1,11 +1,6 @@
 // QueryTypes.swift
 // DatabaseEngine - Common types for queries
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 

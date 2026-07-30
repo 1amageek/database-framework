@@ -3,11 +3,6 @@
 //
 // Provides DatabaseContext extension and query builder for permuted field queries.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
@@ -243,10 +238,10 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         }
 
         // Build mapping: packed primary key → permutedFields
-        var fieldsByPackedKey: [Data: [any TupleElement]] = [:]
+        var fieldsByPackedKey: [ByteString: [any TupleElement]] = [:]
         for result in rawResults {
-            let pkData = Data(Tuple(result.primaryKey).pack())
-            fieldsByPackedKey[pkData] = result.permutedFields
+            let packedPrimaryKey = Tuple(result.primaryKey).pack()
+            fieldsByPackedKey[packedPrimaryKey] = result.permutedFields
         }
 
         // Fetch items (order may differ from rawResults; missing IDs are skipped)
@@ -260,8 +255,8 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         var finalResults: [(permutedFields: [any TupleElement], item: T)] = []
         for item in items {
             let pkTuple = try DataAccess.extractId(from: item, using: idExpression)
-            let pkData = Data(pkTuple.pack())
-            if let fields = fieldsByPackedKey[pkData] {
+            let packedPrimaryKey = pkTuple.pack()
+            if let fields = fieldsByPackedKey[packedPrimaryKey] {
                 finalResults.append((permutedFields: fields, item: item))
             }
         }

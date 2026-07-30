@@ -3,13 +3,9 @@
 //
 // Provides efficient weighted shortest path finding using priority queues.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
 import DatabaseKit
+import StorageKit
 
 // MARK: - WeightedShortestPathConfiguration
 
@@ -301,6 +297,7 @@ public final class WeightedShortestPathFinder: Sendable {
 
     /// Shared request work budget.
     private let workBudget: GraphAlgorithmWorkBudget?
+    private let clock: MonotonicClock
 
     // MARK: - Initialization
 
@@ -311,10 +308,12 @@ public final class WeightedShortestPathFinder: Sendable {
     ///   - configuration: Algorithm configuration
     public init(
         neighborSource: any WeightedGraphNeighborSource,
+        monotonicClock: any StorageMonotonicClock,
         configuration: WeightedShortestPathConfiguration = .default,
         workBudget: GraphAlgorithmWorkBudget? = nil
     ) {
         self.neighborSource = neighborSource
+        self.clock = MonotonicClock(source: monotonicClock)
         self.configuration = configuration
         self.workBudget = workBudget
     }
@@ -335,7 +334,7 @@ public final class WeightedShortestPathFinder: Sendable {
         edgeLabel: GraphIdentity? = nil,
         maxWeight: Double? = nil
     ) async throws -> WeightedPathResult {
-        let startTime = MonotonicClock.now()
+        let startTime = clock.now()
         let effectiveMaxWeight = maxWeight ?? configuration.maxWeight
         guard !effectiveMaxWeight.isNaN, effectiveMaxWeight >= 0 else {
             throw WeightedShortestPathError.invalidMaximumWeight(effectiveMaxWeight)
@@ -349,7 +348,7 @@ public final class WeightedShortestPathFinder: Sendable {
                 totalWeight: 0,
                 nodesExplored: 1,
                 edgesRelaxed: 0,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -400,7 +399,7 @@ public final class WeightedShortestPathFinder: Sendable {
                     totalWeight: currentDist,
                     nodesExplored: nodesExplored,
                     edgesRelaxed: edgesRelaxed,
-                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                    durationNs: clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                 )
             }
 
@@ -486,7 +485,7 @@ public final class WeightedShortestPathFinder: Sendable {
             totalWeight: .infinity,
             nodesExplored: nodesExplored,
             edgesRelaxed: edgesRelaxed,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: limitReason == nil,
             limitReason: limitReason
         )
@@ -504,7 +503,7 @@ public final class WeightedShortestPathFinder: Sendable {
         edgeLabel: GraphIdentity? = nil,
         maxWeight: Double? = nil
     ) async throws -> SingleSourceResult {
-        let startTime = MonotonicClock.now()
+        let startTime = clock.now()
         let effectiveMaxWeight = maxWeight ?? configuration.maxWeight
         guard !effectiveMaxWeight.isNaN, effectiveMaxWeight >= 0 else {
             throw WeightedShortestPathError.invalidMaximumWeight(effectiveMaxWeight)
@@ -621,7 +620,7 @@ public final class WeightedShortestPathFinder: Sendable {
             parents: parents,
             edgeLabels: edgeLabels,
             nodesExplored: nodesExplored,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: limitReason == nil,
             limitReason: limitReason
         )

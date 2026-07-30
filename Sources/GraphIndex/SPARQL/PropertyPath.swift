@@ -332,7 +332,7 @@ extension ExecutionPropertyPath: CustomStringConvertible {
         case .iri(let value):
             return value.rawValue
         case .negatedPropertySet(let exclusions):
-            var values = (exclusions.forward ?? []).sorted().map(\.rawValue)
+            var values = (exclusions.forward ?? []).sorted().map { $0.rawValue }
             values.append(contentsOf: (exclusions.inverse ?? []).sorted().map {
                 "^\($0.rawValue)"
             })

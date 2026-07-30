@@ -1,11 +1,6 @@
 // Leaderboard.swift
 // LeaderboardIndex - Leaderboard ranking query for Fusion
 //
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -205,18 +200,23 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
             items = items.filter { candidateIDs.contains($0.id) }
         }
 
-        // Match items with their leaderboard scores
+        // Match fetched items to the canonical packed identifiers returned by
+        // the index. This supports every Persistable identifier shape without
+        // runtime type casts or string conversion.
+        var scoresByIdentifier: [ByteString: Int64] = [:]
+        scoresByIdentifier.reserveCapacity(topKResults.count)
+        for result in topKResults {
+            scoresByIdentifier[result.pk.pack()] = result.score
+        }
         var leaderboardResults: [(item: T, score: Int64)] = []
+        leaderboardResults.reserveCapacity(items.count)
         for item in items {
-            // Find matching pk in topKResults
-            for result in topKResults {
-                if let pkId = result.pk[0] as? String, "\(item.id)" == pkId {
-                    leaderboardResults.append((item: item, score: result.score))
-                    break
-                } else if let pkId = result.pk[0] as? Int64, "\(item.id)" == "\(pkId)" {
-                    leaderboardResults.append((item: item, score: result.score))
-                    break
-                }
+            let identifier = try DataAccess.extractId(
+                from: item,
+                using: FieldKeyExpression(fieldName: "id")
+            ).pack()
+            if let score = scoresByIdentifier[identifier] {
+                leaderboardResults.append((item: item, score: score))
             }
         }
 
@@ -251,9 +251,8 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Calculate current window ID if not specified
         let effectiveWindowId = windowId ?? {
-            let now = Date()
-            let timestamp = Int64(now.timeIntervalSince1970)
-            return timestamp / windowDurationSeconds
+            queryContext.context.container.wallClock.now.secondsSinceUnixEpoch
+                / windowDurationSeconds
         }()
 
         let windowSubspace = indexSubspace.subspace("window")
@@ -270,7 +269,10 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
-            snapshot: true
+            limit: k,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var results: [(pk: Tuple, score: Int64)] = []
@@ -286,9 +288,14 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
             // Key structure: windowId, [grouping...], invertedScore, [pk...]
             let invertedScoreIndex = 1 + groupingCount
 
-            guard let invertedScore = keyTuple[invertedScoreIndex] as? Int64 else {
-                continue
+            guard let invertedScoreElement = keyTuple[invertedScoreIndex] else {
+                throw FusionQueryError.invalidConfiguration(
+                    "Leaderboard index '\(indexSubspace)' contains a malformed score entry"
+                )
             }
+            let invertedScore = try TupleDecoder.decodeInt64(
+                invertedScoreElement
+            )
 
             // Reverse the inversion (same formula is self-inverse)
             let unsigned = UInt64(bitPattern: invertedScore)

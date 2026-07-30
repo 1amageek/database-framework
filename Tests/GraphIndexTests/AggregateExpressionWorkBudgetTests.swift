@@ -31,10 +31,7 @@ struct AggregateExpressionWorkBudgetTests {
                 in: partition,
                 workMeter: meter,
                 evaluateExpression: { plan, binding in
-                    try ExpressionEvaluator.evaluate(
-                        plan.expression,
-                        binding: binding
-                    )
+                    Self.expressionOutcome(plan, binding: binding)
                 }
             )
         }
@@ -57,15 +54,12 @@ struct AggregateExpressionWorkBudgetTests {
             VariableBinding(["?value": .string("same")]),
             VariableBinding(["?value": .string("same")]),
         ])
-        let value = try await aggregate.evaluate(
+        let outcome = try await aggregate.evaluate(
             groupIndex: 0,
             in: partition,
             workMeter: meter,
             evaluateExpression: { plan, binding in
-                try ExpressionEvaluator.evaluate(
-                    plan.expression,
-                    binding: binding
-                )
+                Self.expressionOutcome(plan, binding: binding)
             }
         )
 
@@ -73,6 +67,10 @@ struct AggregateExpressionWorkBudgetTests {
             lexicalForm: "1",
             datatype: "http://www.w3.org/2001/XMLSchema#integer"
         )
+        guard case .value(let value) = outcome else {
+            Issue.record("COUNT DISTINCT returned an expression error")
+            return
+        }
         #expect(value == .rdfTerm(.literal(expected)))
         #expect(meter.consumedWorkUnits == 4)
     }
@@ -99,16 +97,30 @@ struct AggregateExpressionWorkBudgetTests {
             source: builder.finish(),
             grouping: .implicitSingleGroup,
             expressionContext: try SPARQLQueryExpressionContext(
+                now: try Timestamp(secondsSinceUnixEpoch: 0),
                 functionRegistry: .empty,
                 workMeter: workMeter
             ),
             workMeter: workMeter,
             evaluateKey: { plan, binding in
+                Self.expressionOutcome(plan, binding: binding)
+            }
+        )
+    }
+
+    private static func expressionOutcome(
+        _ plan: SPARQLExpressionPlan,
+        binding: VariableBinding
+    ) -> SPARQLExpressionEvaluationOutcome<FieldValue> {
+        do throws(SPARQLExpressionEvaluationError) {
+            return .value(
                 try ExpressionEvaluator.evaluate(
                     plan.expression,
                     binding: binding
                 )
-            }
-        )
+            )
+        } catch let error {
+            return .expressionError(error)
+        }
     }
 }

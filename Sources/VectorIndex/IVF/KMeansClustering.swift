@@ -4,11 +4,6 @@
 // Reference: Lloyd's algorithm with K-means++ initialization
 // Arthur & Vassilvitskii, "k-means++: The Advantages of Careful Seeding", 2007
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseMath
 
 /// K-means clustering for IVF centroid training

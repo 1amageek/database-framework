@@ -93,24 +93,36 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
         var graphs: [RDFGraphName] = []
         let range = catalogCodec.range
         let storageLimit = try workMeter.storageReadLimitWithSentinel()
+        var cursor = transaction.rangeCursor(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
+            limit: storageLimit,
+            reverse: false,
+            snapshot: readMode.usesSnapshotReads,
+            streamingMode: .iterator
+        )
         do {
-            try await transaction.forEachInRange(
-                from: .firstGreaterOrEqual(range.begin),
-                to: .firstGreaterOrEqual(range.end),
-                limit: storageLimit,
-                snapshot: readMode.usesSnapshotReads,
-                streamingMode: .iterator
-            ) { key, value in
+            while let (key, value) = try await cursor.next() {
                 try workMeter.consume(at: .storageRow)
                 try catalogCodec.validateMarker(value)
                 graphs.append(try catalogCodec.decodeGraph(from: key))
                 if let limit, graphs.count >= limit {
-                    throw ScanControl.logicalLimitReached
+                    break
                 }
             }
-        } catch ScanControl.logicalLimitReached {
-            // The requested logical page is complete.
+        } catch {
+            let iterationError = error
+            do {
+                try await cursor.finish()
+            } catch {
+                throw StorageRangeCleanupError(
+                    iterationError: iterationError,
+                    cleanupError: error
+                )
+            }
+            throw iterationError
         }
+        try await cursor.finish()
         graphs.sort()
         return graphs
     }
@@ -348,18 +360,34 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     ) async throws -> Bool {
         try workMeter.consume(at: .indexScan)
         let range = try physicalRange(for: .named(graph), ordering: .gspo)
-        var found = false
-        try await transaction.forEachInRange(
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: 1,
+            reverse: false,
             snapshot: false,
             streamingMode: .exact
-        ) { _, _ in
+        )
+        do {
+            guard try await cursor.next() != nil else {
+                try await cursor.finish()
+                return false
+            }
             try workMeter.consume(at: .storageRow)
-            found = true
+        } catch {
+            let iterationError = error
+            do {
+                try await cursor.finish()
+            } catch {
+                throw StorageRangeCleanupError(
+                    iterationError: iterationError,
+                    cleanupError: error
+                )
+            }
+            throw iterationError
         }
-        return found
+        try await cursor.finish()
+        return true
     }
 
     private func validateNamedGraphExists(
@@ -436,16 +464,32 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
         var removed: UInt64 = 0
 
         if scope == .allGraphs {
-            try await transaction.forEachInRange(
+            var cursor = transaction.rangeCursor(
                 from: .firstGreaterOrEqual(scanRange.begin),
                 to: .firstGreaterOrEqual(scanRange.end),
                 limit: storageLimit,
+                reverse: false,
                 snapshot: false,
                 streamingMode: .iterator
-            ) { _, _ in
-                try workMeter.consume(at: .storageRow)
-                removed = try incremented(removed)
+            )
+            do {
+                while try await cursor.next() != nil {
+                    try workMeter.consume(at: .storageRow)
+                    removed = try incremented(removed)
+                }
+            } catch {
+                let iterationError = error
+                do {
+                    try await cursor.finish()
+                } catch {
+                    throw StorageRangeCleanupError(
+                        iterationError: iterationError,
+                        cleanupError: error
+                    )
+                }
+                throw iterationError
             }
+            try await cursor.finish()
             try clearPhysicalRanges(
                 for: scope,
                 includingTermFirstIndexes: true,
@@ -455,43 +499,59 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             return removed
         }
 
-        try await transaction.forEachInRange(
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(scanRange.begin),
             to: .firstGreaterOrEqual(scanRange.end),
             limit: storageLimit,
+            reverse: false,
             snapshot: false,
             streamingMode: .iterator
-        ) { key, _ in
-            try workMeter.consume(at: .storageRow)
-            let encoded: RDFQuadIndexEncodedQuad
+        )
+        do {
+            while let (key, _) = try await cursor.next() {
+                try workMeter.consume(at: .storageRow)
+                let encoded: RDFQuadIndexEncodedQuad
+                do throws(RDFQuadIndexPhysicalCodecError) {
+                    encoded = try physicalCodec.decodeEncodedQuad(
+                        key: key,
+                        ordering: .gspo
+                    )
+                } catch let error {
+                    throw RDFGraphStoreError.invalidPhysicalIndex(error)
+                }
+                if scope == .allNamedGraphs, encoded.graph == nil {
+                    throw RDFGraphStoreError.invalidPhysicalIndex(
+                        .invalidComponentCount(expected: 4...4, actual: 3)
+                    )
+                }
+                let plan: RDFQuadIndexWritePlan
+                do throws(RDFTermStorageError) {
+                    plan = try RDFQuadIndexWritePlan(encodedQuad: encoded)
+                } catch let error {
+                    throw RDFGraphStoreError.invalidTermEncoding(error)
+                }
+                try validateKeySizes(plan)
+                try workMeter.consume(3, at: .storageWrite)
+                try plan.forEachEntry { entry in
+                    guard !entry.ordering.isGraphFirst else { return }
+                    let termFirstKey = try encode(entry)
+                    try transaction.clear(key: termFirstKey)
+                }
+                removed = try incremented(removed)
+            }
+        } catch {
+            let iterationError = error
             do {
-                encoded = try physicalCodec.decodeEncodedQuad(
-                    key: key,
-                    ordering: .gspo
-                )
-            } catch let error as RDFQuadIndexPhysicalCodecError {
-                throw RDFGraphStoreError.invalidPhysicalIndex(error)
-            }
-            if scope == .allNamedGraphs, encoded.graph == nil {
-                throw RDFGraphStoreError.invalidPhysicalIndex(
-                    .invalidComponentCount(expected: 4...4, actual: 3)
+                try await cursor.finish()
+            } catch {
+                throw StorageRangeCleanupError(
+                    iterationError: iterationError,
+                    cleanupError: error
                 )
             }
-            let plan: RDFQuadIndexWritePlan
-            do {
-                plan = try RDFQuadIndexWritePlan(encodedQuad: encoded)
-            } catch let error as RDFTermStorageError {
-                throw RDFGraphStoreError.invalidTermEncoding(error)
-            }
-            try validateKeySizes(plan)
-            try workMeter.consume(3, at: .storageWrite)
-            try plan.forEachEntry { entry in
-                guard !entry.ordering.isGraphFirst else { return }
-                let termFirstKey = try encode(entry)
-                try transaction.clear(key: termFirstKey)
-            }
-            removed = try incremented(removed)
+            throw iterationError
         }
+        try await cursor.finish()
 
         try clearPhysicalRanges(
             for: scope,
@@ -618,7 +678,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             }
         }
         var prefix = RDFQuadIndexPrefixWritePlan()
-        do {
+        do throws(RDFQuadIndexPhysicalCodecError) {
             try prefix.append(component)
             return try physicalCodec.range(prefix: prefix, ordering: ordering)
         } catch let error {
@@ -629,23 +689,25 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     private func encode(
         _ entry: RDFQuadIndexEntryWritePlan
     ) throws -> ByteString {
-        let keyByteCount: Int
-        do {
-            let tupleByteCount = try entry.encodedTupleByteCount()
-            let subspace = try physicalCodec.subspace(for: entry.ordering)
-            let (count, overflow) = subspace.prefix.count
-                .addingReportingOverflow(tupleByteCount)
-            guard !overflow else {
-                throw RDFGraphStoreError.keyTooLarge(
-                    actual: Int.max,
-                    maximum: databaseMaximumKeySize
-                )
-            }
-            keyByteCount = count
-        } catch let error as RDFGraphStoreError {
-            throw error
-        } catch let error as RDFQuadIndexPhysicalCodecError {
+        let tupleByteCount: Int
+        do throws(RDFQuadIndexPhysicalCodecError) {
+            tupleByteCount = try entry.encodedTupleByteCount()
+        } catch let error {
             throw RDFGraphStoreError.invalidPhysicalIndex(error)
+        }
+        let subspace: Subspace
+        do throws(RDFQuadIndexPhysicalCodecError) {
+            subspace = try physicalCodec.subspace(for: entry.ordering)
+        } catch let error {
+            throw RDFGraphStoreError.invalidPhysicalIndex(error)
+        }
+        let (keyByteCount, overflow) = subspace.prefix.count
+            .addingReportingOverflow(tupleByteCount)
+        guard !overflow else {
+            throw RDFGraphStoreError.keyTooLarge(
+                actual: Int.max,
+                maximum: databaseMaximumKeySize
+            )
         }
         guard keyByteCount <= databaseMaximumKeySize else {
             throw RDFGraphStoreError.keyTooLarge(
@@ -654,7 +716,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             )
         }
         let key: ByteString
-        do {
+        do throws(RDFQuadIndexPhysicalCodecError) {
             key = try physicalCodec.encode(entry)
         } catch let error {
             throw RDFGraphStoreError.invalidPhysicalIndex(error)
@@ -674,11 +736,15 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     ) throws {
         try plan.forEachEntry { entry in
             let tupleByteCount: Int
-            let subspace: Subspace
-            do {
+            do throws(RDFQuadIndexPhysicalCodecError) {
                 tupleByteCount = try entry.encodedTupleByteCount()
+            } catch let error {
+                throw RDFGraphStoreError.invalidPhysicalIndex(error)
+            }
+            let subspace: Subspace
+            do throws(RDFQuadIndexPhysicalCodecError) {
                 subspace = try physicalCodec.subspace(for: entry.ordering)
-            } catch let error as RDFQuadIndexPhysicalCodecError {
+            } catch let error {
                 throw RDFGraphStoreError.invalidPhysicalIndex(error)
             }
             let (keyByteCount, overflow) = subspace.prefix.count

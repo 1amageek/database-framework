@@ -1,10 +1,4 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
-import DatabaseMath
 import DatabaseEngine
 import DatabaseTypes
 import Synchronization
@@ -28,11 +22,11 @@ final class SPARQLQueryExpressionContext: Sendable {
     private let workMeter: DatabaseWorkMeter
 
     init(
-        now: Timestamp? = nil,
+        now: Timestamp,
         functionRegistry: SPARQLFunctionRegistry,
         workMeter: DatabaseWorkMeter
     ) throws {
-        self.nowTimestamp = try now ?? Self.currentTimestamp()
+        self.nowTimestamp = now
         self.functionRegistry = functionRegistry
         self.workMeter = workMeter
     }
@@ -82,65 +76,82 @@ final class SPARQLQueryExpressionContext: Sendable {
         name: String,
         arguments: [FieldValue],
         binding: VariableBinding
-    ) throws -> FieldValue {
+    ) throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
         switch name.uppercased() {
         case "NOW":
             guard arguments.isEmpty else {
-                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
+                return .expressionError(.invalidFunctionArguments(name))
             }
-            return try ExpressionEvaluator.evaluate(
-                .literal(.timestamp(nowTimestamp)),
-                binding: VariableBinding()
+            return Self.evaluateImmediate(
+                .literal(.timestamp(nowTimestamp))
             )
 
         case "RAND":
             guard arguments.isEmpty else {
-                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
+                return .expressionError(.invalidFunctionArguments(name))
             }
-            return try ExpressionEvaluator.evaluate(
-                .literal(.double(Double.random(in: 0..<1))),
-                binding: VariableBinding()
+            return Self.evaluateImmediate(
+                .literal(.double(Double.random(in: 0..<1)))
             )
 
         case "UUID":
             guard arguments.isEmpty else {
-                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
+                return .expressionError(.invalidFunctionArguments(name))
             }
-            return .rdfTerm(
-                .iri(try RDFIRI("urn:uuid:\(Self.randomUUID())"))
-            )
+            do {
+                return .value(
+                    .rdfTerm(
+                        .iri(try RDFIRI("urn:uuid:\(Self.randomUUID())"))
+                    )
+                )
+            } catch {
+                return .expressionError(
+                    .runtimeInvariant("UUID generated an invalid RDF IRI")
+                )
+            }
 
         case "STRUUID":
             guard arguments.isEmpty else {
-                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
+                return .expressionError(.invalidFunctionArguments(name))
             }
-            return try ExpressionEvaluator.evaluate(
-                .literal(.string(Self.randomUUID().description)),
-                binding: VariableBinding()
+            return Self.evaluateImmediate(
+                .literal(.string(Self.randomUUID().description))
             )
 
         case "BNODE":
             guard arguments.count <= 1 else {
-                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
+                return .expressionError(.invalidFunctionArguments(name))
             }
             if arguments.isEmpty {
                 try workMeter.consume(at: .resultMaterialization)
-                return .rdfTerm(
-                    .blankNode(
-                        try RDFBlankNodeIdentifier(
-                            Self.randomUUID().description
+                do {
+                    return .value(
+                        .rdfTerm(
+                            .blankNode(
+                                try RDFBlankNodeIdentifier(
+                                    Self.randomUUID().description
+                                )
+                            )
                         )
                     )
-                )
+                } catch {
+                    return .expressionError(
+                        .runtimeInvariant(
+                            "BNODE generated an invalid blank-node identifier"
+                        )
+                    )
+                }
             }
             guard let label = Self.simpleString(arguments[0]) else {
-                throw SPARQLExpressionEvaluationError.typeError(
-                    "BNODE requires a simple string literal"
+                return .expressionError(
+                    .typeError("BNODE requires a simple string literal")
                 )
             }
             guard let solutionScope = binding.expressionScopeIdentifier else {
-                throw SPARQLExpressionEvaluationError.runtimeInvariant(
-                    "BNODE(label) requires a solution-scoped binding"
+                return .expressionError(
+                    .runtimeInvariant(
+                        "BNODE(label) requires a solution-scoped binding"
+                    )
                 )
             }
             try workMeter.consume(
@@ -159,38 +170,60 @@ final class SPARQLQueryExpressionContext: Sendable {
                 state.identifiersByKey[key] = generated
                 return generated
             }
-            return .rdfTerm(
-                .blankNode(try RDFBlankNodeIdentifier(identifier))
-            )
+            do {
+                return .value(
+                    .rdfTerm(
+                        .blankNode(try RDFBlankNodeIdentifier(identifier))
+                    )
+                )
+            } catch {
+                return .expressionError(
+                    .runtimeInvariant(
+                        "BNODE retained an invalid blank-node identifier"
+                    )
+                )
+            }
 
         default:
-            do {
-                return try functionRegistry.evaluate(
-                    identifier: name,
-                    arguments: arguments
+            do throws(SPARQLFunctionRegistryError) {
+                return .value(
+                    try functionRegistry.evaluate(
+                        identifier: name,
+                        arguments: arguments
+                    )
                 )
-            } catch SPARQLFunctionRegistryError.unknownFunction(_) {
-                throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                    "function \(name)"
-                )
-            } catch let error as SPARQLExpressionEvaluationError {
-                throw error
-            } catch {
-                throw SPARQLExpressionEvaluationError.runtimeInvariant(
-                    String(describing: error)
-                )
+            } catch let error {
+                switch error {
+                case .unknownFunction:
+                    return .expressionError(
+                        .unsupportedExpression("function \(name)")
+                    )
+                case .evaluation(let evaluationError):
+                    return .expressionError(evaluationError)
+                case .duplicateFunction, .nonCanonicalResult, .functionFailed:
+                    return .expressionError(
+                        .runtimeInvariant(
+                            "A registered SPARQL function violated its runtime contract"
+                        )
+                    )
+                }
             }
         }
     }
 
-    private static func currentTimestamp() throws -> Timestamp {
-        let interval = Date().timeIntervalSince1970
-        let seconds = DatabaseMath.floor(interval)
-        let fractional = max(0, min(interval - seconds, 0.999_999_999))
-        return try Timestamp(
-            secondsSinceUnixEpoch: Int64(seconds),
-            nanoseconds: UInt32(fractional * 1_000_000_000)
-        )
+    private static func evaluateImmediate(
+        _ expression: Expression
+    ) -> SPARQLExpressionEvaluationOutcome<FieldValue> {
+        do throws(SPARQLExpressionEvaluationError) {
+            return .value(
+                try ExpressionEvaluator.evaluate(
+                    expression,
+                    binding: VariableBinding()
+                )
+            )
+        } catch let error {
+            return .expressionError(error)
+        }
     }
 
     private static func randomUUID() -> DatabaseTypes.UUID {

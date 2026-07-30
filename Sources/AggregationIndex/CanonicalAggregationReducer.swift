@@ -1,11 +1,12 @@
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
+
+private enum AggregationValueOrdering {
+    case ascending
+    case same
+    case descending
+}
 
 /// Applies canonical aggregation semantics to query result values.
 enum CanonicalAggregationReducer {
@@ -606,11 +607,11 @@ enum CanonicalAggregationReducer {
                 )
             }
         }
-        values.removeAll(where: \.isNull)
+        values.removeAll { $0.isNull }
         guard !values.isEmpty else { return nil }
 
         try values.sort { lhs, rhs in
-            try compare(lhs, rhs, field: field) == .orderedAscending
+            try compare(lhs, rhs, field: field) == .ascending
         }
 
         guard let width = Double(exactly: values.count - 1) else {
@@ -661,20 +662,12 @@ enum CanonicalAggregationReducer {
         }
     }
 
-    static func fieldValue(
-        _ rawValue: (any Sendable)?,
+    static func fieldValue<Value: FieldValueRepresentable>(
+        _ rawValue: Value?,
         field: String
     ) throws -> FieldValue {
         guard let rawValue else { return .null }
-        let value: FieldValue
-        do {
-            value = try TypeConversion.toFieldValue(rawValue)
-        } catch {
-            throw AggregationQueryError.invalidFieldValue(
-                field: field,
-                reason: error
-            )
-        }
+        let value = rawValue.fieldValue
         try validate(value: value, field: field)
         return value
     }
@@ -736,8 +729,8 @@ enum CanonicalAggregationReducer {
             }
             if let current = selected {
                 let comparison = try compare(value, current, field: field.name)
-                if (chooseMinimum && comparison == .orderedAscending)
-                    || (!chooseMinimum && comparison == .orderedDescending) {
+                if (chooseMinimum && comparison == .ascending)
+                    || (!chooseMinimum && comparison == .descending) {
                     selected = value
                 }
             } else {
@@ -760,8 +753,8 @@ enum CanonicalAggregationReducer {
             }
             if let current = selected {
                 let comparison = try compare(value, current, field: field)
-                if (chooseMinimum && comparison == .orderedAscending)
-                    || (!chooseMinimum && comparison == .orderedDescending) {
+                if (chooseMinimum && comparison == .ascending)
+                    || (!chooseMinimum && comparison == .descending) {
                     selected = value
                 }
             } else {
@@ -775,10 +768,10 @@ enum CanonicalAggregationReducer {
         _ lhs: FieldValue,
         _ rhs: FieldValue,
         field: String
-    ) throws -> ComparisonResult {
+    ) throws -> AggregationValueOrdering {
         if lhs.isNumeric && rhs.isNumeric {
-            if lhs == rhs { return .orderedSame }
-            return lhs < rhs ? .orderedAscending : .orderedDescending
+            if lhs == rhs { return .same }
+            return lhs < rhs ? .ascending : .descending
         }
 
         switch (lhs, rhs) {
@@ -789,8 +782,8 @@ enum CanonicalAggregationReducer {
              (.timestamp, .timestamp),
              (.uuid, .uuid),
              (.rdfTerm, .rdfTerm):
-            if lhs == rhs { return .orderedSame }
-            return lhs < rhs ? .orderedAscending : .orderedDescending
+            if lhs == rhs { return .same }
+            return lhs < rhs ? .ascending : .descending
         default:
             throw AggregationQueryError.incomparableValues(
                 field: field,

@@ -5,7 +5,7 @@ import StorageKit
 ///
 /// The slice shares the frontier's storage. The iterator opens one physical
 /// identity range at a time and does not materialize an edge batch.
-package struct ShortestPathNeighborSequence: AsyncSequence, Sendable {
+package struct ShortestPathNeighborScan: Sendable {
     package typealias Element = (
         source: GraphIdentity,
         target: GraphIdentity,
@@ -32,8 +32,8 @@ package struct ShortestPathNeighborSequence: AsyncSequence, Sendable {
         self.direction = direction
     }
 
-    package func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(
+    package func makeCursor() -> Cursor {
+        Cursor(
             scanner: scanner,
             snapshot: snapshot,
             nodes: nodes,
@@ -42,15 +42,16 @@ package struct ShortestPathNeighborSequence: AsyncSequence, Sendable {
         )
     }
 
-    package struct AsyncIterator: AsyncIteratorProtocol {
+    package struct Cursor {
         private let scanner: GraphEdgeScanner
         private let snapshot: GraphReadSnapshot
         private let nodes: ArraySlice<GraphIdentity>
         private let edgeLabel: GraphIdentity?
         private let direction: GraphTraversalDirection
         private var nodeIndex: ArraySlice<GraphIdentity>.Index
-        private var activeEdges: GraphEdgeSequence.AsyncIterator?
+        private var activeEdgeCursor: GraphEdgeScan.Cursor?
         private var isFinished = false
+        package private(set) var limitReason: LimitReason?
 
         fileprivate init(
             scanner: GraphEdgeScanner,
@@ -69,26 +70,28 @@ package struct ShortestPathNeighborSequence: AsyncSequence, Sendable {
 
         package mutating func next() async throws -> Element? {
             guard !isFinished else { return nil }
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
 
             while nodeIndex < nodes.endIndex {
-                if var iterator = activeEdges {
-                    activeEdges = nil
-                    if let edge = try await iterator.next() {
-                        activeEdges = iterator
-                        try consumeWork()
+                if var cursor = activeEdgeCursor {
+                    activeEdgeCursor = nil
+                    if let edge = try await cursor.next() {
+                        activeEdgeCursor = cursor
+                        guard try consumeWork() else { return nil }
                         return direction == .outgoing
                             ? (edge.source, edge.target, edge.edgeLabel)
                             : (edge.target, edge.source, edge.edgeLabel)
                     }
                     if let reason = snapshot.workBudget?.limitReason {
-                        throw ShortestPathError.incomplete(reason)
+                        limitReason = reason
+                        isFinished = true
+                        return nil
                     }
                     nodeIndex = nodes.index(after: nodeIndex)
                     continue
                 }
 
-                try consumeWork()
+                guard try consumeWork() else { return nil }
                 let node = nodes[nodeIndex]
                 let edges = direction == .outgoing
                     ? scanner.scanOutgoing(
@@ -101,21 +104,24 @@ package struct ShortestPathNeighborSequence: AsyncSequence, Sendable {
                         edgeLabel: edgeLabel,
                         transaction: snapshot.transaction
                     )
-                activeEdges = edges.makeAsyncIterator()
+                activeEdgeCursor = edges.makeCursor()
             }
 
             isFinished = true
             return nil
         }
 
-        private func consumeWork() throws {
-            guard let workBudget = snapshot.workBudget else { return }
+        private mutating func consumeWork() throws -> Bool {
+            guard let workBudget = snapshot.workBudget else { return true }
             guard try workBudget.consume() else {
                 guard let reason = workBudget.limitReason else {
                     throw ShortestPathError.inconsistentWorkBudget
                 }
-                throw ShortestPathError.incomplete(reason)
+                limitReason = reason
+                isFinished = true
+                return false
             }
+            return true
         }
     }
 }

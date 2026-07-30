@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
 import DatabaseTypes
 import DatabaseKit
@@ -21,9 +16,14 @@ enum BitmapReadParameter {
 }
 
 public enum BitmapReadExecutors {
-    public static var indexExecutor: any IndexReadExecutor { BitmapReadExecutor() }
     public static var polymorphicIndexExecutor: any PolymorphicIndexReadExecutor {
         PolymorphicBitmapReadExecutor()
+    }
+
+    public static func register<Model: Persistable>(
+        with definition: inout EntityRuntimeDefinition<Model>
+    ) throws(DatabaseRuntimeConfigurationError) {
+        try definition.register(BitmapReadExecutor())
     }
 }
 

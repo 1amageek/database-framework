@@ -1,8 +1,10 @@
+import DatabaseEngine
+
 /// Pull-based breadth-first traversal over one stable storage snapshot.
 ///
 /// The iterator retains only the BFS frontier and visited identities. Edge
 /// payload bytes remain owned by their physical key buffers and are not copied.
-package struct GraphTraversalSequence: AsyncSequence, Sendable {
+package struct GraphTraversalScan: Sendable {
     package typealias Element = GraphTraversalStep
 
     private let scanner: GraphEdgeScanner
@@ -28,8 +30,8 @@ package struct GraphTraversalSequence: AsyncSequence, Sendable {
         self.configuration = configuration
     }
 
-    package func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(
+    package func makeCursor() -> Cursor {
+        Cursor(
             scanner: scanner,
             snapshot: snapshot,
             source: source,
@@ -39,7 +41,7 @@ package struct GraphTraversalSequence: AsyncSequence, Sendable {
         )
     }
 
-    package struct AsyncIterator: AsyncIteratorProtocol {
+    package struct Cursor {
         private let scanner: GraphEdgeScanner
         private let snapshot: GraphReadSnapshot
         private let edgeLabel: GraphIdentity?
@@ -51,7 +53,7 @@ package struct GraphTraversalSequence: AsyncSequence, Sendable {
         private var nextLevel: [GraphIdentity] = []
         private var currentDepth = 0
         private var sourceIndex = 0
-        private var activeEdges: GraphNeighborSequence.AsyncIterator?
+        private var activeEdgeCursor: GraphNeighborScan.Cursor?
         private var hasEmittedSource = false
         private var isFinished = false
 
@@ -74,7 +76,7 @@ package struct GraphTraversalSequence: AsyncSequence, Sendable {
 
         package mutating func next() async throws -> GraphTraversalStep? {
             guard !isFinished else { return nil }
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
 
             if !hasEmittedSource {
                 hasEmittedSource = true
@@ -82,10 +84,10 @@ package struct GraphTraversalSequence: AsyncSequence, Sendable {
             }
 
             while currentDepth < configuration.maximumDepth {
-                if var iterator = activeEdges {
-                    activeEdges = nil
-                    if let edge = try await iterator.next() {
-                        activeEdges = iterator
+                if var cursor = activeEdgeCursor {
+                    activeEdgeCursor = nil
+                    if let edge = try await cursor.next() {
+                        activeEdgeCursor = cursor
                         let neighbor = direction == .outgoing
                             ? edge.target
                             : edge.source
@@ -120,10 +122,10 @@ package struct GraphTraversalSequence: AsyncSequence, Sendable {
                             edgeLabel: edgeLabel,
                             transaction: snapshot.transaction
                         )
-                    activeEdges = GraphNeighborSequence(
+                    activeEdgeCursor = GraphNeighborScan(
                         edges: edges,
                         workBudget: snapshot.workBudget
-                    ).makeAsyncIterator()
+                    ).makeCursor()
                     continue
                 }
 

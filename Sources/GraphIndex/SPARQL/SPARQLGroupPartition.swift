@@ -44,12 +44,16 @@ struct SPARQLGroupPartition: ~Copyable, Sendable {
         }
     }
 
-    borrowing func withMember<Result>(
+    borrowing func withMember<Result, Failure: Error>(
         at memberIndex: Int,
-        _ body: (borrowing VariableBinding) async throws -> Result
-    ) async throws -> Result {
-        try await members.withElement(at: memberIndex) { member in
-            try await source.withElement(at: member.sourceIndex) { binding in
+        _ body: (borrowing VariableBinding) async throws(Failure) -> Result
+    ) async throws(Failure) -> Result {
+        try await members.withElement(
+            at: memberIndex
+        ) { (member) async throws(Failure) in
+            try await source.withElement(
+                at: member.sourceIndex
+            ) { (binding) async throws(Failure) in
                 let scoped = binding.assigningExpressionScope(
                     member.expressionScopeIdentifier
                 )

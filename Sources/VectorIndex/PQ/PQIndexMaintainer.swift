@@ -5,11 +5,6 @@
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -24,7 +19,7 @@ import StorageKit
 /// ```
 /// [subspace]/codebooks/[m] = Float32 binary payload // 256 × dsub floats per subspace
 /// [subspace]/metadata = JSON { m, dimensions, trained }
-/// [subspace]/codes/[primaryKey] = Data([UInt8] × M) // Compressed codes
+/// [subspace]/codes/[primaryKey] = M-byte compressed code
 /// [subspace]/vectors/[primaryKey] = Float32 binary payload // Original vectors for retraining
 /// ```
 ///
@@ -250,7 +245,14 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
         let (begin, end) = codesSubspace.range()
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
+        )
 
         for (key, value) in sequence {
             let pkTuple: Tuple
@@ -357,7 +359,14 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [[[Float]]] {
         let codebooksSubspace = subspace.subspace(SubspaceKey.codebooks.rawValue)
         let (begin, end) = codebooksSubspace.range()
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
+        )
 
         var codebooks: [[[Float]]] = []
 
@@ -388,7 +397,14 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [StoredVector] {
         let vectorsSubspace = subspace.subspace(SubspaceKey.vectors.rawValue)
         let (begin, end) = vectorsSubspace.range()
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
+        )
 
         var vectors: [StoredVector] = []
 
@@ -412,9 +428,14 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionAccess
     ) async throws {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(metadata)
-        try transaction.setValue(ByteString(retaining: data), for: metadataKey)
+        let encoded = Tuple(
+            PQMetadata.formatVersion,
+            Int64(metadata.m),
+            Int64(metadata.dimensions),
+            metadata.trained,
+            Int64(metadata.vectorCount)
+        ).pack()
+        try transaction.setValue(encoded, for: metadataKey)
     }
 
     /// Load metadata
@@ -425,9 +446,8 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         guard let data = try await transaction.getValue(for: metadataKey) else {
             return nil
         }
-        let decoder = JSONDecoder()
         do {
-            return try decoder.decode(PQMetadata.self, from: Data(data))
+            return try PQMetadata(packed: data)
         } catch {
             throw VectorIndexError.invalidStructure("Invalid PQ metadata")
         }
@@ -461,9 +481,47 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 // MARK: - PQ Metadata
 
 /// Metadata for PQ index
-private struct PQMetadata: Codable {
+private struct PQMetadata: Sendable {
+    static let formatVersion: Int64 = 1
+
     let m: Int
     let dimensions: Int
     let trained: Bool
     let vectorCount: Int
+
+    init(
+        m: Int,
+        dimensions: Int,
+        trained: Bool,
+        vectorCount: Int
+    ) {
+        self.m = m
+        self.dimensions = dimensions
+        self.trained = trained
+        self.vectorCount = vectorCount
+    }
+
+    init(packed bytes: ByteString) throws {
+        let tuple = try Tuple(packed: bytes)
+        guard tuple.count == 5,
+              case .signedInteger(Self.formatVersion) = try tuple.value(at: 0),
+              case .signedInteger(let m) = try tuple.value(at: 1),
+              case .signedInteger(let dimensions) = try tuple.value(at: 2),
+              case .boolean(let trained) = try tuple.value(at: 3),
+              case .signedInteger(let vectorCount) = try tuple.value(at: 4),
+              let decodedM = Int(exactly: m),
+              let decodedDimensions = Int(exactly: dimensions),
+              let decodedVectorCount = Int(exactly: vectorCount),
+              decodedM > 0,
+              decodedDimensions > 0,
+              decodedVectorCount >= 0 else {
+            throw VectorIndexError.invalidStructure("Invalid PQ metadata")
+        }
+        self.init(
+            m: decodedM,
+            dimensions: decodedDimensions,
+            trained: trained,
+            vectorCount: decodedVectorCount
+        )
+    }
 }

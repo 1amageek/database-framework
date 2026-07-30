@@ -45,7 +45,7 @@ struct XSDRegexCharacterClass: Sendable {
             work = saturatedAdd(work, member.matchWork)
         }
         return Self(
-            expression: .union(members.map(\.expression)),
+            expression: .union(members.map { $0.expression }),
             matchWork: work
         )
     }

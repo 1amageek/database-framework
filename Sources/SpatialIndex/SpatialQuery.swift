@@ -3,11 +3,6 @@
 //
 // Design: Follows GraphIndex Query patterns with SpatialCellScanner integration.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
@@ -741,7 +736,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         var currentRadiusMeters = knnInitialRadiusKm * 1000.0
         let maxRadiusMeters = knnMaxRadiusKm * 1000.0
         var allCandidates: [(item: T, distance: Double)] = []
-        var seenIds: Set<AnyHashable> = []  // Use AnyHashable for stable ID comparison
+        var seenIds: Set<T.ID> = []
         var iterations = 0
         var totalKeysScanned = 0
         var lastUsedRadiusMeters = currentRadiusMeters  // Track actual last used radius
@@ -792,9 +787,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             // Fetch items
             let items = try await queryContext.fetchItems(ids: scanResult.keys, type: T.self)
 
-            // Calculate distances and deduplicate using AnyHashable for stable comparison
+            // Calculate distances once for each statically typed identifier.
             for item in items {
-                let itemId = AnyHashable(item.id)
+                let itemId = item.id
                 guard !seenIds.contains(itemId) else { continue }
                 seenIds.insert(itemId)
 

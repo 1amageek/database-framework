@@ -1,11 +1,6 @@
 // SPARQLFunctionError.swift
 // DatabaseEngine - Errors for SPARQL() function execution
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 /// Errors that occur during SPARQL() function execution
 public enum SPARQLFunctionError: Error, Sendable, CustomStringConvertible {

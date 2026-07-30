@@ -182,14 +182,14 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
             return Array(Set(nodes)).sorted()
         case .entities(let identities):
             guard let persistableType = container.runtimeConfiguration
-                .persistableTypes.type(named: entity.name) else {
+                .entityRuntimes.modelType(named: entity.name) else {
                 throw DatabaseSHACLDataSourceError.schemaEntityNotFound(data.entity)
             }
             let expectedPartition: [String]
             do {
                 expectedPartition = try CanonicalPartitionBinding
                     .makeAnyBinding(
-                        for: persistableType,
+                        for: entity,
                         partitions: data.partitions
                     )?.resolve() ?? []
             } catch CanonicalReadError.invalidPartition(_, let reason) {

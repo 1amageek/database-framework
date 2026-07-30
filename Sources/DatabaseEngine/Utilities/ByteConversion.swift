@@ -5,11 +5,6 @@
 // for use with FoundationDB atomic operations.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 
 /// Byte conversion utilities for FDB atomic operations

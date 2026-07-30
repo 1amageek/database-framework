@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -14,10 +9,12 @@ extension SPARQLQueryExecutor {
         binding: VariableBinding,
         transaction: any TransactionAccess,
         activeGraph: ActiveGraph
-    ) async throws -> FieldValue {
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
         guard let expressionContext else {
-            throw SPARQLExpressionEvaluationError.runtimeInvariant(
-                "query-scoped expression context is unavailable"
+            return .expressionError(
+                .runtimeInvariant(
+                    "query-scoped expression context is unavailable"
+                )
             )
         }
         let scopedBinding = try expressionContext.bindingWithExpressionScope(
@@ -28,15 +25,19 @@ extension SPARQLQueryExecutor {
                 guard let pattern = plan.compiledExistsPattern(
                     for: query
                 ) else {
-                    throw SPARQLExpressionEvaluationError.runtimeInvariant(
-                        "EXISTS pattern was not compiled with its expression plan"
+                    return .expressionError(
+                        .runtimeInvariant(
+                            "EXISTS pattern was not compiled with its expression plan"
+                        )
                     )
                 }
-                return try await self.evaluateExists(
-                    pattern,
-                    binding: correlatedBinding,
-                    transaction: transaction,
-                    activeGraph: activeGraph
+                return .value(
+                    try await self.evaluateExists(
+                        pattern,
+                        binding: correlatedBinding,
+                        transaction: transaction,
+                        activeGraph: activeGraph
+                    )
                 )
             },
             function: { name, arguments, solution in
@@ -107,18 +108,22 @@ extension SPARQLQueryExecutor {
         case .query(let plan):
             let resolver = SPARQLRuntimeExpressionResolver(
                 exists: { query, correlatedBinding in
-                    guard let pattern = plan.compiledExistsPattern(
-                        for: query
-                    ) else {
-                        throw SPARQLExpressionEvaluationError.runtimeInvariant(
+                guard let pattern = plan.compiledExistsPattern(
+                    for: query
+                ) else {
+                    return .expressionError(
+                        .runtimeInvariant(
                             "EXISTS pattern was not compiled with its expression plan"
                         )
-                    }
-                    return try await self.evaluateExists(
-                        pattern,
-                        binding: correlatedBinding,
-                        transaction: transaction,
-                        activeGraph: activeGraph
+                    )
+                }
+                    return .value(
+                        try await self.evaluateExists(
+                            pattern,
+                            binding: correlatedBinding,
+                            transaction: transaction,
+                            activeGraph: activeGraph
+                        )
                     )
                 },
                 function: { name, arguments, solution in

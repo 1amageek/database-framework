@@ -398,6 +398,8 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
     }
 
     public struct AsyncIterator: AsyncIteratorProtocol {
+        public typealias Failure = any Error
+
         private var storage: ItemStorage?
         private var cursor: KeyValueCursor?
         private let snapshot: Bool
@@ -415,7 +417,9 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
             self.pendingError = pendingError
         }
 
-        public mutating func next() async throws -> Element? {
+        public mutating func next(
+            isolation actor: isolated (any Actor)?
+        ) async throws -> Element? {
             if let pendingError {
                 finish()
                 throw pendingError

@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import DatabaseTypes
@@ -24,7 +19,7 @@ import Synchronization
 /// **Transaction Management**:
 /// - Use `context.withTransaction()` for explicit transaction control
 /// - ReadVersionCache is per-context for proper scoping per unit of work
-/// - System operations (DirectoryLayer, Migration) use `container.engine.withTransaction()`
+/// - System operations (DirectoryLayer, Migration) use `container.transactionExecutor.withTransaction()`
 ///
 /// **Usage**:
 /// ```swift
@@ -137,7 +132,9 @@ public final class DatabaseContext: Sendable {
     ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
     public init(container: DBContainer, autosaveEnabled: Bool = false) {
         self.container = container
-        self.readVersionCache = ReadVersionCache()
+        self.readVersionCache = ReadVersionCache(
+            monotonicClock: container.monotonicClock
+        )
         self.stateLock = Mutex(ContextState(autosaveEnabled: autosaveEnabled))
         self.logger = container.configuration.logging.logger(
             label: "com.database.framework.context"
@@ -328,10 +325,11 @@ public final class DatabaseContext: Sendable {
 
             switch mutation {
             case .save(let model, _):
-                if let typed = model as? T {
-                    return (typed, false)
-                }
-                return (nil, false)
+                let persisted = try PersistedModel(
+                    entity: T.persistableType,
+                    fields: model.persistedFields()
+                )
+                return (try persisted.decode(as: T.self), false)
             case .delete:
                 return (nil, true)
             }
@@ -729,7 +727,9 @@ public final class DatabaseContext: Sendable {
 
         if let inserted = pendingResult.inserted {
             // Evaluate GET security for pending insert (not via DataStore)
-            try container.securityDelegate?.evaluateGet(inserted)
+            try container.securityDelegate?.evaluateGet(
+                try PersistedModel(inserted)
+            )
             return inserted
         }
 
@@ -741,7 +741,7 @@ public final class DatabaseContext: Sendable {
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type)
-            return try await container.engine.withTransaction { transaction in
+            return try await container.transactionExecutor.withTransaction { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
@@ -784,7 +784,9 @@ public final class DatabaseContext: Sendable {
         )
 
         if let inserted = pendingResult.inserted {
-            try container.securityDelegate?.evaluateGet(inserted)
+            try container.securityDelegate?.evaluateGet(
+                try PersistedModel(inserted)
+            )
             return inserted
         }
         if pendingResult.isDeleted {
@@ -793,7 +795,7 @@ public final class DatabaseContext: Sendable {
 
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type)
-            return try await container.engine.withTransaction { transaction in
+            return try await container.transactionExecutor.withTransaction { transaction in
                 try await store.fetchByIdentifierTupleInTransaction(
                     type,
                     identifier: identifierTuple,
@@ -850,7 +852,9 @@ public final class DatabaseContext: Sendable {
 
         if let inserted = pendingResult.inserted {
             // Evaluate GET security for pending insert (not via DataStore)
-            try container.securityDelegate?.evaluateGet(inserted)
+            try container.securityDelegate?.evaluateGet(
+                try PersistedModel(inserted)
+            )
             return inserted
         }
 
@@ -862,7 +866,7 @@ public final class DatabaseContext: Sendable {
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type, path: path)
-            return try await container.engine.withTransaction { transaction in
+            return try await container.transactionExecutor.withTransaction { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
@@ -895,7 +899,9 @@ public final class DatabaseContext: Sendable {
         )
 
         if let inserted = pendingResult.inserted {
-            try container.securityDelegate?.evaluateGet(inserted)
+            try container.securityDelegate?.evaluateGet(
+                try PersistedModel(inserted)
+            )
             return inserted
         }
         if pendingResult.isDeleted {
@@ -904,7 +910,7 @@ public final class DatabaseContext: Sendable {
 
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type, path: path)
-            return try await container.engine.withTransaction { transaction in
+            return try await container.transactionExecutor.withTransaction { transaction in
                 try await store.fetchByIdentifierTupleInTransaction(
                     type,
                     identifier: identifierTuple,
@@ -1009,9 +1015,7 @@ public final class DatabaseContext: Sendable {
                           activeSave.identifier == identifier else {
                         throw DatabaseContextError.invalidSaveState
                     }
-                    if Self.isCommitOutcomeUnknown(error) {
-                        state.commitOutcomeUnknown = true
-                    } else {
+                    if !state.commitOutcomeUnknown {
                         var restored = activeSave.capturedMutations
                         for mutation in activeSave.followupMutations {
                             Self.apply(mutation, to: &restored)
@@ -1062,13 +1066,6 @@ public final class DatabaseContext: Sendable {
         }
     }
 
-    private static func isCommitOutcomeUnknown(_ error: Error) -> Bool {
-        guard let storageError = error as? StorageError else {
-            return false
-        }
-        return storageError.code == .commitUnknownResult
-    }
-
     // MARK: - Rollback
 
     /// Discard pending changes when no save outcome is in flight or ambiguous.
@@ -1089,22 +1086,20 @@ public final class DatabaseContext: Sendable {
 
     private func scheduleAutosave() {
         let clock = container.monotonicClock
-        Task { [weak self, clock] in
+        Task { [self, clock] in
             do {
                 try await clock.sleep(for: .milliseconds(10))
-            } catch is CancellationError {
-                return
             } catch {
-                guard let self else { return }
-                self.logger.error("Autosave scheduling failed: \(error)")
+                if Task.isCancelled {
+                    return
+                }
+                self.logger.error("Autosave scheduling failed")
                 let errorHandler = self.stateLock.withLock {
                     $0.autosaveErrorHandler
                 }
                 errorHandler?(error)
                 return
             }
-
-            guard let self = self else { return }
 
             let (shouldSave, errorHandler) = self.stateLock.withLock { state in
                 (state.hasChanges && state.autosaveEnabled, state.autosaveErrorHandler)
@@ -1114,7 +1109,7 @@ public final class DatabaseContext: Sendable {
                 do {
                     try await self.save()
                 } catch {
-                    self.logger.error("Autosave failed: \(error)")
+                    self.logger.error("Autosave failed")
 
                     // Notify caller via error handler
                     errorHandler?(error)
@@ -1306,15 +1301,19 @@ extension DatabaseContext {
 
         // Use TransactionRunner with context's own ReadVersionCache
         let runner = TransactionRunner(
-            database: container.engine,
+            transactionExecutor: container.transactionExecutor,
             clock: container.monotonicClock,
-            logging: container.configuration.logging
+            logging: container.configuration.logging,
+            metrics: container.configuration.metrics
         )
         return try await runner.run(
             configuration: configuration,
             executionDeadline: executionDeadline,
             readVersionCache: readVersionCache,
-            operationDescription: "DatabaseContext.withTransaction"
+            operationDescription: "DatabaseContext.withTransaction",
+            onCommitOutcomeUnknown: { [self] in
+                stateLock.withLock { $0.commitOutcomeUnknown = true }
+            }
         ) { transaction in
             let transaction = DatabaseTransaction(
                 storageAccess: transaction,
@@ -1342,7 +1341,7 @@ extension DatabaseContext {
     ///
     /// **For public API users**:
     /// - Use `withTransaction(_:)` for high-level DatabaseTransaction API
-    /// - Use `container.engine.withTransaction(_:)` for storage-level work
+    /// - Use `container.transactionExecutor.withTransaction(_:)` for storage-level work
     ///
     /// - Parameters:
     ///   - configuration: Transaction configuration (timeout, retry, priority)
@@ -1357,15 +1356,19 @@ extension DatabaseContext {
         try ensureUsable()
 
         let runner = TransactionRunner(
-            database: container.engine,
+            transactionExecutor: container.transactionExecutor,
             clock: container.monotonicClock,
-            logging: container.configuration.logging
+            logging: container.configuration.logging,
+            metrics: container.configuration.metrics
         )
         return try await runner.run(
             configuration: configuration,
             executionDeadline: executionDeadline,
             readVersionCache: readVersionCache,
             operationDescription: "DatabaseContext.withStorageAccess",
+            onCommitOutcomeUnknown: { [self] in
+                stateLock.withLock { $0.commitOutcomeUnknown = true }
+            },
             operation: operation
         )
     }
@@ -1481,7 +1484,7 @@ extension DatabaseContext {
                 identifier: P.polymorphableType
             )
         }
-        return try await scanPolymorphicItems(group: group).map(\.item)
+        return try await scanPolymorphicItems(group: group).map { $0.item }
     }
 
     /// Fetch a specific polymorphic item by ID

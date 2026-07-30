@@ -3,7 +3,7 @@ struct SPARQLRegexWorkBudget {
     let limit: Int
     private(set) var consumed = 0
 
-    mutating func consume(_ amount: Int) throws {
+    mutating func consume(_ amount: Int) throws(SPARQLRegularExpression.Error) {
         let (actual, overflow) = consumed.addingReportingOverflow(amount)
         guard amount >= 0, !overflow, actual <= limit else {
             throw SPARQLRegularExpression.Error.resourceLimit(

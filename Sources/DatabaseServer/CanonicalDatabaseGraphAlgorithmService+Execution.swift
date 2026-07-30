@@ -80,6 +80,7 @@ extension CanonicalDatabaseGraphAlgorithmService {
                     snapshot: snapshot,
                     workBudget: workBudget
                 ),
+                monotonicClock: snapshot.monotonicClock,
                 configuration: WeightedShortestPathConfiguration(
                     maxWeight: maximumWeight,
                     maxNodes: maximumNodes

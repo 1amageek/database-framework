@@ -89,8 +89,8 @@ public enum AggregateExpression: Sendable, Hashable {
         evaluateExpression: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
-    ) async throws -> FieldValue? {
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue?> {
         switch self {
         case .count(let expression, let distinct, _):
             return try await evaluateCount(
@@ -172,8 +172,8 @@ public enum AggregateExpression: Sendable, Hashable {
         evaluateExpression: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
-    ) async throws -> FieldValue {
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue?> {
         var count: UInt64 = 0
         let memberRange = partition.memberRange(at: groupIndex)
         if let expression {
@@ -182,7 +182,7 @@ public enum AggregateExpression: Sendable, Hashable {
                 : nil
             for memberIndex in memberRange {
                 try workMeter.consume(at: .aggregateInput)
-                guard let value = try await partition.withMember(
+                let evaluated = try await partition.withMember(
                     at: memberIndex,
                     { binding in
                         try await recoverExpressionValue(
@@ -191,8 +191,15 @@ public enum AggregateExpression: Sendable, Hashable {
                             evaluateExpression: evaluateExpression
                         )
                     }
-                ) else {
+                )
+                let value: FieldValue
+                switch evaluated {
+                case .value(.some(let evaluatedValue)):
+                    value = evaluatedValue
+                case .value(.none):
                     continue
+                case .expressionError(let error):
+                    return .expressionError(error)
                 }
                 if let distinctValues {
                     try workMeter.consume(at: .deduplication)
@@ -232,8 +239,8 @@ public enum AggregateExpression: Sendable, Hashable {
               let numeric = SPARQLNumericValue(.int64(Int64(count))) else {
             throw SPARQLQueryError.aggregateResultOutOfRange
         }
-        do {
-            return try numeric.fieldValue()
+        do throws(SPARQLNumericError) {
+            return .value(try numeric.fieldValue())
         } catch {
             throw SPARQLQueryError.aggregateResultOutOfRange
         }
@@ -248,15 +255,15 @@ public enum AggregateExpression: Sendable, Hashable {
         evaluateExpression: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
-    ) async throws -> FieldValue {
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue?> {
         var sum: SPARQLNumericValue?
         let distinctValues = distinct
             ? try SPARQLRetainedFieldValueSet.make(workMeter: workMeter)
             : nil
         for memberIndex in partition.memberRange(at: groupIndex) {
             try workMeter.consume(at: .aggregateInput)
-            let value = try await partition.withMember(
+            let evaluated = try await partition.withMember(
                 at: memberIndex
             ) { binding in
                 try await evaluateRequiredValue(
@@ -265,9 +272,16 @@ public enum AggregateExpression: Sendable, Hashable {
                     evaluateExpression: evaluateExpression
                 )
             }
+            let value: FieldValue
+            switch evaluated {
+            case .value(let evaluatedValue):
+                value = evaluatedValue
+            case .expressionError(let error):
+                return .expressionError(error)
+            }
             guard let numeric = SPARQLNumericValue(value) else {
-                throw SPARQLExpressionEvaluationError.typeError(
-                    "SUM requires a numeric aggregate input"
+                return .expressionError(
+                    .typeError("SUM requires a numeric aggregate input")
                 )
             }
             if let distinctValues {
@@ -283,8 +297,8 @@ public enum AggregateExpression: Sendable, Hashable {
         guard let value = sum ?? SPARQLNumericValue(.int64(0)) else {
             throw SPARQLQueryError.aggregateResultOutOfRange
         }
-        do {
-            return try value.fieldValue()
+        do throws(SPARQLNumericError) {
+            return .value(try value.fieldValue())
         } catch {
             throw SPARQLQueryError.aggregateResultOutOfRange
         }
@@ -299,8 +313,8 @@ public enum AggregateExpression: Sendable, Hashable {
         evaluateExpression: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
-    ) async throws -> FieldValue {
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue?> {
         var sum: SPARQLNumericValue?
         var count: Int64 = 0
         let distinctValues = distinct
@@ -308,7 +322,7 @@ public enum AggregateExpression: Sendable, Hashable {
             : nil
         for memberIndex in partition.memberRange(at: groupIndex) {
             try workMeter.consume(at: .aggregateInput)
-            let value = try await partition.withMember(
+            let evaluated = try await partition.withMember(
                 at: memberIndex
             ) { binding in
                 try await evaluateRequiredValue(
@@ -317,9 +331,16 @@ public enum AggregateExpression: Sendable, Hashable {
                     evaluateExpression: evaluateExpression
                 )
             }
+            let value: FieldValue
+            switch evaluated {
+            case .value(let evaluatedValue):
+                value = evaluatedValue
+            case .expressionError(let error):
+                return .expressionError(error)
+            }
             guard let numeric = SPARQLNumericValue(value) else {
-                throw SPARQLExpressionEvaluationError.typeError(
-                    "AVG requires a numeric aggregate input"
+                return .expressionError(
+                    .typeError("AVG requires a numeric aggregate input")
                 )
             }
             if let distinctValues {
@@ -343,14 +364,16 @@ public enum AggregateExpression: Sendable, Hashable {
             guard let zero = SPARQLNumericValue(.int64(0)) else {
                 throw SPARQLQueryError.aggregateResultOutOfRange
             }
-            do {
-                return try zero.fieldValue()
+            do throws(SPARQLNumericError) {
+                return .value(try zero.fieldValue())
             } catch {
                 throw SPARQLQueryError.aggregateResultOutOfRange
             }
         }
         do {
-            return try sum.applying(.divide, to: divisor).fieldValue()
+            return .value(
+                try sum.applying(.divide, to: divisor).fieldValue()
+            )
         } catch {
             throw SPARQLQueryError.aggregateResultOutOfRange
         }
@@ -365,12 +388,12 @@ public enum AggregateExpression: Sendable, Hashable {
         evaluateExpression: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
-    ) async throws -> FieldValue? {
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue?> {
         var extremum: FieldValue?
         for memberIndex in partition.memberRange(at: groupIndex) {
             try workMeter.consume(at: .aggregateInput)
-            let value = try await partition.withMember(
+            let evaluated = try await partition.withMember(
                 at: memberIndex
             ) { binding in
                 try await evaluateRequiredValue(
@@ -379,17 +402,29 @@ public enum AggregateExpression: Sendable, Hashable {
                     evaluateExpression: evaluateExpression
                 )
             }
+            let value: FieldValue
+            switch evaluated {
+            case .value(let evaluatedValue):
+                value = evaluatedValue
+            case .expressionError(let error):
+                return .expressionError(error)
+            }
             guard let current = extremum else {
                 extremum = value
                 continue
             }
-            let comparison = try SPARQLTermOrdering.compare(value, current)
-            if (findMinimum && comparison == .orderedAscending)
-                || (!findMinimum && comparison == .orderedDescending) {
+            let comparison: SPARQLComparisonOrder
+            do throws(SPARQLExpressionEvaluationError) {
+                comparison = try SPARQLTermOrdering.compare(value, current)
+            } catch let error {
+                return .expressionError(error)
+            }
+            if (findMinimum && comparison == .ascending)
+                || (!findMinimum && comparison == .descending) {
                 extremum = value
             }
         }
-        return extremum
+        return .value(extremum)
     }
 
     private func evaluateSample(
@@ -400,25 +435,28 @@ public enum AggregateExpression: Sendable, Hashable {
         evaluateExpression: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
-    ) async throws -> FieldValue? {
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue?> {
         for memberIndex in partition.memberRange(at: groupIndex) {
             try workMeter.consume(at: .aggregateInput)
-            do {
-                let value = try await partition.withMember(
-                    at: memberIndex
-                ) { binding in
-                    try await evaluateExpression(expression, copy binding)
-                }
+            let outcome = try await partition.withMember(
+                at: memberIndex
+            ) { binding in
+                try await evaluateExpression(expression, copy binding)
+            }
+            switch outcome {
+            case .value(let value):
                 if value != .null {
-                    return value
+                    return .value(value)
                 }
-            } catch let error as SPARQLExpressionEvaluationError
-                where error.isSPARQLEvaluationError {
-                continue
+            case .expressionError(let evaluationError):
+                if evaluationError.isSPARQLEvaluationError {
+                    continue
+                }
+                return .expressionError(evaluationError)
             }
         }
-        return nil
+        return .value(nil)
     }
 
     private func evaluateGroupConcat(
@@ -431,8 +469,8 @@ public enum AggregateExpression: Sendable, Hashable {
         evaluateExpression: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
-    ) async throws -> FieldValue {
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue?> {
         let seen = distinct
             ? try SPARQLRetainedFieldValueSet.make(workMeter: workMeter)
             : nil
@@ -442,7 +480,7 @@ public enum AggregateExpression: Sendable, Hashable {
 
         for memberIndex in partition.memberRange(at: groupIndex) {
             try workMeter.consume(at: .aggregateInput)
-            let value = try await partition.withMember(
+            let evaluated = try await partition.withMember(
                 at: memberIndex
             ) { binding in
                 try await evaluateRequiredValue(
@@ -451,9 +489,18 @@ public enum AggregateExpression: Sendable, Hashable {
                     evaluateExpression: evaluateExpression
                 )
             }
+            let value: FieldValue
+            switch evaluated {
+            case .value(let evaluatedValue):
+                value = evaluatedValue
+            case .expressionError(let error):
+                return .expressionError(error)
+            }
             guard let lexicalForm = Self.stringValue(value) else {
-                throw SPARQLExpressionEvaluationError.typeError(
-                    "GROUP_CONCAT requires an RDF term with a lexical form"
+                return .expressionError(
+                    .typeError(
+                        "GROUP_CONCAT requires an RDF term with a lexical form"
+                    )
                 )
             }
             if let seen {
@@ -464,20 +511,24 @@ public enum AggregateExpression: Sendable, Hashable {
             let required = UInt64(separatorCount) + UInt64(lexicalForm.utf8.count)
             let (next, overflow) = requiredUTF8Count.addingReportingOverflow(required)
             guard !overflow else {
-                throw SPARQLExpressionEvaluationError.resourceLimitExceeded(
-                    stage: "GROUP_CONCAT",
-                    required: UInt64.max,
-                    maximum: UInt64(
-                        SPARQLExecutionLimits.maximumLiteralUTF8Count
+                return .expressionError(
+                    .resourceLimitExceeded(
+                        stage: "GROUP_CONCAT",
+                        required: UInt64.max,
+                        maximum: UInt64(
+                            SPARQLExecutionLimits.maximumLiteralUTF8Count
+                        )
                     )
                 )
             }
             guard next <= SPARQLExecutionLimits.maximumLiteralUTF8Count else {
-                throw SPARQLExpressionEvaluationError.resourceLimitExceeded(
-                    stage: "GROUP_CONCAT",
-                    required: next,
-                    maximum: UInt64(
-                        SPARQLExecutionLimits.maximumLiteralUTF8Count
+                return .expressionError(
+                    .resourceLimitExceeded(
+                        stage: "GROUP_CONCAT",
+                        required: next,
+                        maximum: UInt64(
+                            SPARQLExecutionLimits.maximumLiteralUTF8Count
+                        )
                     )
                 )
             }
@@ -487,10 +538,16 @@ public enum AggregateExpression: Sendable, Hashable {
             result.append(lexicalForm)
             hasValue = true
         }
-        return try ExpressionEvaluator.evaluate(
-            .literal(.string(result)),
-            binding: VariableBinding()
-        )
+        do throws(SPARQLExpressionEvaluationError) {
+            return .value(
+                try ExpressionEvaluator.evaluate(
+                    .literal(.string(result)),
+                    binding: VariableBinding()
+                )
+            )
+        } catch let error {
+            return .expressionError(error)
+        }
     }
 
     private func recoverExpressionValue(
@@ -499,14 +556,16 @@ public enum AggregateExpression: Sendable, Hashable {
         evaluateExpression: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
-    ) async throws -> FieldValue? {
-        do {
-            let value = try await evaluateExpression(expression, binding)
-            return value == .null ? nil : value
-        } catch let error as SPARQLExpressionEvaluationError
-            where error.isSPARQLEvaluationError {
-            return nil
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue?> {
+        switch try await evaluateExpression(expression, binding) {
+        case .value(let value):
+            return .value(value == .null ? nil : value)
+        case .expressionError(let evaluationError):
+            if evaluationError.isSPARQLEvaluationError {
+                return .value(nil)
+            }
+            return .expressionError(evaluationError)
         }
     }
 
@@ -528,15 +587,21 @@ public enum AggregateExpression: Sendable, Hashable {
         evaluateExpression: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
-    ) async throws -> FieldValue {
-        let value = try await evaluateExpression(expression, binding)
-        guard value != .null else {
-            throw SPARQLExpressionEvaluationError.typeError(
-                "aggregate input evaluated to a non-RDF null value"
-            )
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
+    ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
+        switch try await evaluateExpression(expression, binding) {
+        case .value(let evaluated):
+            guard evaluated != .null else {
+                return .expressionError(
+                    .typeError(
+                        "aggregate input evaluated to a non-RDF null value"
+                    )
+                )
+            }
+            return .value(evaluated)
+        case .expressionError(let evaluationError):
+            return .expressionError(evaluationError)
         }
-        return value
     }
 
     private static func stringValue(_ value: FieldValue) -> String? {
@@ -681,7 +746,7 @@ extension AggregateExpression: CustomStringConvertible {
     public var description: String {
         switch self {
         case .count(let expression, let distinct, let alias):
-            return "(COUNT(\(distinct ? "DISTINCT " : "")\(expression.map { String(describing: $0.expression) } ?? "*")) AS \(alias))"
+            return "(COUNT(\(distinct ? "DISTINCT " : "")\(expression.map { SPARQLExpressionSemanticName.describe($0.expression) } ?? "*")) AS \(alias))"
         case .sum(let expression, let distinct, let alias):
             return "(SUM(\(distinct ? "DISTINCT " : "")\(expression.expression)) AS \(alias))"
         case .avg(let expression, let distinct, let alias):

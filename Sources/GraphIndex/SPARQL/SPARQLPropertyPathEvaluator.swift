@@ -948,7 +948,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         guard term.isBound else { return nil }
         guard let value = term.literalValue,
               case .rdfTerm(let rdfTerm) = value else {
-            throw SPARQLQueryError.invalidRDFTerm(String(describing: term))
+            throw SPARQLQueryError.invalidRDFTerm(term.description)
         }
         return rdfTerm
     }

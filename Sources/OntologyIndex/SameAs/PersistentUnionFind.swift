@@ -8,11 +8,6 @@
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/#Individual_Equality
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 
 /// Persistent Union-Find for owl:sameAs equivalence classes
@@ -109,7 +104,10 @@ public struct PersistentUnionFind: Sendable {
                 // No parent = this is a root (or not in Union-Find)
                 break
             }
-            guard let parent = String(bytes: parentData, encoding: .utf8) else {
+            guard let parent = String(
+                validating: parentData,
+                as: UTF8.self
+            ) else {
                 throw PersistentUnionFindError.invalidParentUTF8(
                     individual: current
                 )
@@ -299,6 +297,8 @@ public struct PersistentUnionFind: Sendable {
         var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
+            limit: 0,
+            reverse: false,
             snapshot: false,
             streamingMode: .iterator
         )
@@ -392,6 +392,8 @@ public struct PersistentUnionFind: Sendable {
         var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
+            limit: 0,
+            reverse: false,
             snapshot: false,
             streamingMode: .iterator
         )
@@ -420,7 +422,7 @@ public struct PersistentUnionFind: Sendable {
             return try subspace.tupleCursor(for: key)
         } catch {
             throw PersistentUnionFindError.malformedMemberKey(
-                reason: String(describing: error)
+                reason: "The tuple key could not be decoded"
             )
         }
     }
@@ -441,13 +443,13 @@ public struct PersistentUnionFind: Sendable {
             throw error
         } catch {
             throw PersistentUnionFindError.malformedMemberKey(
-                reason: String(describing: error)
+                reason: "The member component could not be decoded"
             )
         }
         guard let value = element as? String else {
             throw PersistentUnionFindError.unexpectedMemberComponent(
                 position: position,
-                actual: String(describing: type(of: element))
+                actual: "non-string tuple element"
             )
         }
         return value
@@ -466,7 +468,7 @@ public struct PersistentUnionFind: Sendable {
             throw error
         } catch {
             throw PersistentUnionFindError.malformedMemberKey(
-                reason: String(describing: error)
+                reason: "The tuple terminator could not be decoded"
             )
         }
     }

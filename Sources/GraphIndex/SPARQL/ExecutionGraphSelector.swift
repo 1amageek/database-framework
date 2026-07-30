@@ -1,4 +1,5 @@
 import DatabaseKit
+import DatabaseTypes
 
 /// Selects the named graph that becomes active while evaluating a graph pattern.
 public enum ExecutionGraphSelector: Sendable, Hashable {
@@ -19,7 +20,7 @@ extension ExecutionGraphSelector: CustomStringConvertible {
     public var description: String {
         switch self {
         case .named(let graph):
-            return String(describing: graph.term)
+            return graph.term.description
         case .variable(let name):
             return name
         }

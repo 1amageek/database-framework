@@ -3,11 +3,6 @@
 //
 // Maintains averages by storing an exact typed sum and count separately.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine

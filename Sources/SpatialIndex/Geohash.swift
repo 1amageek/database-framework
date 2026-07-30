@@ -3,11 +3,6 @@
 //
 // Complete geohash implementation ported from fdb-record-layer.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseMath
 
 /// Geohash encoding/decoding for geographic coordinates

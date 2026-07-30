@@ -5,6 +5,13 @@ import StorageKit
 package struct CanonicalFieldValueTupleElement: TupleElement {
     package let prepared: FieldValueTupleCodec.Prepared
 
+    package var tupleValue: TupleValue? {
+        let packed = encodeTuple()
+        // Canonical field payloads contain no NUL bytes, so the physical tuple
+        // spelling is exactly: bytes type code, payload, terminator.
+        return .bytes(packed[(packed.startIndex + 1)..<(packed.endIndex - 1)])
+    }
+
     package static func == (
         lhs: CanonicalFieldValueTupleElement,
         rhs: CanonicalFieldValueTupleElement

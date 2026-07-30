@@ -85,24 +85,24 @@ public enum FieldSecurityEvaluator {
         for field: FieldIdentity,
         in model: borrowing Model
     ) throws(FieldSecurityError) -> FieldValue {
+        let value: FieldValue?
         do {
-            guard let value = try model.persistedFieldValue(for: field) else {
-                throw FieldSecurityError.unsupportedFieldValue(
-                    type: Model.persistableType,
-                    field: field.name,
-                    reason: "the compiled model adapter did not emit the field"
-                )
-            }
-            return value
-        } catch let error as FieldSecurityError {
-            throw error
-        } catch let error {
+            value = try model.persistedFieldValue(for: field)
+        } catch {
             throw .unsupportedFieldValue(
                 type: Model.persistableType,
                 field: field.name,
-                reason: String(describing: error)
+                reason: "compiled field encoding failed"
             )
         }
+        guard let value else {
+            throw .unsupportedFieldValue(
+                type: Model.persistableType,
+                field: field.name,
+                reason: "the compiled model adapter did not emit the field"
+            )
+        }
+        return value
     }
 
     private static func rejectWriteIfNeeded<Model: Persistable>(

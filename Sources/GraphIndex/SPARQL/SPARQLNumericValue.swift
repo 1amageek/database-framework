@@ -1,11 +1,6 @@
 import DatabaseKit
 import DatabaseMath
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 struct SPARQLNumericValue: Sendable {
     enum ArithmeticOperation: Sendable, Equatable {
@@ -152,7 +147,7 @@ struct SPARQLNumericValue: Sendable {
         }
     }
 
-    func decimalConstructorLexicalForm() throws -> String? {
+    func decimalConstructorLexicalForm() throws(SPARQLNumericError) -> String? {
         let decimal: ExactDecimal
         switch storage {
         case .integer(let value):
@@ -192,17 +187,17 @@ struct SPARQLNumericValue: Sendable {
         return Self.floatingLexicalForm(value)
     }
 
-    func compare(to other: Self) -> ComparisonResult? {
+    func compare(to other: Self) -> SPARQLComparisonOrder? {
         switch (storage, other.storage) {
         case (.integer(let left), .integer(let right)):
             return Self.comparison(left, right)
         case (.unsignedInteger(let left), .unsignedInteger(let right)):
             return Self.comparison(left, right)
         case (.integer(let left), .unsignedInteger(let right)):
-            guard left >= 0 else { return .orderedAscending }
+            guard left >= 0 else { return .ascending }
             return Self.comparison(UInt64(left), right)
         case (.unsignedInteger(let left), .integer(let right)):
-            guard right >= 0 else { return .orderedDescending }
+            guard right >= 0 else { return .descending }
             return Self.comparison(left, UInt64(right))
         default:
             break
@@ -224,9 +219,9 @@ struct SPARQLNumericValue: Sendable {
             return nil
         }
         let result = left.compare(to: right)
-        if result < 0 { return .orderedAscending }
-        if result > 0 { return .orderedDescending }
-        return .orderedSame
+        if result < 0 { return .ascending }
+        if result > 0 { return .descending }
+        return .same
     }
 
     func applying(
@@ -920,16 +915,16 @@ struct SPARQLNumericValue: Sendable {
     private static func comparison<T: Comparable>(
         _ left: T,
         _ right: T
-    ) -> ComparisonResult {
-        if left < right { return .orderedAscending }
-        if left > right { return .orderedDescending }
-        return .orderedSame
+    ) -> SPARQLComparisonOrder {
+        if left < right { return .ascending }
+        if left > right { return .descending }
+        return .same
     }
 
     private static func floatingComparison<T: BinaryFloatingPoint>(
         _ left: T,
         _ right: T
-    ) -> ComparisonResult? {
+    ) -> SPARQLComparisonOrder? {
         guard !left.isNaN, !right.isNaN else { return nil }
         return comparison(left, right)
     }

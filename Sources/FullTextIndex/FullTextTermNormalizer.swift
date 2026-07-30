@@ -56,7 +56,7 @@ internal struct FullTextTermNormalizer: Sendable {
         let normalized = text.lowercased()
         let words = FullTextTextUtilities.tokenSlices(in: normalized)
 
-        var tokens: [(String, Int)] = []
+        var tokens: [(term: String, position: Int)] = []
         tokens.reserveCapacity(words.count)
         var position = 0
 
@@ -72,7 +72,7 @@ internal struct FullTextTermNormalizer: Sendable {
         let normalized = text.lowercased()
         let words = FullTextTextUtilities.tokenSlices(in: normalized)
 
-        var tokens: [(String, Int)] = []
+        var tokens: [(term: String, position: Int)] = []
         tokens.reserveCapacity(words.count)
         var position = 0
 
@@ -114,7 +114,7 @@ internal struct FullTextTermNormalizer: Sendable {
             return []
         }
 
-        var tokens: [(String, Int)] = []
+        var tokens: [(term: String, position: Int)] = []
         var position = 0
 
         while true {

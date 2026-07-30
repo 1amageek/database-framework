@@ -13,9 +13,9 @@ public struct RelationshipEntityEditor: Sendable {
         to target: EntityReference,
         from model: any Persistable,
         descriptor: RelationshipDescriptor
-    ) throws -> any Persistable {
+    ) throws -> PersistedModel {
         let modelType = type(of: model)
-        var fields = try PersistableFieldEncoder.encode(model)
+        var fields = try model.persistedFields()
         guard let fieldIndex = fields.firstIndex(where: {
             $0.name == descriptor.propertyName
         }), let fieldSchema = modelType.fieldSchemas.first(where: {
@@ -59,11 +59,14 @@ public struct RelationshipEntityEditor: Sendable {
             value: replacement
         )
         do {
-            return try modelType.decodePersistedFields(fields)
+            return try PersistedModel(
+                entity: modelType.persistableType,
+                fields: fields
+            )
         } catch {
             throw RelationshipReferenceError.entityDecodingFailed(
                 entity: modelType.persistableType,
-                reason: String(describing: error)
+                reason: "updated fields do not form a canonical persisted model"
             )
         }
     }

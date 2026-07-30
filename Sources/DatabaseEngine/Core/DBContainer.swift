@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import StorageKit
 #if FOUNDATION_DB
@@ -43,7 +38,7 @@ import Synchronization
 /// **Context-Centric Design**:
 /// - DBContainer does NOT create application transactions
 /// - DatabaseContext owns ReadVersionCache and creates transactions via TransactionRunner
-/// - System operations (DirectoryLayer, Migration) use `engine.withTransaction()` directly
+/// - System operations (DirectoryLayer, Migration) use `transactionExecutor.withTransaction()` directly
 ///
 /// **Usage**:
 /// ```swift
@@ -61,7 +56,7 @@ import Synchronization
 ///     version: .init(1, 0, 0)
 /// )
 /// let runtime = try DatabaseFrameworkRuntime.configuration(
-///     persistableTypes: [User.self]
+///     entityRuntimes: [User.self]
 /// )
 /// let container = try await DBContainer.open(
 ///     for: schema,
@@ -95,6 +90,12 @@ public final class DBContainer: Sendable {
     /// Application transactions should use DatabaseContext.withTransaction().
     public let engine: any StorageEngine
 
+    /// Typed transaction execution over the dynamically selected storage engine.
+    ///
+    /// This concrete boundary avoids invoking generic protocol-extension methods
+    /// on an existential engine in Embedded Swift.
+    public let transactionExecutor: StorageTransactionExecutor
+
     /// Schema (version, entities, indexes)
     public let schema: Schema
 
@@ -104,6 +105,10 @@ public final class DBContainer: Sendable {
     /// Container-scoped monotonic time source.
     public var monotonicClock: any StorageMonotonicClock {
         configuration.monotonicClock
+    }
+
+    public var wallClock: any WallClock {
+        configuration.wallClock
     }
 
     /// Container-scoped runtime extensions and operation dependencies.
@@ -201,7 +206,7 @@ public final class DBContainer: Sendable {
         try IndexRuntimeConfigurationValidator.validate(
             configuration.indexConfigurations,
             schema: schema,
-            persistableTypes: runtimeConfiguration.persistableTypes
+            entityRuntimes: runtimeConfiguration.entityRuntimes
         )
 
         let preparedStorage = try await prepareStorage(
@@ -220,7 +225,10 @@ public final class DBContainer: Sendable {
         }
 
         if persistSchemaCatalog {
-            let registry = SchemaRegistry(database: container.engine)
+            let registry = SchemaRegistry(
+                database: container.engine,
+                clock: container.monotonicClock
+            )
             try await registry.persist(schema)
         }
         return container
@@ -273,10 +281,12 @@ public final class DBContainer: Sendable {
             itemStorage: configuration.itemStorage
         )
         let persistedFormat = try await DatabaseFormatCatalog(
-            database: resolvedEngine
+            database: resolvedEngine,
+            clock: configuration.monotonicClock
         ).installIfEmptyOrValidate(expectedFormat)
         let partitionCatalog = try await DatabasePartitionCatalog(
-            engine: resolvedEngine
+            engine: resolvedEngine,
+            clock: configuration.monotonicClock
         )
         let metadataSubspace = try await resolvedEngine.resolveOrCreateNamespace(
             path: ["_metadata"]
@@ -297,6 +307,9 @@ public final class DBContainer: Sendable {
         preparedStorage: PreparedStorage
     ) {
         self.engine = preparedStorage.engine
+        self.transactionExecutor = StorageTransactionExecutor(
+            engine: preparedStorage.engine
+        )
         self.schema = schema
         self.configuration = configuration
         self.runtimeConfiguration = runtimeConfiguration
@@ -311,7 +324,9 @@ public final class DBContainer: Sendable {
                 policies: runtimeConfiguration.authorizationPolicies
             )
             : nil
-        self.dataStoreDelegate = MetricsDataStoreDelegate()
+        self.dataStoreDelegate = MetricsDataStoreDelegate(
+            metrics: configuration.metrics
+        )
 
         self.indexConfigurations = Self.aggregateIndexConfigurations(
             configuration.indexConfigurations
@@ -336,7 +351,7 @@ public final class DBContainer: Sendable {
         for entity in schema.entities {
             guard !entity.indexDescriptors.isEmpty else { continue }
             guard !entity.hasDynamicDirectory else { continue }
-            guard let persistableType = runtimeConfiguration.persistableTypes.type(
+            guard let persistableType = runtimeConfiguration.entityRuntimes.modelType(
                 named: entity.name
             ) else {
                 throw DatabaseRuntimeConfigurationError
@@ -357,7 +372,7 @@ public final class DBContainer: Sendable {
             guard !group.indexes.isEmpty else { continue }
             let subspace = try await resolvePolymorphicDirectory(for: group.identifier)
             let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
-            let indexNames = group.indexes.map(\.name)
+            let indexNames = group.indexes.map { $0.name }
             try await lifecycleStore.ensureReadable(
                 indexNames,
                 entityRange: subspace.subspace(SubspaceKey.items).range()
@@ -418,9 +433,20 @@ public final class DBContainer: Sendable {
         for type: any Persistable.Type,
         path: AnyDirectoryPath? = nil
     ) async throws -> Subspace {
-        try await engine.withTransaction(configuration: .default) { transaction in
+        let entity = try schemaEntity(named: type.persistableType)
+        return try await resolveDirectory(for: entity, path: path)
+    }
+
+    public func resolveDirectory(
+        for entity: Schema.Entity,
+        path: AnyDirectoryPath? = nil
+    ) async throws -> Subspace {
+        try await transactionExecutor.withTransaction(
+            configuration: .default,
+            clock: monotonicClock
+        ) { transaction in
             try await self.resolveDirectory(
-                for: type,
+                for: entity,
                 path: path,
                 transaction: transaction
             )
@@ -434,11 +460,23 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> Subspace {
+        try await resolveDirectory(
+            for: schemaEntity(named: type.persistableType),
+            path: path,
+            transaction: transaction
+        )
+    }
+
+    package func resolveDirectory(
+        for entity: Schema.Entity,
+        path: AnyDirectoryPath? = nil,
+        transaction: any TransactionAccess
+    ) async throws -> Subspace {
         let directoryPath: AnyDirectoryPath
         if let path {
             directoryPath = path
         } else {
-            directoryPath = try AnyDirectoryPath(for: type)
+            directoryPath = try AnyDirectoryPath(for: entity)
         }
         try directoryPath.validate()
 
@@ -450,7 +488,7 @@ public final class DBContainer: Sendable {
         let partitions = directoryPath.canonicalPartitions()
         if !partitions.isEmpty {
             try await partitionCatalog.register(
-                entity: type.persistableType,
+                entity: entity.name,
                 partitions: partitions,
                 transaction: transaction
             )
@@ -466,11 +504,23 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> Subspace {
+        try await openDirectory(
+            for: schemaEntity(named: type.persistableType),
+            path: path,
+            transaction: transaction
+        )
+    }
+
+    package func openDirectory(
+        for entity: Schema.Entity,
+        path: AnyDirectoryPath? = nil,
+        transaction: any TransactionAccess
+    ) async throws -> Subspace {
         let directoryPath: AnyDirectoryPath
         if let path {
             directoryPath = path
         } else {
-            directoryPath = try AnyDirectoryPath(for: type)
+            directoryPath = try AnyDirectoryPath(for: entity)
         }
         try directoryPath.validate()
         return try await engine.namespaceResolver.resolveExisting(
@@ -490,11 +540,25 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> Subspace? {
+        try await readableIndexSubspace(
+            named: indexName,
+            for: schemaEntity(named: type.persistableType),
+            path: path,
+            transaction: transaction
+        )
+    }
+
+    internal func readableIndexSubspace(
+        named indexName: String,
+        for entity: Schema.Entity,
+        path: AnyDirectoryPath? = nil,
+        transaction: any TransactionAccess
+    ) async throws -> Subspace? {
         let directoryPath: AnyDirectoryPath
         if let path {
             directoryPath = path
         } else {
-            directoryPath = try AnyDirectoryPath(for: type)
+            directoryPath = try AnyDirectoryPath(for: entity)
         }
         try directoryPath.validate()
         let components = directoryPath.resolve()
@@ -517,7 +581,7 @@ public final class DBContainer: Sendable {
             [indexName],
             entityRange: subspace
                 .subspace(SubspaceKey.items)
-                .subspace(type.persistableType)
+                .subspace(entity.name)
                 .range(),
             transaction: transaction
         )
@@ -582,19 +646,29 @@ public final class DBContainer: Sendable {
         for type: any Persistable.Type,
         path: AnyDirectoryPath? = nil
     ) async throws -> DatabaseDataStore {
-        let cacheKey = try storeCacheKey(for: type, path: path)
+        try await store(
+            for: schemaEntity(named: type.persistableType),
+            path: path
+        )
+    }
+
+    internal func store(
+        for entity: Schema.Entity,
+        path: AnyDirectoryPath? = nil
+    ) async throws -> DatabaseDataStore {
+        let cacheKey = try storeCacheKey(for: entity, path: path)
         if let cached = dataStoreCache.withLock({
             $0.stores.value(for: cacheKey)
         }) {
             return cached
         }
 
-        let subspace = try await resolveDirectory(for: type, path: path)
-        try await initializeIndexStates(for: type, subspace: subspace)
+        let subspace = try await resolveDirectory(for: entity, path: path)
+        try await initializeIndexStates(for: entity, subspace: subspace)
         let store = DatabaseDataStore(
             container: self,
             subspace: subspace,
-            persistableType: type.persistableType,
+            persistableType: entity.name,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
@@ -610,20 +684,32 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> DatabaseDataStore {
+        try await store(
+            for: schemaEntity(named: type.persistableType),
+            path: path,
+            transaction: transaction
+        )
+    }
+
+    internal func store(
+        for entity: Schema.Entity,
+        path: AnyDirectoryPath? = nil,
+        transaction: any TransactionAccess
+    ) async throws -> DatabaseDataStore {
         let subspace = try await resolveDirectory(
-            for: type,
+            for: entity,
             path: path,
             transaction: transaction
         )
         try await initializeIndexStates(
-            for: type,
+            for: entity,
             subspace: subspace,
             transaction: transaction
         )
         return DatabaseDataStore(
             container: self,
             subspace: subspace,
-            persistableType: type.persistableType,
+            persistableType: entity.name,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
@@ -633,7 +719,17 @@ public final class DBContainer: Sendable {
         for type: any Persistable.Type,
         subspace: Subspace
     ) async throws {
-        let indexNames = try type.indexDescriptors.map(\.name)
+        try await initializeIndexStates(
+            for: schemaEntity(named: type.persistableType),
+            subspace: subspace
+        )
+    }
+
+    private func initializeIndexStates(
+        for entity: Schema.Entity,
+        subspace: Subspace
+    ) async throws {
+        let indexNames = entity.indexDescriptors.map { $0.name }
         guard !indexNames.isEmpty else { return }
 
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
@@ -641,7 +737,7 @@ public final class DBContainer: Sendable {
             indexNames,
             entityRange: subspace
                 .subspace(SubspaceKey.items)
-                .subspace(type.persistableType)
+                .subspace(entity.name)
                 .range()
         )
     }
@@ -651,7 +747,19 @@ public final class DBContainer: Sendable {
         subspace: Subspace,
         transaction: any TransactionAccess
     ) async throws {
-        let indexNames = try type.indexDescriptors.map(\.name)
+        try await initializeIndexStates(
+            for: schemaEntity(named: type.persistableType),
+            subspace: subspace,
+            transaction: transaction
+        )
+    }
+
+    private func initializeIndexStates(
+        for entity: Schema.Entity,
+        subspace: Subspace,
+        transaction: any TransactionAccess
+    ) async throws {
+        let indexNames = entity.indexDescriptors.map { $0.name }
         guard !indexNames.isEmpty else { return }
 
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
@@ -659,7 +767,7 @@ public final class DBContainer: Sendable {
             indexNames,
             entityRange: subspace
                 .subspace(SubspaceKey.items)
-                .subspace(type.persistableType)
+                .subspace(entity.name)
                 .range(),
             transaction: transaction
         )
@@ -669,17 +777,36 @@ public final class DBContainer: Sendable {
         for type: any Persistable.Type,
         path: AnyDirectoryPath?
     ) throws -> DatabaseStoreCacheKey {
+        try storeCacheKey(
+            for: schemaEntity(named: type.persistableType),
+            path: path
+        )
+    }
+
+    private func storeCacheKey(
+        for entity: Schema.Entity,
+        path: AnyDirectoryPath?
+    ) throws -> DatabaseStoreCacheKey {
         let directoryPath: AnyDirectoryPath
         if let path {
             directoryPath = path
         } else {
-            directoryPath = try AnyDirectoryPath(for: type)
+            directoryPath = try AnyDirectoryPath(for: entity)
         }
         let components = directoryPath.resolve()
         return DatabaseStoreCacheKey(
-            entity: type.persistableType,
+            entity: entity.name,
             components: components
         )
+    }
+
+    private func schemaEntity(
+        named entityName: String
+    ) throws -> Schema.Entity {
+        guard let entity = schema.entity(named: entityName) else {
+            throw ContainerSchemaError.entityNotFound(entityName)
+        }
+        return entity
     }
 
     // MARK: - Polymorphic Directory Resolution
@@ -704,32 +831,6 @@ public final class DBContainer: Sendable {
     /// - Throws: Error if protocol has Field path components (not allowed)
     public func resolvePolymorphicDirectory<P: Polymorphable>(for protocolType: P.Type) async throws -> Subspace {
         let pathComponents = P.polymorphicDirectoryPathComponents
-        var path: [String] = []
-
-        for component in pathComponents {
-            switch component {
-            case .staticPath(let value):
-                path.append(value)
-            case .dynamicField:
-                throw DatabaseRuntimeError.internalError(
-                    "Polymorphic protocols cannot use Field path components. " +
-                    "Use only static Path components (string literals) in #Directory."
-                )
-            }
-        }
-
-        return try await engine.resolveOrCreateNamespace(path: path)
-    }
-
-    /// Resolve the directory for a Polymorphable protocol (type-erased version)
-    ///
-    /// Used when the protocol type is known only at runtime (e.g., from `polymorphicProtocol`).
-    ///
-    /// - Parameter protocolType: The Polymorphable protocol metatype
-    /// - Returns: The resolved subspace
-    /// - Throws: Error if protocol has Field path components (not allowed)
-    public func resolvePolymorphicDirectory(for protocolType: any Polymorphable.Type) async throws -> Subspace {
-        let pathComponents = protocolType.polymorphicDirectoryPathComponents
         var path: [String] = []
 
         for component in pathComponents {
@@ -799,22 +900,6 @@ public final class DBContainer: Sendable {
 
     // MARK: - Index Configuration Management
 
-    /// Get a single index configuration
-    public func indexConfiguration<C: IndexRuntimeConfiguration>(
-        for indexName: String,
-        as type: C.Type
-    ) -> C? {
-        return indexConfigurations[indexName]?.first { $0 is C } as? C
-    }
-
-    /// Get all index configurations for an index
-    public func indexConfigurations<C: IndexRuntimeConfiguration>(
-        for indexName: String,
-        as type: C.Type
-    ) -> [C] {
-        return indexConfigurations[indexName]?.compactMap { $0 as? C } ?? []
-    }
-
     /// Check if an index has configurations
     public func hasIndexConfiguration(for indexName: String) -> Bool {
         guard let configs = indexConfigurations[indexName] else { return false }
@@ -844,7 +929,10 @@ extension DBContainer {
 
     /// Get the current schema version from storage
     public func getCurrentSchemaVersion() async throws -> Schema.Version? {
-        return try await engine.withTransaction(configuration: .default) { transaction -> Schema.Version? in
+        return try await transactionExecutor.withTransaction(
+            configuration: .default,
+            clock: monotonicClock
+        ) { transaction -> Schema.Version? in
             try await self.getCurrentSchemaVersion(transaction: transaction)
         }
     }
@@ -862,21 +950,14 @@ extension DBContainer {
             return nil
         }
 
-        let tuple = try Tuple.unpack(from: versionBytes)
+        let tuple = try Tuple(packed: versionBytes)
         guard tuple.count == 3 else {
             throw DatabaseRuntimeError.internalError("Invalid version format")
         }
 
-        func toInt(_ value: Any) -> Int? {
-            if let value = value as? Int { return value }
-            if let value = value as? Int64 { return Int(value) }
-            if let value = value as? Int32 { return Int(value) }
-            return nil
-        }
-
-        guard let majorValue = toInt(tuple[0]),
-              let minorValue = toInt(tuple[1]),
-              let patchValue = toInt(tuple[2]),
+        guard case .signedInteger(let majorValue) = try tuple.value(at: 0),
+              case .signedInteger(let minorValue) = try tuple.value(at: 1),
+              case .signedInteger(let patchValue) = try tuple.value(at: 2),
               let major = UInt32(exactly: majorValue),
               let minor = UInt32(exactly: minorValue),
               let patch = UInt32(exactly: patchValue) else {
@@ -891,7 +972,10 @@ extension DBContainer {
     ) async throws {
         let installedSchema = try schemaDefinition(for: version)
         let metadataSubspace = try await getMetadataSubspace()
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: monotonicClock
+        ) { transaction in
             try Self.setCurrentSchemaSnapshot(
                 installedSchema,
                 metadataSubspace: metadataSubspace,
@@ -980,8 +1064,9 @@ extension DBContainer {
         targetVersion requestedTarget: Schema.Version? = nil
     ) async throws -> DatabaseMigrationStatus {
         let targetVersion = try migrationTarget(requestedTarget)
-        return try await engine.withTransaction(
-            configuration: .readOnly
+        return try await transactionExecutor.withTransaction(
+            configuration: .readOnly,
+            clock: monotonicClock
         ) { transaction in
             try await self.migrationStatus(
                 targetVersion: targetVersion,
@@ -1045,7 +1130,7 @@ extension DBContainer {
         return DatabaseMigrationStatus(
             currentVersion: currentVersion,
             targetVersion: targetVersion,
-            pendingMigrationIdentifiers: stages.map(\.identifier)
+            pendingMigrationIdentifiers: stages.map { $0.identifier }
         )
     }
 
@@ -1063,7 +1148,10 @@ extension DBContainer {
             )
         }
         let targetVersion = try migrationTarget(requestedTarget)
-        let registry = SchemaRegistry(database: engine)
+        let registry = SchemaRegistry(
+            database: engine,
+            clock: monotonicClock
+        )
         var completedStageCount: UInt64 = 0
 
         while completedStageCount < maximumStageCount {
@@ -1201,7 +1289,7 @@ extension DBContainer {
             guard !entity.hasDynamicDirectory else {
                 continue
             }
-            guard let persistableType = runtimeConfiguration.persistableTypes.type(
+            guard let persistableType = runtimeConfiguration.entityRuntimes.modelType(
                 named: entity.name
             ) else {
                 throw DatabaseRuntimeConfigurationError
@@ -1218,13 +1306,14 @@ extension DBContainer {
                     container: self,
                     subspace: subspace
                 ),
-                indexNames: entity.indexDescriptors.map(\.name)
+                indexNames: entity.indexDescriptors.map { $0.name }
             ))
         }
         let stores = staticStores
 
-        return try await engine.withTransaction(
-            configuration: .batch
+        return try await transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: monotonicClock
         ) { transaction in
             guard try await transaction.getValue(
                 for: versionKey,
@@ -1237,7 +1326,9 @@ extension DBContainer {
                     from: .firstGreaterOrEqual(store.range.begin),
                     to: .firstGreaterOrEqual(store.range.end),
                     limit: 1,
-                    snapshot: false
+                    reverse: false,
+                    snapshot: false,
+                    streamingMode: .small
                 )
                 guard rows.isEmpty else {
                     throw MigrationPlanError.unversionedStoreContainsEntities(
@@ -1353,7 +1444,10 @@ extension DBContainer {
             try await didMigrate(context)
         }
 
-        let registry = SchemaRegistry(database: engine)
+        let registry = SchemaRegistry(
+            database: engine,
+            clock: monotonicClock
+        )
         let persistMode: SchemaRegistryPersistMode = if stage.isLightweight {
             .strict
         } else {
@@ -1361,7 +1455,10 @@ extension DBContainer {
                 entityNames: try stage.entitiesRequiringCustomMigration
             )
         }
-        try await engine.withTransaction(configuration: .batch) { transaction in
+        try await transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: monotonicClock
+        ) { transaction in
             try await registry.persist(
                 targetSchema,
                 mode: persistMode,
@@ -1380,7 +1477,7 @@ extension DBContainer {
         var registry: [String: MigrationStoreInfo] = [:]
 
         for entity in schema.entities {
-            guard let persistableType = runtimeConfiguration.persistableTypes.type(
+            guard let persistableType = runtimeConfiguration.entityRuntimes.modelType(
                 named: entity.name
             ) else {
                 throw DatabaseRuntimeConfigurationError
@@ -1421,7 +1518,7 @@ extension DBContainer {
     /// ```
     ///
     /// - Returns: New AdminContext instance
-    public func newAdminContext() -> AdminContextProtocol {
+    public func newAdminContext() -> AdminContext {
         AdminContext(container: self)
     }
 }

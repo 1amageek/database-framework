@@ -90,14 +90,18 @@ struct SHACLShapesStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var iris: [String] = []
         for (key, _) in stream {
             let tuple = try graphsSubspace.unpack(key)
             guard tuple.count == 1,
-                  let iri = tuple[0] as? String else {
+                  let element = tuple[0],
+                  case .string(let iri) = element.tupleValue else {
                 throw StorageError(
                     code: .dataCorruption,
                     operation: .read,

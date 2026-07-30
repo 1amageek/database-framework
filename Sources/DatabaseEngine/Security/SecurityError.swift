@@ -1,11 +1,6 @@
 // SecurityError.swift
 // DatabaseEngine - Security error type
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 /// Security error thrown when access is denied
 ///
@@ -73,7 +68,7 @@ public struct SecurityError: Error, Sendable, CustomStringConvertible {
 
 // MARK: - LocalizedError Conformance
 
-extension SecurityError: LocalizedError {
+extension SecurityError {
     public var errorDescription: String? {
         "Access denied for \(operation.rawValue) operation on \(targetType)"
     }

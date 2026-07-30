@@ -186,8 +186,8 @@ enum LoadedRelationship: Sendable, CustomStringConvertible {
             return "none"
         case let .toOne(value):
             return type(of: value).persistableType
-        case let .toMany(value):
-            return String(reflecting: type(of: value))
+        case .toMany:
+            return "collection"
         }
     }
 
@@ -195,10 +195,10 @@ enum LoadedRelationship: Sendable, CustomStringConvertible {
         switch self {
         case .absentToOne:
             return "absent"
-        case let .toOne(value):
-            return String(describing: value)
-        case let .toMany(value):
-            return String(describing: value)
+        case .toOne:
+            return "loaded entity"
+        case .toMany:
+            return "loaded collection"
         }
     }
 }

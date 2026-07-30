@@ -14,9 +14,9 @@ struct XSDRegexParser {
             case .atom:
                 return false
             case .concatenation(let children):
-                return children.allSatisfy(\.matchesOnlyEmpty)
+                return children.allSatisfy { $0.matchesOnlyEmpty }
             case .alternation(let branches):
-                return branches.allSatisfy(\.matchesOnlyEmpty)
+                return branches.allSatisfy { $0.matchesOnlyEmpty }
             case .repetition(let child, _, let maximum):
                 return maximum == 0 || child.matchesOnlyEmpty
             }
@@ -82,7 +82,7 @@ struct XSDRegexParser {
         }
 
         let firstPiece = pieces.first
-        pieces.removeAll(where: \.matchesOnlyEmpty)
+        pieces.removeAll { $0.matchesOnlyEmpty }
         switch pieces.count {
         case 0:
             return try firstPiece ?? makeNode(.empty)

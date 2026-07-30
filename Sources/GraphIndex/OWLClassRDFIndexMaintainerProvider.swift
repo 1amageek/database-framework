@@ -3,30 +3,28 @@ import DatabaseEngine
 import StorageKit
 
 /// Canonical runtime provider for OWL class RDF projections.
-public struct OWLClassRDFIndexMaintainerProvider: IndexMaintainerProvider {
+public struct OWLClassRDFIndexMaintainerProvider<Root: OWLClassEntity>:
+    EntityIndexMaintainerProvider {
+    public typealias Model = Root
     public let kindIdentifier = "owl_class_rdf"
     public let runtimeRequirements: IndexRuntimeRequirements = .graphQueries
 
     public init() {}
 
-    public func makeIndexMaintainer<Item: Persistable>(
+    public func makeIndexMaintainer(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration]
-    ) throws -> any IndexMaintainer<Item> {
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
+    ) throws -> any IndexMaintainer<Root> {
         let metadata = try OWLClassRDFIndexMetadata(canonical: index.kind)
-        guard let root = Item.self as? any OWLClassEntity.Type else {
-            throw OWLClassRDFIndexError.rootDoesNotConform(
-                typeName: Item.persistableType
-            )
-        }
-        guard metadata.individualIRIBase == root.ontologyIndividualIRIBase,
-              metadata.graph == root.ontologyGraph else {
+        guard metadata.individualIRIBase == Root.ontologyIndividualIRIBase,
+              metadata.graph == Root.ontologyGraph else {
             throw OWLClassRDFIndexError.projectionConfigurationMismatch(
-                typeName: Item.persistableType
+                typeName: Root.persistableType
             )
         }
-        return OWLClassRDFIndexMaintainer<Item>(subspace: subspace)
+        return OWLClassRDFIndexMaintainer<Root>(subspace: subspace)
     }
 }

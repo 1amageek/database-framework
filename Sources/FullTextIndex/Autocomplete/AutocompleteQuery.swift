@@ -1,5 +1,6 @@
 import DatabaseEngine
 import DatabaseKit
+import StorageKit
 
 public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
     private let queryContext: IndexQueryContext

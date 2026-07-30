@@ -1,18 +1,15 @@
 import DatabaseKit
 import DatabaseWire
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 public enum PersistableVersionTokenCodec {
     public static func token(
         for fields: [String: FieldValue]
     ) throws -> PersistableVersionToken {
         let digest = try digest(fields: fields)
-        return PersistableVersionToken(Data(digest).base64EncodedString())
+        return PersistableVersionToken(
+            DatabaseTextFormatting.lowercaseHex(digest)
+        )
     }
 
     public static func digest(
@@ -43,10 +40,30 @@ public enum PersistableVersionTokenCodec {
     }
 
     public static func digest(from token: PersistableVersionToken) throws -> ByteString {
-        guard let data = Data(base64Encoded: token.value) else {
+        let utf8 = token.value.utf8
+        guard utf8.count.isMultiple(of: 2) else {
             throw PersistableVersionTokenCodecError.invalidToken
         }
-        return ByteString(Array(data))
+        return try ByteString.copying(count: utf8.count / 2) { destination in
+            var inputIndex = utf8.startIndex
+            for outputIndex in 0..<destination.count {
+                let high = try hexadecimalNibble(utf8[inputIndex])
+                utf8.formIndex(after: &inputIndex)
+                let low = try hexadecimalNibble(utf8[inputIndex])
+                utf8.formIndex(after: &inputIndex)
+                destination[outputIndex] = high << 4 | low
+            }
+        }
+    }
+}
+
+private func hexadecimalNibble(
+    _ byte: UInt8
+) throws(PersistableVersionTokenCodecError) -> UInt8 {
+    switch byte {
+    case 0x30...0x39: return byte - 0x30
+    case 0x61...0x66: return byte - 0x61 + 10
+    default: throw .invalidToken
     }
 }
 

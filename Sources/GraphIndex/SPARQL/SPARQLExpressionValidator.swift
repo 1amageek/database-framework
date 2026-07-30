@@ -420,7 +420,9 @@ public enum SPARQLExpressionValidator {
     private static func unsupported(
         _ expression: Expression
     ) -> SPARQLExpressionCompilationError {
-        .unsupportedExpression(String(describing: expression))
+        .unsupportedExpression(
+            SPARQLExpressionSemanticName.describe(expression)
+        )
     }
 
     private struct ValidationState {

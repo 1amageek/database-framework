@@ -107,14 +107,16 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
 
                 let storageLimit = try workMeter.storageReadLimitWithSentinel()
                 var reachedLogicalLimit = false
+                var cursor = transaction.rangeCursor(
+                    from: .firstGreaterOrEqual(range.begin),
+                    to: .firstGreaterOrEqual(range.end),
+                    limit: storageLimit,
+                    reverse: false,
+                    snapshot: readMode.usesSnapshotReads,
+                    streamingMode: .iterator
+                )
                 do {
-                    try await transaction.forEachInRange(
-                        from: .firstGreaterOrEqual(range.begin),
-                        to: .firstGreaterOrEqual(range.end),
-                        limit: storageLimit,
-                        snapshot: readMode.usesSnapshotReads,
-                        streamingMode: .iterator
-                    ) { key, value in
+                    while let (key, value) = try await cursor.next() {
                         try workMeter.consume(at: .storageRow)
                         let quad = try decodeQuad(
                             key: key,
@@ -128,13 +130,13 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                             object: object,
                             graphConstraint: graphConstraint
                         ) else {
-                            return
+                            continue
                         }
                         try workMeter.consume(at: .deduplication)
                         if mergesNamedGraphs {
                             let triple = quad.triple
                             guard seenMergedTriples.insert(triple).inserted else {
-                                return
+                                continue
                             }
                             let row = RDFDatasetScanStorageRow(
                                 quad: triple.quad,
@@ -160,7 +162,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                                 storedFieldNames: source.storedFieldNames
                             )
                             guard !seenRows.contains(row) else {
-                                return
+                                continue
                             }
                             let metrics = try RDFDatasetScanRetainedMetrics.measure(
                                 quad,
@@ -177,12 +179,23 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                             rows.append(row)
                         }
                         if let limit, rows.count >= limit {
-                            throw ScanControl.logicalLimitReached
+                            reachedLogicalLimit = true
+                            break
                         }
                     }
-                } catch ScanControl.logicalLimitReached {
-                    reachedLogicalLimit = true
+                } catch {
+                    let iterationError = error
+                    do {
+                        try await cursor.finish()
+                    } catch {
+                        throw StorageRangeCleanupError(
+                            iterationError: iterationError,
+                            cleanupError: error
+                        )
+                    }
+                    throw iterationError
                 }
+                try await cursor.finish()
                 if reachedLogicalLimit {
                     break scanLoop
                 }
@@ -311,7 +324,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
             try workMeter.consume(at: .storageRow)
 
             let encoded: RDFQuadIndexEncodedQuad
-            do {
+            do throws(RDFQuadIndexPhysicalCodecError) {
                 encoded = try source.physicalCodec.decodeEncodedQuad(
                     key: key,
                     ordering: ordering
@@ -325,7 +338,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
             guard let encodedGraph = encoded.graph else { break }
 
             let graphTerm: RDFTerm
-            do {
+            do throws(RDFQuadIndexPhysicalCodecError) {
                 graphTerm = try source.physicalCodec.decodeGraphComponent(
                     encodedGraph
                 )
@@ -345,26 +358,28 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
             try workMeter.consume(at: .deduplication)
             seen.insert(graph)
 
-            var prefix = RDFQuadIndexPrefixWritePlan()
-            do {
-                try prefix.append(
-                    try RDFQuadIndexComponentWritePlan(
-                        canonicalBytes: encodedGraph,
-                        role: .graphName
-                    )
+            let graphComponent: RDFQuadIndexComponentWritePlan
+            do throws(RDFTermStorageError) {
+                graphComponent = try RDFQuadIndexComponentWritePlan(
+                    canonicalBytes: encodedGraph,
+                    role: .graphName
                 )
-                begin = try source.physicalCodec.range(
-                    prefix: prefix,
-                    ordering: ordering
-                ).end
-            } catch let reason as RDFQuadIndexPhysicalCodecError {
-                throw physicalIndexFailure(source, reason: reason)
-            } catch let reason as RDFTermStorageError {
+            } catch let reason {
                 throw RDFDatasetScannerError.invalidRDFComponent(
                     source: sourceDescription(source),
                     component: .graph,
                     reason: reason
                 )
+            }
+            var prefix = RDFQuadIndexPrefixWritePlan()
+            do throws(RDFQuadIndexPhysicalCodecError) {
+                try prefix.append(graphComponent)
+                begin = try source.physicalCodec.range(
+                    prefix: prefix,
+                    ordering: ordering
+                ).end
+            } catch let reason {
+                throw physicalIndexFailure(source, reason: reason)
             }
         }
     }
@@ -547,7 +562,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         source: RDFDatasetSource,
         ordering: GraphIndexOrdering
     ) throws -> RDFQuad {
-        do {
+        do throws(RDFQuadIndexPhysicalCodecError) {
             return try source.physicalCodec.decodeQuad(
                 key: key,
                 ordering: ordering

@@ -5,7 +5,7 @@ enum IndexRuntimeConfigurationValidator {
     static func validate(
         _ configurations: [any IndexRuntimeConfiguration],
         schema: Schema,
-        persistableTypes: PersistableTypeRegistry
+        entityRuntimes: EntityRuntimeRegistry
     ) throws(IndexRuntimeConfigurationError) {
         guard !configurations.isEmpty else {
             return
@@ -17,7 +17,7 @@ enum IndexRuntimeConfigurationValidator {
         }
         for group in schema.polymorphicGroups {
             for memberTypeName in group.memberTypeNames {
-                guard let memberType = persistableTypes.type(
+                guard let memberType = entityRuntimes.modelType(
                     named: memberTypeName
                 ) else {
                     throw .invalidConfiguration(
@@ -27,7 +27,7 @@ enum IndexRuntimeConfigurationValidator {
                 }
                 for descriptor in schema.polymorphicIndexDescriptors(
                     identifier: group.identifier,
-                    memberType: memberType
+                    memberTypeName: memberType.persistableType
                 ) {
                     descriptorsByName[
                         descriptor.name,
@@ -52,11 +52,11 @@ enum IndexRuntimeConfigurationValidator {
                 )
             }
             guard descriptor.kindIdentifier
-                    == type(of: configuration).kindIdentifier else {
+                    == configuration.kindIdentifier else {
                 throw .indexKindMismatch(
                     indexName: configuration.indexName,
                     expected: descriptor.kindIdentifier,
-                    actual: type(of: configuration).kindIdentifier
+                    actual: configuration.kindIdentifier
                 )
             }
             guard descriptor.fieldNames.contains(

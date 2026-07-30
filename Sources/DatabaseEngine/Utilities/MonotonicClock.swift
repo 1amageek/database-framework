@@ -1,33 +1,36 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
+import StorageKit
 
-internal struct MonotonicTimestamp: Sendable {
-    fileprivate let instant: ContinuousClock.Instant
-
-    var uptimeNanoseconds: UInt64 {
-        MonotonicClock.nanoseconds(from: MonotonicClock.epoch, to: instant)
-    }
-}
-
-internal enum MonotonicClock {
-    fileprivate static let clock = ContinuousClock()
-    fileprivate static let epoch = clock.now
-
-    static func now() -> MonotonicTimestamp {
-        _ = epoch
-        return MonotonicTimestamp(instant: clock.now)
-    }
-
-    fileprivate static func nanoseconds(
-        from start: ContinuousClock.Instant,
-        to end: ContinuousClock.Instant
+/// Converts injected monotonic instants into bounded measurement values.
+///
+/// The storage clock owns the platform-specific time source. DatabaseEngine
+/// only computes elapsed durations and therefore has no dependency on
+/// `ContinuousClock` or another runtime-specific clock implementation.
+internal enum DatabaseMonotonicMeasurement {
+    static func nanoseconds(
+        from start: StorageInstant,
+        to end: StorageInstant
     ) -> UInt64 {
-        let components = start.duration(to: end).components
-        let secondsNanoseconds = components.seconds * 1_000_000_000
-        let attosecondsNanoseconds = components.attoseconds / 1_000_000_000
-        return UInt64(max(0, secondsNanoseconds + attosecondsNanoseconds))
+        nanoseconds(start.duration(to: end))
+    }
+
+    static func nanoseconds(_ duration: Duration) -> UInt64 {
+        guard duration > .zero else {
+            return 0
+        }
+
+        let components = duration.components
+        let (wholeNanoseconds, secondsOverflow) =
+            components.seconds.multipliedReportingOverflow(by: 1_000_000_000)
+        guard !secondsOverflow else {
+            return UInt64.max
+        }
+
+        let fractionalNanoseconds = components.attoseconds / 1_000_000_000
+        let (nanoseconds, additionOverflow) =
+            wholeNanoseconds.addingReportingOverflow(fractionalNanoseconds)
+        guard !additionOverflow, nanoseconds >= 0 else {
+            return UInt64.max
+        }
+        return UInt64(nanoseconds)
     }
 }

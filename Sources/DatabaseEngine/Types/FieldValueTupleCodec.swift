@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -159,17 +154,22 @@ public enum FieldValueTupleCodec {
         _ element: any TupleElement,
         limits: FieldValueTupleCodecLimits = .default
     ) throws(FieldValueTupleCodecError) -> FieldValue {
-        switch element {
-        case let value as CanonicalFieldValueTupleElement:
-            return value.prepared.value
-        case let value as ByteString:
+        switch element.tupleValue {
+        case .bytes(let value):
             var decoder = Decoder(bytes: value, limits: limits)
             return try decoder.decodeRoot()
         default:
             throw .unsupportedElementType(
-                String(describing: type(of: element))
+                TupleElementSemanticName.describe(element)
             )
         }
+    }
+
+    package static func isCanonicalEncoding(_ bytes: ByteString) -> Bool {
+        guard bytes.count >= 3 else { return false }
+        return bytes[bytes.startIndex] == magic0
+            && bytes[bytes.startIndex + 1] == magic1
+            && bytes[bytes.startIndex + 2] == magic2
     }
 
     package static func prepareComposite(
@@ -490,12 +490,10 @@ public enum FieldValueTupleCodec {
                 var rdfSink = RDFSink(tupleSink: sinkPointer)
                 try RDFTermStorageFormat.encode(plan, into: &rdfSink)
             }
-        } catch let error as RDFTermStorageError {
-            preconditionFailure(
-                "A validated RDF encoding plan failed during tuple emission: \(error)"
-            )
         } catch {
-            preconditionFailure("Unexpected RDF tuple encoding failure")
+            preconditionFailure(
+                "A validated RDF encoding plan failed during tuple emission"
+            )
         }
     }
 
@@ -1980,8 +1978,8 @@ public enum FieldValueTupleCodec {
             guard isValidUTF8(payload) else {
                 throw .invalidUTF8
             }
-            return String(
-                unsafeUninitializedCapacity: payload.decodedCount
+            return UTF8StringBuilder.make(
+                byteCount: payload.decodedCount
             ) { output in
                 for destination in 0..<payload.decodedCount {
                     output[destination] = decodedByte(
@@ -1989,7 +1987,6 @@ public enum FieldValueTupleCodec {
                         in: payload
                     )
                 }
-                return payload.decodedCount
             }
         }
 

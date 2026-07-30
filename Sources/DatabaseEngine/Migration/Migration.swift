@@ -1,9 +1,4 @@
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 
@@ -241,13 +236,10 @@ public struct MigrationContext: Sendable {
             itemTypes: Set([targetEntity.name])
         )
 
-        // 4. Register index (in-memory, fails if already registered)
-        do {
-            try indexRegistry.register(index: index)
-        } catch DatabaseIndexRegistryError.duplicateIndex {
-            // Index already registered in this DatabaseIndexRegistry instance - OK
-            // This can happen if migration is run multiple times
-        }
+        // 4. Register the compiled definition in this migration-scoped registry.
+        // Migration idempotency is represented by persisted lifecycle state below;
+        // a conflicting in-memory definition must never be treated as success.
+        try indexRegistry.register(index: index)
 
         // 5. Enable index (disabled → writeOnly)
         // Check current state first to ensure idempotency
@@ -270,14 +262,14 @@ public struct MigrationContext: Sendable {
         // Get configurations for this index (HNSW params, full-text settings, etc.)
         let configs = indexConfigurations[index.name] ?? []
 
-        guard let persistableType = container.runtimeConfiguration
-            .persistableTypes.type(named: targetEntity.name) else {
+        guard let entityRuntime = container.runtimeConfiguration
+            .entityRuntimes.registration(named: targetEntity.name) else {
             throw DatabaseRuntimeError.internalError(
                 "Entity '\(targetEntity.name)' has no registered runtime type"
             )
         }
         try await EntityIndexBuilder.buildIndex(
-            for: persistableType,
+            for: entityRuntime,
             container: container,
             storeSubspace: info.subspace,
             index: index,
@@ -353,15 +345,16 @@ public struct MigrationContext: Sendable {
 
         let indexRange = info.indexSubspace.subspace(indexName).range()
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             // Write FormerIndex entry
-            let timestamp = Date().timeIntervalSince1970
+            let timestamp = container.wallClock.now
             try transaction.setValue(
                 Tuple(
                     Int64(addedVersion.major),
                     Int64(addedVersion.minor),
                     Int64(addedVersion.patch),
-                    timestamp
+                    timestamp.secondsSinceUnixEpoch,
+                    UInt64(timestamp.nanoseconds)
                 ).pack(),
                 for: formerIndexKey
             )
@@ -426,17 +419,13 @@ public struct MigrationContext: Sendable {
             indexDescriptor,
             itemTypes: Set([targetEntity.name])
         )
-        do {
-            try indexRegistry.register(index: index)
-        } catch DatabaseIndexRegistryError.duplicateIndex {
-            // Index already registered - OK
-        }
+        try indexRegistry.register(index: index)
 
         // 5. Atomic transaction: disable + clear + enable
         // This ensures the index is in a consistent state before building
         let indexRange = info.indexSubspace.subspace(indexName).range()
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             // Disable index (from any state)
             try await indexRegistry.lifecycleStore.disable(indexName, transaction: transaction)
 
@@ -456,14 +445,14 @@ public struct MigrationContext: Sendable {
         // Get configurations for this index (HNSW params, full-text settings, etc.)
         let configs = indexConfigurations[indexName] ?? []
 
-        guard let persistableType = container.runtimeConfiguration
-            .persistableTypes.type(named: targetEntity.name) else {
+        guard let entityRuntime = container.runtimeConfiguration
+            .entityRuntimes.registration(named: targetEntity.name) else {
             throw DatabaseRuntimeError.internalError(
                 "Entity '\(targetEntity.name)' has no registered runtime type"
             )
         }
         try await EntityIndexBuilder.buildIndex(
-            for: persistableType,
+            for: entityRuntime,
             container: container,
             storeSubspace: info.subspace,
             index: index,
@@ -517,14 +506,15 @@ public struct MigrationContext: Sendable {
             .subspace(indexName)
             .range()
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
-            let timestamp = Date().timeIntervalSince1970
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+            let timestamp = container.wallClock.now
             try transaction.setValue(
                 Tuple(
                     Int64(addedVersion.major),
                     Int64(addedVersion.minor),
                     Int64(addedVersion.patch),
-                    timestamp
+                    timestamp.secondsSinceUnixEpoch,
+                    UInt64(timestamp.nanoseconds)
                 ).pack(),
                 for: formerIndexKey
             )
@@ -549,7 +539,7 @@ public struct MigrationContext: Sendable {
             .subspace(indexName)
             .range()
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await lifecycleStore.disable(indexName, transaction: transaction)
             try transaction.clearRange(
                 beginKey: indexRange.begin,
@@ -585,47 +575,40 @@ public struct MigrationContext: Sendable {
                 metadataSubspace: subspace.subspace(SubspaceKey.metadata)
             ),
             indexSubspace: subspace.subspace(SubspaceKey.indexes),
-            maintainerProviders: container.runtimeConfiguration.indexMaintainerProviders,
             configurations: configurations
         )
         let memberTypeNames = Set(group.memberTypeNames)
 
         for entity in schema.entities where memberTypeNames.contains(entity.name) {
-            guard let persistableType = container.runtimeConfiguration
-                .persistableTypes.type(named: entity.name) else {
+            guard let entityRuntime = container.runtimeConfiguration
+                .entityRuntimes.registration(named: entity.name) else {
                 throw DatabaseRuntimeError.internalError(
                     "Polymorphic member '\(entity.name)' has no registered runtime type"
                 )
             }
-            guard let polymorphicType = persistableType as? any Polymorphable.Type else {
+            guard entity.polymorphicMembership?.identifier
+                    == group.identifier else {
                 throw DatabaseRuntimeError.internalError(
                     "Polymorphic member '\(entity.name)' does not conform to Polymorphable"
                 )
             }
 
-            func descriptors<Member: Persistable>(
-                for memberType: Member.Type
-            ) -> [IndexDescriptor] {
-                schema.polymorphicIndexDescriptors(
-                    identifier: group.identifier,
-                    memberType: memberType
-                )
-            }
-            let memberDescriptors = _openExistential(
-                persistableType,
-                do: descriptors
+            let memberDescriptors = schema.polymorphicIndexDescriptors(
+                identifier: group.identifier,
+                memberTypeName: entity.name
             )
             let descriptors = memberDescriptors.filter { $0.name == indexName }
             guard !descriptors.isEmpty else { continue }
 
-            let typeCode = polymorphicType.typeCode(for: entity.name)
+            let typeCode = PolymorphicTypeCode.value(for: entity.name)
             let typeRange = itemSubspace.subspace(typeCode).range()
             var begin = typeRange.begin
 
             while true {
                 let batchBegin = begin
-                let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(
-                    configuration: .batch
+                let (itemsInBatch, lastProcessedKey) = try await container.transactionExecutor.withTransaction(
+                    configuration: .batch,
+                    clock: container.monotonicClock
                 ) { transaction -> (Int, ByteString?) in
                     let storage = self.container.itemStorageFactory.make(
                         transaction: transaction,
@@ -646,15 +629,20 @@ public struct MigrationContext: Sendable {
                     // before index writes begin.
                     var batch: [(key: ByteString, data: ByteString)] = []
                     batch.reserveCapacity(batchSize)
-                    for try await element in scanSequence {
+                    var iterator = scanSequence.makeAsyncIterator()
+                    while let element = try await iterator.next() {
                         batch.append(element)
                     }
 
                     for (key, data) in batch {
-                        let item = try DataAccess.deserializeAny(data, as: persistableType)
+                        let item = try DataAccess.deserializePersistedModel(
+                            data,
+                            expectedEntity: entity.name
+                        )
                         let compositeID = try itemSubspace.unpack(key)
                         try await maintenanceService.updateIndexesUntyped(
-                            oldModel: nil as (any Persistable)?,
+                            runtime: entityRuntime,
+                            oldModel: nil,
                             newModel: item,
                             id: compositeID,
                             descriptors: descriptors,
@@ -687,7 +675,7 @@ public struct MigrationContext: Sendable {
     public func executeOperation<T: Sendable>(
         _ operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
-        return try await container.engine.withTransaction(configuration: .default) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             try await operation(transaction)
         }
     }
@@ -740,7 +728,8 @@ public struct MigrationContext: Sendable {
                         container: container,
                         batchSize: batchSize
                     )
-                    for try await item in enumerator.makeStream() {
+                    var iterator = enumerator.makeStream().makeAsyncIterator()
+                    while let item = try await iterator.next() {
                         continuation.yield(item)
                     }
                     continuation.finish()
@@ -768,7 +757,7 @@ public struct MigrationContext: Sendable {
         let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(identifier)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
-        try await container.engine.withTransaction(configuration: .default) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -792,7 +781,7 @@ public struct MigrationContext: Sendable {
         let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(identifier)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
-        try await container.engine.withTransaction(configuration: .default) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -821,7 +810,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = Array(items[batchStart..<batchEnd])
 
-            try await container.engine.withTransaction(configuration: .batch) { transaction in
+            try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                 let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
@@ -857,7 +846,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = items[batchStart..<batchEnd]
 
-            try await container.engine.withTransaction(configuration: .batch) { transaction in
+            try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                 let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
@@ -893,7 +882,7 @@ public struct MigrationContext: Sendable {
 
         // Use approximate count for large datasets
         if approximate {
-            let sizeBytes = try await container.engine.withTransaction(configuration: .batch) { transaction in
+            let sizeBytes = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                 try await transaction.getEstimatedRangeSizeBytes(
                     beginKey: beginKey,
                     endKey: endKey
@@ -910,7 +899,7 @@ public struct MigrationContext: Sendable {
 
         while true {
             let currentLastKey = lastKey
-            let (batchCount, newLastKey): (Int, ByteString?) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+            let (batchCount, newLastKey): (Int, ByteString?) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                 let rangeBegin = currentLastKey.map { $0.appending(0x00) } ?? beginKey
 
                 var count = 0
@@ -921,6 +910,7 @@ public struct MigrationContext: Sendable {
                     from: .firstGreaterOrEqual(rangeBegin),
                     to: .firstGreaterOrEqual(endKey),
                     limit: batchSize,
+                    reverse: false,
                     snapshot: true,
                     streamingMode: .wantAll
                 )
@@ -968,7 +958,7 @@ public struct MigrationContext: Sendable {
         let subspace = try await container.resolveDirectory(for: T.self)
         let (beginKey, endKey) = subspace.range()
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clearRange(beginKey: beginKey, endKey: endKey)
         }
     }
@@ -986,7 +976,7 @@ public struct MigrationContext: Sendable {
         guard matchingGroups.count <= 1 else {
             throw DatabaseRuntimeError.internalError(
                 "Index '\(descriptor.name)' is associated with multiple polymorphic groups: " +
-                "\(matchingGroups.map(\.identifier).joined(separator: ", ")). " +
+                "\(matchingGroups.map { $0.identifier }.joined(separator: ", ")). " +
                 "Index names must be unique across all polymorphic groups."
             )
         }
@@ -1146,7 +1136,7 @@ public enum DatabaseRuntimeError: Error, CustomStringConvertible {
                         let currentLastKey = lastKey
 
 	                        // Each batch is a separate transaction
-	                        let batch: [(key: ByteString, value: ByteString)] = try await container.engine.withTransaction(configuration: .batch) { transaction in
+	                        let batch: [(key: ByteString, value: ByteString)] = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
 	                            let rangeBegin = currentLastKey.map { $0.appending(0x00) } ?? beginKey
 
 	                            let storage = self.container.itemStorageFactory.make(
@@ -1155,12 +1145,13 @@ public enum DatabaseRuntimeError: Error, CustomStringConvertible {
 	                            )
 
 	                            var results: [(key: ByteString, value: ByteString)] = []
-	                            for try await (key, value) in storage.scan(
+	                            var iterator = storage.scan(
 	                                begin: rangeBegin,
 	                                end: endKey,
 	                                snapshot: true,
 	                                limit: batchSize
-	                            ) {
+	                            ).makeAsyncIterator()
+	                            while let (key, value) = try await iterator.next() {
 	                                results.append((key: key, value: value))
 	                            }
 	                            return results
@@ -1174,7 +1165,7 @@ public enum DatabaseRuntimeError: Error, CustomStringConvertible {
                             } catch {
                                 // Log decode error but continue processing
                                 continuation.finish(throwing: DatabaseRuntimeError.internalError(
-                                    "Failed to decode \(itemType) item: \(error)"
+                                    "Failed to decode a persisted \(itemType) item"
                                 ))
                                 return
                             }

@@ -1,11 +1,6 @@
 // QueryStatisticsService.swift
 // Unified database statistics management
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseTypes
 import DatabaseKit
@@ -34,6 +29,11 @@ import Synchronization
 /// Uses `final class` + `Mutex` pattern per CLAUDE.md guidelines.
 public final class QueryStatisticsService: StatisticsProvider, Sendable {
 
+    private struct IndexCardinality: Sendable {
+        let entryCount: Int64
+        let distinctKeyCount: Int64
+    }
+
     // MARK: - Properties
 
     /// FDB Container for database access
@@ -50,7 +50,7 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
         var vectorStats: [String: VectorStatisticsData] = [:]
         var fullTextStats: [String: FullTextStatisticsData] = [:]
         var spatialStats: [String: SpatialStatisticsData] = [:]
-        var lastLoaded: Date?
+        var lastLoaded: StorageInstant?
     }
 
     private let cache: Mutex<Cache>
@@ -92,10 +92,10 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
         public let mcvMinFrequency: Double
 
         /// Cache TTL in seconds (0 = no expiry)
-        public let cacheTTL: TimeInterval
+        public let cacheTTL: Duration
 
         /// Staleness threshold in seconds (when to recommend refresh)
-        public let stalenessThreshold: TimeInterval
+        public let stalenessThreshold: Duration
 
         /// Maximum value size to include in statistics (bytes)
         /// Reference: PostgreSQL excludes values > 1KB
@@ -107,8 +107,8 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
             histogramBucketCount: Int = 100,
             mcvMaxSize: Int = 100,
             mcvMinFrequency: Double = 0.01,  // 1%
-            cacheTTL: TimeInterval = 3600,
-            stalenessThreshold: TimeInterval = 86400,
+            cacheTTL: Duration = .seconds(3_600),
+            stalenessThreshold: Duration = .seconds(86_400),
             maxValueSize: Int = 1024  // 1KB (PostgreSQL limit)
         ) {
             self.defaultSampleRate = defaultSampleRate
@@ -146,20 +146,21 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
 
     // MARK: - StatisticsProvider Protocol
 
-    public func estimatedRowCount<T: Persistable>(for type: T.Type) -> Int {
-        let typeName = T.persistableType
-        let stats = cache.withLock { $0.tableStats[typeName] }
-        return stats.map { Int($0.rowCount) } ?? heuristics.estimatedRowCount(for: type)
+    public func estimatedRowCount(entity: String) -> Int {
+        let stats = cache.withLock { $0.tableStats[entity] }
+        return stats.map { Int($0.rowCount) }
+            ?? heuristics.estimatedRowCount(entity: entity)
     }
 
-    public func estimatedDistinctValues<T: Persistable>(field: String, type: T.Type) -> Int? {
-        let key = "\(T.persistableType).\(field)"
+    public func estimatedDistinctValues(field: String, entity: String) -> Int? {
+        let key = "\(entity).\(field)"
         let stats = cache.withLock { $0.fieldStats[key] }
-        return stats.map { Int($0.distinctCount) } ?? heuristics.estimatedDistinctValues(field: field, type: type)
+        return stats.map { Int($0.distinctCount) }
+            ?? heuristics.estimatedDistinctValues(field: field, entity: entity)
     }
 
-    public func equalitySelectivity<T: Persistable>(field: String, type: T.Type) -> Double? {
-        let key = "\(T.persistableType).\(field)"
+    public func equalitySelectivity(field: String, entity: String) -> Double? {
+        let key = "\(entity).\(field)"
         let stats = cache.withLock { $0.fieldStats[key] }
 
         if let stats = stats {
@@ -173,7 +174,7 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
             return stats.equalitySelectivity
         }
 
-        return heuristics.equalitySelectivity(field: field, type: type)
+        return heuristics.equalitySelectivity(field: field, entity: entity)
     }
 
     /// Estimate equality selectivity for a specific value
@@ -192,7 +193,10 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
         let stats = cache.withLock { $0.fieldStats[key] }
 
         guard let stats = stats else {
-            return heuristics.equalitySelectivity(field: field, type: type)
+            return heuristics.equalitySelectivity(
+                field: field,
+                entity: T.persistableType
+            )
         }
 
         // Use combined estimator for accurate selectivity
@@ -208,12 +212,20 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
         return stats.equalitySelectivity
     }
 
-    public func rangeSelectivity<T: Persistable>(field: String, range: RangeBound, type: T.Type) -> Double? {
-        let key = "\(T.persistableType).\(field)"
+    public func rangeSelectivity(
+        field: String,
+        range: RangeBound,
+        entity: String
+    ) -> Double? {
+        let key = "\(entity).\(field)"
         let stats = cache.withLock { $0.fieldStats[key] }
 
         guard let stats = stats else {
-            return heuristics.rangeSelectivity(field: field, range: range, type: type)
+            return heuristics.rangeSelectivity(
+                field: field,
+                range: range,
+                entity: entity
+            )
         }
 
         let minValue = range.lower?.value
@@ -242,7 +254,11 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
             )
         }
 
-        return heuristics.rangeSelectivity(field: field, range: range, type: type)
+        return heuristics.rangeSelectivity(
+            field: field,
+            range: range,
+            entity: entity
+        )
     }
 
     /// Estimate selectivity for IN clause
@@ -260,7 +276,10 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
 
         guard let stats = stats else {
             // Fallback: assume uniform distribution
-            let distinctCount = heuristics.estimatedDistinctValues(field: field, type: type) ?? 100
+            let distinctCount = heuristics.estimatedDistinctValues(
+                field: field,
+                entity: T.persistableType
+            ) ?? 100
             return min(1.0, Double(values.count) / Double(distinctCount))
         }
 
@@ -282,10 +301,11 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
         return min(1.0, total)
     }
 
-    public func nullSelectivity<T: Persistable>(field: String, type: T.Type) -> Double? {
-        let key = "\(T.persistableType).\(field)"
+    public func nullSelectivity(field: String, entity: String) -> Double? {
+        let key = "\(entity).\(field)"
         let stats = cache.withLock { $0.fieldStats[key] }
-        return stats?.nullSelectivity ?? heuristics.nullSelectivity(field: field, type: type)
+        return stats?.nullSelectivity
+            ?? heuristics.nullSelectivity(field: field, entity: entity)
     }
 
     public func estimatedIndexEntries(index: IndexDescriptor) -> Int? {
@@ -313,9 +333,9 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
     ///   - store: DataStore for accessing entities
     ///   - sampleRate: Sample rate (0.0-1.0), nil uses default
     ///   - fields: Specific fields to collect (nil for all)
-    public func collectStatistics<T: Persistable>(
+    public func collectStatistics<T: Persistable, Store: DataStore>(
         for type: T.Type,
-        using store: any DataStore,
+        using store: Store,
         sampleRate: Double? = nil,
         fields: [String]? = nil
     ) async throws {
@@ -406,12 +426,15 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
             }
         }
 
+        let collectionTimestamp = container.wallClock.now
+
         // Build and save table statistics
         let tableStats = TableStatisticsData(
             rowCount: totalCount,
             avgRowSize: totalCount > 0 ? Int(totalSize / totalCount) : 0,
             sampleSize: Int(Double(totalCount) * effectiveSampleRate),
-            sampleRate: effectiveSampleRate
+            sampleRate: effectiveSampleRate,
+            timestamp: collectionTimestamp
         )
 
         try await storage.saveTableStatistics(typeName: typeName, stats: tableStats)
@@ -431,7 +454,8 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
             // Step 1: Build MCV from complete frequency data
             let mcv = mcvBuilder.build(
                 totalCount: nonNullCount,
-                sampleCount: mcvBuilder.totalSamples
+                sampleCount: mcvBuilder.totalSamples,
+                timestamp: collectionTimestamp
             )
 
             // Step 2: Get MCV values to exclude from histogram
@@ -445,7 +469,8 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
                 nullCount: nullCount,
                 bucketCount: configuration.histogramBucketCount,
                 hll: hll,
-                excludeValues: mcvValues
+                excludeValues: mcvValues,
+                timestamp: collectionTimestamp
             )
 
             // Step 4: Create field statistics with both MCV and histogram
@@ -457,7 +482,8 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
                 minValue: computeMinValue(histogram: histogram, mcv: mcv),
                 maxValue: computeMaxValue(histogram: histogram, mcv: mcv),
                 mcv: mcv,
-                histogram: histogram
+                histogram: histogram,
+                timestamp: collectionTimestamp
             )
 
             try await storage.saveFieldStatistics(typeName: typeName, fieldName: field, stats: fieldStats)
@@ -528,13 +554,16 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
             storedFieldNames: index.storedFieldNames
         )
 
-        let (entryCount, distinctKeyCount) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+        let cardinality = try await container.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock
+        ) { transaction in
             var entryCount: Int64 = 0
             var hll = HyperLogLog()
 
             let (beginKey, endKey) = indexSubspace.range()
 
-            for (key, _) in try await transaction.collectRange(from: .firstGreaterOrEqual(beginKey), to: .firstGreaterOrEqual(endKey), snapshot: true) {
+            for (key, _) in try await transaction.collectRange(from: .firstGreaterOrEqual(beginKey), to: .firstGreaterOrEqual(endKey), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
                 let (nextCount, overflow) = entryCount.addingReportingOverflow(1)
                 guard !overflow else {
                     throw StatisticsCollectionError.entryCountOverflow(
@@ -553,14 +582,20 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
                 } catch {
                     throw StatisticsCollectionError.invalidPhysicalEntry(
                         indexName: index.name,
-                        reason: String(describing: error)
+                        reason: "physical index entry decoding failed"
                     )
                 }
                 try hll.add(.array(entry.indexedValues))
             }
 
-            return (entryCount, try hll.cardinality())
+            return IndexCardinality(
+                entryCount: entryCount,
+                distinctKeyCount: try hll.cardinality()
+            )
         }
+
+        let entryCount = cardinality.entryCount
+        let distinctKeyCount = cardinality.distinctKeyCount
 
         let avgEntriesPerKey = distinctKeyCount > 0
             ? Double(entryCount) / Double(distinctKeyCount)
@@ -570,7 +605,8 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
             indexName: index.name,
             entryCount: entryCount,
             distinctKeyCount: distinctKeyCount,
-            avgEntriesPerKey: avgEntriesPerKey
+            avgEntriesPerKey: avgEntriesPerKey,
+            timestamp: container.wallClock.now
         )
 
         try await storage.saveIndexStatistics(indexName: index.name, stats: stats)
@@ -594,7 +630,7 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
         cache.withLock { cache in
             cache.tableStats = tableStats
             cache.fieldStats = fieldStats
-            cache.lastLoaded = Date()
+            cache.lastLoaded = container.monotonicClock.now
         }
     }
 
@@ -612,13 +648,16 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
     }
 
     /// Check if statistics are stale
-    public func isStale(typeName: String) -> Bool {
+    public func isStale(typeName: String) throws -> Bool {
         guard let stats = cache.withLock({ $0.tableStats[typeName] }) else {
             return true
         }
 
-        let age = Date().timeIntervalSince(stats.timestamp)
-        return age > configuration.stalenessThreshold
+        let age = try DatabaseTimestampMeasurement.elapsed(
+            from: stats.timestamp,
+            to: container.wallClock.now
+        )
+        return Duration(age) > configuration.stalenessThreshold
     }
 
 }
@@ -627,17 +666,67 @@ public final class QueryStatisticsService: StatisticsProvider, Sendable {
 
 extension QueryStatisticsService {
 
+    /// Resolves the compiled model name before entering the runtime statistics
+    /// provider boundary.
+    public func estimatedRowCount<Model: Persistable>(
+        for type: Model.Type
+    ) -> Int {
+        estimatedRowCount(entity: Model.persistableType)
+    }
+
+    public func estimatedDistinctValues<Model: Persistable>(
+        field: String,
+        type: Model.Type
+    ) -> Int? {
+        estimatedDistinctValues(
+            field: field,
+            entity: Model.persistableType
+        )
+    }
+
+    public func equalitySelectivity<Model: Persistable>(
+        field: String,
+        type: Model.Type
+    ) -> Double? {
+        equalitySelectivity(field: field, entity: Model.persistableType)
+    }
+
+    public func rangeSelectivity<Model: Persistable>(
+        field: String,
+        range: RangeBound,
+        type: Model.Type
+    ) -> Double? {
+        rangeSelectivity(
+            field: field,
+            range: range,
+            entity: Model.persistableType
+        )
+    }
+
+    public func nullSelectivity<Model: Persistable>(
+        field: String,
+        type: Model.Type
+    ) -> Double? {
+        nullSelectivity(field: field, entity: Model.persistableType)
+    }
+
     /// Get a summary of statistics status
-    public func getStatisticsSummary() -> StatisticsSummary {
-        cache.withLock { cache in
+    public func getStatisticsSummary() throws -> StatisticsSummary {
+        let currentTimestamp = container.wallClock.now
+        return try cache.withLock { cache in
             StatisticsSummary(
                 tableCount: cache.tableStats.count,
                 fieldCount: cache.fieldStats.count,
                 indexCount: cache.indexStats.count,
                 lastLoaded: cache.lastLoaded,
-                staleTypes: cache.tableStats.compactMap { (typeName, stats) in
-                    let age = Date().timeIntervalSince(stats.timestamp)
-                    return age > configuration.stalenessThreshold ? typeName : nil
+                staleTypes: try cache.tableStats.compactMap { (typeName, stats) in
+                    let age = try DatabaseTimestampMeasurement.elapsed(
+                        from: stats.timestamp,
+                        to: currentTimestamp
+                    )
+                    return Duration(age) > configuration.stalenessThreshold
+                        ? typeName
+                        : nil
                 }
             )
         }
@@ -648,7 +737,7 @@ extension QueryStatisticsService {
         public let tableCount: Int
         public let fieldCount: Int
         public let indexCount: Int
-        public let lastLoaded: Date?
+        public let lastLoaded: StorageInstant?
         public let staleTypes: [String]
     }
 }

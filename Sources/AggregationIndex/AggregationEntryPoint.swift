@@ -4,11 +4,6 @@
 // Follows the EntryPoint → QueryBuilder pattern used by other index types
 // (VectorEntryPoint, FullTextEntryPoint, SpatialEntryPoint)
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
 import DatabaseKit
 

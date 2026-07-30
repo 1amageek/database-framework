@@ -4,14 +4,13 @@
 // Reference: FoundationDB transaction retry pattern
 // https://apple.github.io/foundationdb/developer-guide.html#transactions
 
-import Metrics
 import StorageKit
-import StorageKitSystemClock
 import Synchronization
 
 private enum TransactionDeadlineRaceResult<Value: Sendable>: Sendable {
     case value(Value)
     case timedOut
+    case cleanupFailed(StorageTransactionCleanupError)
     case lostRace
 }
 
@@ -29,10 +28,6 @@ private struct EffectiveTransactionDeadline: Sendable {
 private enum TransactionCancellationOutcome: Sendable {
     case succeeded
     case failed(any Error)
-}
-
-private struct TransactionCancellationAlreadyHandled: Error, Sendable {
-    let cleanupError: StorageTransactionCleanupError
 }
 
 private final class TransactionDeadlineRaceState: Sendable {
@@ -74,9 +69,17 @@ private final class TransactionCancellationGate: Sendable {
         self.onCancel = onCancel
     }
 
+    var hasStarted: Bool {
+        task.withLock { $0 != nil }
+    }
+
+    var storageFailure: StorageError? {
+        transaction.storageFailure
+    }
+
     func cancel(
         preserving operationError: any Error
-    ) async throws(StorageTransactionCleanupError) {
+    ) async -> StorageTransactionCleanupError? {
         let cancellationTask = task.withLock {
             task -> Task<TransactionCancellationOutcome, Never> in
             if let task { return task }
@@ -99,15 +102,9 @@ private final class TransactionCancellationGate: Sendable {
 
         switch await cancellationTask.value {
         case .succeeded:
-            return
+            return nil
         case .failed(let cancellationError):
-            if let cleanupError = operationError
-                as? StorageTransactionCleanupError {
-                throw cleanupError.addingCancellationError(
-                    cancellationError
-                )
-            }
-            throw StorageTransactionCleanupError(
+            return StorageTransactionCleanupError(
                 operationError: operationError,
                 cancellationError: cancellationError
             )
@@ -145,35 +142,44 @@ private final class TransactionCancellationGate: Sendable {
 internal struct TransactionRunner: Sendable {
     // MARK: - Properties
 
-    /// StorageEngine is internally thread-safe (manages backend connections).
-    private let database: any StorageEngine
+    /// Storage transaction execution is internally thread-safe.
+    private let transactionExecutor: StorageTransactionExecutor
     private let clock: any StorageMonotonicClock
 
     private let logger: DatabaseLogger
-
-    private static let retryCounter = Counter(label: "database_transaction_retries_total")
-    private static let retryExhaustedCounter = Counter(label: "database_transaction_retry_exhausted_total")
-    private static let cacheUpdateFailureCounter = Counter(
-        label: "database_transaction_read_version_cache_update_failures_total"
-    )
-    private static let unsupportedConfigurationHintCounter = Counter(
-        label: "database_transaction_unsupported_configuration_hints_total"
-    )
-    private static let unsupportedCachedReadVersionCounter = Counter(
-        label: "database_transaction_unsupported_cached_read_versions_total"
-    )
+    private let retryCounter: DatabaseMetricCounter
+    private let retryExhaustedCounter: DatabaseMetricCounter
+    private let cacheUpdateFailureCounter: DatabaseMetricCounter
+    private let unsupportedConfigurationHintCounter: DatabaseMetricCounter
+    private let unsupportedCachedReadVersionCounter: DatabaseMetricCounter
 
     // MARK: - Initialization
 
     init(
-        database: any StorageEngine,
-        clock: any StorageMonotonicClock = SystemStorageClock(),
-        logging: DatabaseLoggingConfiguration = .disabled
+        transactionExecutor: StorageTransactionExecutor,
+        clock: any StorageMonotonicClock,
+        logging: DatabaseLoggingConfiguration = .disabled,
+        metrics: DatabaseMetricsConfiguration = .disabled
     ) {
-        self.database = database
+        self.transactionExecutor = transactionExecutor
         self.clock = clock
         self.logger = logging.logger(
             label: "com.database.framework.transaction-runner"
+        )
+        self.retryCounter = metrics.counter(
+            label: "database_transaction_retries_total"
+        )
+        self.retryExhaustedCounter = metrics.counter(
+            label: "database_transaction_retry_exhausted_total"
+        )
+        self.cacheUpdateFailureCounter = metrics.counter(
+            label: "database_transaction_read_version_cache_update_failures_total"
+        )
+        self.unsupportedConfigurationHintCounter = metrics.counter(
+            label: "database_transaction_unsupported_configuration_hints_total"
+        )
+        self.unsupportedCachedReadVersionCounter = metrics.counter(
+            label: "database_transaction_unsupported_cached_read_versions_total"
         )
     }
 
@@ -194,6 +200,7 @@ internal struct TransactionRunner: Sendable {
         operationDescription: String = "transaction",
         onRetry: (@Sendable (_ attempt: Int, _ error: StorageError) -> Void)? = nil,
         onCancel: (@Sendable (_ transaction: any Transaction) -> Void)? = nil,
+        onCommitOutcomeUnknown: (@Sendable () -> Void)? = nil,
         onCommitSuccess: (@Sendable (_ transaction: any Transaction, _ commitNanos: UInt64) -> Void)? = nil,
         operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
@@ -230,14 +237,15 @@ internal struct TransactionRunner: Sendable {
         )
 
         for attempt in 0..<maxAttempts {
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             try ensureBeforeDeadline(effectiveDeadline)
             var cancellationGate: TransactionCancellationGate?
             var commitDispatched = false
 
             do {
                 // 1. Create NEW transaction for each attempt
-                let newTransaction = try database.createTransaction()
+                let newTransaction = try transactionExecutor
+                    .createOwnedTransaction()
                 let newCancellationGate = TransactionCancellationGate(
                     transaction: newTransaction,
                     onCancel: onCancel
@@ -285,9 +293,9 @@ internal struct TransactionRunner: Sendable {
                 )
 
                 // 5. Commit (throws on failure)
-                try Task.checkCancellation()
+                try ensureDatabaseTaskIsActive()
                 try ensureBeforeDeadline(effectiveDeadline)
-                let commitStart = MonotonicClock.now().uptimeNanoseconds
+                let commitStart = clock.now
                 // Once commit dispatch begins, cancellation or the portable
                 // deadline cannot determine whether the backend committed. The
                 // unstructured task is immediately awaited so the backend's
@@ -297,7 +305,10 @@ internal struct TransactionRunner: Sendable {
                     try await newTransaction.commit()
                 }
                 try await commitTask.value
-                let commitNanos = MonotonicClock.now().uptimeNanoseconds - commitStart
+                let commitNanos = DatabaseMonotonicMeasurement.nanoseconds(
+                    from: commitStart,
+                    to: clock.now
+                )
 
                 // 6. Update cache after successful commit
                 updateCacheAfterCommit(
@@ -318,37 +329,44 @@ internal struct TransactionRunner: Sendable {
                 }
                 return attemptResult.value
 
-            } catch let handled as TransactionCancellationAlreadyHandled {
-                throw handled.cleanupError
-            } catch is CancellationError {
-                if commitDispatched {
-                    throw Self.commitUnknownError(
-                        underlying: CancellationError()
-                    )
-                }
-                let operationError = CancellationError()
-                if let cancellationGate {
-                    try await cancellationGate.cancel(preserving: operationError)
-                }
-                throw operationError
             } catch {
                 let operationError = error
-                if let storageError = operationError as? StorageError,
-                   storageError.code == .commitUnknownResult {
-                    throw storageError
-                }
-                if commitDispatched, !(operationError is StorageError) {
-                    throw Self.commitUnknownError(underlying: operationError)
-                }
-                // Cancel transaction before retry or rethrow
-                // Reference: FDB best practice - cancel uncommitted transactions
-                if let cancellationGate {
-                    try await cancellationGate.cancel(preserving: operationError)
+                let storageError = cancellationGate?.storageFailure
+
+                if Task.isCancelled {
+                    if commitDispatched {
+                        onCommitOutcomeUnknown?()
+                        throw Self.commitUnknownError()
+                    }
+                    let cancellationError = CancellationError()
+                    if let cancellationGate, !cancellationGate.hasStarted {
+                        if let cleanupError = await cancellationGate.cancel(
+                            preserving: cancellationError
+                        ) {
+                            throw cleanupError
+                        }
+                    }
+                    throw cancellationError
                 }
 
-                // 6. Check if retryable
-                if let storageError = operationError as? StorageError,
-                   storageError.isRetryable {
+                if let storageError,
+                   storageError.code == .commitUnknownResult {
+                    onCommitOutcomeUnknown?()
+                    throw storageError
+                }
+                if commitDispatched, storageError == nil {
+                    onCommitOutcomeUnknown?()
+                    throw Self.commitUnknownError()
+                }
+                if let cancellationGate, !cancellationGate.hasStarted {
+                    if let cleanupError = await cancellationGate.cancel(
+                        preserving: operationError
+                    ) {
+                        throw cleanupError
+                    }
+                }
+
+                if let storageError, storageError.isRetryable {
                     lastRetryableError = storageError
                     if attempt < maxAttempts - 1 {
                         logger.debug(
@@ -357,13 +375,12 @@ internal struct TransactionRunner: Sendable {
                                 "operation": "\(operationDescription)",
                                 "attempt": "\(attempt + 1)",
                                 "maxAttempts": "\(maxAttempts)",
-                                "error": String(describing: storageError)
+                                "classification": "retryable storage error"
                             ]
                         )
-                        Self.retryCounter.increment()
+                        retryCounter.increment()
                         onRetry?(attempt + 1, storageError)
-                        try Task.checkCancellation()
-                        // Apply exponential backoff before retry
+                        try ensureDatabaseTaskIsActive()
                         try await applyBackoff(
                             attempt: attempt,
                             initialDelayMs: configuration.initialRetryDelay,
@@ -372,19 +389,18 @@ internal struct TransactionRunner: Sendable {
                         )
                         continue
                     }
-                    Self.retryExhaustedCounter.increment()
+                    retryExhaustedCounter.increment()
                     logger.error(
                         "Transaction retry exhausted",
                         metadata: [
                             "operation": "\(operationDescription)",
                             "attempts": "\(maxAttempts)",
-                            "error": String(describing: storageError)
+                            "classification": "retryable storage error"
                         ]
                     )
                     throw storageError
                 }
 
-                // Non-retryable error or max retries exceeded
                 throw operationError
             }
         }
@@ -435,14 +451,10 @@ internal struct TransactionRunner: Sendable {
                 try await clock.sleep(until: deadline.instant)
                 guard raceState.selectTimeout() else { return .lostRace }
                 let timeoutError = Self.timeoutError(deadline)
-                do {
-                    try await cancellationGate.cancel(
-                        preserving: timeoutError
-                    )
-                } catch let cleanupError as StorageTransactionCleanupError {
-                    throw TransactionCancellationAlreadyHandled(
-                        cleanupError: cleanupError
-                    )
+                if let cleanupError = await cancellationGate.cancel(
+                    preserving: timeoutError
+                ) {
+                    return .cleanupFailed(cleanupError)
                 }
                 return .timedOut
             }
@@ -455,6 +467,9 @@ internal struct TransactionRunner: Sendable {
                 case .timedOut:
                     group.cancelAll()
                     throw Self.timeoutError(deadline)
+                case .cleanupFailed(let error):
+                    group.cancelAll()
+                    throw error
                 case .lostRace:
                     continue
                 }
@@ -534,14 +549,12 @@ internal struct TransactionRunner: Sendable {
         )
     }
 
-    private static func commitUnknownError(
-        underlying: any Error
-    ) -> StorageError {
+    private static func commitUnknownError() -> StorageError {
         StorageError(
             code: .commitUnknownResult,
             operation: .commit,
             message: "Commit dispatch ended without an authoritative backend outcome",
-            underlyingDescription: String(describing: underlying)
+            underlyingDescription: "backend commit outcome was unavailable"
         )
     }
 
@@ -563,7 +576,7 @@ internal struct TransactionRunner: Sendable {
 
         guard transaction.capabilities.historicalReadVersion else {
             cache.clear()
-            Self.unsupportedCachedReadVersionCounter.increment()
+            unsupportedCachedReadVersionCounter.increment()
             logger.debug(
                 "Cached read version omitted because the backend has no historical reads",
                 metadata: ["cachedVersion": "\(cachedVersion)"]
@@ -583,10 +596,10 @@ internal struct TransactionRunner: Sendable {
             return try await transaction.getReadVersion()
         } catch {
             cache.clear()
-            Self.cacheUpdateFailureCounter.increment()
+            cacheUpdateFailureCounter.increment()
             logger.warning(
                 "Read version capture failed before commit; cache cleared",
-                metadata: ["error": "\(String(describing: error))"]
+                metadata: ["outcome": "read-version capture failed"]
             )
             return nil
         }
@@ -622,11 +635,11 @@ internal struct TransactionRunner: Sendable {
             cache.clear()
         } catch {
             cache.clear()
-            Self.cacheUpdateFailureCounter.increment()
+            cacheUpdateFailureCounter.increment()
             logger.warning(
                 "Read version cache update failed after commit; cache cleared",
                 metadata: [
-                    "error": "\(String(describing: error))"
+                    "outcome": "read-version cache update failed"
                 ]
             )
         }
@@ -637,7 +650,7 @@ internal struct TransactionRunner: Sendable {
         operationDescription: String
     ) {
         for hint in resolution.unsupportedHints {
-            Self.unsupportedConfigurationHintCounter.increment()
+            unsupportedConfigurationHintCounter.increment()
             logger.debug(
                 "Transaction configuration hint omitted for backend",
                 metadata: [

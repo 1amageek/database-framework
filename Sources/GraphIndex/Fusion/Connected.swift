@@ -194,7 +194,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             )
         } else {
             // Fetch items that match connected node values
-            items = try await fetchItemsByNodeValues(connectedNodes.map(\.node))
+            items = try await fetchItemsByNodeValues(connectedNodes.map { $0.node })
         }
 
         // Score items based on graph connectivity
@@ -318,42 +318,50 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
         switch direction {
         case .outgoing:
-            for try await edge in scanner.scanOutgoing(
+            let edgeSequence = scanner.scanOutgoing(
                 from: nodeIdentity,
                 edgeLabel: edgeIdentity,
                 transaction: transaction
-            ) {
+            )
+            var edgeCursor = edgeSequence.makeCursor()
+            while let edge = try await edgeCursor.next() {
                 results.insert(
                     try edge.target.requirePropertyGraphIdentifier()
                 )
             }
 
         case .incoming:
-            for try await edge in scanner.scanIncoming(
+            let edgeSequence = scanner.scanIncoming(
                 to: nodeIdentity,
                 edgeLabel: edgeIdentity,
                 transaction: transaction
-            ) {
+            )
+            var edgeCursor = edgeSequence.makeCursor()
+            while let edge = try await edgeCursor.next() {
                 results.insert(
                     try edge.source.requirePropertyGraphIdentifier()
                 )
             }
 
         case .both:
-            for try await edge in scanner.scanOutgoing(
+            let outgoingSequence = scanner.scanOutgoing(
                 from: nodeIdentity,
                 edgeLabel: edgeIdentity,
                 transaction: transaction
-            ) {
+            )
+            var outgoingCursor = outgoingSequence.makeCursor()
+            while let edge = try await outgoingCursor.next() {
                 results.insert(
                     try edge.target.requirePropertyGraphIdentifier()
                 )
             }
-            for try await edge in scanner.scanIncoming(
+            let incomingSequence = scanner.scanIncoming(
                 to: nodeIdentity,
                 edgeLabel: edgeIdentity,
                 transaction: transaction
-            ) {
+            )
+            var incomingCursor = incomingSequence.makeCursor()
+            while let edge = try await incomingCursor.next() {
                 results.insert(
                     try edge.source.requirePropertyGraphIdentifier()
                 )
@@ -443,7 +451,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             throw GraphIndexError.invalidFieldType(
                 fieldName: field.name,
                 expectedType: "String",
-                actualType: String(describing: value)
+                actualType: GraphValueSemanticName.field(value)
             )
         }
     }

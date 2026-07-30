@@ -1,11 +1,6 @@
 // MostCommonValues.swift
 // Database statistics for most common values
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 
@@ -69,17 +64,16 @@ public struct MostCommonValues: Sendable {
     public var count: Int { entries.count }
 
     /// Timestamp when statistics were collected
-    public let timestamp: Date
+    public let timestamp: Timestamp
 
     /// Create an MCV list
-    public init(entries: [Entry], timestamp: Date = Date()) {
+    public init(entries: [Entry], timestamp: Timestamp) {
         self.entries = entries
         self.totalFrequency = entries.reduce(0) { $0 + $1.frequency }
         self.timestamp = timestamp
     }
 
     /// Empty MCV
-    public static let empty = MostCommonValues(entries: [])
 
     // MARK: - Selectivity Estimation
 
@@ -217,9 +211,13 @@ public struct MCVBuilder: Sendable {
     ///   - totalCount: Total population count (for frequency scaling)
     ///   - sampleCount: Number of samples taken (if different from totalSamples)
     /// - Returns: MostCommonValues instance
-    public func build(totalCount: Int64, sampleCount: Int? = nil) -> MostCommonValues {
+    public func build(
+        totalCount: Int64,
+        sampleCount: Int? = nil,
+        timestamp: Timestamp
+    ) -> MostCommonValues {
         guard totalSamples > 0 else {
-            return .empty
+            return MostCommonValues(entries: [], timestamp: timestamp)
         }
 
         let effectiveSampleCount = sampleCount ?? totalSamples
@@ -250,15 +248,18 @@ public struct MCVBuilder: Sendable {
             )
         }
 
-        return MostCommonValues(entries: mcvEntries)
+        return MostCommonValues(entries: mcvEntries, timestamp: timestamp)
     }
 
     /// Get values that should be excluded from histogram
     ///
     /// Returns the set of values in MCV (these should not be included
     /// in histogram buckets to avoid double-counting)
-    public func mcvValues() -> Set<FieldValue> {
-        let built = build(totalCount: Int64(totalSamples))
+    public func mcvValues(timestamp: Timestamp) -> Set<FieldValue> {
+        let built = build(
+            totalCount: Int64(totalSamples),
+            timestamp: timestamp
+        )
         return Set(built.entries.map { $0.value })
     }
 

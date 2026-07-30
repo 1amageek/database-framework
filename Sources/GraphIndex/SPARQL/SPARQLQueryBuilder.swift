@@ -3,14 +3,10 @@
 //
 // Fluent builder for constructing SPARQL-like graph queries.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
+import StorageKit
 
 /// Builder for SPARQL-like graph queries
 ///
@@ -435,14 +431,18 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
 
         let executor = SPARQLQueryExecutor(
             database: queryContext.context.container.engine,
+            wallClock: queryContext.context.container.wallClock,
             sources: [source]
         )
-        let workMeter = DatabaseWorkMeter(budget: budget)
+        let workMeter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: queryContext.context.container.monotonicClock
+        )
 
         let allVariables = graphPattern.outputVariables
         let projection = projectedVariables ?? Array(allVariables).sorted()
 
-        let startTime = MonotonicClock.now()
+        let startTime = queryContext.graphClock.now()
 
         let hasOrderBy = !sortKeys.isEmpty
         let needsAllResults = hasOrderBy || isDistinct
@@ -490,7 +490,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             }
         }
 
-        let endTime = MonotonicClock.now()
+        let endTime = queryContext.graphClock.now()
         stats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
         let resultCount = projected.count

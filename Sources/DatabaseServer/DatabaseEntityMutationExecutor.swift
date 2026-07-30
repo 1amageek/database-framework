@@ -58,7 +58,7 @@ struct DatabaseEntityMutationExecutor: Sendable {
                     throw DatabaseMutationError.unknownEntity(change.identity.entity)
                 }
                 guard let type = container.runtimeConfiguration
-                    .persistableTypes.type(named: entity.name) else {
+                    .entityRuntimes.modelType(named: entity.name) else {
                     throw DatabaseMutationError.entityHasNoPersistableType(change.identity.entity)
                 }
                 model = try type.decodePersistedObject(change.fields)

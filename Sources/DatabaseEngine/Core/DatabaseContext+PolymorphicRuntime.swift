@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import StorageKit
 
@@ -15,11 +10,18 @@ public struct PolymorphicEntity: Sendable {
     public let item: any Persistable
     public let typeName: String
     public let typeCode: Int64
+    public let polymorphicIdentifier: Tuple
 
-    public init(item: any Persistable, typeName: String, typeCode: Int64) {
+    public init(
+        item: any Persistable,
+        typeName: String,
+        typeCode: Int64,
+        polymorphicIdentifier: Tuple
+    ) {
         self.item = item
         self.typeName = typeName
         self.typeCode = typeCode
+        self.polymorphicIdentifier = polymorphicIdentifier
     }
 }
 
@@ -58,22 +60,35 @@ extension DatabaseContext {
             let (begin, end) = itemSubspace.range()
             var entities: [PolymorphicEntity] = []
 
-            for try await (key, data) in storage.scan(begin: begin, end: end, snapshot: true) {
+            var iterator = storage.scan(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).makeAsyncIterator()
+            while let (key, data) = try await iterator.next() {
                 let tuple = try itemSubspace.unpack(key)
-                guard tuple.count > 0,
-                      let typeCode = tuple[0] as? Int64 else {
+                guard tuple.count > 0 else {
                     throw PolymorphicRuntimeError.invalidStoredIdentifier
                 }
-                guard let runtimeType = typeMap[typeCode] else {
+                let typeCodeValue = try tuple.value(at: 0)
+                guard case .signedInteger(let typeCode) = typeCodeValue else {
+                    throw PolymorphicRuntimeError.invalidStoredIdentifier
+                }
+                guard let runtime = typeMap[typeCode] else {
                     throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
                 }
-                let item = try DataAccess.deserializeAny(data, as: runtimeType)
-                try self.container.securityDelegate?.evaluateGet(item)
+                let persistedModel = try DataAccess.deserializePersistedModel(
+                    data,
+                    expectedEntity: runtime.entity.name
+                )
+                let item = try runtime.decode(persistedModel)
+                try self.container.securityDelegate?.evaluateGet(persistedModel)
                 entities.append(
                     PolymorphicEntity(
                         item: item,
-                        typeName: runtimeType.persistableType,
-                        typeCode: typeCode
+                        typeName: runtime.entity.name,
+                        typeCode: typeCode,
+                        polymorphicIdentifier: tuple
                     )
                 )
             }
@@ -97,24 +112,32 @@ extension DatabaseContext {
             var items: [PolymorphicEntity] = []
 
             for id in ids {
-                guard id.count > 0,
-                      let typeCode = id[0] as? Int64 else {
+                guard id.count > 0 else {
+                    throw PolymorphicRuntimeError.invalidRequestedIdentifier
+                }
+                let typeCodeValue = try id.value(at: 0)
+                guard case .signedInteger(let typeCode) = typeCodeValue else {
                     throw PolymorphicRuntimeError.invalidRequestedIdentifier
                 }
                 let key = itemSubspace.pack(id)
                 guard let data = try await storage.read(for: key) else {
                     continue
                 }
-                guard let runtimeType = typeMap[typeCode] else {
+                guard let runtime = typeMap[typeCode] else {
                     throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
                 }
-                let item = try DataAccess.deserializeAny(data, as: runtimeType)
-                try self.container.securityDelegate?.evaluateGet(item)
+                let persistedModel = try DataAccess.deserializePersistedModel(
+                    data,
+                    expectedEntity: runtime.entity.name
+                )
+                let item = try runtime.decode(persistedModel)
+                try self.container.securityDelegate?.evaluateGet(persistedModel)
                 items.append(
                     PolymorphicEntity(
                         item: item,
-                        typeName: runtimeType.persistableType,
-                        typeCode: typeCode
+                        typeName: runtime.entity.name,
+                        typeCode: typeCode,
+                        polymorphicIdentifier: id
                     )
                 )
             }
@@ -122,12 +145,12 @@ extension DatabaseContext {
         }
     }
 
-    func polymorphicTypeMap(
+    package func polymorphicTypeMap(
         for group: PolymorphicGroup
-    ) throws -> [Int64: any Persistable.Type] {
-        var result: [Int64: any Persistable.Type] = [:]
+    ) throws -> [Int64: EntityRuntimeRegistration] {
+        var result: [Int64: EntityRuntimeRegistration] = [:]
         for typeName in group.memberTypeNames {
-            guard let type = container.runtimeConfiguration.persistableTypes.type(
+            guard let runtime = container.runtimeConfiguration.entityRuntimes.registration(
                 named: typeName
             ) else {
                 throw DatabaseRuntimeConfigurationError
@@ -136,13 +159,13 @@ extension DatabaseContext {
                         memberTypeName: typeName
                     )
             }
-            guard let polymorphicType = type as? any Polymorphable.Type else {
+            guard runtime.entity.polymorphicMembership?.identifier == group.identifier else {
                 throw PolymorphicRuntimeError.nonPolymorphableMember(
                     groupIdentifier: group.identifier,
                     memberTypeName: typeName
                 )
             }
-            result[polymorphicType.typeCode(for: type.persistableType)] = type
+            result[PolymorphicTypeCode.value(for: runtime.entity.name)] = runtime
         }
         return result
     }
@@ -154,7 +177,7 @@ extension DatabaseContext {
         orderBy: [String]?
     ) throws {
         for typeName in group.memberTypeNames {
-            guard let type = container.runtimeConfiguration.persistableTypes.type(
+            guard let runtime = container.runtimeConfiguration.entityRuntimes.registration(
                 named: typeName
             ) else {
                 throw DatabaseRuntimeConfigurationError
@@ -164,7 +187,7 @@ extension DatabaseContext {
                     )
             }
             try evaluatePolymorphicListAccess(
-                for: type,
+                for: runtime.entity,
                 limit: limit,
                 offset: offset,
                 orderBy: orderBy
@@ -173,21 +196,17 @@ extension DatabaseContext {
     }
 
     private func evaluatePolymorphicListAccess(
-        for type: any Persistable.Type,
+        for entity: Schema.Entity,
         limit: Int?,
         offset: Int?,
         orderBy: [String]?
     ) throws {
-        func evaluateConcreteListAccess<T: Persistable>(_ concreteType: T.Type) throws {
-            try container.securityDelegate?.evaluateList(
-                type: concreteType,
-                limit: limit,
-                offset: offset,
-                orderBy: orderBy
-            )
-        }
-
-        try _openExistential(type, do: evaluateConcreteListAccess)
+        try container.securityDelegate?.evaluateList(
+            entity: entity.name,
+            limit: limit,
+            offset: offset,
+            orderBy: orderBy
+        )
     }
 
 }

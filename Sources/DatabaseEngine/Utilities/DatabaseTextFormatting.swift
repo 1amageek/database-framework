@@ -146,22 +146,26 @@ public enum DatabaseTextFormatting {
             + retainedDigits.count
             + decimalPointByteCount
 
-        return String(unsafeUninitializedCapacity: outputByteCount) { output in
-            var outputIndex = 0
-            if isNegative {
-                output[outputIndex] = 0x2D
-                outputIndex += 1
-            }
-
-            for index in retainedDigits.indices {
-                if fractionDigits > 0, index == integerDigitCount {
-                    output[outputIndex] = 0x2E
-                    outputIndex += 1
+        return UTF8StringBuilder.make(byteCount: outputByteCount) { output in
+            for outputIndex in 0..<outputByteCount {
+                var contentIndex = outputIndex
+                if isNegative {
+                    if contentIndex == 0 {
+                        output[outputIndex] = 0x2D
+                        continue
+                    }
+                    contentIndex -= 1
                 }
-                output[outputIndex] = retainedDigits[index] + 0x30
-                outputIndex += 1
+                if fractionDigits > 0, contentIndex == integerDigitCount {
+                    output[outputIndex] = 0x2E
+                    continue
+                }
+                let digitIndex = fractionDigits > 0
+                    && contentIndex > integerDigitCount
+                    ? contentIndex - 1
+                    : contentIndex
+                output[outputIndex] = retainedDigits[digitIndex] + 0x30
             }
-            return outputIndex
         }
     }
 
@@ -176,7 +180,7 @@ public enum DatabaseTextFormatting {
         let (capacity, overflow) = bytes.count.multipliedReportingOverflow(by: 2)
         precondition(!overflow, "Hex output exceeds addressable memory")
 
-        return String(unsafeUninitializedCapacity: capacity) { output in
+        return UTF8StringBuilder.make(byteCount: capacity) { output in
             var outputIndex = 0
             for byte in bytes {
                 let high = byte >> 4
@@ -185,7 +189,6 @@ public enum DatabaseTextFormatting {
                 output[outputIndex + 1] = low < 10 ? low + 0x30 : low + 0x57
                 outputIndex += 2
             }
-            return outputIndex
         }
     }
 

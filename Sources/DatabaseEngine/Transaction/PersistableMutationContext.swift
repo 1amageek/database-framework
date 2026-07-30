@@ -53,6 +53,22 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
         }
     }
 
+    /// Saves a heterogeneous canonical model through its statically registered
+    /// entity runtime. Relationship and graph maintainers use this boundary to
+    /// avoid reopening an existential metatype inside Embedded Swift.
+    public func save(
+        _ model: PersistedModel,
+        precondition: WritePrecondition = .none
+    ) async throws {
+        try await perform {
+            try await transaction.savePersistedModel(
+                model,
+                precondition: precondition,
+                within: operationID
+            )
+        }
+    }
+
     public func delete(
         _ model: any Persistable,
         precondition: WritePrecondition = .exists
@@ -86,7 +102,7 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
     ) async throws -> Value {
         try scope.enter()
         do {
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             let value = try await operation()
             scope.leave()
             return value

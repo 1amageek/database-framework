@@ -1,4 +1,5 @@
 import DatabaseKit
+import StorageKit
 
 /// A container-scoped executable adapter for one concrete model policy.
 ///
@@ -13,22 +14,22 @@ public struct AuthorizationPolicyHandler: Sendable {
         AuthorizationContext
     ) -> Bool
     private let readDecision: @Sendable (
-        borrowing any Persistable,
+        borrowing PersistedModel,
         AuthorizationContext
-    ) throws -> Bool
+    ) throws -> AuthorizationResourceDecision
     private let createDecision: @Sendable (
-        borrowing any Persistable,
+        borrowing PersistedModel,
         AuthorizationContext
-    ) throws -> Bool
+    ) throws -> AuthorizationResourceDecision
     private let updateDecision: @Sendable (
-        borrowing any Persistable,
-        borrowing any Persistable,
+        borrowing PersistedModel,
+        borrowing PersistedModel,
         AuthorizationContext
-    ) throws -> Bool
+    ) throws -> AuthorizationResourceDecision
     private let deleteDecision: @Sendable (
-        borrowing any Persistable,
+        borrowing PersistedModel,
         AuthorizationContext
-    ) throws -> Bool
+    ) throws -> AuthorizationResourceDecision
 
     public init<Model: SecurityPolicy>(_ modelType: Model.Type) {
         _ = modelType
@@ -37,45 +38,37 @@ public struct AuthorizationPolicyHandler: Sendable {
             Model.permitsQuery(query, in: context)
         }
         self.readDecision = { resource, context in
-            guard let resource = resource as? Model else {
-                throw AuthorizationPolicyHandlerError.modelTypeMismatch(
-                    expected: Model.persistableType,
-                    actual: type(of: resource).persistableType
-                )
-            }
-            return Model.permitsRead(of: resource, in: context)
+            let resource = try resource.decode(as: Model.self)
+            return try AuthorizationResourceDecision(
+                isPermitted: Model.permitsRead(of: resource, in: context),
+                resource: resource
+            )
         }
         self.createDecision = { resource, context in
-            guard let resource = resource as? Model else {
-                throw AuthorizationPolicyHandlerError.modelTypeMismatch(
-                    expected: Model.persistableType,
-                    actual: type(of: resource).persistableType
-                )
-            }
-            return Model.permitsCreate(resource, in: context)
+            let resource = try resource.decode(as: Model.self)
+            return try AuthorizationResourceDecision(
+                isPermitted: Model.permitsCreate(resource, in: context),
+                resource: resource
+            )
         }
         self.updateDecision = { oldResource, newResource, context in
-            guard let oldResource = oldResource as? Model,
-                  let newResource = newResource as? Model else {
-                throw AuthorizationPolicyHandlerError.modelTypeMismatch(
-                    expected: Model.persistableType,
-                    actual: type(of: newResource).persistableType
-                )
-            }
-            return Model.permitsUpdate(
-                from: oldResource,
-                to: newResource,
-                in: context
+            let oldResource = try oldResource.decode(as: Model.self)
+            let newResource = try newResource.decode(as: Model.self)
+            return try AuthorizationResourceDecision(
+                isPermitted: Model.permitsUpdate(
+                    from: oldResource,
+                    to: newResource,
+                    in: context
+                ),
+                resource: newResource
             )
         }
         self.deleteDecision = { resource, context in
-            guard let resource = resource as? Model else {
-                throw AuthorizationPolicyHandlerError.modelTypeMismatch(
-                    expected: Model.persistableType,
-                    actual: type(of: resource).persistableType
-                )
-            }
-            return Model.permitsDelete(resource, in: context)
+            let resource = try resource.decode(as: Model.self)
+            return try AuthorizationResourceDecision(
+                isPermitted: Model.permitsDelete(resource, in: context),
+                resource: resource
+            )
         }
     }
 
@@ -87,31 +80,49 @@ public struct AuthorizationPolicyHandler: Sendable {
     }
 
     func permitsRead(
-        _ resource: borrowing any Persistable,
+        _ resource: borrowing PersistedModel,
         context: AuthorizationContext
-    ) throws -> Bool {
+    ) throws -> AuthorizationResourceDecision {
         try readDecision(resource, context)
     }
 
     func permitsCreate(
-        _ resource: borrowing any Persistable,
+        _ resource: borrowing PersistedModel,
         context: AuthorizationContext
-    ) throws -> Bool {
+    ) throws -> AuthorizationResourceDecision {
         try createDecision(resource, context)
     }
 
     func permitsUpdate(
-        from resource: borrowing any Persistable,
-        to newResource: borrowing any Persistable,
+        from resource: borrowing PersistedModel,
+        to newResource: borrowing PersistedModel,
         context: AuthorizationContext
-    ) throws -> Bool {
+    ) throws -> AuthorizationResourceDecision {
         try updateDecision(resource, newResource, context)
     }
 
     func permitsDelete(
-        _ resource: borrowing any Persistable,
+        _ resource: borrowing PersistedModel,
         context: AuthorizationContext
-    ) throws -> Bool {
+    ) throws -> AuthorizationResourceDecision {
         try deleteDecision(resource, context)
+    }
+}
+
+struct AuthorizationResourceDecision: Sendable {
+    let isPermitted: Bool
+    let resourceID: String
+
+    init<Model: Persistable>(
+        isPermitted: Bool,
+        resource: borrowing Model
+    ) throws {
+        self.isPermitted = isPermitted
+        self.resourceID = DatabaseTextFormatting.lowercaseHex(
+            try PersistableIdentifierKeyCodec.tuple(
+                for: resource.persistableIdentifierValue,
+                expectedType: Model.persistableIdentifierType
+            ).pack()
+        )
     }
 }

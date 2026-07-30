@@ -1,11 +1,6 @@
 // StatisticsStorage.swift
 // Storage-backed persistence for database statistics
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseTypes
 import DatabaseKit
@@ -63,7 +58,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("table").pack(Tuple([typeName]))
         let data = try StatisticsEntryCodec.encode(stats)
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.setValue(data, for: key)
         }
     }
@@ -72,7 +67,7 @@ public final class StatisticsStorage: Sendable {
     public func loadTableStatistics(typeName: String) async throws -> TableStatisticsData? {
         let key = statsSubspace.subspace("table").pack(Tuple([typeName]))
 
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -84,11 +79,11 @@ public final class StatisticsStorage: Sendable {
     public func loadAllTableStatistics() async throws -> [String: TableStatisticsData] {
         let tableSubspace = statsSubspace.subspace("table")
 
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             var results: [String: TableStatisticsData] = [:]
 
             let (begin, end) = tableSubspace.range()
-            for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
+            for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
                 let keyTuple = try tableSubspace.unpack(key)
                 guard keyTuple.count == 1 else {
                     throw StatisticsStorageError.malformedKey(
@@ -96,7 +91,7 @@ public final class StatisticsStorage: Sendable {
                         actual: keyTuple.count
                     )
                 }
-                guard let typeName = try keyTuple.element(at: 0) as? String else {
+                guard case .string(let typeName) = try keyTuple.value(at: 0) else {
                     throw StatisticsStorageError.malformedKeyElement
                 }
                 results[typeName] = try StatisticsEntryCodec.decodeTable(value)
@@ -113,7 +108,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("field").subspace(typeName).pack(Tuple([fieldName]))
         let data = try StatisticsEntryCodec.encode(stats)
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.setValue(data, for: key)
         }
     }
@@ -122,7 +117,7 @@ public final class StatisticsStorage: Sendable {
     public func loadFieldStatistics(typeName: String, fieldName: String) async throws -> FieldStatisticsData? {
         let key = statsSubspace.subspace("field").subspace(typeName).pack(Tuple([fieldName]))
 
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -134,11 +129,11 @@ public final class StatisticsStorage: Sendable {
     public func loadAllFieldStatistics(typeName: String) async throws -> [String: FieldStatisticsData] {
         let fieldSubspace = statsSubspace.subspace("field").subspace(typeName)
 
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             var results: [String: FieldStatisticsData] = [:]
 
             let (begin, end) = fieldSubspace.range()
-            for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
+            for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
                 let keyTuple = try fieldSubspace.unpack(key)
                 guard keyTuple.count == 1 else {
                     throw StatisticsStorageError.malformedKey(
@@ -146,7 +141,7 @@ public final class StatisticsStorage: Sendable {
                         actual: keyTuple.count
                     )
                 }
-                guard let fieldName = try keyTuple.element(at: 0) as? String else {
+                guard case .string(let fieldName) = try keyTuple.value(at: 0) else {
                     throw StatisticsStorageError.malformedKeyElement
                 }
                 results[fieldName] = try StatisticsEntryCodec.decodeField(value)
@@ -163,7 +158,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("index").pack(Tuple([indexName]))
         let data = try StatisticsEntryCodec.encode(stats)
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.setValue(data, for: key)
         }
     }
@@ -172,7 +167,7 @@ public final class StatisticsStorage: Sendable {
     public func loadIndexStatistics(indexName: String) async throws -> IndexStatisticsData? {
         let key = statsSubspace.subspace("index").pack(Tuple([indexName]))
 
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -187,7 +182,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("search").subspace("vector").pack(Tuple([indexName]))
         let data = try StatisticsEntryCodec.encode(stats)
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.setValue(data, for: key)
         }
     }
@@ -196,7 +191,7 @@ public final class StatisticsStorage: Sendable {
     public func loadVectorStatistics(indexName: String) async throws -> VectorStatisticsData? {
         let key = statsSubspace.subspace("search").subspace("vector").pack(Tuple([indexName]))
 
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -209,7 +204,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("search").subspace("fulltext").pack(Tuple([indexName]))
         let data = try StatisticsEntryCodec.encode(stats)
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.setValue(data, for: key)
         }
     }
@@ -218,7 +213,7 @@ public final class StatisticsStorage: Sendable {
     public func loadFullTextStatistics(indexName: String) async throws -> FullTextStatisticsData? {
         let key = statsSubspace.subspace("search").subspace("fulltext").pack(Tuple([indexName]))
 
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -231,7 +226,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("search").subspace("spatial").pack(Tuple([indexName]))
         let data = try StatisticsEntryCodec.encode(stats)
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.setValue(data, for: key)
         }
     }
@@ -240,7 +235,7 @@ public final class StatisticsStorage: Sendable {
     public func loadSpatialStatistics(indexName: String) async throws -> SpatialStatisticsData? {
         let key = statsSubspace.subspace("search").subspace("spatial").pack(Tuple([indexName]))
 
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -252,7 +247,7 @@ public final class StatisticsStorage: Sendable {
 
     /// Delete all statistics for a type
     public func deleteAllStatistics(typeName: String) async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             // Delete table stats (single key range)
             let tableKey = self.statsSubspace.subspace("table").pack(Tuple([typeName]))
             let tableKeyEnd = tableKey.appending(0x00)
@@ -267,7 +262,7 @@ public final class StatisticsStorage: Sendable {
 
     /// Delete index statistics
     public func deleteIndexStatistics(indexName: String) async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             let key = self.statsSubspace.subspace("index").pack(Tuple([indexName]))
             let keyEnd = key.appending(0x00)
             try transaction.clearRange(beginKey: key, endKey: keyEnd)
@@ -281,11 +276,14 @@ public final class StatisticsStorage: Sendable {
     }
 
     /// Get statistics age for a type
-    public func statisticsAge(typeName: String) async throws -> TimeInterval? {
+    public func statisticsAge(typeName: String) async throws -> TimeSpan? {
         guard let stats = try await loadTableStatistics(typeName: typeName) else {
             return nil
         }
-        return Date().timeIntervalSince(stats.timestamp)
+        return try DatabaseTimestampMeasurement.elapsed(
+            from: stats.timestamp,
+            to: container.wallClock.now
+        )
     }
 }
 
@@ -297,14 +295,14 @@ public struct TableStatisticsData: Sendable {
     public let avgRowSize: Int
     public let sampleSize: Int
     public let sampleRate: Double
-    public let timestamp: Date
+    public let timestamp: Timestamp
 
     public init(
         rowCount: Int64,
         avgRowSize: Int = 0,
         sampleSize: Int = 0,
         sampleRate: Double = 1.0,
-        timestamp: Date = Date()
+        timestamp: Timestamp
     ) {
         self.rowCount = rowCount
         self.avgRowSize = avgRowSize
@@ -334,7 +332,7 @@ public struct FieldStatisticsData: Sendable {
     /// Histogram (excludes MCV values to avoid double-counting)
     public let histogram: Histogram?
 
-    public let timestamp: Date
+    public let timestamp: Timestamp
 
     public init(
         fieldName: String,
@@ -345,7 +343,7 @@ public struct FieldStatisticsData: Sendable {
         maxValue: FieldValue? = nil,
         mcv: MostCommonValues? = nil,
         histogram: Histogram? = nil,
-        timestamp: Date = Date()
+        timestamp: Timestamp
     ) {
         self.fieldName = fieldName
         self.distinctCount = distinctCount
@@ -386,7 +384,7 @@ public struct IndexStatisticsData: Sendable {
     public let distinctKeyCount: Int64
     public let avgEntriesPerKey: Double
     public let sizeBytes: Int64?
-    public let timestamp: Date
+    public let timestamp: Timestamp
 
     public init(
         indexName: String,
@@ -394,7 +392,7 @@ public struct IndexStatisticsData: Sendable {
         distinctKeyCount: Int64 = 0,
         avgEntriesPerKey: Double = 1.0,
         sizeBytes: Int64? = nil,
-        timestamp: Date = Date()
+        timestamp: Timestamp
     ) {
         self.indexName = indexName
         self.entryCount = entryCount
@@ -413,7 +411,7 @@ public struct VectorStatisticsData: Sendable {
     public let avgL2Norm: Double
     public let stdDevL2Norm: Double
     public let normBuckets: [NormBucketData]?
-    public let timestamp: Date
+    public let timestamp: Timestamp
 
     public init(
         indexName: String,
@@ -422,7 +420,7 @@ public struct VectorStatisticsData: Sendable {
         avgL2Norm: Double = 1.0,
         stdDevL2Norm: Double = 0.1,
         normBuckets: [NormBucketData]? = nil,
-        timestamp: Date = Date()
+        timestamp: Timestamp
     ) {
         self.indexName = indexName
         self.vectorCount = vectorCount
@@ -453,7 +451,7 @@ public struct FullTextStatisticsData: Sendable {
     public let avgDocLength: Double
     public let uniqueTerms: Int64
     public let topTerms: [TermFrequency]?
-    public let timestamp: Date
+    public let timestamp: Timestamp
 
     public init(
         indexName: String,
@@ -461,7 +459,7 @@ public struct FullTextStatisticsData: Sendable {
         avgDocLength: Double,
         uniqueTerms: Int64,
         topTerms: [TermFrequency]? = nil,
-        timestamp: Date = Date()
+        timestamp: Timestamp
     ) {
         self.indexName = indexName
         self.totalDocs = totalDocs
@@ -490,7 +488,7 @@ public struct SpatialStatisticsData: Sendable {
     public let cellCount: Int64
     public let avgCellDensity: Double
     public let hotCells: [UInt64]?
-    public let timestamp: Date
+    public let timestamp: Timestamp
 
     public init(
         indexName: String,
@@ -499,7 +497,7 @@ public struct SpatialStatisticsData: Sendable {
         cellCount: Int64 = 0,
         avgCellDensity: Double = 1.0,
         hotCells: [UInt64]? = nil,
-        timestamp: Date = Date()
+        timestamp: Timestamp
     ) {
         self.indexName = indexName
         self.entryCount = entryCount

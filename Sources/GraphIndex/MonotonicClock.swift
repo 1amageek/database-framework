@@ -1,33 +1,37 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
+import StorageKit
 
 internal struct MonotonicTimestamp: Sendable {
-    fileprivate let instant: ContinuousClock.Instant
+    fileprivate let instant: StorageInstant
 
     var uptimeNanoseconds: UInt64 {
-        MonotonicClock.nanoseconds(from: MonotonicClock.epoch, to: instant)
+        let duration = StorageInstant(
+            durationSinceReference: .zero
+        ).duration(to: instant)
+        let components = duration.components
+        guard components.seconds >= 0 else { return 0 }
+        let seconds = UInt64(components.seconds)
+        let secondNanoseconds = seconds.multipliedReportingOverflow(
+            by: 1_000_000_000
+        )
+        guard !secondNanoseconds.overflow else { return UInt64.max }
+        let fractionalNanoseconds = UInt64(
+            max(0, components.attoseconds / 1_000_000_000)
+        )
+        let total = secondNanoseconds.partialValue.addingReportingOverflow(
+            fractionalNanoseconds
+        )
+        return total.overflow ? UInt64.max : total.partialValue
     }
 }
 
-internal enum MonotonicClock {
-    fileprivate static let clock = ContinuousClock()
-    fileprivate static let epoch = clock.now
+internal struct MonotonicClock: Sendable {
+    private let source: any StorageMonotonicClock
 
-    static func now() -> MonotonicTimestamp {
-        _ = epoch
-        return MonotonicTimestamp(instant: clock.now)
+    init(source: any StorageMonotonicClock) {
+        self.source = source
     }
 
-    fileprivate static func nanoseconds(
-        from start: ContinuousClock.Instant,
-        to end: ContinuousClock.Instant
-    ) -> UInt64 {
-        let components = start.duration(to: end).components
-        let secondsNanoseconds = components.seconds * 1_000_000_000
-        let attosecondsNanoseconds = components.attoseconds / 1_000_000_000
-        return UInt64(max(0, secondsNanoseconds + attosecondsNanoseconds))
+    func now() -> MonotonicTimestamp {
+        MonotonicTimestamp(instant: source.now)
     }
 }

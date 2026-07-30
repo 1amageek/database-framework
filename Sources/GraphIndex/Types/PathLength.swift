@@ -4,11 +4,6 @@
 // Provides a flexible way to specify path length constraints for
 // graph traversal queries, similar to Cypher's *min..max syntax.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 // MARK: - PathLength
 
@@ -260,27 +255,5 @@ extension PathLength {
 
     public init(_ range: PartialRangeUpTo<Int>) {
         self = .atMost(range.upperBound - 1)
-    }
-}
-
-// MARK: - Codable
-
-extension PathLength: Codable {
-    enum CodingKeys: String, CodingKey {
-        case min
-        case max
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let min = try container.decode(Int.self, forKey: .min)
-        let max = try container.decodeIfPresent(Int.self, forKey: .max)
-        self.init(min: min, max: max)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(min, forKey: .min)
-        try container.encodeIfPresent(max, forKey: .max)
     }
 }

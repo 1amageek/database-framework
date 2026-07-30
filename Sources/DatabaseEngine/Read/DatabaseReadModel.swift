@@ -1,6 +1,7 @@
 import DatabaseKit
 import DatabaseTypes
 import DatabaseWire
+import StorageKit
 
 /// Opaque continuation produced and consumed by the engine read pipeline.
 public struct QueryContinuation: Sendable, Hashable {
@@ -52,11 +53,15 @@ public struct ReadExecutionContext: Sendable {
 
     public init(
         options: ReadExecutionOptions = .default,
+        monotonicClock: any StorageMonotonicClock,
         workMeter: DatabaseWorkMeter? = nil,
         queryStructuralLimits: QueryStructuralLimits = .default
     ) {
         self.options = options
-        self.workMeter = workMeter ?? DatabaseWorkMeter(budget: options.budget)
+        self.workMeter = workMeter ?? DatabaseWorkMeter(
+            budget: options.budget,
+            monotonicClock: monotonicClock
+        )
         self.queryStructuralLimits = queryStructuralLimits
     }
 

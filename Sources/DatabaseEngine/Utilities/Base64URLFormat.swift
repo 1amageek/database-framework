@@ -14,32 +14,32 @@ internal enum Base64URLFormat {
         let remainder = bytes.count % 3
         let outputCount = completeQuartetCount * 4
             + (remainder == 0 ? 0 : remainder + 1)
-        return String(
-            unsafeUninitializedCapacity: outputCount
-        ) { output in
-            var inputOffset = 0
-            var outputOffset = 0
-            while inputOffset < bytes.count {
-                let hasSecond = inputOffset + 1 < bytes.count
-                let hasThird = inputOffset + 2 < bytes.count
+        return UTF8StringBuilder.make(byteCount: outputCount) { output in
+            for outputIndex in 0..<outputCount {
+                let inputOffset = (outputIndex / 4) * 3
                 let first = UInt32(bytes[inputOffset])
-                let second = hasSecond ? UInt32(bytes[inputOffset + 1]) : 0
-                let third = hasThird ? UInt32(bytes[inputOffset + 2]) : 0
-                let value = (first << 16) | (second << 8) | third
-                output[outputOffset] = digits[Int((value >> 18) & 0x3f)]
-                output[outputOffset + 1] =
-                    digits[Int((value >> 12) & 0x3f)]
-                if hasSecond {
-                    output[outputOffset + 2] =
-                        digits[Int((value >> 6) & 0x3f)]
+                let second = inputOffset + 1 < bytes.count
+                    ? UInt32(bytes[inputOffset + 1])
+                    : 0
+                let third = inputOffset + 2 < bytes.count
+                    ? UInt32(bytes[inputOffset + 2])
+                    : 0
+                let combined = (first << 16) | (second << 8) | third
+                let sextet: UInt32
+                switch outputIndex & 3 {
+                case 0:
+                    sextet = (combined >> 18) & 0x3f
+                case 1:
+                    sextet = (combined >> 12) & 0x3f
+                case 2:
+                    sextet = (combined >> 6) & 0x3f
+                case 3:
+                    sextet = combined & 0x3f
+                default:
+                    preconditionFailure("Base64 output index is invalid")
                 }
-                if hasThird {
-                    output[outputOffset + 3] = digits[Int(value & 0x3f)]
-                }
-                inputOffset += 3
-                outputOffset += hasThird ? 4 : (hasSecond ? 3 : 2)
+                output[outputIndex] = digits[Int(sextet)]
             }
-            return outputCount
         }
     }
 

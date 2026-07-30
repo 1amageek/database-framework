@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -50,13 +45,13 @@ extension SPARQLQueryExecutor {
                         resultLimit: nil
                     )
                     stats.indexScans += scannedMatches.stats.indexScans
-                    let sharedMatches = try (
+                    let sharedOwnership = try (
                         consume scannedMatches.bindings
-                    ).sharing(at: .joinCandidate)
-                    scanCache[signature] = try SPARQLSharedBindingSnapshot(
-                        shared: sharedMatches
+                    ).sharingForFanOut(
+                        at: .joinCandidate
                     )
-                    matches = consume sharedMatches
+                    scanCache[signature] = sharedOwnership.snapshot
+                    matches = consume sharedOwnership.retained
                 }
 
                 for matchIndex in 0..<matches.count {

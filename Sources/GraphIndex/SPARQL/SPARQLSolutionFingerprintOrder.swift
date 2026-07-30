@@ -1,5 +1,6 @@
 import DatabaseEngine
 import DatabaseTypes
+import DatabaseWire
 
 /// Canonical solution occurrence order without copying binding rows.
 struct SPARQLSolutionFingerprintOrder: ~Copyable {

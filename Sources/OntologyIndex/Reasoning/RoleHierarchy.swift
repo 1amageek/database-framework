@@ -7,11 +7,6 @@
 // Reference: Horrocks, I., & Sattler, U. (2004).
 // "Decidability of SHIQ with complex role inclusion axioms."
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 
 /// Role Hierarchy Manager

@@ -126,9 +126,10 @@ struct SPARQLSubqueryCacheStorageSharingTests {
             }
             let original = builder.finish()
             let originalAddress = bindingBufferAddress(original)
-            let shared = try (consume original).sharing(
-                at: .subqueryCache
-            )
+            let sharedOwnership = try (
+                consume original
+            ).sharingForFanOut(at: .subqueryCache)
+            let shared = consume sharedOwnership.retained
             let slice = (consume shared).applyingSlice(offset: 1, limit: 1)
 
             #expect(slice.count == 1)

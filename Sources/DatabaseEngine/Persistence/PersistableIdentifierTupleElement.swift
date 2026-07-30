@@ -8,6 +8,44 @@ import StorageKit
 struct PersistableIdentifierTupleElement: TupleElement {
     let value: ReferenceIdentifier
 
+    var tupleValue: TupleValue? {
+        switch value {
+        case .bool(let value):
+            return .boolean(value)
+        case .int8(let value):
+            return .signedInteger(Int64(value))
+        case .int16(let value):
+            return .signedInteger(Int64(value))
+        case .int32(let value):
+            return .signedInteger(Int64(value))
+        case .int64(let value):
+            return .signedInteger(value)
+        case .uint8(let value):
+            return .unsignedInteger(UInt64(value))
+        case .uint16(let value):
+            return .unsignedInteger(UInt64(value))
+        case .uint32(let value):
+            return .unsignedInteger(UInt64(value))
+        case .uint64(let value):
+            return .unsignedInteger(value)
+        case .string(let value):
+            return .string(value)
+        case .bytes(let value):
+            return .bytes(value)
+        case .uuid(let value):
+            return .uuid(value)
+        case .composite(let components):
+            return .nested(
+                Tuple(
+                    components.map {
+                        PersistableIdentifierTupleElement(value: $0)
+                            as any TupleElement
+                    }
+                )
+            )
+        }
+    }
+
     func encodeTuple(to sink: inout TupleEncodingSink) {
         Self.encode(value, to: &sink)
     }

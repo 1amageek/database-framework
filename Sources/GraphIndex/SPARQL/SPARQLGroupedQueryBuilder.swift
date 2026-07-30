@@ -3,15 +3,11 @@
 //
 // Fluent builder for constructing SPARQL GROUP BY queries with aggregation.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
+import StorageKit
 
 /// Builder for SPARQL GROUP BY queries with aggregation
 ///
@@ -331,11 +327,15 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
 
         let executor = SPARQLQueryExecutor(
             database: queryContext.context.container.engine,
+            wallClock: queryContext.context.container.wallClock,
             sources: [source]
         )
-        let workMeter = DatabaseWorkMeter(budget: budget)
+        let workMeter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: queryContext.context.container.monotonicClock
+        )
 
-        let startTime = MonotonicClock.now()
+        let startTime = queryContext.graphClock.now()
 
         // Step 1: Pattern evaluation + GROUP BY + HAVING
         var (bindings, stats) = try await executor.execute(
@@ -382,7 +382,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
             projected = Array(projected.prefix(limit))
         }
 
-        let endTime = MonotonicClock.now()
+        let endTime = queryContext.graphClock.now()
         var finalStats = stats
         finalStats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 

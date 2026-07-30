@@ -4,11 +4,6 @@
 // Provides default implementations for IndexMaintainers that store data in FDB subspaces.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import StorageKit
 

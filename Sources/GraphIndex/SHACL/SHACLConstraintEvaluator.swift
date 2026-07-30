@@ -9,11 +9,6 @@
 // Reference: W3C SHACL §4 (Core Constraint Components)
 // https://www.w3.org/TR/shacl/#core-components
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
@@ -429,12 +424,11 @@ public struct SHACLConstraintEvaluator: Sendable {
             case .tripleTerm: str = value.description
             }
 
-            let matches = try expression.matches(str) { inputUTF8ByteCount in
-                try budget.consume(
-                    UInt64(inputUTF8ByteCount),
-                    at: .filterEvaluation
-                )
-            }
+            try budget.consume(
+                UInt64(str.utf8.count),
+                at: .filterEvaluation
+            )
+            let matches = try expression.matches(str)
             if !matches {
                 results.append(try makeResult(focusNode: focusNode, path: path, value: value,
                     component: SHACLConstraint.pattern(regex, flags: flags).componentIRI, sourceShape: sourceShape,

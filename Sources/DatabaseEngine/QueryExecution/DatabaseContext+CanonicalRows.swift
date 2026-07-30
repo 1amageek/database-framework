@@ -1,7 +1,8 @@
 import DatabaseKit
 import DatabaseTypes
+import DatabaseWire
 
-private struct CanonicalSourceRow: Sendable {
+struct CanonicalSourceRow: Sendable {
     let fields: [String: FieldValue]
     let scopedFields: [String: [String: FieldValue]]
     let annotations: [String: FieldValue]
@@ -100,7 +101,10 @@ extension DatabaseContext {
         options: ReadExecutionOptions = .default,
         graphPartitions: FieldObject = FieldObject()
     ) async throws -> QueryResponse {
-        let execution = ReadExecutionContext(options: options)
+        let execution = ReadExecutionContext(
+            options: options,
+            monotonicClock: container.monotonicClock
+        )
         let response = try await query(
             selectQuery,
             execution: execution,
@@ -267,12 +271,8 @@ extension DatabaseContext {
             // Only scalar index access is routed through SelectQueryPlanner, because
             // it maps cleanly onto Query<T>.forcedIndex + typed fetch.
             if case .index(let indexScan) = accessPath,
-               indexScan.kindIdentifier != "scalar",
-               let executor = container.runtimeConfiguration.readExecutors.indexExecutor(
-                for: indexScan.kindIdentifier
-               ) {
+               indexScan.kindIdentifier != "scalar" {
                 let rowSet = try await dispatchTableIndexExecutor(
-                    executor: executor,
                     tableRef: tableRef,
                     selectQuery: selectQuery,
                     indexScan: indexScan,
@@ -408,8 +408,8 @@ extension DatabaseContext {
         }
 
         let entity = try resolveEntity(named: tableRef.table)
-        guard let type = container.runtimeConfiguration
-            .persistableTypes.type(named: entity.name) else {
+        guard let runtime = container.runtimeConfiguration
+            .entityRuntimes.registration(named: entity.name) else {
             throw CanonicalReadError.unsupportedSelectQuery(
                 "Entity '\(tableRef.table)' has no registered runtime type"
             )
@@ -417,7 +417,7 @@ extension DatabaseContext {
 
         let sourceName = tableRef.alias ?? tableRef.effectiveName
         let pushdown = try await fetchTableSourceRows(
-            type: type,
+            runtime: runtime,
             sourceName: sourceName,
             selectQuery: selectQuery,
             options: options
@@ -474,77 +474,46 @@ extension DatabaseContext {
         return QueryResponse(rows: page.items, continuation: page.continuation)
     }
 
-    private struct CanonicalTableSourceRows: Sendable {
-        let rows: [CanonicalSourceRow]
-        let residualFilter: DatabaseKit.Expression?
-        let residualOrderBy: [SortKey]?
-        let limitPushed: Bool
-        let offsetPushed: Bool
-    }
-
     private func dispatchTableIndexExecutor(
-        executor: any IndexReadExecutor,
         tableRef: TableRef,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         options: ReadExecutionContext
     ) async throws -> IndexReadResult {
         let entity = try resolveEntity(named: tableRef.table)
-        guard let type = container.runtimeConfiguration
-            .persistableTypes.type(named: entity.name) else {
+        guard let runtime = container.runtimeConfiguration
+            .entityRuntimes.registration(named: entity.name) else {
             throw CanonicalReadError.unsupportedSelectQuery(
                 "Entity '\(tableRef.table)' has no registered runtime type"
             )
         }
-        func executeIndexRead<T: Persistable>(
-            _ concreteType: T.Type
-        ) async throws -> IndexReadResult {
-            try await executor.executeRows(
-                context: self,
-                selectQuery: selectQuery,
-                indexScan: indexScan,
-                as: T.self,
-                options: options,
-                partitions: tableRef.partitions
+        guard let result = try await runtime.executeIndexRows(
+            kindIdentifier: indexScan.kindIdentifier,
+            context: self,
+            selectQuery: selectQuery,
+            indexScan: indexScan,
+            options: options,
+            partitions: tableRef.partitions
+        ) else {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "Entity '\(entity.name)' has no registered '\(indexScan.kindIdentifier)' index reader"
             )
         }
-        return try await _openExistential(type, do: executeIndexRead)
+        return result
     }
 
     private func fetchTableSourceRows(
-        type: any Persistable.Type,
+        runtime: EntityRuntimeRegistration,
         sourceName: String,
         selectQuery: SelectQuery,
         options: ReadExecutionContext
-    ) async throws -> CanonicalTableSourceRows {
-        func fetchRows<T: Persistable>(
-            _ concreteType: T.Type
-        ) async throws -> CanonicalTableSourceRows {
-            let plan = try SelectQueryPlanner.plan(
-                selectQuery,
-                as: T.self,
-                options: options
-            )
-            let items = try await fetch(plan.typedQuery)
-            let rows = try items.map { item -> CanonicalSourceRow in
-                try options.workMeter.consume(at: .resultMaterialization)
-                let row = try QueryRowCodec.encodeAny(item)
-                return CanonicalSourceRow.fromBaseFields(
-                    row.fields,
-                    sourceName: sourceName,
-                    annotations: row.annotations,
-                    version: row.version
-                )
-            }
-            return CanonicalTableSourceRows(
-                rows: rows,
-                residualFilter: plan.residualFilter,
-                residualOrderBy: plan.residualOrderBy,
-                limitPushed: plan.limitPushed,
-                offsetPushed: plan.offsetPushed
-            )
-        }
-        return try await _openExistential(type, do: fetchRows)
+    ) async throws -> EntityTableRows {
+        try await runtime.fetchTableRows(
+            context: self,
+            sourceName: sourceName,
+            selectQuery: selectQuery,
+            options: options
+        )
     }
 
     private func resolveEntity(named name: String) throws -> Schema.Entity {
@@ -1018,9 +987,17 @@ extension DatabaseContext {
 
     private func inferredEmptyScopes(from rows: [CanonicalSourceRow]) -> [String: [String: FieldValue]] {
         guard let first = rows.first else { return [:] }
-        return first.scopedFields.mapValues { fields in
-            Dictionary(uniqueKeysWithValues: fields.keys.map { ($0, .null) })
+        var emptyScopes: [String: [String: FieldValue]] = [:]
+        emptyScopes.reserveCapacity(first.scopedFields.count)
+        for (scope, fields) in first.scopedFields {
+            var emptyFields: [String: FieldValue] = [:]
+            emptyFields.reserveCapacity(fields.count)
+            for fieldName in fields.keys {
+                emptyFields[fieldName] = .null
+            }
+            emptyScopes[scope] = emptyFields
         }
+        return emptyScopes
     }
 
     private func firstScopedFieldValue(named column: String, in row: CanonicalSourceRow) -> FieldValue? {
@@ -1178,9 +1155,15 @@ extension DatabaseContext {
             scopedFields[graphName, default: [:]][key] = value
         }
 
+        var nonemptyScopes: [String: [String: FieldValue]] = [:]
+        nonemptyScopes.reserveCapacity(scopedFields.count)
+        for (scope, scopeFields) in scopedFields where !scopeFields.isEmpty {
+            nonemptyScopes[scope] = scopeFields
+        }
+
         return CanonicalSourceRow(
             fields: baseFields,
-            scopedFields: scopedFields.filter { !$0.value.isEmpty }
+            scopedFields: nonemptyScopes
         )
     }
 
@@ -1252,7 +1235,7 @@ extension DatabaseContext {
             return lhsItem.fingerprint.lexicographicallyPrecedes(
                 rhsItem.fingerprint
             )
-        }.map(\.row)
+        }.map { $0.row }
     }
 
     private func projectRows(

@@ -20,7 +20,10 @@ struct BitmapIndexReader: Sendable {
         transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
         let key = dataSubspace.pack(Tuple(fieldValues))
-        guard let bytes = try await transaction.getValue(for: key) else {
+        guard let bytes = try await transaction.getValue(
+            for: key,
+            snapshot: false
+        ) else {
             return RoaringBitmap()
         }
         return try RoaringBitmap(serializedBytes: bytes)
@@ -60,7 +63,10 @@ struct BitmapIndexReader: Sendable {
 
         for identifier in bitmap {
             let key = idsSubspace.pack(Tuple(Int(identifier)))
-            if let bytes = try await transaction.getValue(for: key) {
+            if let bytes = try await transaction.getValue(
+                for: key,
+                snapshot: false
+            ) {
                 results.append(Tuple(try Tuple.unpack(from: bytes)))
             }
         }
@@ -74,7 +80,10 @@ struct BitmapIndexReader: Sendable {
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         var results: [[any TupleElement]] = []

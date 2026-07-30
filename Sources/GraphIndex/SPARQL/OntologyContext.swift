@@ -14,11 +14,6 @@
 //   - Detect transitive properties for BFS optimization (F-3)
 //   - Check functional property hints for cardinality estimation (F-4)
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 
 import OntologyIndex

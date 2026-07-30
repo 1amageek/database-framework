@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 
@@ -41,59 +36,19 @@ public protocol PolymorphicIndexReadExecutor: Sendable {
     ) async throws -> IndexReadResult
 }
 
-public protocol FusionReadExecutor: Sendable {
-    var strategyIdentifier: String { get }
-
-    func execute<T: Persistable>(
-        context: DatabaseContext,
-        selectQuery: SelectQuery,
-        fusionSource: FusionSource,
-        as type: T.Type,
-        options: ReadExecutionContext,
-        partitions: FieldObject
-    ) async throws -> QueryResponse
-}
-
 public struct ReadExecutorRegistry: Sendable {
-    private let indexExecutors: [String: any IndexReadExecutor]
     private let polymorphicIndexExecutors: [String: any PolymorphicIndexReadExecutor]
-    private let fusionExecutors: [String: any FusionReadExecutor]
 
     public init(
-        indexExecutors: [any IndexReadExecutor] = [],
-        polymorphicIndexExecutors: [any PolymorphicIndexReadExecutor] = [],
-        fusionExecutors: [any FusionReadExecutor] = []
+        polymorphicIndexExecutors: [any PolymorphicIndexReadExecutor] = []
     ) throws(DatabaseRuntimeConfigurationError) {
-        self.indexExecutors = try Self.indexExecutorsByIdentifier(indexExecutors)
         self.polymorphicIndexExecutors = try Self.polymorphicExecutorsByIdentifier(
             polymorphicIndexExecutors
         )
-        self.fusionExecutors = try Self.fusionExecutorsByIdentifier(fusionExecutors)
-    }
-
-    public func indexExecutor(for kindIdentifier: String) -> (any IndexReadExecutor)? {
-        indexExecutors[kindIdentifier]
     }
 
     public func polymorphicIndexExecutor(for kindIdentifier: String) -> (any PolymorphicIndexReadExecutor)? {
         polymorphicIndexExecutors[kindIdentifier]
-    }
-
-    public func fusionExecutor(for strategyIdentifier: String) -> (any FusionReadExecutor)? {
-        fusionExecutors[strategyIdentifier]
-    }
-
-    private static func indexExecutorsByIdentifier(
-        _ executors: [any IndexReadExecutor]
-    ) throws(DatabaseRuntimeConfigurationError) -> [String: any IndexReadExecutor] {
-        var result: [String: any IndexReadExecutor] = [:]
-        for executor in executors {
-            guard result[executor.kindIdentifier] == nil else {
-                throw .duplicateIndexReadExecutor(executor.kindIdentifier)
-            }
-            result[executor.kindIdentifier] = executor
-        }
-        return result
     }
 
     private static func polymorphicExecutorsByIdentifier(
@@ -109,16 +64,4 @@ public struct ReadExecutorRegistry: Sendable {
         return result
     }
 
-    private static func fusionExecutorsByIdentifier(
-        _ executors: [any FusionReadExecutor]
-    ) throws(DatabaseRuntimeConfigurationError) -> [String: any FusionReadExecutor] {
-        var result: [String: any FusionReadExecutor] = [:]
-        for executor in executors {
-            guard result[executor.strategyIdentifier] == nil else {
-                throw .duplicateFusionReadExecutor(executor.strategyIdentifier)
-            }
-            result[executor.strategyIdentifier] = executor
-        }
-        return result
-    }
 }

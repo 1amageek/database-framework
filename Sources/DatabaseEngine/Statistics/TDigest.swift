@@ -11,11 +11,6 @@
 // - Memory: ~10KB per instance (compression=100)
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseMath
 import StorageKit
 

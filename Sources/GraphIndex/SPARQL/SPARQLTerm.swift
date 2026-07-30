@@ -3,11 +3,6 @@
 //
 // Represents terms in triple patterns following SPARQL semantics.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 

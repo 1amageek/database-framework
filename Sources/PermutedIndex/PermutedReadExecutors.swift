@@ -15,9 +15,14 @@ enum PermutedReadParameter {
 }
 
 public enum PermutedReadExecutors {
-    public static var indexExecutor: any IndexReadExecutor { PermutedReadExecutor() }
     public static var polymorphicIndexExecutor: any PolymorphicIndexReadExecutor {
         PolymorphicPermutedReadExecutor()
+    }
+
+    public static func register<Model: Persistable>(
+        with definition: inout EntityRuntimeDefinition<Model>
+    ) throws(DatabaseRuntimeConfigurationError) {
+        try definition.register(PermutedReadExecutor())
     }
 }
 

@@ -13,7 +13,8 @@ public struct BitmapIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration]
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
         _ = try BitmapIndexSpecification(index.kind)
         return BitmapIndexMaintainer<Item>(

@@ -3,11 +3,6 @@
 //
 // Represents a single solution (row) in a SPARQL result set.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 

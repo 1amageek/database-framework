@@ -4,11 +4,6 @@
 // Design: Follows GraphEdgeScanner pattern for centralized scanning logic.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -98,7 +93,9 @@ public final class SpatialCellScanner: Sendable {
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 limit: readLimit,
-                snapshot: true
+                reverse: false,
+                snapshot: true,
+                streamingMode: .iterator
             )
 
             for (key, _) in sequence {
@@ -175,7 +172,9 @@ public final class SpatialCellScanner: Sendable {
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
             limit: readLimit,
-            snapshot: true
+            reverse: false,
+            snapshot: true,
+            streamingMode: .iterator
         )
 
         for (key, _) in sequence {
@@ -249,7 +248,9 @@ public final class SpatialCellScanner: Sendable {
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 limit: readLimit,
-                snapshot: true
+                reverse: false,
+                snapshot: true,
+                streamingMode: .iterator
             )
 
             for (key, _) in sequence {
@@ -309,7 +310,10 @@ public final class SpatialCellScanner: Sendable {
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in sequence {

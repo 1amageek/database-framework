@@ -8,7 +8,7 @@ import StorageKit
 /// receive an operation-scoped capability that permits recursive persistence
 /// while preserving this owner, shared storage access, and final validation.
 /// `TransactionRunner` alone owns commit, cancellation, and retry lifecycle.
-public actor DatabaseTransaction: DatabaseTransactionWriting {
+public final actor DatabaseTransaction: DatabaseTransactionWriting {
     private enum State: Sendable, Equatable {
         case open
         case executing(UInt64)
@@ -133,7 +133,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
                 throw DatabaseTransactionError.invalidLimit(limit)
             }
             try container.securityDelegate?.evaluateList(
-                type: type,
+                entity: Model.persistableType,
                 limit: limit,
                 offset: nil,
                 orderBy: nil
@@ -194,8 +194,12 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
                 ) else {
                     throw DatabaseTransactionError.itemDisappearedDuringScan
                 }
-                let model: Model = try DataAccess.deserialize(bytes)
-                try container.securityDelegate?.evaluateGet(model)
+                let persistedModel = try DataAccess.deserializePersistedModel(
+                    bytes,
+                    expectedEntity: Model.persistableType
+                )
+                let model = try persistedModel.decode(as: Model.self)
+                try container.securityDelegate?.evaluateGet(persistedModel)
                 models.append(model)
             }
 
@@ -423,6 +427,27 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             try ensureActive(operationID, permitsMutation: true)
             try await persist(
                 model,
+                precondition: precondition,
+                operationID: operationID,
+                source: .derived
+            )
+        } catch {
+            state = .closed
+            throw error
+        }
+    }
+
+    package func savePersistedModel(
+        _ model: PersistedModel,
+        precondition: WritePrecondition,
+        within operationID: UInt64
+    ) async throws {
+        do {
+            try ensureActive(operationID, permitsMutation: true)
+            let runtime = try entityRuntime(named: model.entity)
+            let decoded = try runtime.decode(model)
+            try await persist(
+                decoded,
                 precondition: precondition,
                 operationID: operationID,
                 source: .derived
@@ -688,15 +713,15 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         id: Tuple,
         partition: AnyDirectoryPath?
     ) async throws -> (any Persistable)? {
-        let type = try persistableType(named: entity)
-        if type.hasDynamicDirectory, partition == nil {
+        let runtime = try entityRuntime(named: entity)
+        if runtime.entity.hasDynamicDirectory, partition == nil {
             throw DirectoryPathError.dynamicFieldsRequired(
                 typeName: entity,
-                fields: type.directoryFieldNames
+                fields: runtime.entity.dynamicFieldNames
             )
         }
         guard let subspaces = try await openSubspaces(
-            for: type,
+            for: runtime.entity,
             partition: partition
         ) else {
             return nil
@@ -709,8 +734,12 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         guard let data = try await storage.read(for: key) else {
             return nil
         }
-        let model = try DataAccess.deserializeAny(data, as: type)
-        try container.securityDelegate?.evaluateGet(model)
+        let persistedModel = try DataAccess.deserializePersistedModel(
+            data,
+            expectedEntity: entity
+        )
+        let model = try runtime.decode(persistedModel)
+        try container.securityDelegate?.evaluateGet(persistedModel)
         return model
     }
 
@@ -722,21 +751,21 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         guard limit > 0 else {
             throw DatabaseTransactionError.invalidLimit(limit)
         }
-        let type = try persistableType(named: entity)
-        if type.hasDynamicDirectory, partition == nil {
+        let runtime = try entityRuntime(named: entity)
+        if runtime.entity.hasDynamicDirectory, partition == nil {
             throw DirectoryPathError.dynamicFieldsRequired(
                 typeName: entity,
-                fields: type.directoryFieldNames
+                fields: runtime.entity.dynamicFieldNames
             )
         }
         try container.securityDelegate?.evaluateList(
-            type: type,
+            entity: runtime.entity.name,
             limit: limit,
             offset: nil,
             orderBy: nil
         )
         guard let subspaces = try await openSubspaces(
-            for: type,
+            for: runtime.entity,
             partition: partition
         ) else {
             return []
@@ -748,14 +777,19 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         )
         var models: [any Persistable] = []
         models.reserveCapacity(limit)
-        for try await (_, data) in storage.scan(
+        var iterator = storage.scan(
             begin: begin,
             end: end,
             snapshot: false,
             limit: limit
-        ) {
-            let model = try DataAccess.deserializeAny(data, as: type)
-            try container.securityDelegate?.evaluateGet(model)
+        ).makeAsyncIterator()
+        while let (_, data) = try await iterator.next() {
+            let persistedModel = try DataAccess.deserializePersistedModel(
+                data,
+                expectedEntity: entity
+            )
+            let model = try runtime.decode(persistedModel)
+            try container.securityDelegate?.evaluateGet(persistedModel)
             models.append(model)
         }
         return models
@@ -769,7 +803,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         try transactionScope.enter()
         var operationID: UInt64?
         do {
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             guard state == .open else {
                 throw lifecycleError(for: state)
             }
@@ -867,21 +901,24 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         for type: Model.Type,
         in partition: DirectoryPath<Model>
     ) async throws -> ResolvedSubspaces? {
-        try await openSubspaces(
-            for: type,
+        guard let entity = container.schema.entity(named: Model.persistableType) else {
+            throw DatabaseTransactionError.unknownEntity(Model.persistableType)
+        }
+        return try await openSubspaces(
+            for: entity,
             partition: try AnyDirectoryPath(partition)
         )
     }
 
     private func openSubspaces(
-        for type: any Persistable.Type,
+        for entity: Schema.Entity,
         partition: AnyDirectoryPath?
     ) async throws -> ResolvedSubspaces? {
-        let path = try partition ?? AnyDirectoryPath(for: type)
+        let path = try partition ?? AnyDirectoryPath(for: entity)
         try path.validate()
         let partitionPath = path.resolve()
         let cacheKey = DatabaseStoreCacheKey(
-            entity: type.persistableType,
+            entity: entity.name,
             components: partitionPath
         )
         if let cached = subspaceCache.value(for: cacheKey) {
@@ -894,7 +931,7 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
             return nil
         }
         let root = try await container.openDirectory(
-            for: type,
+            for: entity,
             path: path,
             transaction: storageAccess
         )
@@ -926,43 +963,53 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
         ) else {
             return nil
         }
-        let model: Model = try DataAccess.deserialize(bytes)
-        try container.securityDelegate?.evaluateGet(model)
+        let persistedModel = try DataAccess.deserializePersistedModel(
+            bytes,
+            expectedEntity: Model.persistableType
+        )
+        let model = try persistedModel.decode(as: Model.self)
+        try container.securityDelegate?.evaluateGet(persistedModel)
         return model
     }
 
-    private func persistableType(
+    private func entityRuntime(
         named entity: String
-    ) throws -> any Persistable.Type {
+    ) throws -> EntityRuntimeRegistration {
         guard container.schema.entity(named: entity) != nil else {
             throw DatabaseTransactionError.unknownEntity(entity)
         }
-        guard let type = container.runtimeConfiguration.persistableTypes.type(
+        guard let runtime = container.runtimeConfiguration.entityRuntimes.registration(
             named: entity
         ) else {
             throw DatabaseTransactionError.entityHasNoPersistableType(entity)
         }
-        return type
+        return runtime
     }
 
     private func resolve(
         _ identity: EntityReference
     ) throws -> (id: Tuple, partition: AnyDirectoryPath?) {
-        let type = try persistableType(named: identity.entity)
+        let runtime = try entityRuntime(named: identity.entity)
+        guard let entity = container.schema.entity(named: identity.entity) else {
+            throw DatabaseTransactionError.invalidIdentity(
+                entity: identity.entity,
+                reason: "entity is not present in the schema"
+            )
+        }
         do {
             let id = try PersistableIdentifierKeyCodec.tuple(
                 for: identity,
-                expectedType: type.persistableIdentifierType
+                expectedType: runtime.entity.identifierType
             )
             let partition = try CanonicalPartitionBinding.makeAnyBinding(
-                for: type,
+                for: entity,
                 partitions: identity.partitions
             )
             return (id, partition)
         } catch {
             throw DatabaseTransactionError.invalidIdentity(
                 entity: identity.entity,
-                reason: String(describing: error)
+                reason: "identity resolution failed"
             )
         }
     }
@@ -970,17 +1017,28 @@ public actor DatabaseTransaction: DatabaseTransactionWriting {
     private func partition(
         for model: any Persistable
     ) throws -> AnyDirectoryPath? {
-        func makePath<Model: Persistable>(
-            _ model: Model
-        ) throws -> AnyDirectoryPath? {
-            guard Model.hasDynamicDirectory else {
-                return nil
-            }
-            return try AnyDirectoryPath(
-                DirectoryPath<Model>.from(model)
-            )
+        let entityName = type(of: model).persistableType
+        guard let entity = container.schema.entity(named: entityName) else {
+            throw DatabaseTransactionError.unknownEntity(entityName)
         }
-        return try _openExistential(model, do: makePath)
+        guard entity.hasDynamicDirectory else {
+            return nil
+        }
+        let persisted = try model.persistedFields()
+        var partitions: [(key: String, value: FieldValue)] = []
+        partitions.reserveCapacity(entity.dynamicFieldNames.count)
+        for name in entity.dynamicFieldNames {
+            guard let value = persisted.first(where: {
+                $0.name == name
+            })?.value else {
+                throw DirectoryPathError.missingFields([name])
+            }
+            partitions.append((key: name, value: value))
+        }
+        return try AnyDirectoryPath(
+            entity: entity,
+            partitions: FieldObject(partitions)
+        )
     }
 
     private func validate(

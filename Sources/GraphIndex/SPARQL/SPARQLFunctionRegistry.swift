@@ -28,7 +28,7 @@ public struct SPARQLFunctionRegistry: Sendable {
     func evaluate(
         identifier: String,
         arguments: [FieldValue]
-    ) throws -> FieldValue {
+    ) throws(SPARQLFunctionRegistryError) -> FieldValue {
         let iri: RDFIRI
         do {
             iri = try RDFIRI(identifier)
@@ -41,13 +41,8 @@ public struct SPARQLFunctionRegistry: Sendable {
         let value: FieldValue
         do {
             value = try function.evaluate(arguments: arguments)
-        } catch let error as SPARQLExpressionEvaluationError {
-            throw error
-        } catch {
-            throw SPARQLFunctionRegistryError.functionFailed(
-                identifier: identifier,
-                detail: String(describing: error)
-            )
+        } catch let error {
+            throw .evaluation(error)
         }
         guard case .rdfTerm = value else {
             throw SPARQLFunctionRegistryError.nonCanonicalResult(identifier)

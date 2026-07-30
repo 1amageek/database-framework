@@ -8,17 +8,25 @@ public struct DatabaseFormatCatalog: Sendable {
         "format"
     ]).pack()
 
-    private let database: any StorageEngine
+    private let transactionExecutor: StorageTransactionExecutor
+    private let clock: any StorageMonotonicClock
 
-    public init(database: any StorageEngine) {
-        self.database = database
+    public init(
+        database: any StorageEngine,
+        clock: any StorageMonotonicClock
+    ) {
+        self.transactionExecutor = StorageTransactionExecutor(engine: database)
+        self.clock = clock
     }
 
     /// Installs a descriptor only in an empty database, or validates it exactly.
     package func installIfEmptyOrValidate(
         _ expected: DatabaseFormatDescriptor
     ) async throws -> DatabaseFormatDescriptor {
-        try await database.withTransaction(configuration: .default) {
+        try await transactionExecutor.withTransaction(
+            configuration: .default,
+            clock: clock
+        ) {
             transaction in
             if let bytes = try await transaction.getValue(
                 for: Self.descriptorKey,
@@ -38,6 +46,7 @@ public struct DatabaseFormatCatalog: Sendable {
                 from: .firstGreaterOrEqual(ByteString()),
                 to: .firstGreaterOrEqual([0xFF]),
                 limit: 1,
+                reverse: false,
                 snapshot: false,
                 streamingMode: .small
             )
@@ -56,7 +65,10 @@ public struct DatabaseFormatCatalog: Sendable {
 
     /// Loads the persisted descriptor without assuming or installing a default.
     public func loadRequired() async throws -> DatabaseFormatDescriptor {
-        try await database.withTransaction(configuration: .default) {
+        try await transactionExecutor.withTransaction(
+            configuration: .default,
+            clock: clock
+        ) {
             transaction in
             guard let bytes = try await transaction.getValue(
                 for: Self.descriptorKey,

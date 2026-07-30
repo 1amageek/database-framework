@@ -1,4 +1,5 @@
 import DatabaseKit
+import DatabaseTypes
 
 struct FullTextIndexConfiguration: Sendable, Hashable {
     let tokenizer: TokenizationStrategy

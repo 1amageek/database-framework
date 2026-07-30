@@ -8,6 +8,22 @@ import StorageKit
 public protocol KeyExpression: Sendable {
     /// Number of columns this expression produces
     var columnCount: Int { get }
+
+    /// A statically inspectable field path when this expression is one field.
+    var fieldPath: String? { get }
+
+    /// A statically inspectable resolved tuple when this expression is literal.
+    var resolvedTuple: Tuple? { get }
+
+    /// Evaluates the expression through a non-generic runtime boundary.
+    func evaluate(
+        resolvingField: (String) throws -> [any TupleElement]
+    ) throws -> [any TupleElement]
+}
+
+extension KeyExpression {
+    public var fieldPath: String? { nil }
+    public var resolvedTuple: Tuple? { nil }
 }
 
 // MARK: - Field Key Expression
@@ -21,6 +37,13 @@ public struct FieldKeyExpression: KeyExpression {
     }
 
     public var columnCount: Int { 1 }
+    public var fieldPath: String? { fieldName }
+
+    public func evaluate(
+        resolvingField: (String) throws -> [any TupleElement]
+    ) throws -> [any TupleElement] {
+        try resolvingField(fieldName)
+    }
 }
 
 // MARK: - Concatenate Key Expression
@@ -36,6 +59,21 @@ public struct ConcatenateKeyExpression: KeyExpression {
     public var columnCount: Int {
         return children.reduce(0) { $0 + $1.columnCount }
     }
+
+    public func evaluate(
+        resolvingField: (String) throws -> [any TupleElement]
+    ) throws -> [any TupleElement] {
+        var values: [any TupleElement] = []
+        values.reserveCapacity(columnCount)
+        for child in children {
+            values.append(
+                contentsOf: try child.evaluate(
+                    resolvingField: resolvingField
+                )
+            )
+        }
+        return values
+    }
 }
 
 // MARK: - Literal Key Expression
@@ -49,6 +87,12 @@ public struct LiteralKeyExpression<T: TupleElement>: KeyExpression {
     }
 
     public var columnCount: Int { 1 }
+
+    public func evaluate(
+        resolvingField: (String) throws -> [any TupleElement]
+    ) throws -> [any TupleElement] {
+        [value]
+    }
 }
 
 // MARK: - Tuple Key Expression
@@ -62,6 +106,20 @@ public struct TupleKeyExpression: KeyExpression {
     }
 
     public var columnCount: Int { value.count }
+    public var resolvedTuple: Tuple? { value }
+
+    public func evaluate(
+        resolvingField: (String) throws -> [any TupleElement]
+    ) throws -> [any TupleElement] {
+        var elements: [any TupleElement] = []
+        elements.reserveCapacity(value.count)
+        for index in 0..<value.count {
+            if let element = value[index] {
+                elements.append(element)
+            }
+        }
+        return elements
+    }
 }
 
 // MARK: - Empty Key Expression
@@ -71,6 +129,12 @@ public struct EmptyKeyExpression: KeyExpression {
     public init() {}
 
     public var columnCount: Int { 0 }
+
+    public func evaluate(
+        resolvingField: (String) throws -> [any TupleElement]
+    ) throws -> [any TupleElement] {
+        []
+    }
 }
 
 // MARK: - Nest Expression
@@ -87,6 +151,14 @@ public struct NestExpression: KeyExpression {
 
     public var columnCount: Int {
         return child.columnCount
+    }
+
+    public func evaluate(
+        resolvingField: (String) throws -> [any TupleElement]
+    ) throws -> [any TupleElement] {
+        try child.evaluate { childPath in
+            try resolvingField("\(parentField).\(childPath)")
+        }
     }
 }
 

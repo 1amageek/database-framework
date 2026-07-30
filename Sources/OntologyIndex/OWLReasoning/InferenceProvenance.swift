@@ -111,8 +111,8 @@ public struct InferenceStatistics: Sendable {
     /// Number of inconsistencies detected
     public var inconsistenciesDetected: Int = 0
 
-    /// Time spent on inference (seconds)
-    public var inferenceTime: Double = 0
+    /// Monotonic time spent on inference.
+    public var inferenceTime: Duration = .zero
 
     /// Number of triples examined
     public var triplesExamined: Int = 0

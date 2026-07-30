@@ -37,10 +37,12 @@ package enum MaterializedGraphSnapshotBuilder {
         var outgoing: [GraphIdentity: [EdgeInfo]] = [:]
         var incoming: [GraphIdentity: [EdgeInfo]] = [:]
 
-        for try await edge in scanner.scanAllEdges(
+        let edgeSequence = scanner.scanAllEdges(
             edgeLabel: edgeLabel,
             transaction: snapshot.transaction
-        ) {
+        )
+        var edgeCursor = edgeSequence.makeCursor()
+        while let edge = try await edgeCursor.next() {
             if let workBudget = snapshot.workBudget,
                try !workBudget.consume() {
                 return result(

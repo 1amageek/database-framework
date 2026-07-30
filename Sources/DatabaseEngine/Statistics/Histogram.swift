@@ -1,11 +1,6 @@
 // Histogram.swift
 // Database statistics histogram for selectivity estimation
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import StorageKit
@@ -50,7 +45,7 @@ public struct Histogram: Sendable {
     public let distinctCount: Int64
 
     /// Collection timestamp
-    public let timestamp: Date
+    public let timestamp: Timestamp
 
     /// Create a histogram
     public init(
@@ -58,7 +53,7 @@ public struct Histogram: Sendable {
         totalCount: Int64,
         nullCount: Int64 = 0,
         distinctCount: Int64? = nil,
-        timestamp: Date = Date()
+        timestamp: Timestamp
     ) {
         self.buckets = buckets
         self.totalCount = totalCount
@@ -479,7 +474,8 @@ public struct HistogramBuilder: Sendable {
         nullCount: Int64 = 0,
         bucketCount: Int = 100,
         hll: HyperLogLog? = nil,
-        excludeValues: Set<FieldValue> = []
+        excludeValues: Set<FieldValue> = [],
+        timestamp: Timestamp
     ) throws -> Histogram {
         // Filter out nulls and exclude MCV values
         let values = samples.compactMap { fieldValue -> FieldValue? in
@@ -490,7 +486,12 @@ public struct HistogramBuilder: Sendable {
         }
 
         guard !values.isEmpty else {
-            return Histogram(buckets: [], totalCount: totalCount, nullCount: nullCount)
+            return Histogram(
+                buckets: [],
+                totalCount: totalCount,
+                nullCount: nullCount,
+                timestamp: timestamp
+            )
         }
 
         let sorted = values.sorted()
@@ -520,7 +521,8 @@ public struct HistogramBuilder: Sendable {
             buckets: buckets,
             totalCount: totalCount,
             nullCount: nullCount,
-            distinctCount: histogramDistinctCount
+            distinctCount: histogramDistinctCount,
+            timestamp: timestamp
         )
     }
 

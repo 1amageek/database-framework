@@ -1,15 +1,12 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
+
+import DatabaseTypes
 
 /// The ordered field transitions between two instances of one model identity.
 public struct ModelDiff: Sendable, Hashable {
     public let typeName: String
     public let idString: String
     public let changes: [FieldChange]
-    public let timestamp: Date
+    public let timestamp: Timestamp
     public let oldVersion: VersionInfo?
     public let newVersion: VersionInfo?
 
@@ -17,7 +14,7 @@ public struct ModelDiff: Sendable, Hashable {
         typeName: String,
         idString: String,
         changes: [FieldChange],
-        timestamp: Date,
+        timestamp: Timestamp,
         oldVersion: VersionInfo?,
         newVersion: VersionInfo?
     ) {

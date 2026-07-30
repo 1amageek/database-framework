@@ -14,7 +14,7 @@ enum SPARQLGroupPartitionBuilder {
         evaluateKey: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
-        ) async throws -> FieldValue
+        ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue>
     ) async throws -> SPARQLGroupPartition {
         let sourceCount = source.count
         let groupKeys = grouping.keys
@@ -65,17 +65,20 @@ enum SPARQLGroupPartitionBuilder {
                     reservedIdentifier: reservedScopeIdentifier
                 )
                 for groupKey in groupKeys {
-                    do {
-                        let value = try await evaluateKey(
+                    switch try await evaluateKey(
                             groupKey.expression,
                             binding
-                        )
+                        ) {
+                    case .value(let value):
                         key.append(
                             GroupValue(from: value == .null ? nil : value)
                         )
-                    } catch let error as SPARQLExpressionEvaluationError
-                        where error.isSPARQLEvaluationError {
-                        key.append(.unbound)
+                    case .expressionError(let evaluationError):
+                        if evaluationError.isSPARQLEvaluationError {
+                            key.append(.unbound)
+                        } else {
+                            throw evaluationError
+                        }
                     }
                 }
                 guard let identifier = binding.expressionScopeIdentifier else {

@@ -3,11 +3,6 @@
 //
 // Provides diff functionality between version history entries.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -58,6 +53,7 @@ extension VersionQueryBuilder {
         let baseDiff = try ModelDiffBuilder.diff(
             old: oldItem,
             new: newItem,
+            timestamp: currentTimestamp,
             options: options
         )
 
@@ -113,6 +109,7 @@ extension VersionQueryBuilder {
         let baseDiff = try ModelDiffBuilder.diff(
             old: oldItem,
             new: newItem,
+            timestamp: currentTimestamp,
             options: options
         )
 
@@ -174,6 +171,7 @@ extension VersionQueryBuilder {
         let baseDiff = try ModelDiffBuilder.diff(
             old: oldItem,
             new: latestItem,
+            timestamp: currentTimestamp,
             options: options
         )
 
@@ -232,6 +230,7 @@ extension VersionQueryBuilder {
             let baseDiff = try ModelDiffBuilder.diff(
                 old: oldItem,
                 new: newItem,
+                timestamp: currentTimestamp,
                 options: options
             )
 
@@ -286,6 +285,6 @@ extension VersionQueryBuilder {
 
     /// String description of the primary key for error messages
     private var primaryKeyDescription: String {
-        primaryKey.map { "\($0)" }.joined(separator: ", ")
+        "primary key with \(primaryKey.count) component(s)"
     }
 }

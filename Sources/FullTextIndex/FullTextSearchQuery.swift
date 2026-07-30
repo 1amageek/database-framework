@@ -3,11 +3,6 @@
 //
 // Reference: Lucene BooleanQuery, FDB Record Layer
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 // MARK: - FullTextSearchQuery
 
@@ -179,7 +174,7 @@ public struct BooleanClause: Sendable, Hashable {
 /// How a clause participates in a boolean query
 ///
 /// **Reference**: Lucene BooleanClause.Occur
-public enum BooleanOccur: String, Sendable, Hashable, Codable {
+public enum BooleanOccur: String, Sendable, Hashable {
     /// The clause must match (AND)
     ///
     /// Documents must match this clause to be included in results.

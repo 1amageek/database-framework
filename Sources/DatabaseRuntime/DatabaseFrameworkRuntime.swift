@@ -16,31 +16,23 @@ import VersionIndex
 /// Runtime composition that exposes the complete database-framework feature set.
 public enum DatabaseFrameworkRuntime {
     public static func configuration(
-        persistableTypes: [any Persistable.Type],
+        entityRuntimes: [EntityRuntimeRegistration],
         authorizationPolicies: [AuthorizationPolicyHandler] = []
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         try configuration(
-            persistableTypes: persistableTypes,
+            entityRuntimes: entityRuntimes,
             sparqlFunctionRegistry: .empty,
             authorizationPolicies: authorizationPolicies
         )
     }
 
     public static func configuration(
-        persistableTypes: [any Persistable.Type],
+        entityRuntimes: [EntityRuntimeRegistration],
         sparqlFunctionRegistry: SPARQLFunctionRegistry,
         authorizationPolicies: [AuthorizationPolicyHandler] = []
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
-            indexMaintainerProviders: maintainerProviders(),
-            indexReadExecutors: [
-                VectorReadExecutors.indexExecutor,
-                FullTextReadExecutors.indexExecutor,
-                RankReadExecutors.indexExecutor,
-                BitmapReadExecutors.indexExecutor,
-                VersionReadExecutors.indexExecutor,
-                PermutedReadExecutors.indexExecutor,
-            ],
+            indexMaintainerProviderDescriptors: maintainerProviderDescriptors(),
             polymorphicIndexReadExecutors: [
                 VectorReadExecutors.polymorphicIndexExecutor,
                 FullTextReadExecutors.polymorphicIndexExecutor,
@@ -54,35 +46,86 @@ public enum DatabaseFrameworkRuntime {
                 functionRegistry: sparqlFunctionRegistry
             ),
             persistableMutationMaintainers: [RelationshipReferenceMaintainer()],
-            persistableTypes: persistableTypes,
+            entityRuntimes: entityRuntimes,
             authorizationPolicies: authorizationPolicies
         )
     }
 
-    private static func maintainerProviders() -> [any IndexMaintainerProvider] {
+    public static func entity<Model: Persistable>(
+        _ model: Model.Type
+    ) throws -> EntityRuntimeRegistration {
+        try definition(model).registration()
+    }
+
+    public static func entity<Model: OWLClassEntity>(
+        _ model: Model.Type
+    ) throws -> EntityRuntimeRegistration {
+        var definition = try definition(model)
+        try definition.register(
+            OWLClassRDFIndexMaintainerProvider<Model>()
+        )
+        return definition.registration()
+    }
+
+    private static func definition<Model: Persistable>(
+        _ model: Model.Type
+    ) throws -> EntityRuntimeDefinition<Model> {
+        var definition = try EntityRuntimeDefinition(model)
+        try VectorReadExecutors.register(with: &definition)
+        try FullTextReadExecutors.register(with: &definition)
+        try RankReadExecutors.register(with: &definition)
+        try BitmapReadExecutors.register(with: &definition)
+        try VersionReadExecutors.register(with: &definition)
+        try PermutedReadExecutors.register(with: &definition)
+        try definition.register(ScalarIndexMaintainerProvider())
+        try definition.register(CountIndexMaintainerProvider())
+        try definition.register(SumIndexMaintainerProvider())
+        try definition.register(MinIndexMaintainerProvider())
+        try definition.register(MaxIndexMaintainerProvider())
+        try definition.register(AverageIndexMaintainerProvider())
+        try definition.register(VersionIndexMaintainerProvider())
+        try definition.register(CountUpdatesIndexMaintainerProvider())
+        try definition.register(CountNotNullIndexMaintainerProvider())
+        try definition.register(BitmapIndexMaintainerProvider())
+        try definition.register(TimeWindowLeaderboardIndexMaintainerProvider())
+        try definition.register(DistinctIndexMaintainerProvider())
+        try definition.register(PercentileIndexMaintainerProvider())
+        try definition.register(VectorIndexMaintainerProvider())
+        try definition.register(FullTextIndexMaintainerProvider())
+        try definition.register(AutocompleteIndexMaintainerProvider())
+        try definition.register(SpatialIndexMaintainerProvider())
+        try definition.register(RankIndexMaintainerProvider())
+        try definition.register(PermutedIndexMaintainerProvider())
+        try definition.register(GraphIndexMaintainerProvider())
+        try definition.register(RDFQuadIndexMaintainerProvider())
+        return definition
+    }
+
+    private static func maintainerProviderDescriptors() -> [
+        IndexMaintainerProviderDescriptor
+    ] {
         [
-            ScalarIndexMaintainerProvider(),
-            CountIndexMaintainerProvider(),
-            SumIndexMaintainerProvider(),
-            MinIndexMaintainerProvider(),
-            MaxIndexMaintainerProvider(),
-            AverageIndexMaintainerProvider(),
-            VersionIndexMaintainerProvider(),
-            CountUpdatesIndexMaintainerProvider(),
-            CountNotNullIndexMaintainerProvider(),
-            BitmapIndexMaintainerProvider(),
-            TimeWindowLeaderboardIndexMaintainerProvider(),
-            DistinctIndexMaintainerProvider(),
-            PercentileIndexMaintainerProvider(),
-            VectorIndexMaintainerProvider(),
-            FullTextIndexMaintainerProvider(),
-            AutocompleteIndexMaintainerProvider(),
-            SpatialIndexMaintainerProvider(),
-            RankIndexMaintainerProvider(),
-            PermutedIndexMaintainerProvider(),
-            GraphIndexMaintainerProvider(),
-            RDFQuadIndexMaintainerProvider(),
-            OWLClassRDFIndexMaintainerProvider(),
+            .init(describing: ScalarIndexMaintainerProvider()),
+            .init(describing: CountIndexMaintainerProvider()),
+            .init(describing: SumIndexMaintainerProvider()),
+            .init(describing: MinIndexMaintainerProvider()),
+            .init(describing: MaxIndexMaintainerProvider()),
+            .init(describing: AverageIndexMaintainerProvider()),
+            .init(describing: VersionIndexMaintainerProvider()),
+            .init(describing: CountUpdatesIndexMaintainerProvider()),
+            .init(describing: CountNotNullIndexMaintainerProvider()),
+            .init(describing: BitmapIndexMaintainerProvider()),
+            .init(describing: TimeWindowLeaderboardIndexMaintainerProvider()),
+            .init(describing: DistinctIndexMaintainerProvider()),
+            .init(describing: PercentileIndexMaintainerProvider()),
+            .init(describing: VectorIndexMaintainerProvider()),
+            .init(describing: FullTextIndexMaintainerProvider()),
+            .init(describing: AutocompleteIndexMaintainerProvider()),
+            .init(describing: SpatialIndexMaintainerProvider()),
+            .init(describing: RankIndexMaintainerProvider()),
+            .init(describing: PermutedIndexMaintainerProvider()),
+            .init(describing: GraphIndexMaintainerProvider()),
+            .init(describing: RDFQuadIndexMaintainerProvider()),
         ]
     }
 }

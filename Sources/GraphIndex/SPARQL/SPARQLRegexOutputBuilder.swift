@@ -9,7 +9,7 @@ struct SPARQLRegexOutputBuilder {
         storage.reserveCapacity(capacity)
     }
 
-    mutating func append(_ source: Substring) throws {
+    mutating func append(_ source: Substring) throws(SPARQLRegularExpression.Error) {
         let sourceByteCount = source.utf8.count
         utf8Count = try SPARQLRegularExpression.checkedAdd(
             utf8Count,

@@ -4,11 +4,6 @@
 // Reference: FDB Record Layer RemoteFetchProperties and FDBRecordStore.fetchRemote
 // Optimizes entity retrieval by reducing round trips and leveraging locality.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import Synchronization
@@ -142,19 +137,24 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// Container-scoped canonical entity storage policy
     private let itemStorageFactory: ItemStorageFactory
 
+    /// Monotonic time source used to measure fetch latency.
+    private let monotonicClock: any StorageMonotonicClock
+
     // MARK: - Initialization
 
     public init(
         subspace: Subspace,
         blobsSubspace: Subspace,
-        itemType: String = String(describing: Item.self),
+        itemType: String = Item.persistableType,
         itemStorageFactory: ItemStorageFactory,
+        monotonicClock: any StorageMonotonicClock,
         configuration: RemoteFetchConfiguration = .default
     ) {
         self.subspace = subspace
         self.blobsSubspace = blobsSubspace
         self.itemType = itemType
         self.itemStorageFactory = itemStorageFactory
+        self.monotonicClock = monotonicClock
         self.configuration = configuration
     }
 
@@ -188,9 +188,9 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
             orderedKeys = primaryKeys
         }
 
-        // Fetch in batches
-        // Use Data as key for efficient O(1) lookup (vs String which is slow)
-        var results: [Data: Item] = [:]
+        // Preserve packed tuple bytes as the lookup identity. ByteString retains
+        // its backing storage, so this path does not materialize Data or String.
+        var results: [ByteString: Item] = [:]
         results.reserveCapacity(primaryKeys.count)
 
         let batches = orderedKeys.chunked(into: configuration.batchSize)
@@ -212,8 +212,8 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         orderedResults.reserveCapacity(primaryKeys.count)
 
         for pk in primaryKeys {
-            let keyData = Data(pk.pack())
-            if let item = results[keyData] {
+            let packedKey = pk.pack()
+            if let item = results[packedKey] {
                 orderedResults.append(item)
             }
         }
@@ -226,8 +226,8 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         primaryKeys: [Tuple],
         subspace: Subspace,
         storage: ItemStorage
-    ) async throws -> [(Data, Item)] {
-        var results: [(Data, Item)] = []
+    ) async throws -> [(ByteString, Item)] {
+        var results: [(ByteString, Item)] = []
         results.reserveCapacity(primaryKeys.count)
 
         // Sequential reads within transaction (FDB constraint)
@@ -235,7 +235,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
             let key = subspace.pack(pk)
             if let data = try await storage.read(for: key) {
                 let item: Item = try DataAccess.deserialize(data)
-                results.append((Data(pk.pack()), item))
+                results.append((pk.pack(), item))
             }
         }
 
@@ -295,7 +295,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         primaryKeys: [Tuple],
         transaction: any TransactionAccess
     ) async throws -> RemoteFetchResult<Item> {
-        let startTime = MonotonicClock.now()
+        let startTime = monotonicClock.now
 
         guard !primaryKeys.isEmpty else {
             return RemoteFetchResult(
@@ -328,7 +328,10 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
             }
         }
 
-        let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+        let duration = DatabaseMonotonicMeasurement.nanoseconds(
+            from: startTime,
+            to: monotonicClock.now
+        )
 
         return RemoteFetchResult(
             items: items,
@@ -442,7 +445,7 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
         container: DBContainer,
         subspace: Subspace,
         blobsSubspace: Subspace,
-        itemType: String = String(describing: Item.self),
+        itemType: String = Item.persistableType,
         configuration: RemoteFetchConfiguration = .default,
         maxConcurrency: Int = 4
     ) {
@@ -452,6 +455,7 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
             blobsSubspace: blobsSubspace,
             itemType: itemType,
             itemStorageFactory: container.itemStorageFactory,
+            monotonicClock: container.monotonicClock,
             configuration: configuration
         )
         self.maxConcurrency = maxConcurrency
@@ -474,7 +478,7 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
         let results = try await withThrowingTaskGroup(of: [Item].self) { group in
             for chunk in chunks {
                 group.addTask {
-                    try await self.container.engine.withTransaction(configuration: .default) { tx in
+                    try await self.container.transactionExecutor.withTransaction(configuration: .default, clock: self.container.monotonicClock) { tx in
                         try await self.fetcher.fetch(primaryKeys: chunk, transaction: tx)
                     }
                 }
@@ -483,7 +487,7 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
             var allItems: [Item] = []
             allItems.reserveCapacity(primaryKeys.count)
 
-            for try await items in group {
+            while let items = try await group.next() {
                 allItems.append(contentsOf: items)
             }
 

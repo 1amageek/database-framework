@@ -4,11 +4,6 @@
 // Reference: Snowball Porter2 stemmer
 // https://snowballstem.org/algorithms/english/stemmer.html
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 // MARK: - SnowballStemmer
 

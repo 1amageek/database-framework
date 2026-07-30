@@ -1,11 +1,6 @@
 // StatisticsProvider.swift
 // Database statistics for query analysis
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import DatabaseMath
@@ -51,31 +46,31 @@ public struct RangeBoundComponent: Sendable {
 /// Provides statistics about tables and indexes for cost estimation
 public protocol StatisticsProvider: Sendable {
     /// Estimated total row count for a type
-    func estimatedRowCount<T: Persistable>(for type: T.Type) -> Int
+    func estimatedRowCount(entity: String) -> Int
 
     /// Estimated distinct values for a field
-    func estimatedDistinctValues<T: Persistable>(
+    func estimatedDistinctValues(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Int?
 
     /// Selectivity for equality condition
-    func equalitySelectivity<T: Persistable>(
+    func equalitySelectivity(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Double?
 
     /// Selectivity for range condition
-    func rangeSelectivity<T: Persistable>(
+    func rangeSelectivity(
         field: String,
         range: RangeBound,
-        type: T.Type
+        entity: String
     ) -> Double?
 
     /// Selectivity for null check
-    func nullSelectivity<T: Persistable>(
+    func nullSelectivity(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Double?
 
     /// Index entry count estimate
@@ -186,42 +181,42 @@ public struct HeuristicStatisticsProvider: StatisticsProvider {
         self.nullRatio = nullRatio
     }
 
-    public func estimatedRowCount<T: Persistable>(for type: T.Type) -> Int {
+    public func estimatedRowCount(entity: String) -> Int {
         defaultRowCount
     }
 
-    public func estimatedDistinctValues<T: Persistable>(
+    public func estimatedDistinctValues(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Int? {
         // HEURISTIC: Assume 10% distinct values by default
         max(1, Int(Double(defaultRowCount) * distinctValueRatio))
     }
 
-    public func equalitySelectivity<T: Persistable>(
+    public func equalitySelectivity(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Double? {
         // HEURISTIC: 1 / estimated distinct values
-        guard let distinct = estimatedDistinctValues(field: field, type: type) else {
+        guard let distinct = estimatedDistinctValues(field: field, entity: entity) else {
             return nil
         }
         return 1.0 / Double(distinct)
     }
 
-    public func rangeSelectivity<T: Persistable>(
+    public func rangeSelectivity(
         field: String,
         range: RangeBound,
-        type: T.Type
+        entity: String
     ) -> Double? {
         // HEURISTIC: Default to 30% for ranges
         // In production, use histogram-based estimation
         0.3
     }
 
-    public func nullSelectivity<T: Persistable>(
+    public func nullSelectivity(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Double? {
         // HEURISTIC: Default 5% null
         nullRatio
@@ -243,9 +238,13 @@ public struct TableStatistics: Sendable {
     public let sampleSize: Int
 
     /// Last update timestamp
-    public let lastUpdated: Date
+    public let lastUpdated: Timestamp
 
-    public init(rowCount: Int, sampleSize: Int, lastUpdated: Date = Date()) {
+    public init(
+        rowCount: Int,
+        sampleSize: Int,
+        lastUpdated: Timestamp
+    ) {
         self.rowCount = rowCount
         self.sampleSize = sampleSize
         self.lastUpdated = lastUpdated
@@ -371,59 +370,58 @@ public final class CollectedStatisticsProvider: StatisticsProvider, Sendable {
 
     // MARK: - StatisticsProvider
 
-    public func estimatedRowCount<T: Persistable>(for type: T.Type) -> Int {
-        let typeName = String(describing: type)
+    public func estimatedRowCount(entity: String) -> Int {
         return state.withLock { state in
-            state.tableStatistics[typeName]?.rowCount
-                ?? fallback.estimatedRowCount(for: type)
+            state.tableStatistics[entity]?.rowCount
+                ?? fallback.estimatedRowCount(entity: entity)
         }
     }
 
-    public func estimatedDistinctValues<T: Persistable>(
+    public func estimatedDistinctValues(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Int? {
-        let key = "\(type).\(field)"
+        let key = "\(entity).\(field)"
         return state.withLock { state in
             state.fieldStatistics[key]?.distinctValues
-                ?? fallback.estimatedDistinctValues(field: field, type: type)
+                ?? fallback.estimatedDistinctValues(field: field, entity: entity)
         }
     }
 
-    public func equalitySelectivity<T: Persistable>(
+    public func equalitySelectivity(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Double? {
-        guard let distinct = estimatedDistinctValues(field: field, type: type) else {
-            return fallback.equalitySelectivity(field: field, type: type)
+        guard let distinct = estimatedDistinctValues(field: field, entity: entity) else {
+            return fallback.equalitySelectivity(field: field, entity: entity)
         }
         return 1.0 / Double(max(1, distinct))
     }
 
-    public func rangeSelectivity<T: Persistable>(
+    public func rangeSelectivity(
         field: String,
         range: RangeBound,
-        type: T.Type
+        entity: String
     ) -> Double? {
-        let key = "\(type).\(field)"
+        let key = "\(entity).\(field)"
         let stats = state.withLock { $0.fieldStatistics[key] }
 
         guard let stats = stats, let histogram = stats.histogram else {
-            return fallback.rangeSelectivity(field: field, range: range, type: type)
+            return fallback.rangeSelectivity(field: field, range: range, entity: entity)
         }
 
         // Use histogram for range estimation
         return estimateRangeSelectivityFromHistogram(histogram: histogram, range: range)
     }
 
-    public func nullSelectivity<T: Persistable>(
+    public func nullSelectivity(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Double? {
-        let key = "\(type).\(field)"
+        let key = "\(entity).\(field)"
         let stats = state.withLock { $0.fieldStatistics[key] }
 
-        return stats?.nullRatio ?? fallback.nullSelectivity(field: field, type: type)
+        return stats?.nullRatio ?? fallback.nullSelectivity(field: field, entity: entity)
     }
 
     public func estimatedIndexEntries(index: IndexDescriptor) -> Int? {
@@ -438,21 +436,28 @@ public final class CollectedStatisticsProvider: StatisticsProvider, Sendable {
     public func updateTableStats<T: Persistable>(
         for type: T.Type,
         rowCount: Int,
-        sampleSize: Int
+        sampleSize: Int,
+        lastUpdated: Timestamp
     ) {
         updateTableStats(
-            typeName: String(describing: type),
+            typeName: T.persistableType,
             rowCount: rowCount,
-            sampleSize: sampleSize
+            sampleSize: sampleSize,
+            lastUpdated: lastUpdated
         )
     }
 
     func updateTableStats(
         typeName: String,
         rowCount: Int,
-        sampleSize: Int
+        sampleSize: Int,
+        lastUpdated: Timestamp
     ) {
-        let stats = TableStatistics(rowCount: rowCount, sampleSize: sampleSize)
+        let stats = TableStatistics(
+            rowCount: rowCount,
+            sampleSize: sampleSize,
+            lastUpdated: lastUpdated
+        )
         state.withLock { $0.tableStatistics[typeName] = stats }
     }
 
@@ -462,7 +467,7 @@ public final class CollectedStatisticsProvider: StatisticsProvider, Sendable {
         field: String,
         stats: FieldStatistics
     ) {
-        let key = "\(type).\(field)"
+        let key = "\(T.persistableType).\(field)"
 
         state.withLock { $0.fieldStatistics[key] = stats }
     }
@@ -788,7 +793,8 @@ public struct SearchStatisticsCollector: Sendable {
         var sumNormSquared: Double = 0
         var normValues: [Double] = []
 
-        for try await (_, value) in reader.scanSubspace(subspace) {
+        var vectorIterator = reader.scanSubspace(subspace, reverse: false).makeAsyncIterator()
+        while let (_, value) = try await vectorIterator.next() {
             vectorCount += 1
 
             // Parse vector and compute norm (sample only)
@@ -839,7 +845,8 @@ public struct SearchStatisticsCollector: Sendable {
         var totalTermOccurrences = 0
 
         // Scan terms subspace
-        for try await (key, _) in reader.scanSubspace(termsSubspace) {
+        var termIterator = reader.scanSubspace(termsSubspace, reverse: false).makeAsyncIterator()
+        while let (key, _) = try await termIterator.next() {
             // Key structure: [termsSubspace][term][docID]
             // Quick check before attempting unpack
             guard termsSubspace.contains(key) else {
@@ -853,7 +860,7 @@ public struct SearchStatisticsCollector: Sendable {
                 )
             }
 
-            guard let term = try keyTuple.element(at: 0) as? String else {
+            guard case .string(let term) = try keyTuple.value(at: 0) else {
                 throw StatisticsCollectionError.invalidTerm
             }
             termFrequencies[term, default: 0] += 1
@@ -875,7 +882,9 @@ public struct SearchStatisticsCollector: Sendable {
 
         // Get top terms
         let sortedTerms = termFrequencies.sorted { $0.value > $1.value }
-        let topTerms = Array(sortedTerms.prefix(topTermCount).map { ($0.key, $0.value) })
+        let topTerms: [(term: String, docFreq: Int)] = sortedTerms
+            .prefix(topTermCount)
+            .map { (term: $0.key, docFreq: $0.value) }
 
         return FullTextIndexStatistics(
             indexName: indexName,
@@ -898,7 +907,8 @@ public struct SearchStatisticsCollector: Sendable {
         var maxLat = -Double.infinity
         var maxLon = -Double.infinity
 
-        for try await (key, _) in reader.scanSubspace(subspace) {
+        var spatialIterator = reader.scanSubspace(subspace, reverse: false).makeAsyncIterator()
+        while let (key, _) = try await spatialIterator.next() {
             // Quick check before attempting unpack
             guard subspace.contains(key) else {
                 throw StatisticsCollectionError.keyOutsideSubspace
@@ -914,7 +924,7 @@ public struct SearchStatisticsCollector: Sendable {
             entryCount += 1
 
             // Extract cell code
-            guard let cellCode = try keyTuple.element(at: 0) as? Int64 else {
+            guard case .signedInteger(let cellCode) = try keyTuple.value(at: 0) else {
                 throw StatisticsCollectionError.invalidSpatialCell
             }
             let code = UInt64(bitPattern: cellCode)
@@ -1113,37 +1123,37 @@ public final class DatabaseLiveStatisticsProvider: LiveStatisticsProvider, Senda
 
     // MARK: - StatisticsProvider (delegated to base)
 
-    public func estimatedRowCount<T: Persistable>(for type: T.Type) -> Int {
-        baseProvider.estimatedRowCount(for: type)
+    public func estimatedRowCount(entity: String) -> Int {
+        baseProvider.estimatedRowCount(entity: entity)
     }
 
-    public func estimatedDistinctValues<T: Persistable>(
+    public func estimatedDistinctValues(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Int? {
-        baseProvider.estimatedDistinctValues(field: field, type: type)
+        baseProvider.estimatedDistinctValues(field: field, entity: entity)
     }
 
-    public func equalitySelectivity<T: Persistable>(
+    public func equalitySelectivity(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Double? {
-        baseProvider.equalitySelectivity(field: field, type: type)
+        baseProvider.equalitySelectivity(field: field, entity: entity)
     }
 
-    public func rangeSelectivity<T: Persistable>(
+    public func rangeSelectivity(
         field: String,
         range: RangeBound,
-        type: T.Type
+        entity: String
     ) -> Double? {
-        baseProvider.rangeSelectivity(field: field, range: range, type: type)
+        baseProvider.rangeSelectivity(field: field, range: range, entity: entity)
     }
 
-    public func nullSelectivity<T: Persistable>(
+    public func nullSelectivity(
         field: String,
-        type: T.Type
+        entity: String
     ) -> Double? {
-        baseProvider.nullSelectivity(field: field, type: type)
+        baseProvider.nullSelectivity(field: field, entity: entity)
     }
 
     public func estimatedIndexEntries(index: IndexDescriptor) -> Int? {
@@ -1156,7 +1166,7 @@ public final class DatabaseLiveStatisticsProvider: LiveStatisticsProvider, Senda
         beginKey: ByteString,
         endKey: ByteString
     ) async throws -> Int {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: beginKey,
                 endKey: endKey
@@ -1169,7 +1179,7 @@ public final class DatabaseLiveStatisticsProvider: LiveStatisticsProvider, Senda
         endKey: ByteString,
         chunkSize: Int
     ) async throws -> [ByteString] {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: beginKey,
                 endKey: endKey,

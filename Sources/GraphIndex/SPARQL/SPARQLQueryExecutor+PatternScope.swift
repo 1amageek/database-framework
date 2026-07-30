@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -40,7 +35,7 @@ extension SPARQLQueryExecutor {
             expressionContext: expressionContext,
             workMeter: workMeter,
             evaluateKey: { plan, binding in
-                try await evaluateCanonicalExpression(
+                try await self.evaluateCanonicalExpression(
                     plan,
                     binding: binding,
                     transaction: transaction,
@@ -75,26 +70,32 @@ extension SPARQLQueryExecutor {
                 }
             }
             for agg in aggs {
-                do {
-                    if let aggValue = try await agg.evaluate(
-                        groupIndex: groupIndex,
-                        in: partition,
-                        workMeter: workMeter,
-                        evaluateExpression: { plan, solution in
-                            try await evaluateCanonicalExpression(
-                                plan,
-                                binding: solution,
-                                transaction: transaction,
-                                activeGraph: activeGraph
-                            )
-                        }
-                    ) {
-                        binding = binding.binding(agg.alias, to: aggValue)
+                let aggregateOutcome = try await agg.evaluate(
+                    groupIndex: groupIndex,
+                    in: partition,
+                    workMeter: workMeter,
+                    evaluateExpression: { plan, solution in
+                        try await self.evaluateCanonicalExpression(
+                            plan,
+                            binding: solution,
+                            transaction: transaction,
+                            activeGraph: activeGraph
+                        )
                     }
-                } catch let error as SPARQLExpressionEvaluationError
-                    where error.isSPARQLEvaluationError {
-                    // SPARQL aggregate errors leave only this alias unbound.
-                    continue
+                )
+                switch aggregateOutcome {
+                case .value(.some(let aggregateValue)):
+                    binding = binding.binding(
+                        agg.alias,
+                        to: aggregateValue
+                    )
+                case .value(.none):
+                    break
+                case .expressionError(let error):
+                    if error.isSPARQLEvaluationError {
+                        break
+                    }
+                    throw error
                 }
             }
             if let having = havingExpr {

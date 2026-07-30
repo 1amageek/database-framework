@@ -4,11 +4,6 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 /// Parameters for Product Quantization
 ///
@@ -41,7 +36,7 @@ import Foundation
 /// let pq = PQParameters(m: 8)  // 8 subquantizers
 /// // For 384-dim vectors: 384*4=1536 bytes → 8 bytes (192x compression)
 /// ```
-public struct PQParameters: Sendable, Codable, Hashable {
+public struct PQParameters: Sendable, Hashable {
     /// Number of subquantizers (subspaces to split vector into)
     ///
     /// Must divide the vector dimension evenly.

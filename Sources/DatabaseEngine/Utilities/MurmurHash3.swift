@@ -3,7 +3,7 @@ internal enum MurmurHash3 {
     @usableFromInline
     struct Stream: Sendable {
         @usableFromInline
-        private(set) var byteCount: Int = 0
+        var byteCount: Int = 0
 
         @usableFromInline
         var h1: UInt64

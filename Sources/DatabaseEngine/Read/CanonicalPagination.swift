@@ -65,8 +65,6 @@ public enum CanonicalQueryPagination {
                     resultFingerprint: resultFingerprint,
                     offset: offset
                 )
-            } catch is CanonicalReadError {
-                throw CanonicalReadError.invalidContinuation
             } catch {
                 throw CanonicalReadError.invalidContinuation
             }

@@ -7,7 +7,7 @@ enum SPARQLDatatypeConstructor {
     static func evaluate(
         identifier: RDFIRI,
         argument: FieldValue
-    ) throws -> FieldValue {
+    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
         let localName = identifier.rawValue.dropFirst(
             SPARQLFunctionIdentifier.xsdNamespace.count
         )
@@ -56,7 +56,7 @@ enum SPARQLDatatypeConstructor {
 
     private static func stringLexicalForm(
         _ argument: FieldValue
-    ) throws -> String {
+    ) throws(SPARQLExpressionEvaluationError) -> String {
         switch argument {
         case .rdfTerm(.iri(let iri)):
             return iri.rawValue
@@ -94,12 +94,7 @@ enum SPARQLDatatypeConstructor {
         case .float64(let value):
             return floatingLexicalForm(value)
         case .decimal:
-            guard let numeric = SPARQLNumericValue(argument),
-                  let lexicalForm =
-                    try numeric.decimalConstructorLexicalForm() else {
-                throw typeError("xsd:string received an invalid decimal")
-            }
-            return lexicalForm
+            return try decimalLexicalForm(argument)
         case .bytes,
              .date, .time, .dateTime, .timestamp,
              .timeSpan, .calendarPeriod,
@@ -111,7 +106,7 @@ enum SPARQLDatatypeConstructor {
 
     private static func booleanLexicalForm(
         _ argument: FieldValue
-    ) throws -> String {
+    ) throws(SPARQLExpressionEvaluationError) -> String {
         if let numeric = SPARQLNumericValue(argument) {
             return numeric.isZero || numeric.isNaN ? "false" : "true"
         }
@@ -132,7 +127,7 @@ enum SPARQLDatatypeConstructor {
 
     private static func integerLexicalForm(
         _ argument: FieldValue
-    ) throws -> String {
+    ) throws(SPARQLExpressionEvaluationError) -> String {
         if let numeric = SPARQLNumericValue(argument) {
             guard let value = numeric.integerConstructorValue() else {
                 throw typeError("numeric value cannot be cast to xsd:integer")
@@ -147,17 +142,12 @@ enum SPARQLDatatypeConstructor {
 
     private static func decimalLexicalForm(
         _ argument: FieldValue
-    ) throws -> String {
+    ) throws(SPARQLExpressionEvaluationError) -> String {
         if let numeric = SPARQLNumericValue(argument) {
-            do {
-                guard let lexicalForm = try numeric
-                    .decimalConstructorLexicalForm() else {
-                    throw typeError("numeric value cannot be cast to xsd:decimal")
-                }
-                return lexicalForm
-            } catch let error as SPARQLExpressionEvaluationError {
-                throw error
-            } catch let error as SPARQLNumericError {
+            let lexicalForm: String?
+            do throws(SPARQLNumericError) {
+                lexicalForm = try numeric.decimalConstructorLexicalForm()
+            } catch let error {
                 switch error {
                 case .resultLiteralTooLarge(let required, let maximum):
                     throw SPARQLExpressionEvaluationError.resourceLimitExceeded(
@@ -169,6 +159,10 @@ enum SPARQLDatatypeConstructor {
                     throw typeError("numeric value cannot be represented as xsd:decimal")
                 }
             }
+            guard let lexicalForm else {
+                throw typeError("numeric value cannot be cast to xsd:decimal")
+            }
+            return lexicalForm
         }
         if let value = booleanValue(argument) {
             return value ? "1" : "0"
@@ -179,7 +173,7 @@ enum SPARQLDatatypeConstructor {
     private static func floatingLexicalForm(
         _ argument: FieldValue,
         asFloat: Bool
-    ) throws -> String {
+    ) throws(SPARQLExpressionEvaluationError) -> String {
         if let numeric = SPARQLNumericValue(argument) {
             return numeric.floatingConstructorLexicalForm(asFloat: asFloat)
         }
@@ -194,7 +188,7 @@ enum SPARQLDatatypeConstructor {
 
     private static func dateTimeLexicalForm(
         _ argument: FieldValue
-    ) throws -> String {
+    ) throws(SPARQLExpressionEvaluationError) -> String {
         switch argument {
         case .rdfTerm(.literal(let literal))
             where literal.datatypeIRI.rawValue == xsd("dateTime"):
@@ -207,7 +201,7 @@ enum SPARQLDatatypeConstructor {
     private static func stringInput(
         _ argument: FieldValue,
         target: String
-    ) throws -> String {
+    ) throws(SPARQLExpressionEvaluationError) -> String {
         switch argument {
         case .string(let value):
             return value
@@ -240,7 +234,7 @@ enum SPARQLDatatypeConstructor {
     private static func construct(
         datatype: String,
         lexicalForm: String
-    ) throws -> FieldValue {
+    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
         let literal: RDFLiteral
         do {
             literal = try RDFLiteral(
@@ -250,12 +244,12 @@ enum SPARQLDatatypeConstructor {
         } catch {
             throw typeError("invalid datatype constructor result")
         }
-        do {
+        do throws(XSDValidationFailure) {
             _ = try XSDValueParser(
                 profile: .extendedXSD11,
                 limits: .default
             ).parse(literal)
-        } catch let failure as XSDValidationFailure {
+        } catch let failure {
             switch failure {
             case .resourceLimitExceeded(let resource, let limit, let actual):
                 throw SPARQLExpressionEvaluationError.resourceLimitExceeded(

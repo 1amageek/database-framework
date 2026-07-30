@@ -5,11 +5,6 @@
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/IndexingMerger.java
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 
@@ -163,7 +158,7 @@ public final class UniquenessViolationTracker: Sendable {
                 persistableType: persistableType,
                 valueKey: valueKey,
                 primaryKeys: [pkBytes],  // Will be updated when second conflict is found
-                detectedAt: Date()
+                detectedAt: container.wallClock.now
             )
 
             try transaction.setValue(
@@ -236,7 +231,7 @@ public final class UniquenessViolationTracker: Sendable {
                 persistableType: persistableType,
                 valueKey: valueKey,
                 primaryKeys: [existingBytes, newBytes],
-                detectedAt: Date()
+                detectedAt: container.wallClock.now
             )
 
             try transaction.setValue(
@@ -267,7 +262,7 @@ public final class UniquenessViolationTracker: Sendable {
         indexName: String,
         limit: Int? = nil
     ) async throws -> [UniquenessViolation] {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.scanViolations(
                 indexName: indexName,
                 limit: limit,
@@ -294,7 +289,7 @@ public final class UniquenessViolationTracker: Sendable {
         var violations: [UniquenessViolation] = []
         var count = 0
 
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
 
         for (_, value) in sequence {
             if let maxLimit = limit, count >= maxLimit {
@@ -316,7 +311,7 @@ public final class UniquenessViolationTracker: Sendable {
     public func scanAllViolations(
         limit: Int? = nil
     ) async throws -> [String: [UniquenessViolation]] {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.scanAllViolations(limit: limit, transaction: transaction)
         }
     }
@@ -330,7 +325,7 @@ public final class UniquenessViolationTracker: Sendable {
 
         var result: [String: [UniquenessViolation]] = [:]
 
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
 
         for (_, value) in sequence {
             let violation = try UniquenessViolationCodec.decode(value)
@@ -353,7 +348,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// - Parameter indexName: Name of the index to check
     /// - Returns: True if violations exist
     public func hasViolations(indexName: String) async throws -> Bool {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.hasViolations(indexName: indexName, transaction: transaction)
         }
     }
@@ -366,7 +361,7 @@ public final class UniquenessViolationTracker: Sendable {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
 
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
 
         for _ in sequence {
             return true
@@ -380,7 +375,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Returns: Number of distinct value violations (not total conflicting entities)
     public func countViolations(indexName: String) async throws -> Int {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.countViolations(indexName: indexName, transaction: transaction)
         }
     }
@@ -394,7 +389,7 @@ public final class UniquenessViolationTracker: Sendable {
         let (begin, end) = subspace.range()
 
         var count = 0
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
 
         for _ in sequence {
             count += 1
@@ -419,7 +414,7 @@ public final class UniquenessViolationTracker: Sendable {
         valueKey: ByteString,
         indexSubspace: Subspace
     ) async throws -> ViolationResolution {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.verifyResolution(
                 indexName: indexName,
                 valueKey: valueKey,
@@ -453,7 +448,7 @@ public final class UniquenessViolationTracker: Sendable {
         let (begin, end) = valueSubspace.range()
 
         var foundPrimaryKeys: [ByteString] = []
-        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
 
         for (key, _) in sequence {
             // Extract primary key from index key
@@ -491,7 +486,7 @@ public final class UniquenessViolationTracker: Sendable {
         indexName: String,
         valueKey: ByteString
     ) async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.clearViolation(
                 indexName: indexName,
                 valueKey: valueKey,
@@ -522,7 +517,7 @@ public final class UniquenessViolationTracker: Sendable {
     ///
     /// - Parameter indexName: Name of the index
     public func clearAllViolations(indexName: String) async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.clearAllViolations(indexName: indexName, transaction: transaction)
         }
     }

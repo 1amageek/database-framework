@@ -18,7 +18,7 @@ internal enum ContinuationStateFormat {
             )
         } catch {
             preconditionFailure(
-                "The continuation frame limits must be valid: \(error)"
+                "The continuation frame limits declaration is invalid"
             )
         }
     }()
@@ -58,40 +58,53 @@ internal enum ContinuationStateFormat {
                 maximum: maximumByteCount
             )
         }
+        let decoded: (
+            marker: UInt32,
+            version: UInt8,
+            nextOffset: UInt64,
+            remainingLimit: UInt64?,
+            fingerprint: ByteString
+        )
         do {
             var reader = try StorageFrameDecoder(
                 bytes,
                 limits: limits
             )
-            guard try reader.readUInt32() == magic else {
-                throw ContinuationError.corruptedToken
-            }
+            let marker = try reader.readUInt32()
             let version = try reader.readUInt8()
-            guard version == ContinuationToken.currentVersion else {
-                throw ContinuationError.versionMismatch(
-                    expected: ContinuationToken.currentVersion,
-                    actual: version
-                )
-            }
             let nextOffset = UInt64(bitPattern: try reader.readInt64())
             let remainingLimit = try reader.readBool()
                 ? UInt64(bitPattern: try reader.readInt64())
                 : nil
             let fingerprint = try reader.readBytes()
-            guard fingerprint.count == SHA256Accumulator.digestByteCount else {
-                throw ContinuationError.corruptedToken
-            }
             try reader.ensureFullyRead()
-            return ContinuationState(
+            decoded = (
+                marker: marker,
                 version: version,
                 nextOffset: nextOffset,
                 remainingLimit: remainingLimit,
-                queryFingerprint: fingerprint.detached()
+                fingerprint: fingerprint
             )
-        } catch let error as ContinuationError {
-            throw error
         } catch {
             throw ContinuationError.corruptedToken
         }
+        guard decoded.marker == magic else {
+            throw ContinuationError.corruptedToken
+        }
+        guard decoded.version == ContinuationToken.currentVersion else {
+            throw ContinuationError.versionMismatch(
+                expected: ContinuationToken.currentVersion,
+                actual: decoded.version
+            )
+        }
+        guard decoded.fingerprint.count == SHA256Accumulator.digestByteCount else {
+            throw ContinuationError.corruptedToken
+        }
+        return ContinuationState(
+            version: decoded.version,
+            nextOffset: decoded.nextOffset,
+            remainingLimit: decoded.remainingLimit,
+            queryFingerprint: decoded.fingerprint.detached()
+        )
     }
 }

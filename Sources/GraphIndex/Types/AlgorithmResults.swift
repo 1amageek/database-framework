@@ -4,11 +4,6 @@
 // Provides data structures for PageRank, Community Detection,
 // and other graph algorithm results.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
 
 // MARK: - PageRank
@@ -367,12 +362,12 @@ public struct CommunityResult: Sendable {
 
     /// Size of the largest community
     public var largestCommunitySize: Int {
-        communities.values.map(\.count).max() ?? 0
+        communities.values.map { $0.count }.max() ?? 0
     }
 
     /// Size of the smallest community
     public var smallestCommunitySize: Int {
-        communities.values.map(\.count).min() ?? 0
+        communities.values.map { $0.count }.min() ?? 0
     }
 
     // MARK: - Initialization

@@ -102,7 +102,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in stream {
@@ -170,7 +173,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (_, value) in stream {
@@ -230,7 +236,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (_, value) in stream {
@@ -270,7 +279,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (_, value) in stream {
@@ -331,7 +343,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in stream {
@@ -356,7 +371,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in stream {
@@ -397,7 +415,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in stream {
@@ -422,7 +443,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in stream {
@@ -498,7 +522,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in stream {
@@ -531,7 +558,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in stream {
@@ -561,7 +591,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (_, value) in stream {
@@ -583,7 +616,10 @@ public struct OntologyStore: Sendable {
         let stream = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, value) in stream {

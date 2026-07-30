@@ -4,13 +4,8 @@
 // Reference: FDB Record Layer StoreTimer.java
 // Provides fine-grained timing and counting for database operations.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
-import Metrics
 import Synchronization
+import StorageKit
 
 // MARK: - StoreTimerEvent
 
@@ -192,69 +187,68 @@ public final class StoreTimer: Sendable {
 
     private let state: Mutex<State>
 
+    private let monotonicClock: any StorageMonotonicClock
+
     /// Prefix for metrics labels
     public let metricsPrefix: String
-
-    /// Whether to emit metrics to swift-metrics backend
-    public let emitMetrics: Bool
 
     // MARK: - Pre-created Metrics
 
     /// Pre-created timer metrics for O(1) lookup
     /// Reference: swift-metrics recommends reusing metric instances
-    private let timerMetrics: [StoreTimerEvent: Metrics.Timer]
+    private let timerMetrics: [StoreTimerEvent: DatabaseMetricTimer]
 
     /// Pre-created counter metrics for O(1) lookup
-    private let counterMetrics: [StoreTimerEvent: Counter]
+    private let counterMetrics: [StoreTimerEvent: DatabaseMetricCounter]
 
     // MARK: - Initialization
 
-    public init(metricsPrefix: String = "database", emitMetrics: Bool = true) {
+    public init(
+        monotonicClock: any StorageMonotonicClock,
+        metricsPrefix: String = "database",
+        metrics: DatabaseMetricsConfiguration = .disabled
+    ) {
+        self.monotonicClock = monotonicClock
         self.metricsPrefix = metricsPrefix
-        self.emitMetrics = emitMetrics
         self.state = Mutex(State())
 
-        // Pre-create all metrics for efficiency
-        if emitMetrics {
-            // Timer events (timing-based)
-            let timerEvents: [StoreTimerEvent] = [
-                .getReadVersion, .commit, .commitWait, .transactionDuration,
-                .saveEntity, .loadEntity, .deleteEntity,
-                .updateIndex, .scanIndex,
-                .rangeScan,
-                .serialize, .deserialize,
-                .compress, .decompress, .compressionRatio,
-                .planQuery, .executePlan,
-                .onlineIndexBatch
-            ]
+        let timerEvents: [StoreTimerEvent] = [
+            .getReadVersion, .commit, .commitWait, .transactionDuration,
+            .saveEntity, .loadEntity, .deleteEntity,
+            .updateIndex, .scanIndex,
+            .rangeScan,
+            .serialize, .deserialize,
+            .compress, .decompress, .compressionRatio,
+            .planQuery, .executePlan,
+            .onlineIndexBatch
+        ]
 
-            var timers: [StoreTimerEvent: Metrics.Timer] = [:]
-            for event in timerEvents {
-                timers[event] = Metrics.Timer(label: "\(metricsPrefix)_\(event.name)_nanoseconds")
-            }
-            self.timerMetrics = timers
-
-            // Counter events (count/size-based)
-            let counterEvents: [StoreTimerEvent] = [
-                .retries,
-                .entitiesSaved, .entitiesLoaded, .entitiesDeleted,
-                .indexEntriesWritten, .indexEntriesRead, .indexEntriesDeleted,
-                .rangesScanned, .rangeKeyValues,
-                .bytesSerialized, .bytesDeserialized,
-                .plansEvaluated,
-                .entitiesIndexed,
-                .cacheHit, .cacheMiss
-            ]
-
-            var counters: [StoreTimerEvent: Counter] = [:]
-            for event in counterEvents {
-                counters[event] = Counter(label: "\(metricsPrefix)_\(event.name)_total")
-            }
-            self.counterMetrics = counters
-        } else {
-            self.timerMetrics = [:]
-            self.counterMetrics = [:]
+        var timers: [StoreTimerEvent: DatabaseMetricTimer] = [:]
+        for event in timerEvents {
+            timers[event] = metrics.timer(
+                label: "\(metricsPrefix)_\(event.name)_nanoseconds"
+            )
         }
+        self.timerMetrics = timers
+
+        let counterEvents: [StoreTimerEvent] = [
+            .retries,
+            .entitiesSaved, .entitiesLoaded, .entitiesDeleted,
+            .indexEntriesWritten, .indexEntriesRead, .indexEntriesDeleted,
+            .rangesScanned, .rangeKeyValues,
+            .bytesSerialized, .bytesDeserialized,
+            .plansEvaluated,
+            .entitiesIndexed,
+            .cacheHit, .cacheMiss
+        ]
+
+        var counters: [StoreTimerEvent: DatabaseMetricCounter] = [:]
+        for event in counterEvents {
+            counters[event] = metrics.counter(
+                label: "\(metricsPrefix)_\(event.name)_total"
+            )
+        }
+        self.counterMetrics = counters
     }
 
     // MARK: - Recording
@@ -275,7 +269,7 @@ public final class StoreTimer: Sendable {
         }
 
         // Emit to pre-created swift-metrics timer (O(1) lookup)
-        timerMetrics[event]?.recordNanoseconds(Int64(nanoseconds))
+        timerMetrics[event]?.recordNanoseconds(nanoseconds)
     }
 
     /// Increment a count event
@@ -312,9 +306,12 @@ public final class StoreTimer: Sendable {
     ///   - operation: The operation to execute
     /// - Returns: The result of the operation
     public func time<T>(_ event: StoreTimerEvent, _ operation: () throws -> T) rethrows -> T {
-        let start = MonotonicClock.now()
+        let start = monotonicClock.now
         defer {
-            let duration = MonotonicClock.now().uptimeNanoseconds - start.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: start,
+                to: monotonicClock.now
+            )
             record(event, duration: duration)
         }
         return try operation()
@@ -327,9 +324,12 @@ public final class StoreTimer: Sendable {
     ///   - operation: The async operation to execute
     /// - Returns: The result of the operation
     public func time<T>(_ event: StoreTimerEvent, _ operation: () async throws -> T) async rethrows -> T {
-        let start = MonotonicClock.now()
+        let start = monotonicClock.now
         defer {
-            let duration = MonotonicClock.now().uptimeNanoseconds - start.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: start,
+                to: monotonicClock.now
+            )
             record(event, duration: duration)
         }
         return try await operation()
@@ -375,6 +375,10 @@ public final class StoreTimer: Sendable {
                 )
             }
         }
+    }
+
+    fileprivate var measurementInstant: StorageInstant {
+        monotonicClock.now
     }
 
     // MARK: - Reset
@@ -448,12 +452,12 @@ public struct EventStats: Sendable {
 
 /// Immutable snapshot of timer state
 public struct StoreTimerSnapshot: Sendable {
-    public let timestamp: Date
+    public let timestamp: StorageInstant
     public let stats: [StoreTimerEvent: EventStats]
 
     /// Create a snapshot from a timer
     public init(from timer: StoreTimer) {
-        self.timestamp = Date()
+        self.timestamp = timer.measurementInstant
         var stats: [StoreTimerEvent: EventStats] = [:]
         for stat in timer.getAllStats() {
             stats[stat.event] = stat

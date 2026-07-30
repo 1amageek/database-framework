@@ -22,7 +22,7 @@ package final class GraphIdentityPool: Sendable {
         _ encoded: ByteString,
         role: GraphRDFComponentRole
     ) throws -> GraphIdentity {
-        do {
+        do throws(RDFTermStorageError) {
             return try RDFTermStorageFormat.withValidatedBytes(
                 encoded,
                 role: role.databaseRole

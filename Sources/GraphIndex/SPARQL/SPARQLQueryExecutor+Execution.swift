@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -29,7 +24,8 @@ extension SPARQLQueryExecutor {
             limit: limit
         )
         let executor = try requestScoped(by: workMeter)
-        return try await database.withTransaction(configuration: .default) { transaction in
+        return try await StorageTransactionExecutor(engine: database)
+            .withTransaction { transaction in
             let attemptExecutor = try executor.transactionAttemptScoped()
             let evaluated = try await attemptExecutor.evaluate(
                 pattern: pattern,
@@ -134,9 +130,8 @@ extension SPARQLQueryExecutor {
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         let executor = try scoped(to: selectPlan.ordered.datasetScope)
             .requestScoped(by: workMeter)
-        return try await database.withTransaction(
-            configuration: .default
-        ) { transaction in
+        return try await StorageTransactionExecutor(engine: database)
+            .withTransaction { transaction in
             let attemptExecutor = try executor.transactionAttemptScoped()
             let evaluated = try await attemptExecutor.evaluateSelectPlan(
                 selectPlan,

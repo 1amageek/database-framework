@@ -1,12 +1,6 @@
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
-import Metrics
 
 /// Online index scrubber for detecting and repairing index inconsistencies
 ///
@@ -83,25 +77,25 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     // MARK: - Metrics
 
     /// Counter for index entries scanned
-    private let entriesScannedCounter: Counter
+    private let entriesScannedCounter: DatabaseMetricCounter
 
     /// Counter for items scanned
-    private let itemsScannedCounter: Counter
+    private let itemsScannedCounter: DatabaseMetricCounter
 
     /// Counter for dangling entries detected
-    private let danglingEntriesCounter: Counter
+    private let danglingEntriesCounter: DatabaseMetricCounter
 
     /// Counter for missing entries detected
-    private let missingEntriesCounter: Counter
+    private let missingEntriesCounter: DatabaseMetricCounter
 
     /// Counter for entries repaired
-    private let entriesRepairedCounter: Counter
+    private let entriesRepairedCounter: DatabaseMetricCounter
 
     /// Timer for scrub duration
-    private let scrubDurationTimer: Metrics.Timer
+    private let scrubDurationTimer: DatabaseMetricTimer
 
     /// Counter for errors
-    private let errorsCounter: Counter
+    private let errorsCounter: DatabaseMetricCounter
 
     // MARK: - Initialization
 
@@ -146,31 +140,32 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
             ("item_type", itemType)
         ]
 
-        self.entriesScannedCounter = Counter(
+        let metrics = container.configuration.metrics
+        self.entriesScannedCounter = metrics.counter(
             label: "database_index_scrubber_entries_scanned_total",
             dimensions: baseDimensions
         )
-        self.itemsScannedCounter = Counter(
+        self.itemsScannedCounter = metrics.counter(
             label: "database_index_scrubber_items_scanned_total",
             dimensions: baseDimensions
         )
-        self.danglingEntriesCounter = Counter(
+        self.danglingEntriesCounter = metrics.counter(
             label: "database_index_scrubber_dangling_entries_total",
             dimensions: baseDimensions
         )
-        self.missingEntriesCounter = Counter(
+        self.missingEntriesCounter = metrics.counter(
             label: "database_index_scrubber_missing_entries_total",
             dimensions: baseDimensions
         )
-        self.entriesRepairedCounter = Counter(
+        self.entriesRepairedCounter = metrics.counter(
             label: "database_index_scrubber_entries_repaired_total",
             dimensions: baseDimensions
         )
-        self.scrubDurationTimer = Metrics.Timer(
+        self.scrubDurationTimer = metrics.timer(
             label: "database_index_scrubber_duration_seconds",
             dimensions: baseDimensions
         )
-        self.errorsCounter = Counter(
+        self.errorsCounter = metrics.counter(
             label: "database_index_scrubber_errors_total",
             dimensions: baseDimensions
         )
@@ -187,7 +182,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     public func scrubIndex() async throws -> ScrubberResult {
         try validateConfiguration()
         let capabilities = try requirePhysicalEntryCapabilities()
-        let startTime = Date()
+        let startTime = container.monotonicClock.now
         do {
             // Phase 1: Index → Item (detect dangling entries)
             let phase1Result = try await runPhase1(capabilities: capabilities)
@@ -199,8 +194,10 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
             try await clearProgress()
 
             // Record duration
-            let duration = Date().timeIntervalSince(startTime)
-            scrubDurationTimer.recordSeconds(duration)
+            let duration = startTime.duration(to: container.monotonicClock.now)
+            scrubDurationTimer.recordNanoseconds(
+                DatabaseMonotonicMeasurement.nanoseconds(duration)
+            )
 
             let summary = ScrubberSummary(
                 timeElapsed: duration,
@@ -224,7 +221,11 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
         } catch {
             errorsCounter.increment()
-            scrubDurationTimer.recordSeconds(Date().timeIntervalSince(startTime))
+            scrubDurationTimer.recordNanoseconds(
+                DatabaseMonotonicMeasurement.nanoseconds(
+                    startTime.duration(to: container.monotonicClock.now)
+                )
+            )
             throw error
         }
     }
@@ -299,8 +300,9 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         rangeSet: inout RangeSet
     ) async throws -> Phase1Result {
 
-        let result = try await container.engine.withTransaction(
-            configuration: transactionConfiguration
+        let result = try await container.transactionExecutor.withTransaction(
+            configuration: transactionConfiguration,
+            clock: container.monotonicClock
         ) { transaction in
             var entriesScanned = 0
             var danglingDetected = 0
@@ -314,6 +316,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 from: .firstGreaterOrEqual(bounds.begin),
                 to: .firstGreaterOrEqual(bounds.end),
                 limit: batchSize,
+                reverse: false,
                 snapshot: false,
                 streamingMode: .iterator
             )
@@ -345,7 +348,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 } catch {
                     throw ScrubberError.invalidPhysicalEntry(
                         indexName: self.index.name,
-                        reason: String(describing: error)
+                        reason: "physical index entry decoding failed"
                     )
                 }
 
@@ -457,8 +460,9 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         rangeSet: inout RangeSet
     ) async throws -> Phase2Result {
 
-        let result = try await container.engine.withTransaction(
-            configuration: transactionConfiguration
+        let result = try await container.transactionExecutor.withTransaction(
+            configuration: transactionConfiguration,
+            clock: container.monotonicClock
         ) { transaction in
             var itemsScanned = 0
             var missingDetected = 0
@@ -479,7 +483,8 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 limit: batchSize
             )
 
-            for try await (key, data) in scanSequence {
+            var iterator = scanSequence.makeAsyncIterator()
+            while let (key, data) = try await iterator.next() {
                 let (entryBytes, entryOverflow) = key.count
                     .addingReportingOverflow(data.count)
                 let (newBytesScanned, totalOverflow) = bytesScanned
@@ -562,8 +567,9 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Load saved progress
     private func loadProgress(key: ByteString) async throws -> RangeSet? {
-        return try await container.engine.withTransaction(
-            configuration: transactionConfiguration
+        return try await container.transactionExecutor.withTransaction(
+            configuration: transactionConfiguration,
+            clock: container.monotonicClock
         ) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
@@ -575,8 +581,9 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Save progress
     private func saveProgress(_ rangeSet: RangeSet, key: ByteString) async throws {
-        try await container.engine.withTransaction(
-            configuration: transactionConfiguration
+        try await container.transactionExecutor.withTransaction(
+            configuration: transactionConfiguration,
+            clock: container.monotonicClock
         ) { transaction in
             try transaction.setValue(try RangeSetCodec.encode(rangeSet), for: key)
         }
@@ -586,8 +593,9 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     private func clearProgress() async throws {
         let phase1Key = self.phase1ProgressKey
         let phase2Key = self.phase2ProgressKey
-        try await container.engine.withTransaction(
-            configuration: transactionConfiguration
+        try await container.transactionExecutor.withTransaction(
+            configuration: transactionConfiguration,
+            clock: container.monotonicClock
         ) { transaction in
             try transaction.clear(key: phase1Key)
             try transaction.clear(key: phase2Key)

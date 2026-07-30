@@ -11,11 +11,6 @@
 // - Baader, F., et al. (2003). "The Description Logic Handbook", Chapter 2
 // - Horrocks, I., & Sattler, U. (2007). "A Tableaux Decision Procedure for SHOIQ"
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 
@@ -605,7 +600,7 @@ public struct ExpansionRules {
         } catch {
             return .indeterminate(XSDDiagnostic(
                 code: "unexpectedDatatypeFailure",
-                message: String(describing: error)
+                message: "The datatype range could not be compiled"
             ))
         }
 
@@ -666,7 +661,7 @@ public struct ExpansionRules {
         } catch {
             return .indeterminate(XSDDiagnostic(
                 code: "unexpectedDatatypeFailure",
-                message: String(describing: error)
+                message: "The datatype intersection could not be compiled"
             ))
         }
 
@@ -682,7 +677,7 @@ public struct ExpansionRules {
                 } catch {
                     return .indeterminate(XSDDiagnostic(
                         code: "unexpectedDatatypeFailure",
-                        message: String(describing: error)
+                        message: "Intersection membership could not be evaluated"
                     ))
                 }
             case .unsatisfiable:
@@ -711,7 +706,7 @@ public struct ExpansionRules {
         } catch {
             return .indeterminate(XSDDiagnostic(
                 code: "unexpectedDatatypeFailure",
-                message: String(describing: error)
+                message: "The complemented datatype range could not be compiled"
             ))
         }
         let candidates = canonicalOWL2Witnesses()
@@ -725,7 +720,7 @@ public struct ExpansionRules {
             } catch {
                 return .indeterminate(XSDDiagnostic(
                     code: "unexpectedDatatypeFailure",
-                    message: String(describing: error)
+                    message: "Complement membership could not be evaluated"
                 ))
             }
         }
@@ -754,7 +749,7 @@ public struct ExpansionRules {
         } catch {
             return .indeterminate(XSDDiagnostic(
                 code: "unexpectedDatatypeFailure",
-                message: String(describing: error)
+                message: "The restricted datatype range could not be compiled"
             ))
         }
 
@@ -770,7 +765,7 @@ public struct ExpansionRules {
         } catch {
             return .indeterminate(XSDDiagnostic(
                 code: "unexpectedFacetAnalysisFailure",
-                message: String(describing: error)
+                message: "The datatype facets could not be analyzed"
             ))
         }
         if facetAnalysis.isUnsatisfiable {
@@ -801,7 +796,7 @@ public struct ExpansionRules {
             } catch {
                 return .indeterminate(XSDDiagnostic(
                     code: "unexpectedDatatypeFailure",
-                    message: String(describing: error)
+                    message: "Restricted datatype membership could not be evaluated"
                 ))
             }
         }

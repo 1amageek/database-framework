@@ -1,9 +1,4 @@
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 
 // MARK: - ScrubberConfiguration
@@ -161,7 +156,7 @@ public struct ScrubberResult: Sendable {
 /// Summary statistics from a scrubbing operation
 public struct ScrubberSummary: Sendable {
     /// Time elapsed during scrubbing
-    public let timeElapsed: TimeInterval
+    public let timeElapsed: Duration
 
     /// Number of index entries scanned (Phase 1)
     public let entriesScanned: Int
@@ -196,7 +191,7 @@ public struct ScrubberSummary: Sendable {
 
     /// Initialize a scrubber summary
     public init(
-        timeElapsed: TimeInterval,
+        timeElapsed: Duration,
         entriesScanned: Int,
         itemsScanned: Int,
         danglingEntriesDetected: Int,
@@ -307,8 +302,8 @@ public enum ScrubberError: Error, CustomStringConvertible {
             return "Invalid scrubber configuration '\(field)': \(value)"
         case .transactionByteLimitExceeded(let maximum):
             return "Scrubber batch exceeded its \(maximum)-byte transaction budget"
-        case .retryLimitExceeded(let phase, let attempts, let error):
-            return "\(phase): Retry limit exceeded after \(attempts) attempts. Last error: \(error)"
+        case .retryLimitExceeded(let phase, let attempts, _):
+            return "\(phase): Retry limit exceeded after \(attempts) attempts"
         case .invalidItemType(let type):
             return "Invalid item type: \(type)"
         }
@@ -332,7 +327,7 @@ extension ScrubberSummary: CustomStringConvertible {
         return """
         ScrubberSummary(
             index: \(indexName),
-            timeElapsed: \(DatabaseTextFormatting.fixedDecimal(timeElapsed, fractionDigits: 2))s,
+            timeElapsed: \(DatabaseMonotonicMeasurement.nanoseconds(timeElapsed))ns,
             entriesScanned: \(entriesScanned),
             itemsScanned: \(itemsScanned),
             danglingEntries: \(danglingEntriesDetected) detected / \(danglingEntriesRepaired) repaired,

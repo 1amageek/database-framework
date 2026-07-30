@@ -18,29 +18,37 @@ public enum PersistableStorageCodec {
     }
 
     public static func encode(
-        _ model: any Persistable
+        _ model: some Persistable
     ) throws -> ByteString {
-        let modelType = type(of: model)
-        try requireCompiledSchema(modelType)
-        let fields = try PersistableFieldEncoder.encode(model)
+        try requireCompiledSchema(type(of: model))
+        return try encode(try PersistedModel(model))
+    }
+
+    public static func encode(
+        _ model: PersistedModel
+    ) throws -> ByteString {
         return try encode(
-            entity: modelType.persistableType,
-            fields: fields
+            entity: model.entity,
+            fields: model.fields
         )
     }
 
     /// Measures the canonical frame without allocating its final byte buffer.
     public static func encodedByteCount(
-        _ model: any Persistable
+        _ model: some Persistable
     ) throws -> Int {
-        let modelType = type(of: model)
-        try requireCompiledSchema(modelType)
-        let fields = try PersistableFieldEncoder.encode(model)
+        try requireCompiledSchema(type(of: model))
+        return try encodedByteCount(try PersistedModel(model))
+    }
+
+    public static func encodedByteCount(
+        _ model: PersistedModel
+    ) throws -> Int {
         return try PersistableFieldFrameCodec.encodedByteCount(
             magic: magic,
             version: formatVersion,
-            entity: modelType.persistableType,
-            fields: fields,
+            entity: model.entity,
+            fields: model.fields,
             limits: try storageLimits()
         )
     }
@@ -64,23 +72,10 @@ public enum PersistableStorageCodec {
         from bytes: ByteString
     ) throws -> Model {
         try requireCompiledSchema(type)
-        let fields = try decodeFields(
+        return try decodePersistedModel(
             from: bytes,
             expectedEntity: type.persistableType
-        ).fields
-        return try type.decodePersistedFields(fields)
-    }
-
-    public static func decodeAny(
-        _ type: any Persistable.Type,
-        from bytes: ByteString
-    ) throws -> any Persistable {
-        try requireCompiledSchema(type)
-        let fields = try decodeFields(
-            from: bytes,
-            expectedEntity: type.persistableType
-        ).fields
-        return try type.decodePersistedFields(fields)
+        ).decode(as: type)
     }
 
     /// Decodes a bounded canonical DBRC v1 frame for dynamic catalog tooling.
@@ -94,6 +89,20 @@ public enum PersistableStorageCodec {
             version: formatVersion,
             expectedEntity: expectedEntity,
             limits: try storageLimits()
+        )
+    }
+
+    public static func decodePersistedModel(
+        from bytes: ByteString,
+        expectedEntity: String? = nil
+    ) throws -> PersistedModel {
+        let decoded = try decodeFields(
+            from: bytes,
+            expectedEntity: expectedEntity
+        )
+        return try PersistedModel(
+            entity: decoded.entity,
+            fields: decoded.fields
         )
     }
 

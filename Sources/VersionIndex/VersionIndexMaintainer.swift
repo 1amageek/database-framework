@@ -4,14 +4,14 @@
 // Maintains version history using FDB versionstamps for global ordering.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
+
+private enum VersionValueLayout {
+    static let timestampByteCount = MemoryLayout<Int64>.size
+        + MemoryLayout<UInt32>.size
+}
 
 /// Maintainer for version history indexes
 ///
@@ -53,18 +53,24 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// Version history retention strategy
     private let strategy: VersionHistoryStrategy
 
+    /// Absolute time is injected by the owning database container so version
+    /// retention and persisted timestamps are deterministic across platforms.
+    private let wallClock: any WallClock
+
     // MARK: - Initialization
 
     public init(
         index: Index,
         strategy: VersionHistoryStrategy,
         subspace: Subspace,
-        idExpression: KeyExpression
+        idExpression: KeyExpression,
+        wallClock: any WallClock
     ) {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
         self.strategy = strategy
+        self.wallClock = wallClock
     }
 
     // MARK: - IndexMaintainer
@@ -130,7 +136,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         let beginKey = subspace.pack(pkTuple)
         let endKey = beginKey.appending(0xFF)
 
-        var versions: [(Version, ByteString)] = []
+        var versions: [(version: Version, data: ByteString)] = []
 
         if let limit = limit {
             // Reverse scan: fetch newest N versions directly.
@@ -151,8 +157,10 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
                 let version = Version(bytes: versionBytes)
 
                 let data: ByteString
-                if value.count > 8 {
-                    data = value[8..<value.count]
+                if value.count > VersionValueLayout.timestampByteCount {
+                    data = value[
+                        VersionValueLayout.timestampByteCount..<value.count
+                    ]
                 } else {
                     data = []
                 }
@@ -165,7 +173,10 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
             let sequence = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(beginKey),
                 to: .firstGreaterOrEqual(endKey),
-                snapshot: true
+                limit: 0,
+                reverse: false,
+                snapshot: true,
+                streamingMode: .wantAll
             )
 
             for (key, value) in sequence {
@@ -174,8 +185,10 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
                 let version = Version(bytes: versionBytes)
 
                 let data: ByteString
-                if value.count > 8 {
-                    data = value[8..<value.count]
+                if value.count > VersionValueLayout.timestampByteCount {
+                    data = value[
+                        VersionValueLayout.timestampByteCount..<value.count
+                    ]
                 } else {
                     data = []
                 }
@@ -214,9 +227,9 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
             return nil
         }
 
-        // Return item data (skip first 8 bytes which is timestamp)
-        if value.count > 8 {
-            return value[8..<value.count]
+        // Return item data after the canonical timestamp prefix.
+        if value.count > VersionValueLayout.timestampByteCount {
+            return value[VersionValueLayout.timestampByteCount..<value.count]
         }
         return []
     }
@@ -252,7 +265,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         )
 
         // Build value: [timestamp(8 bytes)][item data]
-        let timestamp = Date().timeIntervalSince1970
+        let timestamp = wallClock.now
         let value = versionValue(timestamp: timestamp, itemData: itemData)
 
         // Use atomicOp with setVersionstampedKey
@@ -283,8 +296,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         )
 
         // Value: [timestamp(8 bytes)] only (empty item data = deletion marker)
-        let timestamp = Date().timeIntervalSince1970
-        let value = ByteConversion.uint64ToBytes(timestamp.bitPattern)
+        let value = versionValue(timestamp: wallClock.now, itemData: [])
 
         try transaction.atomicOp(key: key, param: value, mutationType: .setVersionstampedKey)
     }
@@ -315,22 +327,31 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     }
 
     private func versionValue(
-        timestamp: TimeInterval,
+        timestamp: Timestamp,
         itemData: ByteString
     ) -> ByteString {
-        let timestampByteCount = MemoryLayout<UInt64>.size
+        let secondsEnd = MemoryLayout<Int64>.size
+        let timestampEnd = VersionValueLayout.timestampByteCount
         return ByteString.copying(
-            count: timestampByteCount + itemData.count
+            count: timestampEnd + itemData.count
         ) { destination in
-            var bits = timestamp.bitPattern.littleEndian
-            withUnsafeBytes(of: &bits) { source in
+            var seconds = timestamp.secondsSinceUnixEpoch.littleEndian
+            withUnsafeBytes(of: &seconds) { source in
                 UnsafeMutableRawBufferPointer(
-                    rebasing: destination[..<timestampByteCount]
+                    rebasing: destination[..<secondsEnd]
+                ).copyMemory(from: source)
+            }
+            var nanoseconds = timestamp.nanoseconds.littleEndian
+            withUnsafeBytes(of: &nanoseconds) { source in
+                UnsafeMutableRawBufferPointer(
+                    rebasing: destination[secondsEnd..<timestampEnd]
                 ).copyMemory(from: source)
             }
             itemData.withUnsafeBytes { source in
                 UnsafeMutableRawBufferPointer(
-                    rebasing: destination[timestampByteCount...]
+                    rebasing: destination[
+                        timestampEnd...
+                    ]
                 ).copyMemory(from: source)
             }
         }
@@ -377,7 +398,10 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: false
+            limit: 0,
+            reverse: false,
+            snapshot: false,
+            streamingMode: .wantAll
         )
 
         for (key, _) in sequence {
@@ -397,11 +421,11 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// Apply keepForDuration retention strategy
     private func applyKeepForDurationStrategy(
         item: Item,
-        duration: TimeInterval,
+        duration: TimeSpan,
         transaction: any TransactionAccess
     ) async throws {
         let (_, beginKey, endKey) = try getPrimaryKeySubspace(for: item)
-        let cutoffTime = Date().timeIntervalSince1970 - duration
+        let cutoffTime = try subtract(duration, from: wallClock.now)
 
         var versionsToDelete: [ByteString] = []
         var totalCount = 0
@@ -409,16 +433,16 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
-            snapshot: false
+            limit: 0,
+            reverse: false,
+            snapshot: false,
+            streamingMode: .wantAll
         )
 
         for (key, value) in sequence {
             totalCount += 1
 
-            // Extract timestamp from value (first 8 bytes)
-            guard value.count >= 8 else { continue }
-            let bitPattern = try ByteConversion.bytesToUInt64(value[0..<8])
-            let timestamp = TimeInterval(bitPattern: bitPattern)
+            let timestamp = try decodeTimestamp(from: value)
 
             if timestamp < cutoffTime {
                 versionsToDelete.append(key)
@@ -432,6 +456,66 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
         for keyToDelete in versionsToDelete {
             try transaction.clear(key: keyToDelete)
+        }
+    }
+
+    private func decodeTimestamp(
+        from value: ByteString
+    ) throws(VersionIndexError) -> Timestamp {
+        guard value.count >= VersionValueLayout.timestampByteCount else {
+            throw .malformedVersionValue(byteCount: value.count)
+        }
+        let secondsBits: UInt64
+        let nanoseconds: UInt32
+        let secondsEnd = MemoryLayout<Int64>.size
+        let timestampEnd = VersionValueLayout.timestampByteCount
+        do {
+            secondsBits = try ByteConversion.bytesToUInt64(
+                value[..<secondsEnd]
+            )
+            nanoseconds = value[secondsEnd..<timestampEnd].withUnsafeBytes {
+                UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self))
+            }
+        } catch {
+            throw .malformedVersionValue(byteCount: value.count)
+        }
+        do {
+            return try Timestamp(
+                secondsSinceUnixEpoch: Int64(bitPattern: secondsBits),
+                nanoseconds: nanoseconds
+            )
+        } catch {
+            throw .invalidTimestamp(error)
+        }
+    }
+
+    private func subtract(
+        _ duration: TimeSpan,
+        from timestamp: Timestamp
+    ) throws(VersionIndexError) -> Timestamp {
+        let secondsDifference = timestamp.secondsSinceUnixEpoch
+            .subtractingReportingOverflow(duration.seconds)
+        guard !secondsDifference.overflow else {
+            throw .timestampArithmeticOverflow
+        }
+        var seconds = secondsDifference.partialValue
+        var nanoseconds = Int64(timestamp.nanoseconds)
+            - Int64(duration.nanoseconds)
+        if nanoseconds < 0 {
+            let borrowed = seconds.subtractingReportingOverflow(1)
+            guard !borrowed.overflow else {
+                throw .timestampArithmeticOverflow
+            }
+            seconds = borrowed.partialValue
+            nanoseconds += 1_000_000_000
+        }
+        do {
+            return try Timestamp(
+                secondsSinceUnixEpoch: seconds,
+                nanoseconds: UInt32(nanoseconds)
+            )
+        } catch {
+            throw .invalidTimestamp(error)
         }
     }
 }

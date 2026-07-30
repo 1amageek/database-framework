@@ -13,7 +13,8 @@ public struct VersionIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration]
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
         let definition = try IndexDefinition(metadata: index.kind)
         guard case .version(let strategy) = definition else {
@@ -27,7 +28,8 @@ public struct VersionIndexMaintainerProvider: IndexMaintainerProvider {
             index: index,
             strategy: strategy,
             subspace: subspace,
-            idExpression: idExpression
+            idExpression: idExpression,
+            wallClock: wallClock
         )
     }
 }

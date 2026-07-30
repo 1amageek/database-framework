@@ -6,7 +6,6 @@
 
 import Synchronization
 import StorageKit
-import StorageKitSystemClock
 
 // MARK: - ThrottleConfiguration
 
@@ -214,8 +213,8 @@ extension ThrottleConfiguration {
 ///         let items = try await processBatch(size: batchSize)
 ///         throttler.recordSuccess(itemCount: items.count, durationNs: elapsed)
 ///     } catch {
-///         throttler.recordFailure(error: error)
-///         if !throttler.isRetryable(error) { throw error }
+///         throttler.recordFailure()
+///         throw error
 ///     }
 ///
 ///     try await throttler.waitBeforeNextBatch()
@@ -236,14 +235,14 @@ public final class AdaptiveThrottler: Sendable {
     }
 
     private let configuration: ThrottleConfiguration
-    private let clock: any StorageMonotonicClock
+    fileprivate let clock: any StorageMonotonicClock
     private let state: Mutex<State>
 
     // MARK: - Initialization
 
     public init(
         configuration: ThrottleConfiguration = .default,
-        clock: any StorageMonotonicClock = SystemStorageClock()
+        clock: any StorageMonotonicClock
     ) {
         self.configuration = configuration
         self.clock = clock
@@ -313,8 +312,7 @@ public final class AdaptiveThrottler: Sendable {
 
     /// Record a failed operation
     ///
-    /// - Parameter error: The error that occurred
-    public func recordFailure(error: Error) {
+    public func recordFailure() {
         state.withLock { state in
             state.consecutiveFailures += 1
             state.consecutiveSuccesses = 0
@@ -328,19 +326,6 @@ public final class AdaptiveThrottler: Sendable {
             let newDelay = Int(Double(max(state.currentDelayMs, 10)) * configuration.delayIncreaseRatio)
             state.currentDelayMs = min(newDelay, configuration.maxDelayMs)
         }
-    }
-
-    /// Check if an error is retryable
-    ///
-    /// - Parameter error: The error to check
-    /// - Returns: true if the operation should be retried
-    public func isRetryable(_ error: Error) -> Bool {
-        // StorageError has a built-in isRetryable property
-        if let storageError = error as? StorageError {
-            return storageError.isRetryable
-        }
-
-        return false
     }
 
     /// Wait before next batch
@@ -421,48 +406,29 @@ public struct ThrottledBatchExecutor<T: Sendable>: Sendable {
         self.operation = operation
     }
 
-    /// Execute the operation with automatic throttling and retry
+    /// Execute one operation with adaptive batch sizing.
     ///
-    /// - Parameter maxRetries: Maximum number of retries for retryable errors
+    /// Storage retry ownership belongs to `TransactionRunner`; this layer only
+    /// observes the final outcome and adjusts the next batch.
     /// - Returns: The result of the operation
-    public func execute(maxRetries: Int = 3) async throws -> T {
-        var lastError: Error?
+    public func execute() async throws -> T {
+        let batchSize = throttler.currentBatchSize
+        let startTime = throttler.clock.now
 
-        for attempt in 0..<(maxRetries + 1) {
-            let batchSize = throttler.currentBatchSize
-            let startTime = MonotonicClock.now()
-
-            do {
-                let (result, itemCount) = try await operation(batchSize)
-                let elapsed = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-                throttler.recordSuccess(itemCount: itemCount, durationNs: elapsed)
-
-                // Wait before next batch
-                try await throttler.waitBeforeNextBatch()
-
-                return result
-            } catch {
-                throttler.recordFailure(error: error)
-                lastError = error
-
-                if !throttler.isRetryable(error) || attempt == maxRetries {
-                    throw error
-                }
-
-                // Wait before retry (exponential backoff built into delay)
-                try await throttler.waitBeforeNextBatch()
-            }
+        do {
+            let (result, itemCount) = try await operation(batchSize)
+            let elapsed = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: throttler.clock.now
+            )
+            throttler.recordSuccess(itemCount: itemCount, durationNs: elapsed)
+            try await throttler.waitBeforeNextBatch()
+            return result
+        } catch {
+            throttler.recordFailure()
+            throw error
         }
-
-        throw lastError ?? ThrottlerError.maxRetriesExceeded
     }
-}
-
-// MARK: - ThrottlerError
-
-/// Errors from throttling operations
-public enum ThrottlerError: Error {
-    case maxRetriesExceeded
 }
 
 // MARK: - CustomStringConvertible

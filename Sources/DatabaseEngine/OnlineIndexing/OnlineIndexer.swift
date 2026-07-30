@@ -1,7 +1,6 @@
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
-import Metrics
 
 /// Online index builder for batch index construction
 ///
@@ -92,16 +91,16 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Metrics
 
     /// Counter for items indexed
-    private let itemsIndexedCounter: Counter
+    private let itemsIndexedCounter: DatabaseMetricCounter
 
     /// Counter for batches processed
-    private let batchesProcessedCounter: Counter
+    private let batchesProcessedCounter: DatabaseMetricCounter
 
     /// Timer for batch duration
-    private let batchDurationTimer: Metrics.Timer
+    private let batchDurationTimer: DatabaseMetricTimer
 
     /// Counter for errors
-    private let errorsCounter: Counter
+    private let errorsCounter: DatabaseMetricCounter
 
     // MARK: - Initialization
 
@@ -171,19 +170,20 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             ("item_type", itemType)
         ]
 
-        self.itemsIndexedCounter = Counter(
+        let metrics = container.configuration.metrics
+        self.itemsIndexedCounter = metrics.counter(
             label: "database_indexer_items_indexed_total",
             dimensions: baseDimensions
         )
-        self.batchesProcessedCounter = Counter(
+        self.batchesProcessedCounter = metrics.counter(
             label: "database_indexer_batches_processed_total",
             dimensions: baseDimensions
         )
-        self.batchDurationTimer = Metrics.Timer(
+        self.batchDurationTimer = metrics.timer(
             label: "database_indexer_batch_duration_seconds",
             dimensions: baseDimensions
         )
-        self.errorsCounter = Counter(
+        self.errorsCounter = metrics.counter(
             label: "database_indexer_errors_total",
             dimensions: baseDimensions
         )
@@ -292,7 +292,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
-            let batchStartTime = MonotonicClock.now()
+            let batchStartTime = container.monotonicClock.now
 
             do {
                 // Capture current rangeSet state before transaction
@@ -300,7 +300,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
                 // Process batch in transaction with batch priority
                 // Progress is saved atomically in the same transaction
-                let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
 
                     var itemsInBatch = 0
                     var lastProcessedKey: ByteString? = nil
@@ -321,7 +321,8 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     var batchEntries: [(item: Item, id: Tuple)] = []
                     batchEntries.reserveCapacity(self.batchSize)
 
-                    for try await (key, data) in scanSequence {
+                    var iterator = scanSequence.makeAsyncIterator()
+                    while let (key, data) = try await iterator.next() {
                         // Deserialize item from decompressed data
                         let item: Item = try DataAccess.deserialize(data)
 
@@ -378,8 +379,11 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 }
 
                 // Record metrics
-                let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
-                batchDurationTimer.recordNanoseconds(Int64(batchDuration))
+                let batchDuration = DatabaseMonotonicMeasurement.nanoseconds(
+                    from: batchStartTime,
+                    to: container.monotonicClock.now
+                )
+                batchDurationTimer.recordNanoseconds(batchDuration)
                 batchesProcessedCounter.increment()
                 itemsIndexedCounter.increment(by: itemsInBatch)
 
@@ -407,7 +411,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// - Returns: RangeSet if progress exists, nil otherwise
     private func loadProgress() async throws -> RangeSet? {
         let progressKey = self.progressKey
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -433,7 +437,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Called after successful completion
     private func clearProgress() async throws {
         let progressKey = self.progressKey
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clear(key: progressKey)
         }
     }
@@ -446,7 +450,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Used when `clearFirst: true` is specified.
     private func clearIndexData() async throws {
         let indexRange = self.indexSubspace.subspace(self.index.name).range()
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
@@ -515,7 +519,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         let (begin, end) = itemTypeSubspace.range()
 
         // Get split points from FDB
-        let splitPoints = try await container.engine.withTransaction(configuration: .batch) { transaction in
+        let splitPoints = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: begin,
                 endKey: end,
@@ -616,7 +620,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             }
 
             // As workers complete, start new ones
-            for try await itemsProcessed in group {
+            while let itemsProcessed = try await group.next() {
                 itemsIndexedCounter.increment(by: itemsProcessed)
 
                 // Start next chunk if available
@@ -684,7 +688,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             // Capture current begin for Sendable closure
             let rangeBegin = currentBegin
 
-            let (batchCount, newLastKey): (Int, ByteString?) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+            let (batchCount, newLastKey): (Int, ByteString?) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                 var count = 0
                 var processedKey: ByteString? = nil
 
@@ -704,7 +708,8 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 var batchEntries: [(item: Item, id: Tuple)] = []
                 batchEntries.reserveCapacity(self.batchSize)
 
-                for try await (key, data) in scanSequence {
+                var iterator = scanSequence.makeAsyncIterator()
+                while let (key, data) = try await iterator.next() {
                     // Deserialize item from decompressed data
                     let item: Item = try DataAccess.deserialize(data)
 
@@ -835,12 +840,14 @@ internal final class ParallelBuildProgress: Sendable {
     func loadProgress(chunkCount: Int) async throws -> [Int: ChunkProgress] {
         let (begin, end) = progressSubspace.range()
 
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             var progress: [Int: ChunkProgress] = [:]
 
             let sequence = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
+                limit: 0,
+                reverse: false,
                 snapshot: true,
                 streamingMode: .wantAll
             )
@@ -872,7 +879,7 @@ internal final class ParallelBuildProgress: Sendable {
         let key = progressSubspace.pack(Tuple(chunkIndex))
         let value = encodeProgress(status: status, lastKey: lastKey)
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.setValue(value, for: key)
         }
     }
@@ -901,7 +908,7 @@ internal final class ParallelBuildProgress: Sendable {
     func clearProgress() async throws {
         let (begin, end) = progressSubspace.range()
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
@@ -911,7 +918,7 @@ internal final class ParallelBuildProgress: Sendable {
     private func extractChunkIndex(from key: ByteString) throws -> Int {
         let tuple = try progressSubspace.unpack(key)
         guard tuple.count == 1,
-              let index = try tuple.element(at: 0) as? Int64,
+              case .signedInteger(let index) = try tuple.value(at: 0),
               let converted = Int(exactly: index) else {
             throw OnlineIndexBuildError.corruptedProgress
         }
@@ -927,16 +934,16 @@ internal final class ParallelBuildProgress: Sendable {
     }
 
     private func decodeProgress(from data: ByteString) throws -> ChunkProgress {
-        let elements = try Tuple.unpack(from: data)
-        guard elements.count == 1 || elements.count == 2,
-              let statusRaw = elements[0] as? Int64,
+        let tuple = try Tuple(packed: data)
+        guard tuple.count == 1 || tuple.count == 2,
+              case .signedInteger(let statusRaw) = try tuple.value(at: 0),
               let statusValue = Int(exactly: statusRaw),
               let status = ChunkStatus(rawValue: statusValue) else {
             throw OnlineIndexBuildError.corruptedProgress
         }
         let lastKey: ByteString?
-        if elements.count == 2 {
-            guard let bytes = elements[1] as? ByteString else {
+        if tuple.count == 2 {
+            guard case .bytes(let bytes) = try tuple.value(at: 1) else {
                 throw OnlineIndexBuildError.corruptedProgress
             }
             lastKey = bytes

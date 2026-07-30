@@ -3,11 +3,6 @@
 //
 // Provides efficient cycle detection for directed graphs.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -317,7 +312,7 @@ public final class CycleDetector: Sendable {
         edgeLabel: GraphIdentity? = nil,
         maxCycles: Int? = nil
     ) async throws -> CycleInfo {
-        let startTime = MonotonicClock.now()
+        let startTime = snapshot.clock.now()
         let effectiveMaxCycles = maxCycles ?? configuration.maxCycles
 
         // Collect all nodes in the graph
@@ -331,7 +326,7 @@ public final class CycleDetector: Sendable {
                 cycles: [],
                 backEdges: [],
                 nodesExplored: 0,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                 isComplete: collection.limitReason == nil,
                 limitReason: collection.limitReason
             )
@@ -440,7 +435,7 @@ public final class CycleDetector: Sendable {
             cycles: cycles,
             backEdges: backEdges,
             nodesExplored: nodesExplored,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: isComplete,
             limitReason: limitReason
         )

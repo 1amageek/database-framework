@@ -4,7 +4,7 @@ import DatabaseEngine
 import StorageKit
 
 /// Maintains the canonical RDF projection of an OWL-bound entity.
-public struct OWLClassRDFIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct OWLClassRDFIndexMaintainer<Item: OWLClassEntity>: IndexMaintainer {
     private let subspace: Subspace
     private let physicalCodec: RDFQuadIndexPhysicalCodec
 
@@ -64,12 +64,7 @@ public struct OWLClassRDFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     private func buildQuads(for item: Item) throws -> [RDFQuad] {
-        guard let owlItem = item as? any OWLClassEntity else {
-            throw OWLClassRDFIndexError.rootDoesNotConform(
-                typeName: Item.persistableType
-            )
-        }
-        let quads = try owlItem.ontologyQuads()
+        let quads = try item.ontologyQuads()
         for quad in quads {
             try quad.validate()
         }

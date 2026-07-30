@@ -199,9 +199,7 @@ extension IndexMaintainer {
         for item: Item,
         id: Tuple
     ) async throws -> [ByteString] {
-        throw IndexVerificationError.expectedKeysUnsupported(
-            maintainerType: String(reflecting: Self.self)
-        )
+        throw IndexVerificationError.expectedKeysUnsupported
     }
 
     /// Default: calls the non-transaction version

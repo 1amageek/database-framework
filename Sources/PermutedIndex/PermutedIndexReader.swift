@@ -1,4 +1,5 @@
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Reads the physical key layout owned by a permuted index.
@@ -29,7 +30,10 @@ struct PermutedIndexReader: Sendable {
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
         for (key, _) in sequence {
             guard prefixSubspace.contains(key) else { break }
@@ -77,7 +81,10 @@ struct PermutedIndexReader: Sendable {
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
         for (key, _) in sequence {
             guard subspace.contains(key) else { break }

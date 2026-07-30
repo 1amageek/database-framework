@@ -3,11 +3,6 @@
 //
 // Provides query builder for variable-length path patterns.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -159,7 +154,10 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
             in: queryContext
         )
         return try await queryContext.withTransaction { transaction in
-            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let snapshot = GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: queryContext.context.container.monotonicClock
+            )
             return try await executePaths(
                 source: .identifier(source),
                 target: targetNode.map(GraphIdentity.identifier),
@@ -186,7 +184,10 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
             in: queryContext
         )
         let identities = try await queryContext.withTransaction { transaction in
-            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let snapshot = GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: queryContext.context.container.monotonicClock
+            )
             return try await executeEndNodes(
                 source: .identifier(source),
                 target: targetNode.map(GraphIdentity.identifier),
@@ -258,11 +259,13 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
             }
             var nextPaths: [PartialPath] = []
 
-            for try await edge in scanner.batchScanOutgoing(
+            let edgeSequence = scanner.batchScanOutgoing(
                 from: Array(frontier),
                 edgeLabel: edgeLabelFilter.map(GraphIdentity.identifier),
                 transaction: transaction
-            ) {
+            )
+            var edgeCursor = edgeSequence.makeCursor()
+            while let edge = try await edgeCursor.next() {
                 guard let sourcePaths = pathsBySource[edge.source] else {
                     throw PathPatternQueryError.inconsistentTraversalState
                 }
@@ -322,7 +325,9 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
             )
             var nextLevel: Set<GraphIdentity> = []
 
-            for try await edge in edges where !visited.contains(edge.target) {
+            var edgeCursor = edges.makeCursor()
+            while let edge = try await edgeCursor.next() {
+                guard !visited.contains(edge.target) else { continue }
                 guard visited.count < maxNodesValue else {
                     throw PathPatternQueryError.maximumNodesReached(maxNodesValue)
                 }

@@ -3,11 +3,6 @@
 //
 // Provides BFS-based shortest path finding with bidirectional optimization.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -120,7 +115,7 @@ public final class ShortestPathFinder: Sendable {
         maxDepth: Int? = nil,
         bidirectional: Bool? = nil
     ) async throws -> ShortestPathResult {
-        let startTime = MonotonicClock.now()
+        let startTime = snapshot.clock.now()
         let effectiveMaxDepth = maxDepth ?? configuration.maxDepth
         let useBidirectional = bidirectional ?? configuration.bidirectional
 
@@ -131,7 +126,7 @@ public final class ShortestPathFinder: Sendable {
                 path: path,
                 distance: 0,
                 nodesExplored: 1,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -171,7 +166,7 @@ public final class ShortestPathFinder: Sendable {
         edgeLabel: GraphIdentity? = nil,
         maxDepth: Int? = nil
     ) async throws -> AllShortestPathsResult {
-        let startTime = MonotonicClock.now()
+        let startTime = snapshot.clock.now()
         let effectiveMaxDepth = maxDepth ?? configuration.maxDepth
 
         // Early termination: source == target
@@ -181,7 +176,7 @@ public final class ShortestPathFinder: Sendable {
                 paths: [path],
                 distance: 0,
                 nodesExplored: 1,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -260,13 +255,13 @@ public final class ShortestPathFinder: Sendable {
                     direction: .outgoing
                 )
 
-                do {
-                    for try await (parentNode, targetNode, edge) in neighbors {
+                var neighborCursor = neighbors.makeCursor()
+                while let (parentNode, targetNode, edge) = try await neighborCursor.next() {
                         guard !state.visited.contains(targetNode) else { continue }
                         guard state.nodesExplored < configuration.maxNodesExplored else {
                             return .notFound(
                                 nodesExplored: state.nodesExplored,
-                                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                                 isComplete: false,
                                 limitReason: .maxNodesReached(
                                     explored: state.nodesExplored,
@@ -291,16 +286,16 @@ public final class ShortestPathFinder: Sendable {
                                 path: path,
                                 distance: Double(path.length),
                                 nodesExplored: state.nodesExplored,
-                                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                             )
                         }
 
                         nextLevel.append(targetNode)
-                    }
-                } catch ShortestPathError.incomplete(let limitReason) {
+                }
+                if let limitReason = neighborCursor.limitReason {
                     return .notFound(
                         nodesExplored: state.nodesExplored,
-                        durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                        durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                         isComplete: false,
                         limitReason: limitReason
                     )
@@ -314,7 +309,7 @@ public final class ShortestPathFinder: Sendable {
         let hitMaximumDepth = depth >= maxDepth && !currentLevel.isEmpty
         return .notFound(
             nodesExplored: state.nodesExplored,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: !hitMaximumDepth,
             limitReason: hitMaximumDepth
                 ? .maxDepthReached(depth: depth, limit: maxDepth)
@@ -351,7 +346,7 @@ public final class ShortestPathFinder: Sendable {
         guard nodesExplored <= configuration.maxNodesExplored else {
             return .notFound(
                 nodesExplored: configuration.maxNodesExplored,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                 isComplete: false,
                 limitReason: .maxNodesReached(
                     explored: configuration.maxNodesExplored,
@@ -377,14 +372,14 @@ public final class ShortestPathFinder: Sendable {
                         direction: .outgoing
                     )
 
-                    do {
-                        for try await (parentNode, targetNode, edge) in neighbors {
+                    var neighborCursor = neighbors.makeCursor()
+                    while let (parentNode, targetNode, edge) = try await neighborCursor.next() {
                             guard !forwardVisited.contains(targetNode) else { continue }
                             let isNewNode = !backwardVisited.contains(targetNode)
                             guard !isNewNode || nodesExplored < configuration.maxNodesExplored else {
                                 return .notFound(
                                     nodesExplored: nodesExplored,
-                                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                                    durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                                     isComplete: false,
                                     limitReason: .maxNodesReached(
                                         explored: nodesExplored,
@@ -412,16 +407,16 @@ public final class ShortestPathFinder: Sendable {
                                     path: path,
                                     distance: Double(path.length),
                                     nodesExplored: nodesExplored,
-                                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                                    durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                                 )
                             }
 
                             nextLevel.append(targetNode)
-                        }
-                    } catch ShortestPathError.incomplete(let limitReason) {
+                    }
+                    if let limitReason = neighborCursor.limitReason {
                         return .notFound(
                             nodesExplored: nodesExplored,
-                            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                            durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                             isComplete: false,
                             limitReason: limitReason
                         )
@@ -440,14 +435,14 @@ public final class ShortestPathFinder: Sendable {
                         direction: .incoming
                     )
 
-                    do {
-                        for try await (parentNode, targetNode, edge) in neighbors {
+                    var neighborCursor = neighbors.makeCursor()
+                    while let (parentNode, targetNode, edge) = try await neighborCursor.next() {
                             guard !backwardVisited.contains(targetNode) else { continue }
                             let isNewNode = !forwardVisited.contains(targetNode)
                             guard !isNewNode || nodesExplored < configuration.maxNodesExplored else {
                                 return .notFound(
                                     nodesExplored: nodesExplored,
-                                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                                    durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                                     isComplete: false,
                                     limitReason: .maxNodesReached(
                                         explored: nodesExplored,
@@ -475,16 +470,16 @@ public final class ShortestPathFinder: Sendable {
                                     path: path,
                                     distance: Double(path.length),
                                     nodesExplored: nodesExplored,
-                                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                                    durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                                 )
                             }
 
                             nextLevel.append(targetNode)
-                        }
-                    } catch ShortestPathError.incomplete(let limitReason) {
+                    }
+                    if let limitReason = neighborCursor.limitReason {
                         return .notFound(
                             nodesExplored: nodesExplored,
-                            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                            durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                             isComplete: false,
                             limitReason: limitReason
                         )
@@ -500,7 +495,7 @@ public final class ShortestPathFinder: Sendable {
             && !backwardLevel.isEmpty
         return .notFound(
             nodesExplored: nodesExplored,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: !hitMaximumDepth,
             limitReason: hitMaximumDepth
                 ? .maxDepthReached(depth: depth, limit: maxDepth)
@@ -539,8 +534,8 @@ public final class ShortestPathFinder: Sendable {
                     direction: .outgoing
                 )
 
-                do {
-                    for try await (parentNode, targetNode, edge) in neighbors {
+                var neighborCursor = neighbors.makeCursor()
+                while let (parentNode, targetNode, edge) = try await neighborCursor.next() {
                         if let found = foundDepth, depth > found {
                             continue
                         }
@@ -567,8 +562,8 @@ public final class ShortestPathFinder: Sendable {
                         } else if !currentLevel.contains(targetNode) && levelNewNodes.contains(targetNode) {
                             parents[targetNode, default: []].append((parentNode, edge))
                         }
-                    }
-                } catch ShortestPathError.incomplete(let workLimitReason) {
+                }
+                if let workLimitReason = neighborCursor.limitReason {
                     limitReason = workLimitReason
                     break search
                 }
@@ -597,7 +592,7 @@ public final class ShortestPathFinder: Sendable {
                 paths: [],
                 distance: nil,
                 nodesExplored: nodesExplored,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                 isComplete: limitReason == nil,
                 limitReason: limitReason
             )
@@ -617,7 +612,7 @@ public final class ShortestPathFinder: Sendable {
             paths: paths,
             distance: paths.first.map { Double($0.length) },
             nodesExplored: nodesExplored,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: limitReason == nil,
             limitReason: limitReason
         )
@@ -634,8 +629,8 @@ public final class ShortestPathFinder: Sendable {
         nodes: ArraySlice<GraphIdentity>,
         edgeLabel: GraphIdentity?,
         direction: GraphTraversalDirection
-    ) -> ShortestPathNeighborSequence {
-        ShortestPathNeighborSequence(
+    ) -> ShortestPathNeighborScan {
+        ShortestPathNeighborScan(
             scanner: scanner,
             snapshot: snapshot,
             nodes: nodes,

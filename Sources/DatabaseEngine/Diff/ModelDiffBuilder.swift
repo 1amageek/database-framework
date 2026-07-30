@@ -3,13 +3,9 @@
 //
 // Provides detailed diff computation with array element support and custom comparators.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
+import StorageKit
 
 // MARK: - ModelDiffBuilder
 
@@ -62,6 +58,7 @@ public struct ModelDiffBuilder: Sendable {
     public static func diff<T: Persistable>(
         old: T,
         new: T,
+        timestamp: Timestamp,
         options: DiffOptions = DiffOptions()
     ) throws -> ModelDiff {
         var changes: [FieldChange] = []
@@ -118,9 +115,11 @@ public struct ModelDiffBuilder: Sendable {
 
         return ModelDiff(
             typeName: T.persistableType,
-            idString: "\(new.id)",
+            idString: DatabaseTextFormatting.lowercaseHex(
+                try new.persistableIdentifierTuple().pack()
+            ),
             changes: changes,
-            timestamp: Date(),
+            timestamp: timestamp,
             oldVersion: nil,
             newVersion: nil
         )
@@ -201,27 +200,27 @@ public struct ModelDiffBuilder: Sendable {
                 typeName: T.persistableType
             )
         }
+        let extracted: FieldValue?
         do {
-            guard let value = try item.persistedFieldValue(
+            extracted = try item.persistedFieldValue(
                 for: FieldIdentity(
                     name: schema.name,
                     number: schema.fieldNumber
                 )
-            ) else {
-                throw DiffError.fieldNotFound(
-                    fieldPath: fieldPath,
-                    typeName: T.persistableType
-                )
-            }
-            return value
-        } catch let error as DiffError {
-            throw error
+            )
         } catch {
             throw DiffError.conversionFailed(
                 fieldPath: fieldPath,
-                valueType: String(reflecting: T.self)
+                valueType: T.persistableType
             )
         }
+        guard let extracted else {
+            throw DiffError.fieldNotFound(
+                fieldPath: fieldPath,
+                typeName: T.persistableType
+            )
+        }
+        return extracted
     }
     /// Diff arrays with optional element-level detail
     private static func diffArrays(

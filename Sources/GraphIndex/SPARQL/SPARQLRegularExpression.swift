@@ -78,7 +78,7 @@ struct SPARQLRegularExpression: Sendable {
         pattern: String,
         flags: String? = nil,
         limits: Limits = .default
-    ) throws {
+    ) throws(SPARQLRegularExpression.Error) {
         try Self.validate(limits: limits)
         try Self.checkBoundedString(
             pattern,
@@ -109,16 +109,8 @@ struct SPARQLRegularExpression: Sendable {
         self.limits = limits
     }
 
-    func matches(_ input: String) throws -> Bool {
-        try matches(input) { _ in }
-    }
-
-    func matches(
-        _ input: String,
-        onValidatedInput: (Int) throws -> Void
-    ) throws -> Bool {
-        let inputUTF8ByteCount = try checkedInputUTF8ByteCount(input)
-        try onValidatedInput(inputUTF8ByteCount)
+    func matches(_ input: String) throws(SPARQLRegularExpression.Error) -> Bool {
+        _ = try checkedInputUTF8ByteCount(input)
         var budget = SPARQLRegexWorkBudget(
             limit: limits.activeTransitionWork
         )
@@ -134,7 +126,7 @@ struct SPARQLRegularExpression: Sendable {
     func replacingMatches(
         in input: String,
         with replacement: String
-    ) throws -> String {
+    ) throws(SPARQLRegularExpression.Error) -> String {
         _ = try checkedInputUTF8ByteCount(input)
         let template = try SPARQLRegexReplacementTemplate(
             replacement,
@@ -194,10 +186,10 @@ struct SPARQLRegularExpression: Sendable {
         _ input: String,
         pattern: String,
         flags: String?
-    ) throws -> Bool {
-        do {
+    ) throws(SPARQLExpressionEvaluationError) -> Bool {
+        do throws(Error) {
             return try Self(pattern: pattern, flags: flags).matches(input)
-        } catch let error as Error {
+        } catch let error {
             throw map(error, pattern: pattern, function: "REGEX")
         }
     }
@@ -207,16 +199,16 @@ struct SPARQLRegularExpression: Sendable {
         pattern: String,
         replacement: String,
         flags: String?
-    ) throws -> String {
-        do {
+    ) throws(SPARQLExpressionEvaluationError) -> String {
+        do throws(Error) {
             return try Self(pattern: pattern, flags: flags)
                 .replacingMatches(in: input, with: replacement)
-        } catch let error as Error {
+        } catch let error {
             throw map(error, pattern: pattern, function: "REPLACE")
         }
     }
 
-    private func checkedInputUTF8ByteCount(_ input: String) throws -> Int {
+    private func checkedInputUTF8ByteCount(_ input: String) throws(SPARQLRegularExpression.Error) -> Int {
         try Self.checkedUTF8ByteCount(
             input,
             name: "inputUTF8Bytes",
@@ -227,7 +219,7 @@ struct SPARQLRegularExpression: Sendable {
     private static func parseOptions(
         _ flags: String,
         limits: Limits
-    ) throws -> Options {
+    ) throws(SPARQLRegularExpression.Error) -> Options {
         var options: Options = []
         var offset = 0
         for flag in flags.unicodeScalars {
@@ -304,7 +296,7 @@ struct SPARQLRegularExpression: Sendable {
         }
     }
 
-    private static func validate(limits: Limits) throws {
+    private static func validate(limits: Limits) throws(SPARQLRegularExpression.Error) {
         let namedLimits: [(String, Int)] = [
             ("patternUTF8Bytes", limits.patternUTF8Bytes),
             ("patternScalars", limits.patternScalars),
@@ -331,7 +323,7 @@ struct SPARQLRegularExpression: Sendable {
         byteLimit: Int,
         scalarLimitName: String,
         scalarLimit: Int
-    ) throws {
+    ) throws(SPARQLRegularExpression.Error) {
         var bytes = 0
         var scalars = 0
         for scalar in value.unicodeScalars {
@@ -354,7 +346,7 @@ struct SPARQLRegularExpression: Sendable {
         _ rhs: Int,
         name: String,
         limit: Int
-    ) throws -> Int {
+    ) throws(SPARQLRegularExpression.Error) -> Int {
         let (result, overflow) = lhs.addingReportingOverflow(rhs)
         guard !overflow, result <= limit else {
             throw Error.resourceLimit(
@@ -371,7 +363,7 @@ struct SPARQLRegularExpression: Sendable {
         _ rhs: Int,
         name: String,
         limit: Int
-    ) throws -> Int {
+    ) throws(SPARQLRegularExpression.Error) -> Int {
         let (result, overflow) = lhs.multipliedReportingOverflow(by: rhs)
         guard !overflow, result <= limit else {
             throw Error.resourceLimit(
@@ -387,7 +379,7 @@ struct SPARQLRegularExpression: Sendable {
         _ value: Int,
         name: String,
         limit: Int
-    ) throws -> Int {
+    ) throws(SPARQLRegularExpression.Error) -> Int {
         try checkedAdd(value, 1, name: name, limit: limit)
     }
 
@@ -395,7 +387,7 @@ struct SPARQLRegularExpression: Sendable {
         _ value: String,
         name: String,
         limit: Int
-    ) throws -> Int {
+    ) throws(SPARQLRegularExpression.Error) -> Int {
         var count = 0
         for scalar in value.unicodeScalars {
             count = try checkedAdd(

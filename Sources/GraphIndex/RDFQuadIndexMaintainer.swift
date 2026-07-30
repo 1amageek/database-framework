@@ -117,7 +117,7 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
             throw GraphIndexError.invalidFieldType(
                 fieldName: field.name,
                 expectedType: "RDFTerm",
-                actualType: String(describing: value)
+                actualType: GraphValueSemanticName.field(value)
             )
         }
         return term
@@ -136,7 +136,7 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
             throw GraphIndexError.invalidFieldType(
                 fieldName: graphField.name,
                 expectedType: "RDFTerm?",
-                actualType: String(describing: value)
+                actualType: GraphValueSemanticName.field(value)
             )
         }
         return term

@@ -3,11 +3,6 @@
 //
 // Provides topological ordering for directed acyclic graphs (DAGs).
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -202,7 +197,7 @@ public final class TopologicalSorter: Sendable {
 
     /// Internal: Compute topological order and return adjacency list for reuse
     private func sortWithGraph(edgeLabel: GraphIdentity?) async throws -> (TopologicalSortResult, [GraphIdentity: [GraphIdentity]]) {
-        let startTime = MonotonicClock.now()
+        let startTime = snapshot.clock.now()
 
         // Step 1: Collect all nodes and compute in-degrees
         let graph = try await buildGraph(edgeLabel: edgeLabel)
@@ -216,7 +211,7 @@ public final class TopologicalSorter: Sendable {
                 hasCycle: false,
                 cyclicNodes: [],
                 totalNodes: 0,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                 isComplete: graph.limitReason == nil,
                 limitReason: graph.limitReason
             ), adjacency)
@@ -302,7 +297,7 @@ public final class TopologicalSorter: Sendable {
             hasCycle: hasCycle,
             cyclicNodes: cyclicNodes,
             totalNodes: nodes.count,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: isComplete,
             limitReason: limitReason
         ), adjacency)
@@ -515,10 +510,12 @@ public final class TopologicalSorter: Sendable {
             return (nodes, inDegree, adjacency, workBudget?.limitReason)
         }
 
-        for try await edgeInfo in scanner.scanAllEdges(
+        let edgeSequence = scanner.scanAllEdges(
             edgeLabel: edgeLabel,
             transaction: snapshot.transaction
-        ) {
+        )
+        var edgeCursor = edgeSequence.makeCursor()
+        while let edgeInfo = try await edgeCursor.next() {
             guard try consumeWork() else {
                 limitReason = workBudget?.limitReason
                 break
@@ -562,11 +559,13 @@ public final class TopologicalSorter: Sendable {
                 try requiredWorkLimitReason()
             )
         }
-        for try await edgeInfo in scanner.scanOutgoing(
+        let edgeSequence = scanner.scanOutgoing(
             from: nodeID,
             edgeLabel: edgeLabel,
             transaction: snapshot.transaction
-        ) {
+        )
+        var edgeCursor = edgeSequence.makeCursor()
+        while let edgeInfo = try await edgeCursor.next() {
             guard try consumeWork() else {
                 throw TopologicalSortError.incomplete(
                     try requiredWorkLimitReason()
@@ -588,11 +587,13 @@ public final class TopologicalSorter: Sendable {
                 try requiredWorkLimitReason()
             )
         }
-        for try await edgeInfo in scanner.scanIncoming(
+        let edgeSequence = scanner.scanIncoming(
             to: nodeID,
             edgeLabel: edgeLabel,
             transaction: snapshot.transaction
-        ) {
+        )
+        var edgeCursor = edgeSequence.makeCursor()
+        while let edgeInfo = try await edgeCursor.next() {
             guard try consumeWork() else {
                 throw TopologicalSortError.incomplete(
                     try requiredWorkLimitReason()

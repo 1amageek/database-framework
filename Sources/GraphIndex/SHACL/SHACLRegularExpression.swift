@@ -7,30 +7,20 @@ struct SHACLRegularExpression: Sendable {
     private let expression: SPARQLRegularExpression
 
     init(pattern: String, flags: String?) throws {
-        do {
+        do throws(SPARQLRegularExpression.Error) {
             expression = try SPARQLRegularExpression(
                 pattern: pattern,
                 flags: flags
             )
-        } catch let error as SPARQLRegularExpression.Error {
+        } catch let error {
             throw Self.mapCompilationError(error, pattern: pattern)
         }
     }
 
     func matches(_ input: String) throws -> Bool {
-        try matches(input) { _ in }
-    }
-
-    func matches(
-        _ input: String,
-        onValidatedInput: (Int) throws -> Void
-    ) throws -> Bool {
-        do {
-            return try expression.matches(
-                input,
-                onValidatedInput: onValidatedInput
-            )
-        } catch let error as SPARQLRegularExpression.Error {
+        do throws(SPARQLRegularExpression.Error) {
+            return try expression.matches(input)
+        } catch let error {
             throw Self.mapExecutionError(error)
         }
     }

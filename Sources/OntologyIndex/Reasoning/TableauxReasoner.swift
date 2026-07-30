@@ -15,12 +15,8 @@
 // - Horrocks, I., & Sattler, U. (2007). "A Tableaux Decision Procedure for SHOIQ"
 // - Motik, B., Shearer, R., & Horrocks, I. (2009). "Hypertableau Reasoning for Description Logics"
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
+import StorageKit
 
 // MARK: - TableauxReasoner
 
@@ -121,7 +117,7 @@ public final class TableauxReasoner: Sendable {
         ///
         /// **Important**: Timeout is applied per-operation, not per-reasoner lifetime.
         /// Each call to `checkSatisfiability` calculates a fresh deadline from this value.
-        public let timeout: TimeInterval?
+        public let timeout: Duration?
 
         /// Whether to check OWL DL regularity before reasoning
         /// When enabled, the reasoner will validate that the ontology
@@ -137,7 +133,7 @@ public final class TableauxReasoner: Sendable {
 
         public init(
             maxExpansionSteps: Int = 100000,
-            timeout: TimeInterval? = nil,
+            timeout: Duration? = nil,
             checkRegularity: Bool = true,
             abortOnRegularityViolations: Bool = true
         ) {
@@ -155,6 +151,7 @@ public final class TableauxReasoner: Sendable {
     private let roleHierarchy: RoleHierarchy
     private let classHierarchy: ClassHierarchy
     private let configuration: Configuration
+    private let clock: any StorageMonotonicClock
 
     /// TBox constraints in NNF form
     private let tboxConstraints: [OWLClassExpression]
@@ -188,9 +185,15 @@ public final class TableauxReasoner: Sendable {
     ///   - ontology: The OWL ontology to reason over
     ///   - index: Pre-built OntologyIndex for O(1) lookups
     ///   - configuration: Reasoner configuration (default: standard settings)
-    public init(ontology: OWLOntology, index: OntologyIndex, configuration: Configuration = Configuration()) {
+    public init(
+        ontology: OWLOntology,
+        index: OntologyIndex,
+        clock: any StorageMonotonicClock,
+        configuration: Configuration = Configuration()
+    ) {
         self.ontology = ontology
         self.ontologyIndex = index
+        self.clock = clock
         var rh = RoleHierarchy(ontology: ontology, index: index)
         rh.ensureClosuresComputed()
         self.roleHierarchy = rh
@@ -217,9 +220,18 @@ public final class TableauxReasoner: Sendable {
     /// - Parameters:
     ///   - ontology: The OWL ontology to reason over
     ///   - configuration: Reasoner configuration (default: standard settings)
-    public convenience init(ontology: OWLOntology, configuration: Configuration = Configuration()) {
+    public convenience init(
+        ontology: OWLOntology,
+        clock: any StorageMonotonicClock,
+        configuration: Configuration = Configuration()
+    ) {
         let index = ontology.buildIndex()
-        self.init(ontology: ontology, index: index, configuration: configuration)
+        self.init(
+            ontology: ontology,
+            index: index,
+            clock: clock,
+            configuration: configuration
+        )
     }
 
     /// Initialize reasoner with ontology (convenience)
@@ -227,8 +239,16 @@ public final class TableauxReasoner: Sendable {
     /// - Parameters:
     ///   - ontology: The OWL ontology to reason over
     ///   - maxExpansionSteps: Maximum expansion steps (default: 100000)
-    public convenience init(ontology: OWLOntology, maxExpansionSteps: Int) {
-        self.init(ontology: ontology, configuration: Configuration(maxExpansionSteps: maxExpansionSteps))
+    public convenience init(
+        ontology: OWLOntology,
+        clock: any StorageMonotonicClock,
+        maxExpansionSteps: Int
+    ) {
+        self.init(
+            ontology: ontology,
+            clock: clock,
+            configuration: Configuration(maxExpansionSteps: maxExpansionSteps)
+        )
     }
 
     /// Compute TBox constraints in NNF form from pre-filtered TBox axioms
@@ -313,7 +333,9 @@ public final class TableauxReasoner: Sendable {
 
         // Calculate deadline at operation start time (not at Configuration init)
         // This ensures each checkSatisfiability call gets a fresh deadline
-        let operationDeadline = configuration.timeout.map { Date().addingTimeInterval($0) }
+        let operationDeadline = configuration.timeout.map {
+            clock.now.advanced(by: $0)
+        }
 
         // Create completion graph
         let graph = CompletionGraph(roleHierarchy: roleHierarchy, classHierarchy: classHierarchy)
@@ -342,13 +364,17 @@ public final class TableauxReasoner: Sendable {
     ///   - graph: The completion graph to expand
     ///   - stats: Statistics to update during expansion
     ///   - deadline: Optional deadline for timeout (calculated at operation start)
-    private func runExpansion(graph: CompletionGraph, stats: inout Statistics, deadline: Date?) -> SatisfiabilityResult {
+    private func runExpansion(
+        graph: CompletionGraph,
+        stats: inout Statistics,
+        deadline: StorageInstant?
+    ) -> SatisfiabilityResult {
 
         while stats.expansionSteps < configuration.maxExpansionSteps {
             stats.expansionSteps += 1
 
             // Check deadline before each expansion step
-            if let deadline = deadline, Date() > deadline {
+            if let deadline, clock.now > deadline {
                 return SatisfiabilityResult(status: .unknown, clash: nil, statistics: stats)
             }
 

@@ -5,11 +5,6 @@
 // Reference: Tarjan, R. E. (1972). "Depth-first search and linear graph algorithms"
 // SIAM Journal on Computing, 1(2), 146-160.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 import DatabaseEngine
@@ -162,7 +157,7 @@ public final class SCCFinder: Sendable {
     private func computeSCCs(
         edgeLabel: GraphIdentity?
     ) async throws -> SCCComputation {
-        let startTime = MonotonicClock.now()
+        let startTime = snapshot.clock.now()
 
         let load = try await MaterializedGraphSnapshotBuilder.load(
             scanner: scanner,
@@ -176,7 +171,7 @@ public final class SCCFinder: Sendable {
                     components: [],
                     nodeToComponent: [:],
                     nodesExplored: load.graph.nodes.count,
-                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                    durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                     limitReason: limitReason
                 ),
                 graph: load.graph
@@ -188,7 +183,7 @@ public final class SCCFinder: Sendable {
             initialLimitReason: load.limitReason
         )
 
-        let endTime = MonotonicClock.now()
+        let endTime = snapshot.clock.now()
         let durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
         return SCCComputation(
@@ -632,7 +627,10 @@ public struct StronglyConnectedComponentsQuery<Edge: Persistable>: Sendable {
             in: queryContext
         )
         return try await queryContext.withTransaction { transaction in
-            let snapshot = GraphReadSnapshot(transaction: transaction)
+            let snapshot = GraphReadSnapshot(
+                transaction: transaction,
+                monotonicClock: queryContext.context.container.monotonicClock
+            )
             let finder = SCCFinder(
                 snapshot: snapshot,
                 scanner: resolvedIndex.scanner(snapshot: snapshot),

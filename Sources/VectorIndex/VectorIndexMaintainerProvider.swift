@@ -25,7 +25,8 @@ public struct VectorIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration]
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
         let specification = try VectorIndexSpecification(index.kind)
         return try specification.makeIndexMaintainer(

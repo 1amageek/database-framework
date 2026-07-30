@@ -3,11 +3,6 @@
 //
 // Provides PageRank computation using power iteration.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -99,7 +94,7 @@ public final class PageRankComputer: Sendable {
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: PageRankResult with scores for all nodes
     public func compute(edgeLabel: GraphIdentity? = nil) async throws -> PageRankResult {
-        let startTime = MonotonicClock.now()
+        let startTime = snapshot.clock.now()
 
         // Step 1: Collect all nodes and their out-degrees
         let collection = try await collectNodesAndDegrees(edgeLabel: edgeLabel)
@@ -112,7 +107,7 @@ public final class PageRankComputer: Sendable {
                 scores: [:],
                 iterations: 0,
                 convergenceDelta: 0,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                 isComplete: false,
                 limitReason: limitReason
             )
@@ -123,7 +118,7 @@ public final class PageRankComputer: Sendable {
                 scores: [:],
                 iterations: 0,
                 convergenceDelta: 0,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -177,7 +172,7 @@ public final class PageRankComputer: Sendable {
                     scores: scores,
                     iterations: iteration,
                     convergenceDelta: delta.isFinite ? delta : 0,
-                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                    durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                     isComplete: false,
                     limitReason: limitReason
                 )
@@ -209,7 +204,7 @@ public final class PageRankComputer: Sendable {
             scores: scores,
             iterations: iteration,
             convergenceDelta: delta,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: converged,
             limitReason: converged
                 ? nil
@@ -233,7 +228,7 @@ public final class PageRankComputer: Sendable {
         from startNode: GraphIdentity,
         edgeLabel: GraphIdentity? = nil
     ) async throws -> PageRankResult {
-        let startTime = MonotonicClock.now()
+        let startTime = snapshot.clock.now()
 
         // Step 1: Collect all nodes and their out-degrees
         let collection = try await collectNodesAndDegrees(edgeLabel: edgeLabel)
@@ -246,7 +241,7 @@ public final class PageRankComputer: Sendable {
                 scores: [:],
                 iterations: 0,
                 convergenceDelta: 0,
-                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                 isComplete: false,
                 limitReason: limitReason
             )
@@ -310,7 +305,7 @@ public final class PageRankComputer: Sendable {
                     scores: scores,
                     iterations: iteration,
                     convergenceDelta: delta.isFinite ? delta : 0,
-                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                    durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                     isComplete: false,
                     limitReason: limitReason
                 )
@@ -342,7 +337,7 @@ public final class PageRankComputer: Sendable {
             scores: scores,
             iterations: iteration,
             convergenceDelta: delta,
-            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: snapshot.clock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: converged,
             limitReason: converged
                 ? nil

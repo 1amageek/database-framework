@@ -3,16 +3,11 @@
 //
 // Provides a higher-level API for running transactions with configuration.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 
 // MARK: - StorageEngine Extension
 
-extension StorageEngine {
+extension StorageTransactionExecutor {
     /// Execute a transaction with the specified configuration
     ///
     /// This method uses `TransactionRunner` to provide:
@@ -41,10 +36,14 @@ extension StorageEngine {
     /// - Throws: Error if transaction fails after all retry attempts
     public func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration,
+        clock: any StorageMonotonicClock,
         executionDeadline: TransactionExecutionDeadline? = nil,
         _ operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
-        let runner = TransactionRunner(database: self)
+        let runner = TransactionRunner(
+            transactionExecutor: self,
+            clock: clock
+        )
         return try await runner.run(
             configuration: configuration,
             executionDeadline: executionDeadline,

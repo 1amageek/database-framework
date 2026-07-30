@@ -16,7 +16,8 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        configurations: [any IndexRuntimeConfiguration]
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
         try index.kind.validateIdentity(identifier: kindIdentifier, subspaceStructure: .hierarchical)
         try index.kind.validateMetadataKeys(required: ["scoreType"])
@@ -51,7 +52,10 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
         }
     }
 
-    private func make<Item: Persistable, Score: IndexNumericValue>(
+    private func make<
+        Item: Persistable,
+        Score: IndexNumericValue & TupleDecodable
+    >(
         _ scoreType: Score.Type,
         index: Index,
         subspace: Subspace,

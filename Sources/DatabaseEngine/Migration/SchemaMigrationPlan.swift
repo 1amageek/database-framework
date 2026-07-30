@@ -52,6 +52,18 @@ public protocol SchemaMigrationPlan: Sendable {
     /// Defines how to migrate between consecutive versions.
     /// Should have N-1 stages for N schemas (one for each version transition).
     static var stages: [MigrationStage] { get }
+
+    /// Current schema version represented by this complete plan.
+    static var currentVersion: Schema.Version? { get }
+
+    /// Returns the ordered migration stages between two versions.
+    static func findPath(
+        from: Schema.Version,
+        to: Schema.Version
+    ) throws -> [MigrationStage]
+
+    /// Validates ordering, uniqueness, and stage continuity.
+    static func validate() throws
 }
 
 // MARK: - SchemaMigrationPlan Extensions

@@ -8,6 +8,21 @@ import DatabaseKit
 import DatabaseEngine
 import StorageKit
 
+private struct FullTextPositionResult: Sendable {
+    let termIndex: Int
+    let positions: [Int]
+}
+
+private enum FullTextPositionOutcome: Sendable {
+    case success(FullTextPositionResult)
+    case failure(any Error)
+}
+
+private enum FullTextPositionBatchOutcome: Sendable {
+    case success([FullTextPositionResult])
+    case failure(any Error)
+}
+
 // MARK: - FullText Constants
 
 /// Maximum term length in bytes to prevent key size overflow.
@@ -419,30 +434,58 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
             }
 
             // Fetch all term positions concurrently using TaskGroup
-            let positionResults = try await withThrowingTaskGroup(
-                of: (index: Int, positions: [Int]).self
+            let batchOutcome = await withTaskGroup(
+                of: FullTextPositionOutcome.self
             ) { group in
                 for (index, key) in termKeys {
                     group.addTask {
-                        if let value = try await transaction.getValue(for: key, snapshot: true) {
-                            let posting = try FullTextStorageDecoder.posting(
-                                from: value,
-                                positionsStored: true,
-                                term: terms[index]
-                            )
-                            return (index, posting.positions)
-                        } else {
-                            return (index, [])
+                        do {
+                            if let value = try await transaction.getValue(
+                                for: key,
+                                snapshot: true
+                            ) {
+                                let posting = try FullTextStorageDecoder.posting(
+                                    from: value,
+                                    positionsStored: true,
+                                    term: terms[index]
+                                )
+                                return .success(FullTextPositionResult(
+                                    termIndex: index,
+                                    positions: posting.positions
+                                ))
+                            }
+                            return .success(FullTextPositionResult(
+                                termIndex: index,
+                                positions: []
+                            ))
+                        } catch {
+                            return .failure(error)
                         }
                     }
                 }
 
                 // Collect results and sort by original index
-                var collected: [(index: Int, positions: [Int])] = []
-                for try await result in group {
-                    collected.append(result)
+                var collected: [FullTextPositionResult] = []
+                for await outcome in group {
+                    switch outcome {
+                    case .success(let result):
+                        collected.append(result)
+                    case .failure(let error):
+                        group.cancelAll()
+                        return FullTextPositionBatchOutcome.failure(error)
+                    }
                 }
-                return collected.sorted { $0.index < $1.index }
+                return .success(collected.sorted {
+                    $0.termIndex < $1.termIndex
+                })
+            }
+
+            let positionResults: [FullTextPositionResult]
+            switch batchOutcome {
+            case .success(let results):
+                positionResults = results
+            case .failure(let error):
+                throw error
             }
 
             // Extract position arrays in order
@@ -497,7 +540,10 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
-            snapshot: true
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for (key, _) in sequence {

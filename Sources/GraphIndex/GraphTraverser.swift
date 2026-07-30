@@ -43,7 +43,7 @@ package struct GraphTraverser: Sendable {
         from node: GraphIdentity,
         edgeLabel: GraphIdentity? = nil,
         direction: GraphTraversalDirection = .outgoing
-    ) -> GraphNeighborSequence {
+    ) -> GraphNeighborScan {
         let edges = direction == .outgoing
             ? scanner.scanOutgoing(
                 from: node,
@@ -55,7 +55,7 @@ package struct GraphTraverser: Sendable {
                 edgeLabel: edgeLabel,
                 transaction: snapshot.transaction
             )
-        return GraphNeighborSequence(
+        return GraphNeighborScan(
             edges: edges,
             workBudget: snapshot.workBudget
         )
@@ -65,8 +65,8 @@ package struct GraphTraverser: Sendable {
         from node: GraphIdentity,
         edgeLabel: GraphIdentity? = nil,
         direction: GraphTraversalDirection = .outgoing
-    ) -> GraphTraversalSequence {
-        GraphTraversalSequence(
+    ) -> GraphTraversalScan {
+        GraphTraversalScan(
             scanner: scanner,
             snapshot: snapshot,
             source: node,

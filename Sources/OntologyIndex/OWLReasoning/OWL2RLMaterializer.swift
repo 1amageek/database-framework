@@ -67,10 +67,18 @@ public struct OWL2RLMaterializer: Sendable {
     /// Configuration
     private let configuration: Configuration
 
+    /// Runtime-provided monotonic time source.
+    private let clock: any StorageMonotonicClock
+
     // MARK: - Initialization
 
-    public init(ontologyStore: OntologyStore, configuration: Configuration = .default) {
+    public init(
+        ontologyStore: OntologyStore,
+        clock: any StorageMonotonicClock,
+        configuration: Configuration = .default
+    ) {
         self.ontologyStore = ontologyStore
+        self.clock = clock
         self.configuration = configuration
     }
 
@@ -89,7 +97,6 @@ public struct OWL2RLMaterializer: Sendable {
         transaction: any TransactionAccess
     ) async throws -> InferenceResult {
         var result = InferenceResult()
-        let clock = ContinuousClock()
         let start = clock.now
         let baseTriple = triple
 
@@ -166,9 +173,7 @@ public struct OWL2RLMaterializer: Sendable {
             )
         }
 
-        result.statistics.inferenceTime = seconds(
-            in: start.duration(to: clock.now)
-        )
+        result.statistics.inferenceTime = start.duration(to: clock.now)
         return result
     }
 
@@ -642,11 +647,6 @@ public struct OWL2RLMaterializer: Sendable {
         }
     }
 
-    private func seconds(in duration: Duration) -> Double {
-        let components = duration.components
-        return Double(components.seconds)
-            + Double(components.attoseconds) / 1_000_000_000_000_000_000
-    }
 }
 
 public enum OWL2RLMaterializationPosition: Sendable, Equatable {

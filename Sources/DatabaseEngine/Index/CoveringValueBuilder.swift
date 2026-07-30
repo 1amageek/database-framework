@@ -1,10 +1,5 @@
 import DatabaseKit
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 
 /// Builds and reads canonical field projections stored in index values.
@@ -32,7 +27,7 @@ public enum CoveringValueBuilder {
         index: Index
     ) throws -> ByteString {
         let schemas = try validatedSchemas(for: Item.self)
-        let modelFields = Set(schemas.map(\.name))
+        let modelFields = Set(schemas.map { $0.name })
         let requestedPaths = ["id"] + index.kind.fieldNames + index.storedFieldNames
         let projectedNames = orderedUnique(requestedPaths.map(rootFieldName))
 

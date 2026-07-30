@@ -368,7 +368,7 @@ public struct FieldComparison<T: Persistable>: Sendable, Hashable {
     ) {
         self.field = field.identity
         self.op = .in
-        self.value = .array(values.map(\.fieldValue))
+        self.value = .array(values.map { $0.fieldValue })
     }
 
     /// Rebuild a comparison while retaining the exact schema identity.
@@ -432,7 +432,7 @@ public struct FieldComparison<T: Persistable>: Sendable, Hashable {
         case .contains:
             if let str = modelFieldValue.stringValue,
                let substr = value.stringValue {
-                return str.contains(substr)
+                return DatabaseStringSearch.contains(substr, in: str)
             }
             return false
         case .hasPrefix:

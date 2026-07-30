@@ -1,4 +1,5 @@
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -7,41 +8,43 @@ enum CanonicalRelationshipIdentity {
         _ identity: EntityReference,
         container: DBContainer
     ) throws -> (id: Tuple, partition: AnyDirectoryPath?) {
-        guard container.schema.entity(named: identity.entity) != nil else {
+        guard let entity = container.schema.entity(named: identity.entity) else {
             throw RelationshipReferenceError.unknownRelatedEntity(identity.entity)
         }
-        guard let type = container.runtimeConfiguration.persistableTypes.type(
-            named: identity.entity
-        ) else {
-            throw RelationshipReferenceError.relatedEntityHasNoCompiledType(
-                identity.entity
-            )
-        }
-        let id: Tuple
-        do {
-            id = try PersistableIdentifierKeyCodec.tuple(
-                for: identity,
-                expectedType: type.persistableIdentifierType
-            )
-        } catch let error {
-            throw RelationshipReferenceError.invalidTargetIdentifier(
-                entity: identity.entity,
-                reason: error
-            )
-        }
+        let id = try resolveIdentifier(
+            identity,
+            expectedType: entity.identifierType
+        )
         let partition: AnyDirectoryPath?
         do {
             partition = try CanonicalPartitionBinding.makeAnyBinding(
-                for: type,
+                for: entity,
                 partitions: identity.partitions
             )
         } catch {
             throw RelationshipReferenceError.invalidTargetPartition(
                 entity: identity.entity,
-                reason: String(describing: error)
+                reason: "partition does not match the compiled entity schema"
             )
         }
         return (id, partition)
+    }
+
+    private static func resolveIdentifier(
+        _ identity: EntityReference,
+        expectedType: PersistableIdentifierType
+    ) throws(RelationshipReferenceError) -> Tuple {
+        do {
+            return try PersistableIdentifierKeyCodec.tuple(
+                for: identity,
+                expectedType: expectedType
+            )
+        } catch let error {
+            throw .invalidTargetIdentifier(
+                entity: identity.entity,
+                reason: error
+            )
+        }
     }
 
 }

@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 
@@ -43,6 +38,36 @@ public enum QueryRowCodec {
         return try T.decodePersistedFields(fields)
     }
 
+    public static func persistedModel(
+        from row: QueryRow,
+        entity: Schema.Entity
+    ) throws -> PersistedModel {
+        var fields: [PersistableField] = []
+        fields.reserveCapacity(row.fields.count)
+        for (name, value) in row.fields {
+            guard let schema = entity.fieldMapByName[name],
+                  schema.fieldNumber > 0,
+                  let number = UInt32(exactly: schema.fieldNumber) else {
+                throw QueryRowCodecError.unknownField(
+                    type: entity.name,
+                    field: name
+                )
+            }
+            fields.append(
+                try PersistableField(
+                    number: number,
+                    name: name,
+                    value: value
+                )
+            )
+        }
+        fields.sort { $0.number < $1.number }
+        return try PersistedModel(
+            entity: entity.name,
+            fields: fields
+        )
+    }
+
     public static func encodeAny(
         _ item: any Persistable,
         annotations: [String: FieldValue] = [:]
@@ -58,7 +83,7 @@ public enum QueryRowCodec {
     private static func canonicalFields(
         _ item: any Persistable
     ) throws -> [String: FieldValue] {
-        let encoded = try PersistableFieldEncoder.encode(item)
+        let encoded = try item.persistedFields()
         var fields: [String: FieldValue] = [:]
         fields.reserveCapacity(encoded.count)
         for field in encoded {

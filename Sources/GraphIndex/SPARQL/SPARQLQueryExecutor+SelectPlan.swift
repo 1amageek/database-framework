@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -30,17 +25,19 @@ extension SPARQLQueryExecutor {
                 by: plan.orderKeys,
                 workMeter: try requiredWorkMeter(),
                 evaluate: { expression, binding in
-                    do {
-                        let value = try await evaluateCanonicalExpression(
+                    switch try await evaluateCanonicalExpression(
                             expression,
                             binding: binding,
                             transaction: transaction,
                             activeGraph: activeGraph
-                        )
+                        ) {
+                    case .value(let value):
                         return value == .null ? nil : value
-                    } catch let error as SPARQLExpressionEvaluationError
-                        where error.isSPARQLEvaluationError {
-                        return nil
+                    case .expressionError(let evaluationError):
+                        if evaluationError.isSPARQLEvaluationError {
+                            return nil
+                        }
+                        throw evaluationError
                     }
                 }
             )

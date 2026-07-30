@@ -10,11 +10,6 @@
 // - Horrocks, I., & Sattler, U. (2007). "A Tableaux Decision Procedure for SHOIQ"
 // - Motik, B., Shearer, R., & Horrocks, I. (2009). "Hypertableau Reasoning for Description Logics"
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 

@@ -3,11 +3,6 @@
 //
 // Reference: FDB Record Layer RecordCursorResult
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 
 // MARK: - CursorResult

@@ -14,7 +14,9 @@ package struct XSDValueParser: Sendable {
         self.limits = limits
     }
 
-    package func parse(_ literal: RDFLiteral) throws -> XSDParsedValue {
+    package func parse(
+        _ literal: RDFLiteral
+    ) throws(XSDValidationFailure) -> XSDParsedValue {
         let lexicalForm = literal.lexicalForm
         let datatype = literal.datatypeIRI.rawValue
         let language = literal.languageTag?.rawValue
@@ -90,12 +92,12 @@ package struct XSDValueParser: Sendable {
             return .text(value)
 
         case .rdfXMLLiteral:
-            do {
+            do throws(XSDXMLLiteralValue.ParseFailure) {
                 return .xmlLiteral(try XSDXMLLiteralValue(
                     lexicalForm: lexicalForm,
                     limits: limits
                 ))
-            } catch let failure as XSDXMLLiteralValue.ParseFailure {
+            } catch let failure {
                 switch failure {
                 case .invalid(let reason):
                     throw invalid(
@@ -270,7 +272,7 @@ package struct XSDValueParser: Sendable {
     private func validateRDFLanguageTag(
         _ language: Substring,
         literal: RDFLiteral
-    ) throws {
+    ) throws(XSDValidationFailure) {
         switch RDFLanguageTagValidator.validate(
             language,
             maximumSubtags: limits.maxLanguageSubtags
@@ -292,7 +294,9 @@ package struct XSDValueParser: Sendable {
         }
     }
 
-    private func enforceScalarLimit(_ source: String) throws {
+    private func enforceScalarLimit(
+        _ source: String
+    ) throws(XSDValidationFailure) {
         var count = 0
         for _ in source.unicodeScalars {
             count += 1
@@ -306,7 +310,9 @@ package struct XSDValueParser: Sendable {
         }
     }
 
-    private func enforceNumericLimits(_ source: String) throws {
+    private func enforceNumericLimits(
+        _ source: String
+    ) throws(XSDValidationFailure) {
         var digitCount = 0
         var fractionDigitCount = 0
         var afterDecimalPoint = false
@@ -341,7 +347,7 @@ package struct XSDValueParser: Sendable {
     private func enforceTemporalLimits(
         _ source: String,
         kind: XSDDatatypeKind
-    ) throws {
+    ) throws(XSDValidationFailure) {
         let bytes = source.utf8
         var index = bytes.startIndex
         if kind != .time {

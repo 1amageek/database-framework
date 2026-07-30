@@ -46,7 +46,7 @@ public final class IndexLifecycleStore: Sendable {
     /// - Returns: Current IndexState (defaults to .disabled if not found)
     /// - Throws: Error if state value is invalid
     public func state(of indexName: String) async throws -> IndexState {
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             let stateKey = self.makeStateKey(for: indexName)
 
             guard let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
@@ -101,7 +101,7 @@ public final class IndexLifecycleStore: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
     public func enable(_ indexName: String) async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             let stateKey = self.makeStateKey(for: indexName)
 
             // Read current state within transaction
@@ -138,7 +138,7 @@ public final class IndexLifecycleStore: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: IndexStateError.invalidTransition if not in WRITE_ONLY state
     public func makeReadable(_ indexName: String) async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.makeReadable(indexName, transaction: transaction)
         }
     }
@@ -194,7 +194,7 @@ public final class IndexLifecycleStore: Sendable {
         _ indexNames: [String],
         entityRange: (begin: ByteString, end: ByteString)
     ) async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.ensureReadable(
                 indexNames,
                 entityRange: entityRange,
@@ -213,7 +213,9 @@ public final class IndexLifecycleStore: Sendable {
             from: .firstGreaterOrEqual(entityRange.begin),
             to: .firstGreaterOrEqual(entityRange.end),
             limit: 1,
-            snapshot: false
+            reverse: false,
+            snapshot: false,
+            streamingMode: .small
         )
         let sourceIsEmpty = sourceRows.isEmpty
         for indexName in indexNames {
@@ -258,8 +260,9 @@ public final class IndexLifecycleStore: Sendable {
         _ indexNames: [String],
         entityRange: (begin: ByteString, end: ByteString)
     ) async throws {
-        try await container.engine.withTransaction(
-            configuration: .batch
+        try await container.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock
         ) { transaction in
             try await self.initializeMissingStates(
                 indexNames,
@@ -297,7 +300,9 @@ public final class IndexLifecycleStore: Sendable {
                     from: .firstGreaterOrEqual(entityRange.begin),
                     to: .firstGreaterOrEqual(entityRange.end),
                     limit: 1,
-                    snapshot: false
+                    reverse: false,
+                    snapshot: false,
+                    streamingMode: .small
                 )
                 sourceIsEmpty = sourceRows.isEmpty
             }
@@ -339,7 +344,9 @@ public final class IndexLifecycleStore: Sendable {
                         from: .firstGreaterOrEqual(entityRange.begin),
                         to: .firstGreaterOrEqual(entityRange.end),
                         limit: 1,
-                        snapshot: true
+                        reverse: false,
+                        snapshot: true,
+                        streamingMode: .small
                     )
                     sourceIsEmpty = sourceRows.isEmpty
                 }
@@ -371,7 +378,7 @@ public final class IndexLifecycleStore: Sendable {
     ///
     /// - Parameter indexName: Name of the index
     public func disable(_ indexName: String) async throws {
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.disable(indexName, transaction: transaction)
         }
     }
@@ -446,7 +453,7 @@ public final class IndexLifecycleStore: Sendable {
     /// - Parameter indexNames: List of index names
     /// - Returns: Dictionary mapping index names to states
     public func states(of indexNames: [String]) async throws -> [String: IndexState] {
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             var states: [String: IndexState] = [:]
 
             for indexName in indexNames {

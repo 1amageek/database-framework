@@ -1,11 +1,6 @@
 // FusionBuilder.swift
 // DatabaseEngine - Builder for fusion queries with ResultBuilder support
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 
 // MARK: - FusionBuilder

@@ -1,4 +1,5 @@
 import DatabaseEngine
+import DatabaseWire
 
 enum SPARQLGroupStorageError: Error, Sendable, Equatable {
     case capacityOverflow

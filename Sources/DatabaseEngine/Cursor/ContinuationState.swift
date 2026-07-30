@@ -82,7 +82,9 @@ internal enum QueryFingerprint {
             digest.update(1)
         case .stale(let duration):
             digest.update(2)
-            append(duration.bitPattern, to: &digest)
+            let components = duration.components
+            append(UInt64(bitPattern: components.seconds), to: &digest)
+            append(UInt64(bitPattern: components.attoseconds), to: &digest)
         }
     }
 

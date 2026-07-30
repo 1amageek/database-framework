@@ -4,12 +4,8 @@
 // Reference: FDB Record Layer TransactionListener
 // Provides hooks for transaction lifecycle events at the database level.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
+import DatabaseTypes
 import Synchronization
 
 // MARK: - TransactionEvent
@@ -17,38 +13,38 @@ import Synchronization
 /// Events in a transaction's lifecycle
 public enum TransactionEvent: Sendable, CustomStringConvertible {
     /// Transaction was created
-    case created(id: String?, timestamp: Date)
+    case created(id: String?, timestamp: Timestamp)
 
     /// Transaction is about to commit
-    case committing(id: String?, timestamp: Date)
+    case committing(id: String?, timestamp: Timestamp)
 
     /// Transaction committed successfully
-    case committed(id: String?, timestamp: Date, duration: TimeInterval, version: Int64?)
+    case committed(id: String?, timestamp: Timestamp, duration: Duration, version: Int64?)
 
     /// Transaction failed
-    case failed(id: String?, timestamp: Date, duration: TimeInterval, error: Error)
+    case failed(id: String?, timestamp: Timestamp, duration: Duration, error: Error)
 
     /// Transaction was cancelled
-    case cancelled(id: String?, timestamp: Date, duration: TimeInterval)
+    case cancelled(id: String?, timestamp: Timestamp, duration: Duration)
 
     /// Transaction was closed (cleanup)
-    case closed(id: String?, timestamp: Date, totalDuration: TimeInterval)
+    case closed(id: String?, timestamp: Timestamp, totalDuration: Duration)
 
     public var description: String {
         switch self {
         case .created(let id, let ts):
-            return "Transaction[\(id ?? "unnamed")] created at \(ts)"
+            return "Transaction[\(id ?? "unnamed")] created at \(ts.secondsSinceUnixEpoch)"
         case .committing(let id, let ts):
-            return "Transaction[\(id ?? "unnamed")] committing at \(ts)"
+            return "Transaction[\(id ?? "unnamed")] committing at \(ts.secondsSinceUnixEpoch)"
         case .committed(let id, let ts, let duration, let version):
             let versionStr = version.map { ", version=\($0)" } ?? ""
-            return "Transaction[\(id ?? "unnamed")] committed at \(ts) (duration=\(DatabaseTextFormatting.fixedDecimal(duration * 1000, fractionDigits: 3))ms\(versionStr))"
-        case .failed(let id, let ts, let duration, let error):
-            return "Transaction[\(id ?? "unnamed")] failed at \(ts) (duration=\(DatabaseTextFormatting.fixedDecimal(duration * 1000, fractionDigits: 3))ms, error=\(error))"
+            return "Transaction[\(id ?? "unnamed")] committed at \(ts.secondsSinceUnixEpoch) (duration=\(DatabaseMonotonicMeasurement.nanoseconds(duration))ns\(versionStr))"
+        case .failed(let id, let ts, let duration, _):
+            return "Transaction[\(id ?? "unnamed")] failed at \(ts.secondsSinceUnixEpoch) (duration=\(DatabaseMonotonicMeasurement.nanoseconds(duration))ns)"
         case .cancelled(let id, let ts, let duration):
-            return "Transaction[\(id ?? "unnamed")] cancelled at \(ts) (duration=\(DatabaseTextFormatting.fixedDecimal(duration * 1000, fractionDigits: 3))ms)"
+            return "Transaction[\(id ?? "unnamed")] cancelled at \(ts.secondsSinceUnixEpoch) (duration=\(DatabaseMonotonicMeasurement.nanoseconds(duration))ns)"
         case .closed(let id, let ts, let totalDuration):
-            return "Transaction[\(id ?? "unnamed")] closed at \(ts) (total=\(DatabaseTextFormatting.fixedDecimal(totalDuration * 1000, fractionDigits: 3))ms)"
+            return "Transaction[\(id ?? "unnamed")] closed at \(ts.secondsSinceUnixEpoch) (total=\(DatabaseMonotonicMeasurement.nanoseconds(totalDuration))ns)"
         }
     }
 
@@ -66,7 +62,7 @@ public enum TransactionEvent: Sendable, CustomStringConvertible {
     }
 
     /// Extract timestamp from event
-    public var timestamp: Date {
+    public var timestamp: Timestamp {
         switch self {
         case .created(_, let ts),
              .committing(_, let ts),
@@ -230,7 +226,7 @@ public final class MetricsTransactionListener: TransactionListener {
 
             case .committed(_, _, let duration, _):
                 state.committedTransactions += 1
-                let nanos = UInt64(duration * 1_000_000_000)
+                let nanos = DatabaseMonotonicMeasurement.nanoseconds(duration)
                 state.totalDurationNanos += nanos
                 state.maxDurationNanos = max(state.maxDurationNanos, nanos)
                 state.minDurationNanos = min(state.minDurationNanos, nanos)
@@ -362,7 +358,9 @@ public final class TransactionListenerRegistry: Sendable {
 /// Used internally to manage transaction state and emit events.
 public final class TransactionLifecycleTracker: Sendable {
     private let id: String?
-    private let startTime: Date
+    private let startTime: StorageInstant
+    private let monotonicClock: any StorageMonotonicClock
+    private let wallClock: any WallClock
     private let registry: TransactionListenerRegistry?
 
     private struct State: Sendable {
@@ -373,19 +371,26 @@ public final class TransactionLifecycleTracker: Sendable {
     }
     private let state: Mutex<State>
 
-    public init(id: String?, registry: TransactionListenerRegistry?) {
+    public init(
+        id: String?,
+        registry: TransactionListenerRegistry?,
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock
+    ) {
         self.id = id
-        self.startTime = Date()
+        self.monotonicClock = monotonicClock
+        self.wallClock = wallClock
+        self.startTime = monotonicClock.now
         self.registry = registry
         self.state = Mutex(State())
 
         // Emit created event
-        registry?.notify(.created(id: id, timestamp: startTime))
+        registry?.notify(.created(id: id, timestamp: wallClock.now))
     }
 
     /// Mark transaction as committing
     public func markCommitting() {
-        registry?.notify(.committing(id: id, timestamp: Date()))
+        registry?.notify(.committing(id: id, timestamp: wallClock.now))
     }
 
     /// Mark transaction as committed
@@ -399,8 +404,8 @@ public final class TransactionLifecycleTracker: Sendable {
         }
 
         if !wasAlreadyDone {
-            let duration = Date().timeIntervalSince(startTime)
-            registry?.notify(.committed(id: id, timestamp: Date(), duration: duration, version: version))
+            let duration = startTime.duration(to: monotonicClock.now)
+            registry?.notify(.committed(id: id, timestamp: wallClock.now, duration: duration, version: version))
         }
     }
 
@@ -415,8 +420,8 @@ public final class TransactionLifecycleTracker: Sendable {
         }
 
         if !wasAlreadyDone {
-            let duration = Date().timeIntervalSince(startTime)
-            registry?.notify(.failed(id: id, timestamp: Date(), duration: duration, error: error))
+            let duration = startTime.duration(to: monotonicClock.now)
+            registry?.notify(.failed(id: id, timestamp: wallClock.now, duration: duration, error: error))
         }
     }
 
@@ -431,8 +436,8 @@ public final class TransactionLifecycleTracker: Sendable {
         }
 
         if !wasAlreadyDone {
-            let duration = Date().timeIntervalSince(startTime)
-            registry?.notify(.cancelled(id: id, timestamp: Date(), duration: duration))
+            let duration = startTime.duration(to: monotonicClock.now)
+            registry?.notify(.cancelled(id: id, timestamp: wallClock.now, duration: duration))
         }
     }
 
@@ -447,8 +452,8 @@ public final class TransactionLifecycleTracker: Sendable {
         }
 
         if !wasAlreadyClosed {
-            let totalDuration = Date().timeIntervalSince(startTime)
-            registry?.notify(.closed(id: id, timestamp: Date(), totalDuration: totalDuration))
+            let totalDuration = startTime.duration(to: monotonicClock.now)
+            registry?.notify(.closed(id: id, timestamp: wallClock.now, totalDuration: totalDuration))
         }
     }
 
@@ -456,7 +461,7 @@ public final class TransactionLifecycleTracker: Sendable {
     public var transactionID: String? { id }
 
     /// Duration since transaction started
-    public var elapsed: TimeInterval {
-        Date().timeIntervalSince(startTime)
+    public var elapsed: Duration {
+        startTime.duration(to: monotonicClock.now)
     }
 }

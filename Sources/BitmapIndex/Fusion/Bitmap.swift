@@ -5,11 +5,6 @@
 // DatabaseEngine remains independent of bitmap execution behavior.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -42,8 +37,8 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     private var predicate: BitmapPredicate
 
     private enum BitmapPredicate: Sendable {
-        case equals(any Sendable & Hashable)
-        case `in`([any Sendable & Hashable])
+        case equals(FieldValue)
+        case `in`([FieldValue])
     }
 
     // MARK: - Initialization (FusionContext - Equals)
@@ -58,7 +53,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     ///     Bitmap(User.fields.status, equals: "active")
     /// }
     /// ```
-    public init<V: Sendable & Hashable & Equatable>(
+    public init<V: FieldValueRepresentable & Hashable & Equatable>(
         _ field: Field<T, V>,
         equals value: V
     ) {
@@ -66,12 +61,12 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
             fatalError("Bitmap must be used within context.fuse { } block")
         }
         self.fieldName = field.name
-        self.predicate = .equals(value)
+        self.predicate = .equals(value.fieldValue)
         self.queryContext = context
     }
 
     /// Create a Bitmap query for optional field equality
-    public init<V: Sendable & Hashable & Equatable>(
+    public init<V: FieldValueRepresentable & Hashable & Equatable>(
         _ field: Field<T, V?>,
         equals value: V
     ) {
@@ -79,7 +74,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
             fatalError("Bitmap must be used within context.fuse { } block")
         }
         self.fieldName = field.name
-        self.predicate = .equals(value)
+        self.predicate = .equals(value.fieldValue)
         self.queryContext = context
     }
 
@@ -88,7 +83,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     /// Create a Bitmap query for set membership (OR)
     ///
     /// Returns items matching ANY of the provided values.
-    public init<V: Sendable & Hashable & Equatable>(
+    public init<V: FieldValueRepresentable & Hashable & Equatable>(
         _ field: Field<T, V>,
         in values: [V]
     ) {
@@ -96,44 +91,44 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
             fatalError("Bitmap must be used within context.fuse { } block")
         }
         self.fieldName = field.name
-        self.predicate = .in(values)
+        self.predicate = .in(values.map(\.fieldValue))
         self.queryContext = context
     }
 
     // MARK: - Initialization (Explicit Context - Equals)
 
     /// Create a Bitmap query for equality comparison with explicit context
-    public init<V: Sendable & Hashable & Equatable>(
+    public init<V: FieldValueRepresentable & Hashable & Equatable>(
         _ field: Field<T, V>,
         equals value: V,
         context: IndexQueryContext
     ) {
         self.fieldName = field.name
-        self.predicate = .equals(value)
+        self.predicate = .equals(value.fieldValue)
         self.queryContext = context
     }
 
     /// Create a Bitmap query for optional field equality with explicit context
-    public init<V: Sendable & Hashable & Equatable>(
+    public init<V: FieldValueRepresentable & Hashable & Equatable>(
         _ field: Field<T, V?>,
         equals value: V,
         context: IndexQueryContext
     ) {
         self.fieldName = field.name
-        self.predicate = .equals(value)
+        self.predicate = .equals(value.fieldValue)
         self.queryContext = context
     }
 
     // MARK: - Initialization (Explicit Context - In)
 
     /// Create a Bitmap query for set membership with explicit context
-    public init<V: Sendable & Hashable & Equatable>(
+    public init<V: FieldValueRepresentable & Hashable & Equatable>(
         _ field: Field<T, V>,
         in values: [V],
         context: IndexQueryContext
     ) {
         self.fieldName = field.name
-        self.predicate = .in(values)
+        self.predicate = .in(values.map(\.fieldValue))
         self.queryContext = context
     }
 

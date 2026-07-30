@@ -98,7 +98,9 @@ public enum RelationshipReferenceCatalog {
             from: beginSelector,
             to: .firstGreaterOrEqual(end),
             limit: limit + 1,
-            snapshot: false
+            reverse: false,
+            snapshot: false,
+            streamingMode: .iterator
         )
         let visibleRows = rows.prefix(limit)
         let identities = try visibleRows.map { _, value in

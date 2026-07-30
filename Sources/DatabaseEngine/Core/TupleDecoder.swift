@@ -3,15 +3,13 @@
 //
 // Single responsibility: Convert TupleElement to Swift types for index operations.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
-import DatabaseTypesFoundation
 import StorageKit
-import StorageKitFoundation
+
+/// A Swift value that can be decoded from the database tuple representation.
+public protocol TupleDecodable {
+    static func decodeTupleElement(_ element: any TupleElement) throws -> Self
+}
 
 // MARK: - TupleDecoder
 
@@ -51,7 +49,7 @@ public struct TupleDecoder: Sendable {
     /// - Returns: Int64 value
     /// - Throws: TupleDecodingError on type mismatch
     public static func decodeInt64(_ element: any TupleElement) throws -> Int64 {
-        if let value = canonicalFieldValue(element) {
+        if let value = try canonicalFieldValue(element) {
             switch value {
             case .int8(let value): return Int64(value)
             case .int16(let value): return Int64(value)
@@ -79,40 +77,42 @@ public struct TupleDecoder: Sendable {
                 )
             }
         }
-        if let v = element as? Int64 { return v }
-        if let v = element as? Int { return Int64(v) }
-        if let v = element as? UInt64 {
-            guard let exact = Int64(exactly: v) else {
+        switch element.tupleValue {
+        case .signedInteger(let value):
+            return value
+        case .unsignedInteger(let value):
+            guard let exact = Int64(exactly: value) else {
                 throw TupleDecodingError.unsignedIntegerOverflow(
-                    value: v,
+                    value: value,
                     targetType: "Int64"
                 )
             }
             return exact
-        }
-        // Numeric coercion from floating point (exact integers only)
-        // Symmetric with decodeDouble accepting Int64→Double
-        if let v = element as? Double {
-            guard !v.isNaN, !v.isInfinite,
-                  let exact = Int64(exactly: v) else {
+        case .float64(let value):
+            guard !value.isNaN, !value.isInfinite,
+                  let exact = Int64(exactly: value) else {
                 throw TupleDecodingError.integerOverflow(
                     value: 0,
-                    targetType: "Int64 (exact from Double \(v))"
+                    targetType: "Int64 (exact from Double \(value))"
                 )
             }
             return exact
-        }
-        if let v = element as? Float {
-            guard !v.isNaN, !v.isInfinite,
-                  let exact = Int64(exactly: v) else {
+        case .float32(let value):
+            guard !value.isNaN, !value.isInfinite,
+                  let exact = Int64(exactly: value) else {
                 throw TupleDecodingError.integerOverflow(
                     value: 0,
-                    targetType: "Int64 (exact from Float \(v))"
+                    targetType: "Int64 (exact from Float \(value))"
                 )
             }
             return exact
+        default:
+            break
         }
-        throw TupleDecodingError.typeMismatch(expected: "Int64", actual: String(describing: type(of: element)))
+        throw TupleDecodingError.typeMismatch(
+            expected: "Int64",
+            actual: TupleElementSemanticName.describe(element)
+        )
     }
 
     /// Decode as Int with range check
@@ -171,7 +171,7 @@ public struct TupleDecoder: Sendable {
 
     /// Decode as UInt64 without passing through a signed or floating value.
     public static func decodeUInt64(_ element: any TupleElement) throws -> UInt64 {
-        if let value = canonicalFieldValue(element) {
+        if let value = try canonicalFieldValue(element) {
             switch value {
             case .uint8(let value): return UInt64(value)
             case .uint16(let value): return UInt64(value)
@@ -192,8 +192,10 @@ public struct TupleDecoder: Sendable {
                 )
             }
         }
-        if let value = element as? UInt64 { return value }
-        if let value = element as? Int64 {
+        switch element.tupleValue {
+        case .unsignedInteger(let value):
+            return value
+        case .signedInteger(let value):
             guard let exact = UInt64(exactly: value) else {
                 throw TupleDecodingError.integerOverflow(
                     value: value,
@@ -201,17 +203,7 @@ public struct TupleDecoder: Sendable {
                 )
             }
             return exact
-        }
-        if let value = element as? Int {
-            guard let exact = UInt64(exactly: value) else {
-                throw TupleDecodingError.integerOverflow(
-                    value: Int64(value),
-                    targetType: "UInt64"
-                )
-            }
-            return exact
-        }
-        if let value = element as? Double {
+        case .float64(let value):
             guard value.isFinite, let exact = UInt64(exactly: value) else {
                 throw TupleDecodingError.typeMismatch(
                     expected: "UInt64 (exact)",
@@ -219,8 +211,7 @@ public struct TupleDecoder: Sendable {
                 )
             }
             return exact
-        }
-        if let value = element as? Float {
+        case .float32(let value):
             guard value.isFinite, let exact = UInt64(exactly: value) else {
                 throw TupleDecodingError.typeMismatch(
                     expected: "UInt64 (exact)",
@@ -228,10 +219,12 @@ public struct TupleDecoder: Sendable {
                 )
             }
             return exact
+        default:
+            break
         }
         throw TupleDecodingError.typeMismatch(
             expected: "UInt64",
-            actual: String(describing: type(of: element))
+            actual: TupleElementSemanticName.describe(element)
         )
     }
 
@@ -293,7 +286,7 @@ public struct TupleDecoder: Sendable {
     /// - Returns: Double value
     /// - Throws: TupleDecodingError on type mismatch
     public static func decodeDouble(_ element: any TupleElement) throws -> Double {
-        if let value = canonicalFieldValue(element) {
+        if let value = try canonicalFieldValue(element) {
             switch value {
             case .int8(let value): return Double(value)
             case .int16(let value): return Double(value)
@@ -312,12 +305,17 @@ public struct TupleDecoder: Sendable {
                 )
             }
         }
-        if let v = element as? Double { return v }
-        if let v = element as? Float { return Double(v) }
-        // Allow numeric coercion from integers
-        if let v = element as? Int64 { return Double(v) }
-        if let v = element as? Int { return Double(v) }
-        throw TupleDecodingError.typeMismatch(expected: "Double", actual: String(describing: type(of: element)))
+        switch element.tupleValue {
+        case .float64(let value): return value
+        case .float32(let value): return Double(value)
+        case .signedInteger(let value): return Double(value)
+        case .unsignedInteger(let value): return Double(value)
+        default: break
+        }
+        throw TupleDecodingError.typeMismatch(
+            expected: "Double",
+            actual: TupleElementSemanticName.describe(element)
+        )
     }
 
     /// Decode as Float
@@ -338,7 +336,7 @@ public struct TupleDecoder: Sendable {
     /// - Returns: String value
     /// - Throws: TupleDecodingError on type mismatch
     public static func decodeString(_ element: any TupleElement) throws -> String {
-        if let value = canonicalFieldValue(element) {
+        if let value = try canonicalFieldValue(element) {
             guard case .string(let string) = value else {
                 throw canonicalTypeMismatch(
                     expected: "String",
@@ -347,8 +345,11 @@ public struct TupleDecoder: Sendable {
             }
             return string
         }
-        if let v = element as? String { return v }
-        throw TupleDecodingError.typeMismatch(expected: "String", actual: String(describing: type(of: element)))
+        if case .string(let value) = element.tupleValue { return value }
+        throw TupleDecodingError.typeMismatch(
+            expected: "String",
+            actual: TupleElementSemanticName.describe(element)
+        )
     }
 
     // MARK: - Bool Decoding
@@ -358,7 +359,7 @@ public struct TupleDecoder: Sendable {
     /// - Returns: Bool value
     /// - Throws: TupleDecodingError on type mismatch
     public static func decodeBool(_ element: any TupleElement) throws -> Bool {
-        if let value = canonicalFieldValue(element) {
+        if let value = try canonicalFieldValue(element) {
             guard case .bool(let bool) = value else {
                 throw canonicalTypeMismatch(
                     expected: "Bool",
@@ -367,41 +368,14 @@ public struct TupleDecoder: Sendable {
             }
             return bool
         }
-        if let v = element as? Bool { return v }
-        throw TupleDecodingError.typeMismatch(expected: "Bool", actual: String(describing: type(of: element)))
+        if case .boolean(let value) = element.tupleValue { return value }
+        throw TupleDecodingError.typeMismatch(
+            expected: "Bool",
+            actual: TupleElementSemanticName.describe(element)
+        )
     }
 
     // MARK: - Binary Decoding
-
-    /// Decode as Data
-    ///
-    /// - Parameter element: TupleElement to decode
-    /// - Returns: Data value
-    /// - Throws: TupleDecodingError on type mismatch
-#if canImport(FoundationEssentials)
-    public static func decodeData(
-        _ element: any TupleElement
-    ) throws -> FoundationEssentials.Data {
-        if let value = element as? ByteString {
-            // Data is the requested Foundation ownership boundary; materializing
-            // independent storage prevents a borrowed tuple slice from escaping.
-            return FoundationEssentials.Data(value)
-        }
-        throw TupleDecodingError.typeMismatch(expected: "Data", actual: String(describing: type(of: element)))
-    }
-#else
-    public static func decodeData(
-        _ element: any TupleElement
-    ) throws -> Foundation.Data {
-        if let value = element as? ByteString {
-            return Foundation.Data(value)
-        }
-        throw TupleDecodingError.typeMismatch(
-            expected: "Data",
-            actual: String(describing: type(of: element))
-        )
-    }
-#endif
 
     /// Decode as owned storage bytes
     ///
@@ -409,75 +383,56 @@ public struct TupleDecoder: Sendable {
     /// - Returns: Owned byte value
     /// - Throws: TupleDecodingError on type mismatch
     public static func decodeBytes(_ element: any TupleElement) throws -> ByteString {
-        if let value = element as? ByteString {
+        if case .bytes(let value) = element.tupleValue {
             return value
         }
-        throw TupleDecodingError.typeMismatch(expected: "ByteString", actual: String(describing: type(of: element)))
+        throw TupleDecodingError.typeMismatch(
+            expected: "ByteString",
+            actual: TupleElementSemanticName.describe(element)
+        )
     }
 
     // MARK: - UUID Decoding
 
-    /// Decode as UUID
-    ///
-    /// - Parameter element: TupleElement to decode
-    /// - Returns: UUID value
-    /// - Throws: TupleDecodingError on type mismatch
-#if canImport(FoundationEssentials)
+    /// Decode the canonical database UUID representation.
     public static func decodeUUID(
         _ element: any TupleElement
-    ) throws -> FoundationEssentials.UUID {
-        if let v = element as? FoundationEssentials.UUID { return v }
-        if let v = element as? DatabaseTypes.UUID {
-            return FoundationEssentials.UUID(v)
-        }
-        throw TupleDecodingError.typeMismatch(expected: "UUID", actual: String(describing: type(of: element)))
-    }
-#else
-    public static func decodeUUID(
-        _ element: any TupleElement
-    ) throws -> Foundation.UUID {
-        if let v = element as? Foundation.UUID { return v }
-        if let v = element as? DatabaseTypes.UUID {
-            return Foundation.UUID(v)
+    ) throws -> DatabaseTypes.UUID {
+        if case .uuid(let value) = element.tupleValue { return value }
+        if let value = try canonicalFieldValue(element), case .uuid(let uuid) = value {
+            return uuid
         }
         throw TupleDecodingError.typeMismatch(
             expected: "UUID",
-            actual: String(describing: type(of: element))
+            actual: TupleElementSemanticName.describe(element)
         )
     }
-#endif
 
-    // MARK: - Date Decoding
-
-    /// Decode as Date
-    ///
-    /// - Parameter element: TupleElement to decode
-    /// - Returns: Date value
-    /// - Throws: TupleDecodingError on type mismatch
-#if canImport(FoundationEssentials)
-    public static func decodeDate(
+    /// Decode the canonical timestamp representation.
+    public static func decodeTimestamp(
         _ element: any TupleElement
-    ) throws -> FoundationEssentials.Date {
-        if let v = element as? FoundationEssentials.Date { return v }
-        if let v = element as? Double {
-            return FoundationEssentials.Date(timeIntervalSince1970: v)
-        }
-        throw TupleDecodingError.typeMismatch(expected: "Date", actual: String(describing: type(of: element)))
-    }
-#else
-    public static func decodeDate(
-        _ element: any TupleElement
-    ) throws -> Foundation.Date {
-        if let v = element as? Foundation.Date { return v }
-        if let v = element as? Double {
-            return Foundation.Date(timeIntervalSince1970: v)
+    ) throws -> Timestamp {
+        if let value = try canonicalFieldValue(element), case .timestamp(let timestamp) = value {
+            return timestamp
         }
         throw TupleDecodingError.typeMismatch(
-            expected: "Date",
-            actual: String(describing: type(of: element))
+            expected: "Timestamp",
+            actual: TupleElementSemanticName.describe(element)
         )
     }
-#endif
+
+    /// Decode the canonical civil-date representation.
+    public static func decodeCivilDate(
+        _ element: any TupleElement
+    ) throws -> CivilDate {
+        if let value = try canonicalFieldValue(element), case .date(let date) = value {
+            return date
+        }
+        throw TupleDecodingError.typeMismatch(
+            expected: "CivilDate",
+            actual: TupleElementSemanticName.describe(element)
+        )
+    }
 
     // MARK: - Generic Decoding
 
@@ -488,64 +443,21 @@ public struct TupleDecoder: Sendable {
     ///   - type: Target type
     /// - Returns: Decoded value of type T
     /// - Throws: TupleDecodingError on failure
-    public static func decode<T>(_ element: any TupleElement, as type: T.Type) throws -> T {
-        switch type {
-        case is Int64.Type:
-            return try decodeInt64(element) as! T
-        case is Int.Type:
-            return try decodeInt(element) as! T
-        case is Int32.Type:
-            return try decodeInt32(element) as! T
-        case is Int16.Type:
-            return try decodeInt16(element) as! T
-        case is Int8.Type:
-            return try decodeInt8(element) as! T
-        case is UInt64.Type:
-            return try decodeUInt64(element) as! T
-        case is UInt.Type:
-            return try decodeUInt(element) as! T
-        case is UInt32.Type:
-            return try decodeUInt32(element) as! T
-        case is UInt16.Type:
-            return try decodeUInt16(element) as! T
-        case is UInt8.Type:
-            return try decodeUInt8(element) as! T
-        case is Double.Type:
-            return try decodeDouble(element) as! T
-        case is Float.Type:
-            return try decodeFloat(element) as! T
-        case is String.Type:
-            return try decodeString(element) as! T
-        case is Bool.Type:
-            return try decodeBool(element) as! T
-#if canImport(FoundationEssentials)
-        case is FoundationEssentials.Data.Type:
-            return try decodeData(element) as! T
-        case is ByteString.Type:
-            return try decodeBytes(element) as! T
-        case is FoundationEssentials.UUID.Type:
-            return try decodeUUID(element) as! T
-        case is FoundationEssentials.Date.Type:
-            return try decodeDate(element) as! T
-#else
-        case is Foundation.Data.Type:
-            return try decodeData(element) as! T
-        case is ByteString.Type:
-            return try decodeBytes(element) as! T
-        case is Foundation.UUID.Type:
-            return try decodeUUID(element) as! T
-        case is Foundation.Date.Type:
-            return try decodeDate(element) as! T
-#endif
-        default:
-            throw TupleDecodingError.unsupportedType(String(describing: type))
-        }
+    public static func decode<T: TupleDecodable>(
+        _ element: any TupleElement,
+        as type: T.Type
+    ) throws -> T {
+        try T.decodeTupleElement(element)
     }
 
     private static func canonicalFieldValue(
         _ element: any TupleElement
-    ) -> FieldValue? {
-        (element as? CanonicalFieldValueTupleElement)?.prepared.value
+    ) throws -> FieldValue? {
+        guard case .bytes(let bytes) = element.tupleValue,
+              FieldValueTupleCodec.isCanonicalEncoding(bytes) else {
+            return nil
+        }
+        return try FieldValueTupleCodec.decode(bytes)
     }
 
     private static func canonicalTypeMismatch(
@@ -554,7 +466,7 @@ public struct TupleDecoder: Sendable {
     ) -> TupleDecodingError {
         .typeMismatch(
             expected: expected,
-            actual: String(describing: value)
+            actual: TupleElementSemanticName.describe(value)
         )
     }
 
@@ -594,6 +506,116 @@ public struct TupleDecoder: Sendable {
         return exact
     }
 
+}
+
+extension Int64: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> Int64 {
+        try TupleDecoder.decodeInt64(element)
+    }
+}
+
+extension Int: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> Int {
+        try TupleDecoder.decodeInt(element)
+    }
+}
+
+extension Int32: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> Int32 {
+        try TupleDecoder.decodeInt32(element)
+    }
+}
+
+extension Int16: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> Int16 {
+        try TupleDecoder.decodeInt16(element)
+    }
+}
+
+extension Int8: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> Int8 {
+        try TupleDecoder.decodeInt8(element)
+    }
+}
+
+extension UInt64: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> UInt64 {
+        try TupleDecoder.decodeUInt64(element)
+    }
+}
+
+extension UInt: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> UInt {
+        try TupleDecoder.decodeUInt(element)
+    }
+}
+
+extension UInt32: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> UInt32 {
+        try TupleDecoder.decodeUInt32(element)
+    }
+}
+
+extension UInt16: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> UInt16 {
+        try TupleDecoder.decodeUInt16(element)
+    }
+}
+
+extension UInt8: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> UInt8 {
+        try TupleDecoder.decodeUInt8(element)
+    }
+}
+
+extension Double: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> Double {
+        try TupleDecoder.decodeDouble(element)
+    }
+}
+
+extension Float: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> Float {
+        try TupleDecoder.decodeFloat(element)
+    }
+}
+
+extension String: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> String {
+        try TupleDecoder.decodeString(element)
+    }
+}
+
+extension Bool: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> Bool {
+        try TupleDecoder.decodeBool(element)
+    }
+}
+
+extension ByteString: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> ByteString {
+        try TupleDecoder.decodeBytes(element)
+    }
+}
+
+extension DatabaseTypes.UUID: TupleDecodable {
+    public static func decodeTupleElement(
+        _ element: any TupleElement
+    ) throws -> DatabaseTypes.UUID {
+        try TupleDecoder.decodeUUID(element)
+    }
+}
+
+extension Timestamp: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> Timestamp {
+        try TupleDecoder.decodeTimestamp(element)
+    }
+}
+
+extension CivilDate: TupleDecodable {
+    public static func decodeTupleElement(_ element: any TupleElement) throws -> CivilDate {
+        try TupleDecoder.decodeCivilDate(element)
+    }
 }
 
 // MARK: - TupleDecodingError

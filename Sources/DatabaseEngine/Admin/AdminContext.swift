@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -69,7 +64,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let (begin, end) = itemSubspace.range()
 
         // Use server-side estimation for size and count
-        let (documentCount, storageSize) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+        let (documentCount, storageSize) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             // Get estimated range size
             let sizeBytes = try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
@@ -78,7 +73,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
             // Count documents (sample-based for large collections)
             var count: Int64 = 0
-            for _ in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
+            for _ in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
                 count += 1
                 // Limit to avoid timeout
                 if count >= 100_000 {
@@ -125,14 +120,14 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let (begin, end) = indexSubspace.range()
 
         // Get index statistics
-        let (entryCount, storageSize) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+        let (entryCount, storageSize) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             let sizeBytes = try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
             )
 
             var count: Int64 = 0
-            for _ in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
+            for _ in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll) {
                 count += 1
                 if count >= 100_000 {
                     break
@@ -204,15 +199,17 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     public func explainAnalyze<T: Persistable>(
         _ query: Query<T>
     ) async throws -> AdminQueryExecutionStatistics {
-        let startTime = MonotonicClock.now()
+        let startTime = container.monotonicClock.now
         let plan = try await explain(query)
 
         // Execute the query to get actual stats
         let store = try await container.store(for: T.self)
         let results = try await store.fetch(query)
 
-        let elapsedNanoseconds = MonotonicClock.now().uptimeNanoseconds
-            - startTime.uptimeNanoseconds
+        let elapsedNanoseconds = DatabaseMonotonicMeasurement.nanoseconds(
+            from: startTime,
+            to: container.monotonicClock.now
+        )
         let duration = try TimeSpan(
             seconds: Int64(elapsedNanoseconds / 1_000_000_000),
             nanoseconds: UInt32(elapsedNanoseconds % 1_000_000_000)
@@ -267,7 +264,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let indexDataSubspace = indexSubspace.subspace(indexName)
         let indexRange = indexDataSubspace.range()
 
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             // Disable index (from any state)
             try await indexLifecycleStore.disable(indexName, transaction: transaction)
 
@@ -290,15 +287,15 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         // Step 4: Build index using EntityIndexBuilder
         // This handles type dispatch and uses OnlineIndexer internally
-        guard let persistableType = container.runtimeConfiguration
-            .persistableTypes.type(named: entity.name) else {
+        guard let entityRuntime = container.runtimeConfiguration
+            .entityRuntimes.registration(named: entity.name) else {
             throw AdminError.operationFailed(
                 "Entity '\(entity.name)' has no Persistable type"
             )
         }
 
         try await EntityIndexBuilder.buildIndex(
-            for: persistableType,
+            for: entityRuntime,
             container: container,
             storeSubspace: subspace,
             index: index,
@@ -403,7 +400,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     // MARK: - FDB-Specific Features
 
     public func currentReadVersion() async throws -> UInt64 {
-        let version: Int64 = try await container.engine.withTransaction(configuration: .batch) { transaction in
+        let version: Int64 = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await transaction.getReadVersion()
         }
         return UInt64(version)
@@ -414,7 +411,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(T.persistableType)
         let (begin, end) = itemSubspace.range()
 
-        let sizeBytes = try await container.engine.withTransaction(configuration: .batch) { transaction in
+        let sizeBytes = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -446,7 +443,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
     private func resolveDirectoryForEntity(_ entity: Schema.Entity) async throws -> Subspace {
         guard let persistableType = container.runtimeConfiguration
-            .persistableTypes.type(named: entity.name) else {
+            .entityRuntimes.modelType(named: entity.name) else {
             throw AdminError.operationFailed("Entity '\(entity.name)' has no Persistable type")
         }
         // Use container's resolveDirectory to respect #Directory definitions
@@ -479,7 +476,7 @@ public enum AdminError: Error, Sendable {
     case operationFailed(String)
 }
 
-extension AdminError: LocalizedError {
+extension AdminError {
     public var errorDescription: String? {
         switch self {
         case .indexNotFound(let name):

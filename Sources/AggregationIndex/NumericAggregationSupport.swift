@@ -6,11 +6,6 @@
 //
 // Reference: Consolidates duplicate code from SumIndexMaintainer, AverageIndexMaintainer
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine

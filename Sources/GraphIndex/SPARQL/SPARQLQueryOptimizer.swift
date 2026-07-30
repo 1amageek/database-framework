@@ -5,12 +5,8 @@
 //
 // Reference: Neumann, T., Weikum, G. (2010). "x-RDF-3X: Fast Querying, Strong Consistency, and Versatile Updates in RDF Databases"
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseMath
+import DatabaseTypes
 
 /// SPARQL Query Optimizer
 ///
@@ -741,7 +737,7 @@ public struct SPARQLQueryOptimizer: Sendable {
                 extractPatternVariables(innerPattern)
             )
         case .groupBy(_, let grouping, let aggs, _):
-            var vars = Set(grouping.keys.lazy.map(\.outputVariable))
+            var vars = Set(grouping.keys.lazy.map { $0.outputVariable })
             for agg in aggs {
                 vars.insert(agg.alias)
             }

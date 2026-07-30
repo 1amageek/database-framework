@@ -4,11 +4,6 @@
 // Analyzes FilterExpression to separate pushable filters (early evaluation)
 // from complex filters (post-scan evaluation).
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine

@@ -104,7 +104,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
             indexLifecycleStore: indexLifecycleStore,
             violationTracker: violationTracker,
             indexSubspace: indexSubspace,
-            maintainerProviders: container.runtimeConfiguration.indexMaintainerProviders,
             configurations: indexConfigurations
         )
     }
@@ -112,7 +111,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     // MARK: - Fetch Operations
     //
     // **Design Intent - No ReadVersionCache**:
-    // Fetch operations use `container.engine.withTransaction()` directly without
+    // Fetch operations use `container.transactionExecutor.withTransaction()` directly without
     // ReadVersionCache. This is a deliberate simplification:
     //
     // 1. DatabaseDataStore is a low-level storage component that doesn't own a cache
@@ -130,14 +129,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
     package func fetchAll<T: Persistable>(_ type: T.Type) async throws -> [T] {
         // Evaluate LIST security via delegate
         try securityDelegate?.evaluateList(
-            type: type,
+            entity: T.persistableType,
             limit: nil,
             offset: nil,
             orderBy: nil
         )
 
         let results = try await fetchAllInternal(type)
-        try securityDelegate?.evaluateReadResults(results)
+        try evaluateReadResults(results)
         return results
     }
 
@@ -145,10 +144,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
     private func fetchAllInternal<T: Persistable>(_ type: T.Type) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
-        let startTime = MonotonicClock.now()
+        let startTime = container.monotonicClock.now
 
         do {
-            let results: [T] = try await container.engine.withTransaction(configuration: .default) { transaction in
+            let results: [T] = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
                 // Use ItemStorage for proper handling of large values
                 let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
@@ -157,19 +156,30 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 var results: [T] = []
 
                 // ItemStorage.scan handles both inline and external (split) values transparently
-                for try await (_, data) in storage.scan(begin: begin, end: end, snapshot: true) {
+                var iterator = storage.scan(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).makeAsyncIterator()
+                while let (_, data) = try await iterator.next() {
                     let model: T = try DataAccess.deserialize(data)
                     results.append(model)
                 }
                 return results
             }
 
-            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: container.monotonicClock.now
+            )
             metricsDelegate.didFetch(itemType: T.persistableType, count: results.count, duration: duration)
 
             return results
         } catch {
-            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: container.monotonicClock.now
+            )
             metricsDelegate.didFailFetch(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
@@ -177,7 +187,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     /// Fetch a single model by ID
     package func fetch<T: Persistable>(_ type: T.Type, id: T.ID) async throws -> T? {
-        let result: T? = try await container.engine.withTransaction { [self] transaction in
+        let result: T? = try await container.transactionExecutor.withTransaction { [self] transaction in
             try await self.fetchByIDInTransaction(type, id: id, transaction: transaction)
         }
 
@@ -194,14 +204,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Evaluate LIST security via delegate
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
         try securityDelegate?.evaluateList(
-            type: T.self,
+            entity: T.persistableType,
             limit: query.fetchLimit,
             offset: query.fetchOffset,
             orderBy: orderByFields.isEmpty ? nil : orderByFields
         )
 
         let results = try await fetchInternal(query)
-        try securityDelegate?.evaluateReadResults(results)
+        try evaluateReadResults(results)
         return results
     }
 
@@ -280,7 +290,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             if query.forcedIndex != nil {
                 throw CanonicalReadError.indexHintNotReadable(
                     indexName: selection.descriptor.name,
-                    state: String(describing: state)
+                    state: state.description
                 )
             }
             return QueryAccessPlan(
@@ -345,10 +355,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
             if forcedIndexName != nil {
                 throw CanonicalReadError.indexHintNotReadable(
                     indexName: matchingIndex.name,
-                    state: String(describing: indexState)
+                    state: indexState.description
                 )
             }
-            logger.debug("Index '\(matchingIndex.name)' is not readable (state: \(indexState)), falling back to scan")
+            logger.debug("Index '\(matchingIndex.name)' is not readable (state: \(indexState.description)), falling back to scan")
             return nil
         }
 
@@ -418,7 +428,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Select optimal StreamingMode based on limit
         let streamingMode: StreamingMode = StreamingMode.forQuery(limit: limit)
 
-        let ids: [Tuple] = try await container.engine.withTransaction(configuration: .default) { transaction in
+        let ids: [Tuple] = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             var ids: [Tuple] = []
             if let limit = limit {
                 ids.reserveCapacity(limit)
@@ -475,7 +485,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         // Fetch models by IDs
         let models = try await fetchByIds(T.self, ids: ids)
-        try securityDelegate?.evaluateReadResults(models)
+        try evaluateReadResults(models)
 
         // Determine if post-filtering is needed
         // (needed if predicate has additional conditions beyond the indexed field)
@@ -522,7 +532,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
             } catch {
                 throw CanonicalReadError.unencodablePredicateValue(
                     field: clause.fieldName,
-                    valueDescription: String(describing: clause.value)
+                    valueDescription: TupleElementSemanticName.describe(
+                        clause.value
+                    )
                 )
             }
             elements.append(element)
@@ -598,7 +610,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Pre-compute keys outside transaction
         let keys = ids.map { typeSubspace.pack($0) }
 
-        return try await container.engine.withTransaction(configuration: .default) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
@@ -619,7 +631,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 // Collect results preserving order
                 var indexed: [(Int, T?)] = []
                 indexed.reserveCapacity(keys.count)
-                for try await result in group {
+                while let result = try await group.next() {
                     indexed.append(result)
                 }
                 indexed.sort { $0.0 < $1.0 }
@@ -639,7 +651,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Evaluate LIST security via delegate
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
         try securityDelegate?.evaluateList(
-            type: T.self,
+            entity: T.persistableType,
             limit: query.fetchLimit,
             offset: query.fetchOffset,
             orderBy: orderByFields.isEmpty ? nil : orderByFields
@@ -692,7 +704,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 if query.forcedIndex != nil {
                     throw CanonicalReadError.indexHintNotReadable(
                         indexName: accessPath.descriptor.name,
-                        state: String(describing: state)
+                        state: state.description
                     )
                 }
             } else if let forcedIndex = query.forcedIndex {
@@ -796,14 +808,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Security evaluation
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
         try securityDelegate?.evaluateList(
-            type: T.self,
+            entity: T.persistableType,
             limit: query.fetchLimit,
             offset: query.fetchOffset,
             orderBy: orderByFields.isEmpty ? nil : orderByFields
         )
 
         let results = try await fetchInternalWithTransaction(query, transaction: transaction)
-        try securityDelegate?.evaluateReadResults(results)
+        try evaluateReadResults(results)
         return results
     }
 
@@ -921,7 +933,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     ) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
-        let startTime = MonotonicClock.now()
+        let startTime = container.monotonicClock.now
 
         do {
             let storage = self.container.itemStorageFactory.make(
@@ -931,18 +943,29 @@ package final class DatabaseDataStore: DataStore, Sendable {
             var results: [T] = []
 
             // ItemStorage.scan handles both inline and external (split) values transparently
-            for try await (_, data) in storage.scan(begin: begin, end: end, snapshot: true) {
+            var iterator = storage.scan(
+                begin: begin,
+                end: end,
+                snapshot: true
+            ).makeAsyncIterator()
+            while let (_, data) = try await iterator.next() {
                 try workMeter?.consume(at: .storageRow)
                 let model: T = try DataAccess.deserialize(data)
                 results.append(model)
             }
 
-            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: container.monotonicClock.now
+            )
             metricsDelegate.didFetch(itemType: T.persistableType, count: results.count, duration: duration)
 
             return results
         } catch {
-            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: container.monotonicClock.now
+            )
             metricsDelegate.didFailFetch(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
@@ -997,7 +1020,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             if forcedIndexName != nil {
                 throw CanonicalReadError.indexHintNotReadable(
                     indexName: matchingIndex.name,
-                    state: String(describing: indexState)
+                    state: indexState.description
                 )
             }
             logger.debug("Index '\(matchingIndex.name)' is not readable (state: \(indexState)), falling back to scan")
@@ -1135,7 +1158,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             transaction: transaction,
             workMeter: workMeter
         )
-        try securityDelegate?.evaluateReadResults(models)
+        try evaluateReadResults(models)
 
         return IndexFetchResult(models: models, needsPostFiltering: needsPostFiltering)
     }
@@ -1172,7 +1195,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             // Collect results preserving order
             var indexed: [(Int, T?)] = []
             indexed.reserveCapacity(keys.count)
-            for try await result in group {
+            while let result = try await group.next() {
                 indexed.append(result)
             }
             indexed.sort { $0.0 < $1.0 }
@@ -1201,7 +1224,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Security evaluation
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
         try securityDelegate?.evaluateList(
-            type: T.self,
+            entity: T.persistableType,
             limit: query.fetchLimit,
             offset: query.fetchOffset,
             orderBy: orderByFields.isEmpty ? nil : orderByFields
@@ -1262,7 +1285,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 if query.forcedIndex != nil {
                     throw CanonicalReadError.indexHintNotReadable(
                         indexName: accessPath.descriptor.name,
-                        state: String(describing: state)
+                        state: state.description
                     )
                 }
             } else if let forcedIndex = query.forcedIndex {
@@ -1322,11 +1345,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
             return nil
         }
 
-        // Deserialize using DataAccess
-        let result: T = try DataAccess.deserialize(bytes)
+        let persistedModel = try DataAccess.deserializePersistedModel(
+            bytes,
+            expectedEntity: T.persistableType
+        )
+        let result = try persistedModel.decode(as: T.self)
 
         // Evaluate GET security via delegate after fetch
-        try securityDelegate?.evaluateGet(result)
+        try securityDelegate?.evaluateGet(persistedModel)
 
         return result
     }
@@ -1484,7 +1510,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             )
         }
 
-        return try await container.engine.withTransaction(configuration: .default) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = try await transaction.collectRange(
@@ -1507,7 +1533,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        return try await container.engine.withTransaction(configuration: .default) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = try await transaction.collectRange(
@@ -1544,7 +1570,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        let sizeBytes = try await container.engine.withTransaction(configuration: .default) { transaction in
+        let sizeBytes = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -1568,7 +1594,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
         let (begin, end) = indexSubspaceForIndex.range()
 
-        let sizeBytes = try await container.engine.withTransaction(configuration: .default) { transaction in
+        let sizeBytes = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -1585,7 +1611,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     func save<T: Persistable>(_ models: [T]) async throws {
         guard !models.isEmpty else { return }
 
-        let startTime = MonotonicClock.now()
+        let startTime = container.monotonicClock.now
 
         do {
             let mutations = models.map {
@@ -1598,14 +1624,20 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 try await transaction.apply(mutations)
             }
 
-            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: container.monotonicClock.now
+            )
             metricsDelegate.didSave(itemType: T.persistableType, count: models.count, duration: duration)
 
             logger.trace("Saved \(models.count) models", metadata: [
                 "type": "\(T.persistableType)"
             ])
         } catch {
-            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: container.monotonicClock.now
+            )
             metricsDelegate.didFailSave(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
@@ -1617,7 +1649,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     func delete<T: Persistable>(_ models: [T]) async throws {
         guard !models.isEmpty else { return }
 
-        let startTime = MonotonicClock.now()
+        let startTime = container.monotonicClock.now
 
         do {
             let mutations = models.map {
@@ -1630,14 +1662,20 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 try await transaction.apply(mutations)
             }
 
-            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: container.monotonicClock.now
+            )
             metricsDelegate.didDelete(itemType: T.persistableType, count: models.count, duration: duration)
 
             logger.trace("Deleted \(models.count) models", metadata: [
                 "type": "\(T.persistableType)"
             ])
         } catch {
-            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: container.monotonicClock.now
+            )
             metricsDelegate.didFailDelete(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
@@ -1657,7 +1695,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         inserts: [any Persistable],
         deletes: [any Persistable]
     ) async throws {
-        let startTime = MonotonicClock.now()
+        let startTime = container.monotonicClock.now
 
         do {
             var mutations: [PersistableMutation] = []
@@ -1677,7 +1715,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 try await transaction.apply(capturedMutations)
             }
 
-            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: container.monotonicClock.now
+            )
             metricsDelegate.didExecuteBatch(insertCount: inserts.count, deleteCount: deletes.count, duration: duration)
 
             logger.trace("Executed batch", metadata: [
@@ -1685,7 +1726,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 "deletes": "\(deletes.count)"
             ])
         } catch {
-            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = DatabaseMonotonicMeasurement.nanoseconds(
+                from: startTime,
+                to: container.monotonicClock.now
+            )
             metricsDelegate.didFailBatch(error: error, duration: duration)
             throw error
         }
@@ -1700,7 +1744,13 @@ package final class DatabaseDataStore: DataStore, Sendable {
     ) async throws -> PersistableWriteResult {
         let modelType = type(of: model)
         let persistableType = modelType.persistableType
-        let idTuple = try model.persistableIdentifierTuple()
+        guard let runtime = container.runtimeConfiguration.entityRuntimes
+            .registration(named: persistableType) else {
+            throw DatabaseRuntimeConfigurationError.missingCompiledEntityType(
+                entityName: persistableType
+            )
+        }
+        let idTuple = try PersistableIdentifierKeyCodec.tuple(for: model)
 
         let key = itemKey(for: persistableType, id: idTuple)
 
@@ -1710,23 +1760,31 @@ package final class DatabaseDataStore: DataStore, Sendable {
             blobsSubspace: self.blobsSubspace
         )
 
+        let canonicalModel = try PersistedModel(
+            entity: persistableType,
+            fields: model.persistedFields()
+        )
+
         // Load the persisted value for security evaluation and index maintenance.
         var oldModel: (any Persistable)?
+        var oldCanonicalModel: PersistedModel?
         let existingRowPresent: Bool
 
         if let oldData = try await storage.read(for: key) {
-            let persistedModel = try DataAccess.deserializeAny(
+            let previousCanonicalModel = try DataAccess.deserializePersistedModel(
                 oldData,
-                as: modelType
+                expectedEntity: persistableType
             )
+            let persistedModel = try runtime.decode(previousCanonicalModel)
+            oldCanonicalModel = previousCanonicalModel
             oldModel = persistedModel
             try securityDelegate?.evaluateUpdate(
-                persistedModel,
-                newResource: model
+                previousCanonicalModel,
+                newResource: canonicalModel
             )
             existingRowPresent = true
         } else {
-            try securityDelegate?.evaluateCreate(model)
+            try securityDelegate?.evaluateCreate(canonicalModel)
             existingRowPresent = false
         }
 
@@ -1737,23 +1795,26 @@ package final class DatabaseDataStore: DataStore, Sendable {
             existingRowPresent: existingRowPresent,
             currentVersion: existingRowPresent ? oldModel.map(Self.entityVersionDigest) : nil,
             typeName: persistableType,
-            idDescription: String(describing: model.id)
+            idDescription: DatabaseTextFormatting.lowercaseHex(idTuple.pack())
         )
 
-        let data = try PersistableStorageCodec.encode(model)
+        let data = try PersistableStorageCodec.encode(canonicalModel)
 
         try await storage.write(data, for: key)
 
         // Update indexes via IndexMaintenanceService (efficient diff-based update)
         try await indexMaintenanceService.updateIndexesUntyped(
-            oldModel: oldModel,
-            newModel: model,
+            runtime: runtime,
+            oldModel: oldCanonicalModel,
+            newModel: canonicalModel,
             id: idTuple,
             transaction: transaction
         )
         return PersistableWriteResult(
             model: model,
             previousModel: oldModel,
+            canonicalModel: canonicalModel,
+            previousCanonicalModel: oldCanonicalModel,
             encodedValue: data,
             identifier: idTuple
         )
@@ -1828,7 +1889,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     private static func entityVersionDigest(
         for model: any Persistable
     ) throws -> ByteString {
-        let fields = try PersistableFieldEncoder.encode(model)
+        let fields = try model.persistedFields()
         return try PersistableVersionTokenCodec.digest(fields: fields)
     }
 
@@ -1840,7 +1901,13 @@ package final class DatabaseDataStore: DataStore, Sendable {
         transaction: any TransactionAccess
     ) async throws -> (any Persistable)? {
         let persistableType = type(of: model).persistableType
-        let idTuple = try model.persistableIdentifierTuple()
+        guard let runtime = container.runtimeConfiguration.entityRuntimes
+            .registration(named: persistableType) else {
+            throw DatabaseRuntimeConfigurationError.missingCompiledEntityType(
+                entityName: persistableType
+            )
+        }
+        let idTuple = try PersistableIdentifierKeyCodec.tuple(for: model)
         let key = itemKey(for: persistableType, id: idTuple)
         let storage = container.itemStorageFactory.make(
             transaction: transaction,
@@ -1852,24 +1919,28 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 existingRowPresent: false,
                 currentVersion: nil,
                 typeName: persistableType,
-                idDescription: String(describing: model.id)
+                idDescription: DatabaseTextFormatting.lowercaseHex(
+                    idTuple.pack()
+                )
             )
             return nil
         }
-        let persistedModel = try DataAccess.deserializeAny(
+        let canonicalModel = try DataAccess.deserializePersistedModel(
             existingData,
-            as: type(of: model)
+            expectedEntity: persistableType
         )
+        let persistedModel = try runtime.decode(canonicalModel)
         try Self.evaluateWritePrecondition(
             precondition,
             existingRowPresent: true,
             currentVersion: try Self.entityVersionDigest(for: persistedModel),
             typeName: persistableType,
-            idDescription: String(describing: model.id)
+            idDescription: DatabaseTextFormatting.lowercaseHex(idTuple.pack())
         )
-        try securityDelegate?.evaluateDelete(persistedModel)
+        try securityDelegate?.evaluateDelete(canonicalModel)
         try await indexMaintenanceService.updateIndexesUntyped(
-            oldModel: persistedModel,
+            runtime: runtime,
+            oldModel: canonicalModel,
             newModel: nil,
             id: idTuple,
             transaction: transaction
@@ -1919,6 +1990,19 @@ package final class DatabaseDataStore: DataStore, Sendable {
     // evaluateFieldComparison and compareModels removed — unified into
     // FieldComparison.evaluate(on:) and SortDescriptor.orderedComparison()
 
+    /// Authorizes every result without routing a generic method through the
+    /// dynamically selected security delegate.
+    private func evaluateReadResults<Model: Persistable>(
+        _ resources: borrowing [Model]
+    ) throws {
+        guard let securityDelegate else { return }
+        for index in resources.indices {
+            try securityDelegate.evaluateGet(
+                try PersistedModel(resources[index])
+            )
+        }
+    }
+
     // MARK: - Transaction Operations
 
     /// Execute operations within a transaction
@@ -1931,7 +2015,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             DatabaseTransaction
         ) async throws -> T
     ) async throws -> T {
-        return try await container.engine.withTransaction(configuration: configuration) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: configuration, clock: container.monotonicClock) { transaction in
             let databaseTransaction = DatabaseTransaction(
                 storageAccess: transaction,
                 container: self.container

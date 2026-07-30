@@ -2,11 +2,6 @@
 // Low-level storage access abstraction for index reads
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 import DatabaseKit
 
@@ -45,6 +40,12 @@ public protocol StorageReader: Sendable {
         reverse: Bool
     ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error>
 
+    /// Scans every key in one already-resolved subspace.
+    func scanSubspace(
+        _ subspace: Subspace,
+        reverse: Bool
+    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error>
+
     /// Get a single value by key
     ///
     /// - Parameter key: The full key
@@ -58,7 +59,7 @@ extension StorageReader {
     /// Convenience method to scan entire subspace
     public func scanSubspace(
         _ subspace: Subspace,
-        reverse: Bool = false
+        reverse: Bool
     ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
         scanRange(
             subspace: subspace,

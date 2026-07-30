@@ -3,11 +3,6 @@
 //
 // Represents the result set of a SPARQL query execution.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine

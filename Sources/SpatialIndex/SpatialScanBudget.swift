@@ -1,11 +1,6 @@
 // SpatialScanBudget.swift
 // SpatialIndex - Candidate scan budgeting for exact-filtered spatial queries
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 internal enum SpatialScanBudget {
     static let minimumCandidateLimit = 256

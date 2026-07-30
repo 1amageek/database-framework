@@ -5,5 +5,7 @@ import DatabaseTypes
 /// return a canonical RDF term and must not depend on global mutable state.
 public protocol SPARQLFunction: Sendable {
     var identifier: RDFIRI { get }
-    func evaluate(arguments: [FieldValue]) throws -> FieldValue
+    func evaluate(
+        arguments: [FieldValue]
+    ) throws(SPARQLExpressionEvaluationError) -> FieldValue
 }

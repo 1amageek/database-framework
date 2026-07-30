@@ -9,6 +9,8 @@ import StorageKit
 struct PersistableWriteResult: Sendable {
     let model: any Persistable
     let previousModel: (any Persistable)?
+    let canonicalModel: PersistedModel
+    let previousCanonicalModel: PersistedModel?
     let encodedValue: ByteString
     let identifier: Tuple
 }

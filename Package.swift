@@ -15,6 +15,14 @@ let package = Package(
     ],
     products: [
         .library(name: "DatabaseEngine", targets: ["DatabaseEngine"]),
+        .library(
+            name: "SwiftLogDatabaseLogging",
+            targets: ["SwiftLogDatabaseLogging"]
+        ),
+        .library(
+            name: "SwiftMetricsDatabaseMetrics",
+            targets: ["SwiftMetricsDatabaseMetrics"]
+        ),
         .library(name: "DatabaseRuntime", targets: ["DatabaseRuntime"]),
         .library(name: "ScalarIndex", targets: ["ScalarIndex"]),
         .library(name: "VectorIndex", targets: ["VectorIndex"]),
@@ -39,6 +47,10 @@ let package = Package(
         .library(name: "BenchmarkFramework", targets: ["BenchmarkFramework"]),
         .library(name: "DatabaseCLICore", targets: ["DatabaseCLICore"]),
         .library(name: "DatabaseServer", targets: ["DatabaseServer"]),
+        .library(
+            name: "DatabaseServerFoundation",
+            targets: ["DatabaseServerFoundation"]
+        ),
         .executable(name: "database", targets: ["DatabaseCLI"]),
     ],
     traits: [
@@ -50,20 +62,11 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-types.git",
-            from: "26.0729.0"
+            from: "26.0729.3"
         ),
-        .package(
-            url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0729.0"
-        ),
-        .package(
-            url: "https://github.com/1amageek/swift-hnsw.git",
-            from: "1.0.1"
-        ),
-        .package(
-            url: "https://github.com/1amageek/storage-kit.git",
-            from: "26.0729.0"
-        ),
+        .package(path: "../database-kit"),
+        .package(path: "../swift-hnsw"),
+        .package(path: "../storage-kit"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
@@ -76,29 +79,29 @@ let package = Package(
             dependencies: [
                 "DatabaseMath",
                 .product(name: "DatabaseTypes", package: "database-types"),
-                .product(
-                    name: "DatabaseTypesFoundation",
-                    package: "database-types"
-                ),
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(
-                    name: "StorageKitFoundation",
-                    package: "storage-kit"
-                ),
-                .product(
-                    name: "StorageKitSystemClock",
-                    package: "storage-kit"
-                ),
                 .product(name: "FDBStorage", package: "storage-kit",
                          condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "Metrics", package: "swift-metrics"),
             ],
             exclude: ["README.md"],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
+            ]
+        ),
+        .target(
+            name: "SwiftLogDatabaseLogging",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Logging", package: "swift-log"),
+            ]
+        ),
+        .target(
+            name: "SwiftMetricsDatabaseMetrics",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Metrics", package: "swift-metrics"),
             ]
         ),
         .target(
@@ -118,12 +121,7 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "DatabaseTypes", package: "database-types"),
-                .product(
-                    name: "DatabaseTypesFoundation",
-                    package: "database-types"
-                ),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "Logging", package: "swift-log"),
                 .product(name: "SwiftHNSW", package: "swift-hnsw"),
             ],
             exclude: ["README.md"]
@@ -349,12 +347,19 @@ let package = Package(
                 "QueryAST",
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ]
+        ),
+        .target(
+            name: "DatabaseServerFoundation",
+            dependencies: [
+                "DatabaseServer",
+                .product(name: "DatabaseTypes", package: "database-types"),
                 .product(
                     name: "DatabaseTypesFoundation",
                     package: "database-types"
                 ),
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
             ]
         ),
         // DatabaseCLI - Standalone executable entry point
@@ -701,6 +706,7 @@ let package = Package(
             name: "DatabaseServerTests",
             dependencies: [
                 "DatabaseServer",
+                "DatabaseServerFoundation",
                 "DatabaseRuntime",
                 "DatabaseEngine",
                 "GraphIndex",

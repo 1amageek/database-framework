@@ -1,15 +1,12 @@
+import DatabaseServer
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
 import Foundation
-#endif
 
 public struct RandomDatabaseUUIDGenerator: DatabaseUUIDGenerator {
     public init() {}
 
     public func generate() -> DatabaseTypes.UUID {
-        let bytes = UUID().uuid
+        let bytes = Foundation.UUID().uuid
         return DatabaseTypes.UUID(
             high: UInt64(bytes.0) << 56
                 | UInt64(bytes.1) << 48

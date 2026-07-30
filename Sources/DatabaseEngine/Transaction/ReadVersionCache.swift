@@ -4,12 +4,8 @@
 // Reference: FDB Record Layer FDBDatabase.java - lastSeenVersion caching
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBDatabase.java
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import Synchronization
+import StorageKit
 
 // MARK: - ReadVersionCache
 
@@ -48,18 +44,20 @@ public final class ReadVersionCache: Sendable {
         let version: Int64
 
         /// Monotonic timestamp when this version was observed.
-        let timestamp: ContinuousClock.Instant
+        let timestamp: StorageInstant
     }
 
     // MARK: - Properties
 
     /// The cached version (thread-safe via Mutex)
     private let cache: Mutex<CachedVersion?>
+    private let monotonicClock: any StorageMonotonicClock
 
     // MARK: - Initialization
 
     /// Create an empty read version cache
-    public init() {
+    public init(monotonicClock: any StorageMonotonicClock) {
+        self.monotonicClock = monotonicClock
         self.cache = Mutex(nil)
     }
 
@@ -73,7 +71,7 @@ public final class ReadVersionCache: Sendable {
     ///
     /// - Parameter version: The committed version from the transaction
     public func updateFromCommit(version: Int64) {
-        let now = ContinuousClock().now
+        let now = monotonicClock.now
         cache.withLock { $0 = CachedVersion(version: version, timestamp: now) }
     }
 
@@ -87,7 +85,7 @@ public final class ReadVersionCache: Sendable {
     ///
     /// - Parameter version: The read version from the transaction
     public func updateFromRead(version: Int64) {
-        let now = ContinuousClock().now
+        let now = monotonicClock.now
         cache.withLock { cached in
             // Only update if newer (or no cached value)
             if cached == nil || version > cached!.version {
@@ -119,17 +117,17 @@ public final class ReadVersionCache: Sendable {
                 cached?.version
             }
 
-        case .stale(let seconds):
+        case .stale(let maximumAge):
             // Use cache only if fresh enough
-            guard seconds > 0 else { return nil }
+            guard maximumAge > .zero else { return nil }
 
             return cache.withLock { cached in
                 guard let cached = cached else { return nil }
 
-                let now = ContinuousClock().now
-                let ageSeconds = Self.elapsedSeconds(from: cached.timestamp, to: now)
+                let now = monotonicClock.now
+                let age = cached.timestamp.duration(to: now)
 
-                guard ageSeconds < seconds else { return nil }
+                guard age < maximumAge else { return nil }
 
                 return cached.version
             }
@@ -143,8 +141,10 @@ public final class ReadVersionCache: Sendable {
         cache.withLock { cached in
             guard let cached = cached else { return nil }
 
-            let now = ContinuousClock().now
-            let ageMillis = Self.elapsedMilliseconds(from: cached.timestamp, to: now)
+            let now = monotonicClock.now
+            let ageMillis = Self.elapsedMilliseconds(
+                cached.timestamp.duration(to: now)
+            )
 
             return (cached.version, ageMillis)
         }
@@ -170,19 +170,10 @@ public final class ReadVersionCache: Sendable {
         cache.withLock { $0 = nil }
     }
 
-    private static func elapsedSeconds(
-        from start: ContinuousClock.Instant,
-        to end: ContinuousClock.Instant
-    ) -> Double {
-        let components = start.duration(to: end).components
-        return Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
-    }
-
     private static func elapsedMilliseconds(
-        from start: ContinuousClock.Instant,
-        to end: ContinuousClock.Instant
+        _ duration: Duration
     ) -> Int64 {
-        let components = start.duration(to: end).components
+        let components = duration.components
         let secondsMillis = components.seconds * 1_000
         let attosecondsMillis = components.attoseconds / 1_000_000_000_000_000
         return secondsMillis + attosecondsMillis
@@ -242,8 +233,8 @@ public final class MetricsCollectingReadVersionCache: Sendable {
 
     // MARK: - Initialization
 
-    public init() {
-        self.inner = ReadVersionCache()
+    public init(monotonicClock: any StorageMonotonicClock) {
+        self.inner = ReadVersionCache(monotonicClock: monotonicClock)
         self.counters = Mutex(Counters())
     }
 

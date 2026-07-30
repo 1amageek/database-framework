@@ -1,8 +1,3 @@
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -15,20 +10,23 @@ extension VectorIndexSpecification {
         configurations: [any IndexRuntimeConfiguration],
         graphCache: HNSWGraphCache
     ) throws -> any IndexMaintainer<Item> {
-        let matchingConfiguration = configurations.first { configuration in
-            type(of: configuration).kindIdentifier == Self.identifier
+        let matchingConfigurations = configurations.filter { configuration in
+            configuration.kindIdentifier == Self.identifier
                 && configuration.indexName == index.name
-        } as? VectorIndexRuntimeConfiguration
+        }
+        let runtimePolicy = try VectorRuntimePolicy.resolve(
+            in: matchingConfigurations
+        )
 
         let indexSubspace: Subspace
-        if let subspaceKey = matchingConfiguration?.subspaceKey {
+        if let subspaceKey = runtimePolicy?.subspaceKey {
             indexSubspace = subspace.subspace(subspaceKey)
         } else {
             indexSubspace = subspace
         }
 
-        if let matchingConfiguration {
-            switch matchingConfiguration.algorithm {
+        if let runtimePolicy {
+            switch runtimePolicy.algorithm {
             case .flat:
                 break
             case .hnsw(let parameters):

@@ -17,7 +17,7 @@ public final class GraphAlgorithmWorkBudget: Sendable {
     }
 
     public func consume(_ units: UInt64 = 1) throws -> Bool {
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         return state.withLock { state in
             guard !state.limitReached else { return false }
             guard units <= maximumWorkUnits - state.consumedComputeUnits else {
@@ -49,7 +49,7 @@ public final class GraphAlgorithmWorkBudget: Sendable {
     }
 
     package func reservePhysicalReads() throws -> GraphPhysicalReadReservation? {
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         let allocation = state.withLock { state -> UInt64 in
             guard !state.limitReached else { return 0 }
             let committed = state.consumedPhysicalReads + state.reservedPhysicalReads
@@ -110,7 +110,7 @@ package final class GraphPhysicalReadReservation: Sendable {
     }
 
     package func recordPhysicalRead() throws {
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         try state.withLock { state in
             guard !state.settled,
                   state.observedReads < allocation else {

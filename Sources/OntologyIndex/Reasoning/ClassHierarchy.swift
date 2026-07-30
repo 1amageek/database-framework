@@ -7,11 +7,6 @@
 // Reference: Baader, F., et al. (2003).
 // "The Description Logic Handbook: Theory, Implementation, and Applications."
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 
 /// Class Hierarchy Manager

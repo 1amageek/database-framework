@@ -1,11 +1,6 @@
 // FusionStage.swift
 // DatabaseEngine - Execution stages for fusion queries
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 
 /// Protocol for execution stages in a fusion pipeline
@@ -96,7 +91,7 @@ public struct Parallel<T: Persistable>: FusionStage {
 
             // Collect results maintaining order
             var indexedResults: [(Int, [ScoredResult<T>])] = []
-            for try await result in group {
+            while let result = try await group.next() {
                 indexedResults.append(result)
             }
 

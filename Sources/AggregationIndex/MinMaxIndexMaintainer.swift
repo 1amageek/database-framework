@@ -3,11 +3,6 @@
 //
 // 2-layer architecture for efficient batch queries while maintaining deletion accuracy.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine

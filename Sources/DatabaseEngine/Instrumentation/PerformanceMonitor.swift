@@ -7,12 +7,9 @@
 // - QPS (queries per second) calculation
 // - Transaction statistics
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
+import DatabaseTypes
+import StorageKit
 import Synchronization
 
 // MARK: - SlowQueryEntry
@@ -30,7 +27,7 @@ import Synchronization
 /// ```
 public struct SlowQueryEntry: Sendable {
     /// Time at which the operation was recorded.
-    public let timestamp: Date
+    public let timestamp: Timestamp
 
     /// Query or transaction description.
     public let queryDescription: String
@@ -39,16 +36,16 @@ public struct SlowQueryEntry: Sendable {
     public let typeName: String?
 
     /// Execution time in seconds.
-    public let executionTime: TimeInterval
+    public let executionTime: Duration
 
     /// Transaction identifier, when available.
     public let transactionID: String?
 
     public init(
-        timestamp: Date = Date(),
+        timestamp: Timestamp,
         queryDescription: String,
         typeName: String? = nil,
-        executionTime: TimeInterval,
+        executionTime: Duration,
         transactionID: String? = nil
     ) {
         self.timestamp = timestamp
@@ -63,7 +60,7 @@ extension SlowQueryEntry: CustomStringConvertible {
     public var description: String {
         let typeStr = typeName.map { " [\($0)]" } ?? ""
         let idStr = transactionID.map { " (tx: \($0))" } ?? ""
-        return "[\(timestamp)]\(typeStr) \(queryDescription) - \(DatabaseTextFormatting.fixedDecimal(executionTime * 1000, fractionDigits: 3))ms\(idStr)"
+        return "[\(timestamp.secondsSinceUnixEpoch)]\(typeStr) \(queryDescription) - \(DatabaseMonotonicMeasurement.nanoseconds(executionTime))ns\(idStr)"
     }
 }
 
@@ -81,16 +78,16 @@ extension SlowQueryEntry: CustomStringConvertible {
 /// ```
 public struct DatabaseMetrics: Sendable {
     /// Snapshot timestamp.
-    public let timestamp: Date
+    public let timestamp: Timestamp
 
     /// Number of active transactions.
     public let activeTransactions: Int
 
     /// P50 latency in seconds.
-    public let latencyP50: TimeInterval
+    public let latencyP50: Duration
 
     /// P99 latency in seconds.
-    public let latencyP99: TimeInterval
+    public let latencyP99: Duration
 
     /// Queries per second.
     public let queriesPerSecond: Double
@@ -109,19 +106,19 @@ public struct DatabaseMetrics: Sendable {
 
     /// P50 latency in milliseconds.
     public var latencyP50Ms: Double {
-        latencyP50 * 1000
+        Double(DatabaseMonotonicMeasurement.nanoseconds(latencyP50)) / 1_000_000
     }
 
     /// P99 latency in milliseconds.
     public var latencyP99Ms: Double {
-        latencyP99 * 1000
+        Double(DatabaseMonotonicMeasurement.nanoseconds(latencyP99)) / 1_000_000
     }
 
     public init(
-        timestamp: Date = Date(),
+        timestamp: Timestamp,
         activeTransactions: Int,
-        latencyP50: TimeInterval,
-        latencyP99: TimeInterval,
+        latencyP50: Duration,
+        latencyP99: Duration,
         queriesPerSecond: Double,
         totalTransactions: Int64,
         successfulTransactions: Int64
@@ -139,7 +136,7 @@ public struct DatabaseMetrics: Sendable {
 extension DatabaseMetrics: CustomStringConvertible {
     public var description: String {
         """
-        DatabaseMetrics (\(timestamp)):
+        DatabaseMetrics (\(timestamp.secondsSinceUnixEpoch)):
           Active transactions: \(activeTransactions)
           Latency: P50=\(DatabaseTextFormatting.fixedDecimal(latencyP50Ms, fractionDigits: 2))ms, P99=\(DatabaseTextFormatting.fixedDecimal(latencyP99Ms, fractionDigits: 2))ms
           QPS: \(DatabaseTextFormatting.fixedDecimal(queriesPerSecond, fractionDigits: 2))
@@ -157,7 +154,7 @@ public protocol PerformanceMonitorProtocol: Sendable {
     /// Enables slow-operation logging.
     ///
     /// - Parameter threshold: Slow-operation threshold in seconds.
-    func enableSlowQueryLog(threshold: TimeInterval)
+    func enableSlowQueryLog(threshold: Duration)
 
     /// Disables slow-operation logging.
     func disableSlowQueryLog()
@@ -207,7 +204,7 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
     // MARK: - Configuration
 
     /// Slow-operation threshold; nil disables logging.
-    private let slowQueryThreshold: Mutex<TimeInterval?>
+    private let slowQueryThreshold: Mutex<Duration?>
 
     /// Maximum number of retained slow operations.
     private let maxSlowQueries: Int
@@ -216,7 +213,7 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
     private let maxLatencySamples: Int
 
     /// Query-rate measurement window in seconds.
-    private let qpsWindow: TimeInterval
+    private let qpsWindow: Duration
 
     // MARK: - State
 
@@ -230,13 +227,17 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
     private let counters: Mutex<TransactionCounters>
 
     /// Query timestamps used to calculate query rate.
-    private let queryTimestamps: Mutex<[Date]>
+    private let queryTimestamps: Mutex<[StorageInstant]>
+
+    private let monotonicClock: any StorageMonotonicClock
+    private let wallClock: any WallClock
 
     // MARK: - Internal Types
 
     private struct LatencySampleState: Sendable {
-        var samples: [TimeInterval] = []
+        var samples: [Duration] = []
         var totalCount: Int = 0
+        var replacementIndex: Int = 0
     }
 
     private struct TransactionCounters: Sendable {
@@ -256,11 +257,15 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
     public init(
         maxSlowQueries: Int = 100,
         maxLatencySamples: Int = 1000,
-        qpsWindow: TimeInterval = 60
+        qpsWindow: Duration = .seconds(60),
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock
     ) {
         self.maxSlowQueries = maxSlowQueries
         self.maxLatencySamples = maxLatencySamples
         self.qpsWindow = qpsWindow
+        self.monotonicClock = monotonicClock
+        self.wallClock = wallClock
 
         self.slowQueryThreshold = Mutex(nil)
         self.slowQueries = Mutex([])
@@ -308,7 +313,7 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
 
     // MARK: - PerformanceMonitorProtocol
 
-    public func enableSlowQueryLog(threshold: TimeInterval) {
+    public func enableSlowQueryLog(threshold: Duration) {
         slowQueryThreshold.withLock { $0 = threshold }
     }
 
@@ -332,6 +337,7 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
         let qps = calculateQPS()
 
         return DatabaseMetrics(
+            timestamp: wallClock.now,
             activeTransactions: currentCounters.active,
             latencyP50: p50,
             latencyP99: p99,
@@ -351,7 +357,7 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
     // MARK: - Private Methods
 
     /// Records latency using reservoir sampling.
-    private func recordLatency(_ duration: TimeInterval) {
+    private func recordLatency(_ duration: Duration) {
         latencySamples.withLock { state in
             state.totalCount += 1
 
@@ -359,33 +365,37 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
                 // Fill the reservoir before replacing samples.
                 state.samples.append(duration)
             } else {
-                // Replace an existing sample with reservoir probability.
-                let index = Int.random(in: 0..<state.totalCount)
-                if index < maxLatencySamples {
-                    state.samples[index] = duration
-                }
+                state.samples[state.replacementIndex] = duration
+                state.replacementIndex = (state.replacementIndex + 1)
+                    % maxLatencySamples
             }
         }
     }
 
     /// Records a query timestamp for rate calculation.
     private func recordQueryTimestamp() {
-        let now = Date()
-        let cutoff = now.addingTimeInterval(-qpsWindow)
+        let now = monotonicClock.now
 
         queryTimestamps.withLock { timestamps in
             // Remove timestamps outside the measurement window.
-            timestamps.removeAll { $0 < cutoff }
+            timestamps.removeAll {
+                $0.duration(to: now) > qpsWindow
+            }
             timestamps.append(now)
         }
     }
 
     /// Records the operation when it exceeds the slow threshold.
-    private func checkSlowQuery(duration: TimeInterval, transactionID: String?, failed: Bool = false) {
+    private func checkSlowQuery(
+        duration: Duration,
+        transactionID: String?,
+        failed: Bool = false
+    ) {
         guard let threshold = slowQueryThreshold.withLock({ $0 }) else { return }
         guard duration >= threshold else { return }
 
         let entry = SlowQueryEntry(
+            timestamp: wallClock.now,
             queryDescription: failed ? "Failed transaction" : "Transaction",
             executionTime: duration,
             transactionID: transactionID
@@ -401,11 +411,11 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
     }
 
     /// Calculates a percentile from retained samples.
-    private func calculatePercentiles() -> (p50: TimeInterval, p99: TimeInterval) {
+    private func calculatePercentiles() -> (p50: Duration, p99: Duration) {
         let samples = latencySamples.withLock { $0.samples }
 
         guard !samples.isEmpty else {
-            return (0, 0)
+            return (.zero, .zero)
         }
 
         let sorted = samples.sorted()
@@ -422,11 +432,17 @@ public final class PerformanceMonitor: PerformanceMonitorProtocol, TransactionLi
         let timestamps = queryTimestamps.withLock { $0 }
         guard !timestamps.isEmpty else { return 0 }
 
-        let now = Date()
-        let cutoff = now.addingTimeInterval(-qpsWindow)
-        let recentCount = timestamps.filter { $0 >= cutoff }.count
+        let now = monotonicClock.now
+        let recentCount = timestamps.filter {
+            $0.duration(to: now) <= qpsWindow
+        }.count
 
-        return Double(recentCount) / qpsWindow
+        let windowNanoseconds = DatabaseMonotonicMeasurement.nanoseconds(
+            qpsWindow
+        )
+        guard windowNanoseconds > 0 else { return 0 }
+        return Double(recentCount) * 1_000_000_000
+            / Double(windowNanoseconds)
     }
 }
 
@@ -444,12 +460,13 @@ extension PerformanceMonitor {
     public func recordSlowQuery(
         description: String,
         typeName: String? = nil,
-        executionTime: TimeInterval
+        executionTime: Duration
     ) {
         guard let threshold = slowQueryThreshold.withLock({ $0 }) else { return }
         guard executionTime >= threshold else { return }
 
         let entry = SlowQueryEntry(
+            timestamp: wallClock.now,
             queryDescription: description,
             typeName: typeName,
             executionTime: executionTime
@@ -464,7 +481,7 @@ extension PerformanceMonitor {
     }
 
     /// Current slow-operation threshold.
-    public var currentThreshold: TimeInterval? {
+    public var currentThreshold: Duration? {
         slowQueryThreshold.withLock { $0 }
     }
 

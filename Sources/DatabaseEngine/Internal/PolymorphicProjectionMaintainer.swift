@@ -17,16 +17,22 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
         transaction: any TransactionAccess
     ) async throws {
         let modelType = type(of: write.model)
-        guard let polymorphicType = modelType as? any Polymorphable.Type,
+        guard let entityRuntime = container.runtimeConfiguration.entityRuntimes
+            .registration(named: modelType.persistableType) else {
+            throw DatabaseRuntimeConfigurationError.missingCompiledEntityType(
+                entityName: modelType.persistableType
+            )
+        }
+        guard let membership = modelType.polymorphicMembership,
               requiresProjection(
                 modelType: modelType,
-                polymorphicType: polymorphicType
+                membership: membership
               ) else {
             return
         }
 
         let projection = try await resolveProjection(
-            polymorphicType: polymorphicType,
+            membership: membership,
             transaction: transaction
         )
         let compositeID = try PolymorphicIdentifierKey.tuple(
@@ -38,18 +44,15 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
             transaction: transaction,
             blobsSubspace: projection.blobs
         )
-        let previousProjection: (any Persistable)?
-        if let bytes = try await storage.read(for: key) {
+        let previousProjection: PersistedModel?
+        if try await storage.read(for: key) != nil {
             guard write.previousModel != nil else {
                 throw PolymorphicProjectionError.unexpectedProjection(
                     entity: modelType.persistableType,
                     group: projection.group.identifier
                 )
             }
-            previousProjection = try DataAccess.deserializeAny(
-                bytes,
-                as: modelType
-            )
+            previousProjection = write.previousCanonicalModel
         } else {
             guard write.previousModel == nil else {
                 throw PolymorphicProjectionError.missingProjection(
@@ -62,12 +65,13 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
 
         try await storage.write(write.encodedValue, for: key)
         try await projection.indexes.updateIndexesUntyped(
+            runtime: entityRuntime,
             oldModel: previousProjection,
-            newModel: write.model,
+            newModel: write.canonicalModel,
             id: compositeID,
             descriptors: container.schema.polymorphicIndexDescriptors(
                 identifier: projection.group.identifier,
-                memberType: modelType
+                memberTypeName: modelType.persistableType
             ),
             logicalTypeName: projection.group.identifier,
             transaction: transaction
@@ -79,21 +83,27 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
         transaction: any TransactionAccess
     ) async throws {
         let modelType = type(of: model)
-        guard let polymorphicType = modelType as? any Polymorphable.Type,
+        guard let entityRuntime = container.runtimeConfiguration.entityRuntimes
+            .registration(named: modelType.persistableType) else {
+            throw DatabaseRuntimeConfigurationError.missingCompiledEntityType(
+                entityName: modelType.persistableType
+            )
+        }
+        guard let membership = modelType.polymorphicMembership,
               requiresProjection(
                 modelType: modelType,
-                polymorphicType: polymorphicType
+                membership: membership
               ) else {
             return
         }
 
         let projection = try await resolveProjection(
-            polymorphicType: polymorphicType,
+            membership: membership,
             transaction: transaction
         )
         let compositeID = try PolymorphicIdentifierKey.tuple(
             for: modelType,
-            identifier: try model.persistableIdentifierTuple()
+            identifier: try PersistableIdentifierKeyCodec.tuple(for: model)
         )
         let key = projection.items.pack(compositeID)
         let storage = container.itemStorageFactory.make(
@@ -106,17 +116,18 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
                 group: projection.group.identifier
             )
         }
-        let projectedModel = try DataAccess.deserializeAny(
+        let projectedModel = try DataAccess.deserializePersistedModel(
             bytes,
-            as: modelType
+            expectedEntity: modelType.persistableType
         )
         try await projection.indexes.updateIndexesUntyped(
+            runtime: entityRuntime,
             oldModel: projectedModel,
-            newModel: nil as (any Persistable)?,
+            newModel: nil,
             id: compositeID,
             descriptors: container.schema.polymorphicIndexDescriptors(
                 identifier: projection.group.identifier,
-                memberType: modelType
+                memberTypeName: modelType.persistableType
             ),
             logicalTypeName: projection.group.identifier,
             transaction: transaction
@@ -126,18 +137,18 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
 
     private func requiresProjection(
         modelType: any Persistable.Type,
-        polymorphicType: any Polymorphable.Type
+        membership: PolymorphicMembership
     ) -> Bool {
         modelType.directoryPathComponents
-            != polymorphicType.polymorphicDirectoryPathComponents
+            != membership.directoryComponents
     }
 
     private func resolveProjection(
-        polymorphicType: any Polymorphable.Type,
+        membership: PolymorphicMembership,
         transaction: any TransactionAccess
     ) async throws -> Projection {
         let group = try container.polymorphicGroup(
-            identifier: polymorphicType.polymorphableType
+            identifier: membership.identifier
         )
         let subspace = try await container.resolvePolymorphicDirectory(
             for: group.identifier,
@@ -162,8 +173,6 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
                     )
                 ),
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),
-                maintainerProviders: container.runtimeConfiguration
-                    .indexMaintainerProviders,
                 configurations: configurations
             )
         )

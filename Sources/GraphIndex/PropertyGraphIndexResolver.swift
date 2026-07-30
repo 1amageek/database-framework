@@ -151,7 +151,7 @@ package enum PropertyGraphIndexResolver {
             throw PropertyGraphIndexResolutionError.ambiguous(
                 entityName: entityName,
                 selector: selector,
-                indexNames: candidates.map(\.indexName).sorted()
+                indexNames: candidates.map { $0.indexName }.sorted()
             )
         }
         return candidate

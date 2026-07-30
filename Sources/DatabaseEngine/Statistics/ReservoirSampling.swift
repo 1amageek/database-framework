@@ -1,11 +1,6 @@
 // ReservoirSampling.swift
 // Database statistics sampling for histogram construction
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseTypes
 import DatabaseKit
 import DatabaseMath
@@ -178,7 +173,8 @@ public struct ReservoirSampling<T: Sendable>: Sendable {
 
 // MARK: - Histogram Building
 
-extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
+extension ReservoirSampling
+where T: Comparable & Hashable & TupleElement & FieldValueRepresentable {
 
     /// Build a histogram from the sampled values
     ///
@@ -236,7 +232,7 @@ extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
             let scaledCount = Int(Double(count) * scaleFactor)
             cumulativeCount += scaledCount
 
-            let comparableValue = try TypeConversion.toFieldValue(value)
+            let comparableValue = value.fieldValue
             buckets.append(HistogramBucket(
                 lowerBound: comparableValue,
                 upperBound: comparableValue,
@@ -263,12 +259,8 @@ extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
             let startIndex = i
             let endIndex = min(i + valuesPerBucket, sorted.count)
 
-            let lowerBound = try TypeConversion.toFieldValue(
-                sorted[startIndex]
-            )
-            let upperBound = try TypeConversion.toFieldValue(
-                sorted[endIndex - 1]
-            )
+            let lowerBound = sorted[startIndex].fieldValue
+            let upperBound = sorted[endIndex - 1].fieldValue
             let count = endIndex - startIndex
 
             let scaledCount = Int(Double(count) * scaleFactor)

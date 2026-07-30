@@ -4,11 +4,6 @@
 // Provides DatabaseContext extension and query builder for temporal versioning.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -79,6 +74,10 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
     internal let primaryKey: [any TupleElement & Sendable]
     private var limitCount: Int?
     private var indexName: String?
+
+    internal var currentTimestamp: Timestamp {
+        queryContext.context.container.wallClock.now
+    }
 
     // MARK: - Initialization
 
@@ -263,8 +262,8 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
             let count = try descriptor.kind.requireInt("strategyCount")
             strategy = .keepLast(count)
         case "keepForDuration":
-            let duration = try descriptor.kind.requireDouble(
-                "strategyDurationSeconds"
+            let duration = try descriptor.kind.requireTimeSpan(
+                "strategyDuration"
             )
             strategy = .keepForDuration(duration)
         default:
@@ -284,7 +283,8 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
             ),
             strategy: strategy,
             subspace: indexSubspace,
-            idExpression: FieldKeyExpression(fieldName: "id")
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            wallClock: queryContext.context.container.wallClock
         )
     }
 }

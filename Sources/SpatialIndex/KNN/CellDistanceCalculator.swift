@@ -3,11 +3,6 @@
 //
 // Reference: Samet, H. "Foundations of Multidimensional and Metric Data Structures", 2006
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseEngine
 import DatabaseMath
 import DatabaseKit

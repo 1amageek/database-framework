@@ -682,7 +682,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         guard let entity = container.schema.entities.first(where: { $0.name == table.table }) else {
             throw DatabaseMutationError.unknownEntity(table.table)
         }
-        guard let type = container.runtimeConfiguration.persistableTypes.type(
+        guard let type = container.runtimeConfiguration.entityRuntimes.modelType(
             named: entity.name
         ) else {
             throw DatabaseMutationError.entityHasNoPersistableType(table.table)
@@ -690,7 +690,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         let partition: AnyDirectoryPath?
         do {
             partition = try CanonicalPartitionBinding.makeAnyBinding(
-                for: type,
+                for: entity,
                 partitions: table.partitions
             )
         } catch CanonicalReadError.invalidPartition(_, let reason) {

@@ -4,13 +4,9 @@
 // Reference: FDB Record Layer ScanProperties.ExecuteState and preload behavior
 // Caches frequently accessed entities to reduce database reads.
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import Synchronization
 import DatabaseKit
+import StorageKit
 
 // MARK: - CacheConfiguration
 
@@ -22,8 +18,8 @@ public struct CacheConfiguration: Sendable, Equatable {
     /// Maximum memory usage in bytes (approximate)
     public let maxMemoryBytes: Int
 
-    /// Time-to-live for cache entries in seconds
-    public let ttlSeconds: Double
+    /// Time-to-live for cache entries.
+    public let timeToLive: Duration
 
     /// Whether to track cache statistics
     public let enableStatistics: Bool
@@ -35,7 +31,7 @@ public struct CacheConfiguration: Sendable, Equatable {
     public static let `default` = CacheConfiguration(
         maxEntries: 10_000,
         maxMemoryBytes: 100 * 1024 * 1024, // 100MB
-        ttlSeconds: 300, // 5 minutes
+        timeToLive: .seconds(300),
         enableStatistics: true,
         evictionPolicy: .lru
     )
@@ -44,7 +40,7 @@ public struct CacheConfiguration: Sendable, Equatable {
     public static let small = CacheConfiguration(
         maxEntries: 1_000,
         maxMemoryBytes: 10 * 1024 * 1024, // 10MB
-        ttlSeconds: 60, // 1 minute
+        timeToLive: .seconds(60),
         enableStatistics: true,
         evictionPolicy: .lru
     )
@@ -53,7 +49,7 @@ public struct CacheConfiguration: Sendable, Equatable {
     public static let large = CacheConfiguration(
         maxEntries: 100_000,
         maxMemoryBytes: 1024 * 1024 * 1024, // 1GB
-        ttlSeconds: 600, // 10 minutes
+        timeToLive: .seconds(600),
         enableStatistics: true,
         evictionPolicy: .lru
     )
@@ -61,17 +57,17 @@ public struct CacheConfiguration: Sendable, Equatable {
     public init(
         maxEntries: Int = 10_000,
         maxMemoryBytes: Int = 100 * 1024 * 1024,
-        ttlSeconds: Double = 300,
+        timeToLive: Duration = .seconds(300),
         enableStatistics: Bool = true,
         evictionPolicy: CacheEvictionPolicy = .lru
     ) {
         precondition(maxEntries > 0, "maxEntries must be positive")
         precondition(maxMemoryBytes > 0, "maxMemoryBytes must be positive")
-        precondition(ttlSeconds > 0, "ttlSeconds must be positive")
+        precondition(timeToLive > .zero, "timeToLive must be positive")
 
         self.maxEntries = maxEntries
         self.maxMemoryBytes = maxMemoryBytes
-        self.ttlSeconds = ttlSeconds
+        self.timeToLive = timeToLive
         self.enableStatistics = enableStatistics
         self.evictionPolicy = evictionPolicy
     }
@@ -125,32 +121,19 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
 
     private struct CacheEntry: Sendable {
         let item: Item
-        let insertedAt: Date
-        var lastAccessedAt: Date
+        let insertedAt: StorageInstant
+        var lastAccessedAt: StorageInstant
         var accessCount: Int
         let approximateSize: Int
 
-        var isExpired: Bool {
-            false // Checked against TTL externally
-        }
-
-        func isExpired(ttl: TimeInterval) -> Bool {
-            Date().timeIntervalSince(insertedAt) > ttl
+        func isExpired(at now: StorageInstant, timeToLive: Duration) -> Bool {
+            insertedAt.duration(to: now) > timeToLive
         }
     }
 
-    // MARK: - LRU Node (Doubly Linked List)
-
-    /// Node for doubly linked list used in LRU/FIFO tracking
-    /// Reference: Standard LRU cache implementation pattern
-    private final class LRUNode {
-        let key: String
-        var prev: LRUNode?
-        var next: LRUNode?
-
-        init(key: String) {
-            self.key = key
-        }
+    private struct ListLinks: Sendable {
+        var previousKey: String?
+        var nextKey: String?
     }
 
     // MARK: - State
@@ -160,14 +143,14 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
 
         // LRU doubly-linked list for O(1) access order management
         // head = least recently used, tail = most recently used
-        var lruHead: LRUNode?
-        var lruTail: LRUNode?
-        var lruNodes: [String: LRUNode] = [:]  // O(1) node lookup
+        var lruHeadKey: String?
+        var lruTailKey: String?
+        var lruLinks: [String: ListLinks] = [:]
 
         // FIFO doubly-linked list
-        var fifoHead: LRUNode?
-        var fifoTail: LRUNode?
-        var fifoNodes: [String: LRUNode] = [:]
+        var fifoHeadKey: String?
+        var fifoTailKey: String?
+        var fifoLinks: [String: ListLinks] = [:]
 
         var totalSize: Int = 0
 
@@ -179,12 +162,17 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
     }
 
     private let state: Mutex<State>
+    private let monotonicClock: any StorageMonotonicClock
     public let configuration: CacheConfiguration
 
     // MARK: - Initialization
 
-    public init(configuration: CacheConfiguration = .default) {
+    public init(
+        configuration: CacheConfiguration = .default,
+        monotonicClock: any StorageMonotonicClock
+    ) {
         self.configuration = configuration
+        self.monotonicClock = monotonicClock
         self.state = Mutex(State())
     }
 
@@ -195,16 +183,20 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
     /// - Parameter key: The cache key
     /// - Returns: The cached item, or nil if not found/expired
     public func get(key: String) -> Item? {
-        state.withLock { state in
+        let now = monotonicClock.now
+        return state.withLock { state in
             guard var entry = state.entries[key] else {
                 if configuration.enableStatistics {
                     state.misses += 1
                 }
-                return nil
+                return Optional<Item>.none
             }
 
             // Check expiration
-            if entry.isExpired(ttl: configuration.ttlSeconds) {
+            if entry.isExpired(
+                at: now,
+                timeToLive: configuration.timeToLive
+            ) {
                 state.entries.removeValue(forKey: key)
                 state.totalSize -= entry.approximateSize
                 removeFromLRU(key: key, state: &state)
@@ -217,7 +209,7 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
             }
 
             // Update access tracking
-            entry.lastAccessedAt = Date()
+            entry.lastAccessedAt = now
             entry.accessCount += 1
             state.entries[key] = entry
 
@@ -241,8 +233,9 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
     ///   - key: The cache key
     public func put(item: Item, key: String) throws {
         let size = try encodedSize(of: item)
+        let now = monotonicClock.now
 
-        state.withLock { state in
+        return state.withLock { state in
             // Remove existing entry if present
             if let existing = state.entries[key] {
                 state.totalSize -= existing.approximateSize
@@ -259,8 +252,8 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
             // Add new entry
             let entry = CacheEntry(
                 item: item,
-                insertedAt: Date(),
-                lastAccessedAt: Date(),
+                insertedAt: now,
+                lastAccessedAt: now,
                 accessCount: 1,
                 approximateSize: size
             )
@@ -297,9 +290,13 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
     /// - Parameter key: The cache key
     /// - Returns: True if key exists and is not expired
     public func contains(key: String) -> Bool {
-        state.withLock { state in
+        let now = monotonicClock.now
+        return state.withLock { state in
             guard let entry = state.entries[key] else { return false }
-            return !entry.isExpired(ttl: configuration.ttlSeconds)
+            return !entry.isExpired(
+                at: now,
+                timeToLive: configuration.timeToLive
+            )
         }
     }
 
@@ -308,13 +305,13 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
         state.withLock { state in
             state.entries.removeAll()
             // Clear LRU list
-            state.lruHead = nil
-            state.lruTail = nil
-            state.lruNodes.removeAll()
+            state.lruHeadKey = nil
+            state.lruTailKey = nil
+            state.lruLinks.removeAll()
             // Clear FIFO list
-            state.fifoHead = nil
-            state.fifoTail = nil
-            state.fifoNodes.removeAll()
+            state.fifoHeadKey = nil
+            state.fifoTailKey = nil
+            state.fifoLinks.removeAll()
             state.totalSize = 0
         }
     }
@@ -335,7 +332,7 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
     /// - Parameter items: Items to preload
     public func preload(_ items: [Item]) throws {
         for item in items {
-            let key = cacheKey(for: item)
+            let key = try cacheKey(for: item)
             try put(item: item, key: key)
         }
     }
@@ -436,7 +433,7 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
         switch configuration.evictionPolicy {
         case .lru:
             // Evict least recently accessed - O(1) from head of LRU list
-            keyToEvict = state.lruHead?.key
+            keyToEvict = state.lruHeadKey
 
         case .lfu:
             // Evict least frequently accessed - O(n) scan still needed
@@ -445,11 +442,17 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
 
         case .fifo:
             // Evict oldest - O(1) from head of FIFO list
-            keyToEvict = state.fifoHead?.key
+            keyToEvict = state.fifoHeadKey
 
         case .ttlOnly:
             // Only evict expired entries - O(n) scan
-            keyToEvict = state.entries.first(where: { $0.value.isExpired(ttl: configuration.ttlSeconds) })?.key
+            let now = monotonicClock.now
+            keyToEvict = state.entries.first(where: {
+                $0.value.isExpired(
+                    at: now,
+                    timeToLive: configuration.timeToLive
+                )
+            })?.key
         }
 
         if let key = keyToEvict, let entry = state.entries.removeValue(forKey: key) {
@@ -466,43 +469,39 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
 
     /// Add a key to the tail of the LRU list (most recently used)
     private func addToLRUTail(key: String, state: inout State) {
-        let node = LRUNode(key: key)
-        state.lruNodes[key] = node
-
-        if let tail = state.lruTail {
-            tail.next = node
-            node.prev = tail
-            state.lruTail = node
+        let previousKey = state.lruTailKey
+        state.lruLinks[key] = ListLinks(
+            previousKey: previousKey,
+            nextKey: nil
+        )
+        if let previousKey {
+            state.lruLinks[previousKey]?.nextKey = key
         } else {
-            state.lruHead = node
-            state.lruTail = node
+            state.lruHeadKey = key
         }
+        state.lruTailKey = key
     }
 
     /// Remove a key from the LRU list
     private func removeFromLRU(key: String, state: inout State) {
-        guard let node = state.lruNodes.removeValue(forKey: key) else { return }
-
-        // Update prev/next pointers
-        if let prev = node.prev {
-            prev.next = node.next
-        } else {
-            state.lruHead = node.next
+        guard let links = state.lruLinks.removeValue(forKey: key) else {
+            return
         }
-
-        if let next = node.next {
-            next.prev = node.prev
+        if let previousKey = links.previousKey {
+            state.lruLinks[previousKey]?.nextKey = links.nextKey
         } else {
-            state.lruTail = node.prev
+            state.lruHeadKey = links.nextKey
         }
-
-        node.prev = nil
-        node.next = nil
+        if let nextKey = links.nextKey {
+            state.lruLinks[nextKey]?.previousKey = links.previousKey
+        } else {
+            state.lruTailKey = links.previousKey
+        }
     }
 
     /// Move a key to the tail of the LRU list (most recently used)
     private func moveToLRUTail(key: String, state: inout State) {
-        guard state.lruNodes[key] != nil else { return }
+        guard state.lruLinks[key] != nil else { return }
         removeFromLRU(key: key, state: &state)
         addToLRUTail(key: key, state: &state)
     }
@@ -511,45 +510,43 @@ public final class PersistablePreloadCache<Item: Persistable>: Sendable {
 
     /// Add a key to the tail of the FIFO list (newest)
     private func addToFIFOTail(key: String, state: inout State) {
-        let node = LRUNode(key: key)
-        state.fifoNodes[key] = node
-
-        if let tail = state.fifoTail {
-            tail.next = node
-            node.prev = tail
-            state.fifoTail = node
+        let previousKey = state.fifoTailKey
+        state.fifoLinks[key] = ListLinks(
+            previousKey: previousKey,
+            nextKey: nil
+        )
+        if let previousKey {
+            state.fifoLinks[previousKey]?.nextKey = key
         } else {
-            state.fifoHead = node
-            state.fifoTail = node
+            state.fifoHeadKey = key
         }
+        state.fifoTailKey = key
     }
 
     /// Remove a key from the FIFO list
     private func removeFromFIFO(key: String, state: inout State) {
-        guard let node = state.fifoNodes.removeValue(forKey: key) else { return }
-
-        // Update prev/next pointers
-        if let prev = node.prev {
-            prev.next = node.next
-        } else {
-            state.fifoHead = node.next
+        guard let links = state.fifoLinks.removeValue(forKey: key) else {
+            return
         }
-
-        if let next = node.next {
-            next.prev = node.prev
+        if let previousKey = links.previousKey {
+            state.fifoLinks[previousKey]?.nextKey = links.nextKey
         } else {
-            state.fifoTail = node.prev
+            state.fifoHeadKey = links.nextKey
         }
-
-        node.prev = nil
-        node.next = nil
+        if let nextKey = links.nextKey {
+            state.fifoLinks[nextKey]?.previousKey = links.previousKey
+        } else {
+            state.fifoTailKey = links.previousKey
+        }
     }
 
     // MARK: - Helpers
 
-    private func cacheKey(for item: Item) -> String {
+    private func cacheKey(for item: Item) throws -> String {
         // Use the item's ID as cache key - Persistable guarantees id property
-        return "\(item.id)"
+        DatabaseTextFormatting.lowercaseHex(
+            try item.persistableIdentifierTuple().pack()
+        )
     }
 
     private func encodedSize(of item: Item) throws -> Int {
@@ -668,7 +665,8 @@ public struct CacheWarmer<Item: Persistable>: Sendable {
     ) async throws -> Int where S.Element == Item {
         var count = 0
 
-        for try await item in source {
+        var iterator = source.makeAsyncIterator()
+        while let item = try await iterator.next() {
             let key = keyExtractor(item)
             try cache.put(item: item, key: key)
             count += 1

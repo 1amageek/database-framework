@@ -1,9 +1,4 @@
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import StorageKit
 
 /// Canonical bounded persistence codec for uniqueness violation entries.
@@ -28,7 +23,8 @@ enum UniquenessViolationCodec {
             for primaryKey in violation.primaryKeys {
                 try writer.writeBytes(primaryKey)
             }
-            writer.writeDouble(violation.detectedAt.timeIntervalSince1970)
+            writer.writeInt64(violation.detectedAt.secondsSinceUnixEpoch)
+            writer.writeUInt32(violation.detectedAt.nanoseconds)
         }
         return encoded
     }
@@ -59,9 +55,16 @@ enum UniquenessViolationCodec {
         for _ in 0..<count {
             primaryKeys.append(try reader.readBytes())
         }
-        let detectedInterval = try reader.readDouble()
+        let detectedSeconds = try reader.readInt64()
+        let detectedNanoseconds = try reader.readUInt32()
         try reader.ensureFullyRead()
-        guard detectedInterval.isFinite else {
+        let detectedAt: Timestamp
+        do {
+            detectedAt = try Timestamp(
+                secondsSinceUnixEpoch: detectedSeconds,
+                nanoseconds: detectedNanoseconds
+            )
+        } catch {
             throw StorageFrameError.invalidTimestamp
         }
         return UniquenessViolation(
@@ -69,7 +72,7 @@ enum UniquenessViolationCodec {
             persistableType: persistableType,
             valueKey: valueKey,
             primaryKeys: primaryKeys,
-            detectedAt: Date(timeIntervalSince1970: detectedInterval)
+            detectedAt: detectedAt
         )
     }
 }

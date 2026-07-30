@@ -17,7 +17,7 @@ package enum CanonicalPartitionBinding {
             return
         }
 
-        guard Set(partitions.fields.map(\.key)) == Set(requiredNames) else {
+        guard Set(partitions.fields.map { $0.key }) == Set(requiredNames) else {
             throw CanonicalReadError.invalidPartition(
                 entity: entity.name,
                 reason: "expected exactly \(requiredNames.sorted())"
@@ -59,7 +59,7 @@ package enum CanonicalPartitionBinding {
         }
 
         let requiredNames = dynamicFieldNames
-        guard Set(partitions.fields.map(\.key)) == Set(requiredNames) else {
+        guard Set(partitions.fields.map { $0.key }) == Set(requiredNames) else {
             throw CanonicalReadError.invalidPartition(
                 entity: T.persistableType,
                 reason: "expected exactly \(requiredNames.sorted())"
@@ -113,13 +113,16 @@ package enum CanonicalPartitionBinding {
     }
 
     package static func makeAnyBinding(
-        for type: any Persistable.Type,
+        for entity: Schema.Entity,
         partitions: FieldObject
     ) throws -> AnyDirectoryPath? {
-        func bind<T: Persistable>(_ concreteType: T.Type) throws -> AnyDirectoryPath? {
-            try makeBinding(for: concreteType, partitions: partitions).map(AnyDirectoryPath.init)
+        guard entity.hasDynamicDirectory || !partitions.isEmpty else {
+            return nil
         }
-        return try _openExistential(type, do: bind)
+        return try AnyDirectoryPath(
+            entity: entity,
+            partitions: partitions
+        )
     }
 
 }

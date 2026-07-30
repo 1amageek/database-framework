@@ -1,3 +1,5 @@
+import OntologyIndex
+
 /// Bounded Unicode-scalar parser for the supported SPARQL/XPath regex syntax.
 struct SPARQLRegexParser {
     indirect enum Node: Sendable {
@@ -19,9 +21,9 @@ struct SPARQLRegexParser {
             case .capture(_, let child):
                 return child.matchesOnlyEmpty
             case .concatenation(let children):
-                return children.allSatisfy(\.matchesOnlyEmpty)
+                return children.allSatisfy { $0.matchesOnlyEmpty }
             case .alternation(let branches):
-                return branches.allSatisfy(\.matchesOnlyEmpty)
+                return branches.allSatisfy { $0.matchesOnlyEmpty }
             case .repetition(let child, _, let maximum):
                 return maximum == 0 || child.matchesOnlyEmpty
             }
@@ -59,7 +61,7 @@ struct SPARQLRegexParser {
         index = pattern.unicodeScalars.startIndex
     }
 
-    mutating func parse() throws -> Parsed {
+    mutating func parse() throws(SPARQLRegularExpression.Error) -> Parsed {
         let expression = try parseExpression()
         guard currentScalar == nil else {
             throw syntax("unexpected metacharacter")
@@ -70,7 +72,7 @@ struct SPARQLRegexParser {
         )
     }
 
-    private mutating func parseExpression() throws -> Node {
+    private mutating func parseExpression() throws(SPARQLRegularExpression.Error) -> Node {
         var branches = [try parseBranch()]
         while currentScalar?.value == 0x7C {
             advance()
@@ -82,7 +84,7 @@ struct SPARQLRegexParser {
         return try makeNode(.alternation(branches))
     }
 
-    private mutating func parseBranch() throws -> Node {
+    private mutating func parseBranch() throws(SPARQLRegularExpression.Error) -> Node {
         var pieces: [Node] = []
         while let scalar = currentScalar,
               scalar.value != 0x7C,
@@ -99,7 +101,7 @@ struct SPARQLRegexParser {
         }
     }
 
-    private mutating func parsePiece() throws -> Node {
+    private mutating func parsePiece() throws(SPARQLRegularExpression.Error) -> Node {
         var node = try parseAtom()
         guard let scalar = currentScalar else {
             return node
@@ -147,7 +149,7 @@ struct SPARQLRegexParser {
         return node
     }
 
-    private mutating func parseAtom() throws -> Node {
+    private mutating func parseAtom() throws(SPARQLRegularExpression.Error) -> Node {
         guard let scalar = currentScalar else {
             throw syntax("expected an atom")
         }
@@ -184,7 +186,7 @@ struct SPARQLRegexParser {
         }
     }
 
-    private mutating func parseGroup() throws -> Node {
+    private mutating func parseGroup() throws(SPARQLRegularExpression.Error) -> Node {
         let openingOffset = scalarOffset
         advance()
         try pushNesting()
@@ -220,7 +222,7 @@ struct SPARQLRegexParser {
         return try makeNode(.capture(group: group, expression))
     }
 
-    private mutating func parseQuantifier() throws -> (
+    private mutating func parseQuantifier() throws(SPARQLRegularExpression.Error) -> (
         minimum: Int,
         maximum: Int?
     ) {
@@ -255,7 +257,7 @@ struct SPARQLRegexParser {
         return (minimum, maximum)
     }
 
-    private mutating func parseQuantifierInteger() throws -> Int {
+    private mutating func parseQuantifierInteger() throws(SPARQLRegularExpression.Error) -> Int {
         guard let first = currentScalar, Self.isASCIIDigit(first.value) else {
             throw syntax("expected a decimal quantifier bound")
         }
@@ -279,7 +281,7 @@ struct SPARQLRegexParser {
         return value
     }
 
-    private mutating func parseCharacterClass() throws
+    private mutating func parseCharacterClass() throws(SPARQLRegularExpression.Error)
         -> SPARQLRegexCharacterClass {
         let openingOffset = scalarOffset
         advance()
@@ -374,7 +376,7 @@ struct SPARQLRegexParser {
         return result
     }
 
-    private mutating func parseClassAtom() throws -> ClassAtom {
+    private mutating func parseClassAtom() throws(SPARQLRegularExpression.Error) -> ClassAtom {
         guard let scalar = currentScalar else {
             throw syntax("expected a character-class member")
         }
@@ -393,7 +395,7 @@ struct SPARQLRegexParser {
         }
     }
 
-    private mutating func parseEscape() throws -> ClassAtom {
+    private mutating func parseEscape() throws(SPARQLRegularExpression.Error) -> ClassAtom {
         let slashOffset = scalarOffset
         advance()
         guard let escaped = currentScalar else {
@@ -445,7 +447,7 @@ struct SPARQLRegexParser {
     private mutating func parsePropertyEscape(
         isComplement: Bool,
         at slashOffset: Int
-    ) throws -> ClassAtom {
+    ) throws(SPARQLRegularExpression.Error) -> ClassAtom {
         guard currentScalar?.value == 0x7B else {
             throw syntax("expected '{' after property escape", at: slashOffset)
         }
@@ -520,7 +522,7 @@ struct SPARQLRegexParser {
         )
     }
 
-    private mutating func makeNode(_ node: Node) throws -> Node {
+    private mutating func makeNode(_ node: Node) throws(SPARQLRegularExpression.Error) -> Node {
         nodeCount = try SPARQLRegularExpression.checkedIncrement(
             nodeCount,
             name: "astNodes",
@@ -529,7 +531,7 @@ struct SPARQLRegexParser {
         return node
     }
 
-    private mutating func pushNesting() throws {
+    private mutating func pushNesting() throws(SPARQLRegularExpression.Error) {
         currentNestingDepth = try SPARQLRegularExpression.checkedIncrement(
             currentNestingDepth,
             name: "nestingDepth",

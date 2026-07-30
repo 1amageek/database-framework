@@ -1,5 +1,6 @@
 import DatabaseKit
 import DatabaseTypes
+import DatabaseEngine
 import StorageKit
 
 /// Decodes canonical model values from aggregation storage keys.

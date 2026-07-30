@@ -166,7 +166,7 @@ public struct GraphPropertyScanner: Sendable {
         scope: GraphScanScope = .all,
         propertyFilters: [PropertyFilter]?,
         transaction: any TransactionAccess
-    ) -> GraphPropertySequence {
+    ) -> GraphPropertyScan {
         let scanner: GraphEdgeScanner
         if let snapshot {
             scanner = GraphEdgeScanner(
@@ -182,7 +182,7 @@ public struct GraphPropertyScanner: Sendable {
                 scope: scope
             )
         }
-        return GraphPropertySequence(
+        return GraphPropertyScan(
             scanner: self,
             entries: scanner.scanEntries(
                 source: source,
@@ -224,16 +224,16 @@ public enum GraphPropertyFilterError: Error, Sendable, Equatable {
     case operatorTypeMismatch(field: String, operation: ComparisonOperator)
 }
 
-public struct GraphPropertySequence: AsyncSequence, Sendable {
+public struct GraphPropertyScan: Sendable {
     public typealias Element = GraphEdgeWithProperties
 
     private let scanner: GraphPropertyScanner
-    private let entries: GraphEdgeEntrySequence
+    private let entries: GraphEdgeEntryScan
     private let filters: [PropertyFilter]?
 
     package init(
         scanner: GraphPropertyScanner,
-        entries: GraphEdgeEntrySequence,
+        entries: GraphEdgeEntryScan,
         filters: [PropertyFilter]?
     ) {
         self.scanner = scanner
@@ -241,31 +241,31 @@ public struct GraphPropertySequence: AsyncSequence, Sendable {
         self.filters = filters
     }
 
-    public func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(
+    public func makeCursor() -> Cursor {
+        Cursor(
             scanner: scanner,
-            iterator: entries.makeAsyncIterator(),
+            entryCursor: entries.makeCursor(),
             filters: filters
         )
     }
 
-    public struct AsyncIterator: AsyncIteratorProtocol {
+    public struct Cursor {
         private let scanner: GraphPropertyScanner
-        private var iterator: GraphEdgeEntrySequence.AsyncIterator
+        private var entryCursor: GraphEdgeEntryScan.Cursor
         private let filters: [PropertyFilter]?
 
         package init(
             scanner: GraphPropertyScanner,
-            iterator: GraphEdgeEntrySequence.AsyncIterator,
+            entryCursor: GraphEdgeEntryScan.Cursor,
             filters: [PropertyFilter]?
         ) {
             self.scanner = scanner
-            self.iterator = iterator
+            self.entryCursor = entryCursor
             self.filters = filters
         }
 
         public mutating func next() async throws -> GraphEdgeWithProperties? {
-            while let entry = try await iterator.next() {
+            while let entry = try await entryCursor.next() {
                 let properties = try scanner.decodeProperties(entry.value)
                 guard try scanner.matches(properties, filters: filters) else {
                     continue

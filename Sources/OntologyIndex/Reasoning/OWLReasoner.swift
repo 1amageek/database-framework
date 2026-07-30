@@ -6,12 +6,8 @@
 // Reference: OWL 2 Web Ontology Language Direct Semantics
 // https://www.w3.org/TR/owl2-direct-semantics/
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
+import StorageKit
 import Synchronization
 
 /// OWL DL Reasoner
@@ -55,14 +51,14 @@ public final class OWLReasoner: Sendable {
         /// Cache classification results
         public var cacheClassification: Bool
 
-        /// Timeout for reasoning operations (seconds)
-        public var timeout: TimeInterval
+        /// Timeout for each reasoning operation.
+        public var timeout: Duration
 
         public init(
             maxExpansionSteps: Int = 10000,
             enableIncrementalReasoning: Bool = true,
             cacheClassification: Bool = true,
-            timeout: TimeInterval = 60.0
+            timeout: Duration = .seconds(60)
         ) {
             self.maxExpansionSteps = maxExpansionSteps
             self.enableIncrementalReasoning = enableIncrementalReasoning
@@ -93,7 +89,7 @@ public final class OWLReasoner: Sendable {
         public var satisfiabilityChecks: Int = 0
         public var subsumptionChecks: Int = 0
         public var instanceChecks: Int = 0
-        public var totalReasoningTime: TimeInterval = 0
+        public var totalReasoningTime: Duration = .zero
         public var cacheHits: Int = 0
         public var cacheMisses: Int = 0
 
@@ -101,7 +97,7 @@ public final class OWLReasoner: Sendable {
             satisfiabilityChecks: Int = 0,
             subsumptionChecks: Int = 0,
             instanceChecks: Int = 0,
-            totalReasoningTime: TimeInterval = 0,
+            totalReasoningTime: Duration = .zero,
             cacheHits: Int = 0,
             cacheMisses: Int = 0
         ) {
@@ -142,6 +138,7 @@ public final class OWLReasoner: Sendable {
     public let ontology: OWLOntology
     private let ontologyIndex: OntologyIndex
     private let configuration: Configuration
+    private let clock: any StorageMonotonicClock
     private let state: Mutex<State>
     private let tableauxReasoner: TableauxReasoner
     private let regularityChecker: OWLDLRegularityChecker
@@ -154,9 +151,14 @@ public final class OWLReasoner: Sendable {
     /// - Parameters:
     ///   - ontology: The OWL ontology to reason over
     ///   - configuration: Reasoning configuration
-    public init(ontology: OWLOntology, configuration: Configuration = .default) {
+    public init(
+        ontology: OWLOntology,
+        clock: any StorageMonotonicClock,
+        configuration: Configuration = .default
+    ) {
         self.ontology = ontology
         self.configuration = configuration
+        self.clock = clock
 
         // Build O(1) index once
         let index = ontology.buildIndex()
@@ -174,6 +176,7 @@ public final class OWLReasoner: Sendable {
         self.tableauxReasoner = TableauxReasoner(
             ontology: ontology,
             index: index,
+            clock: clock,
             configuration: TableauxReasoner.Configuration(
                 maxExpansionSteps: configuration.maxExpansionSteps,
                 timeout: configuration.timeout
@@ -210,12 +213,12 @@ public final class OWLReasoner: Sendable {
     ///
     /// - Returns: ReasoningResult with consistency status
     public func isConsistent() -> ReasoningResult<Bool> {
-        let startTime = Date()
+        let startTime = clock.now
 
         // Check if owl:Thing is satisfiable
         let result = tableauxReasoner.checkSatisfiability(.thing)
 
-        let elapsed = Date().timeIntervalSince(startTime)
+        let elapsed = startTime.duration(to: clock.now)
 
         state.withLock { s in
             s.statistics.satisfiabilityChecks += 1
@@ -252,9 +255,9 @@ public final class OWLReasoner: Sendable {
             state.withLock { $0.statistics.cacheMisses += 1 }
         }
 
-        let startTime = Date()
+        let startTime = clock.now
         let result = tableauxReasoner.checkSatisfiability(classExpr)
-        let elapsed = Date().timeIntervalSince(startTime)
+        let elapsed = startTime.duration(to: clock.now)
 
         state.withLock { s in
             s.statistics.satisfiabilityChecks += 1
@@ -295,9 +298,9 @@ public final class OWLReasoner: Sendable {
             state.withLock { $0.statistics.cacheMisses += 1 }
         }
 
-        let startTime = Date()
+        let startTime = clock.now
         let result = tableauxReasoner.subsumes(superClass: superClass, subClass: subClass)
-        let elapsed = Date().timeIntervalSince(startTime)
+        let elapsed = startTime.duration(to: clock.now)
 
         state.withLock { s in
             s.statistics.subsumptionChecks += 1
@@ -411,9 +414,9 @@ public final class OWLReasoner: Sendable {
     ///   - classExpr: The class expression
     /// - Returns: ReasoningResult with instance check result
     public func isInstanceOf(individual: String, classExpr: OWLClassExpression) -> ReasoningResult<Bool> {
-        let startTime = Date()
+        let startTime = clock.now
         let result = tableauxReasoner.isInstanceOf(individual: individual, classExpr: classExpr)
-        let elapsed = Date().timeIntervalSince(startTime)
+        let elapsed = startTime.duration(to: clock.now)
 
         state.withLock { s in
             s.statistics.instanceChecks += 1

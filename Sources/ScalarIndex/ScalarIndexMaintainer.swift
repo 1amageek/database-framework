@@ -4,11 +4,6 @@
 // Maintains standard B-tree-like indexes for ordering and range queries.
 
 import DatabaseTypes
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import DatabaseEngine
 import StorageKit
@@ -189,7 +184,9 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexUniquenessMaintaine
                 from: .firstGreaterOrEqual(valueKey),
                 to: .firstGreaterOrEqual(rangeEnd),
                 limit: 2,
-                snapshot: false
+                reverse: false,
+                snapshot: false,
+                streamingMode: .exact
             )
             for (key, _) in entries {
                 let entry = try decoder.decode(

@@ -80,10 +80,10 @@ final class SPARQLSubqueryResultCache: Sendable {
             return existing
         }
 
-        let sharedBindings = try bindings.sharing(at: .subqueryCache)
-        let snapshot = try SPARQLSharedBindingSnapshot(
-            shared: sharedBindings
+        let sharedOwnership = try bindings.sharingForFanOut(
+            at: .subqueryCache
         )
+        let snapshot = sharedOwnership.snapshot
 
         while true {
             let observed = state.withLock { state in
@@ -142,7 +142,7 @@ final class SPARQLSubqueryResultCache: Sendable {
 
             switch outcome {
             case .inserted:
-                return consume sharedBindings
+                return consume sharedOwnership.retained
             case .existing(let existing):
                 reservation.release()
                 return existing.retainedBindings()

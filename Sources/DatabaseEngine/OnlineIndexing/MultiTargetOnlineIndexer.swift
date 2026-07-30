@@ -6,7 +6,6 @@
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
-import Metrics
 import Synchronization
 
 /// Multi-target online index builder
@@ -76,10 +75,10 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
     // MARK: - Metrics
 
-    private let itemsIndexedCounter: Counter
-    private let batchesProcessedCounter: Counter
-    private let batchDurationTimer: Metrics.Timer
-    private let errorsCounter: Counter
+    private let itemsIndexedCounter: DatabaseMetricCounter
+    private let batchesProcessedCounter: DatabaseMetricCounter
+    private let batchDurationTimer: DatabaseMetricTimer
+    private let errorsCounter: DatabaseMetricCounter
 
     // MARK: - Initialization
 
@@ -151,19 +150,20 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
             ("target_count", String(targets.count))
         ]
 
-        self.itemsIndexedCounter = Counter(
+        let metrics = container.configuration.metrics
+        self.itemsIndexedCounter = metrics.counter(
             label: "database_multi_indexer_items_indexed_total",
             dimensions: baseDimensions
         )
-        self.batchesProcessedCounter = Counter(
+        self.batchesProcessedCounter = metrics.counter(
             label: "database_multi_indexer_batches_processed_total",
             dimensions: baseDimensions
         )
-        self.batchDurationTimer = Metrics.Timer(
+        self.batchDurationTimer = metrics.timer(
             label: "database_multi_indexer_batch_duration_seconds",
             dimensions: baseDimensions
         )
-        self.errorsCounter = Counter(
+        self.errorsCounter = metrics.counter(
             label: "database_multi_indexer_errors_total",
             dimensions: baseDimensions
         )
@@ -246,14 +246,14 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
-            let batchStartTime = MonotonicClock.now()
+            let batchStartTime = container.monotonicClock.now
 
             do {
                 // Capture current rangeSet state before transaction
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: ByteString? = nil
 
@@ -273,7 +273,8 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                     var batchEntries: [(item: Item, id: Tuple)] = []
                     batchEntries.reserveCapacity(self.batchSize)
 
-                    for try await (key, data) in scanSequence {
+                    var iterator = scanSequence.makeAsyncIterator()
+                    while let (key, data) = try await iterator.next() {
                         // Deserialize item once from decompressed data
                         let item: Item = try DataAccess.deserialize(data)
                         let id = try itemTypeSubspace.unpack(key)
@@ -328,8 +329,11 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                 }
 
                 // Record metrics
-                let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
-                batchDurationTimer.recordNanoseconds(Int64(batchDuration))
+                let batchDuration = DatabaseMonotonicMeasurement.nanoseconds(
+                    from: batchStartTime,
+                    to: container.monotonicClock.now
+                )
+                batchDurationTimer.recordNanoseconds(batchDuration)
                 batchesProcessedCounter.increment()
                 itemsIndexedCounter.increment(by: itemsInBatch * targets.count)
 
@@ -351,7 +355,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
     private func loadProgress() async throws -> RangeSet? {
         let progressKey = self.progressKey
-        return try await container.engine.withTransaction(configuration: .batch) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -365,7 +369,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
     private func clearProgress() async throws {
         let progressKey = self.progressKey
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clear(key: progressKey)
         }
     }
@@ -374,7 +378,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
     private func clearIndexData(for index: Index) async throws {
         let indexRange = self.indexSubspace.subspace(index.name).range()
-        try await container.engine.withTransaction(configuration: .batch) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }
     }

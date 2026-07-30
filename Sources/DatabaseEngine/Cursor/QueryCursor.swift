@@ -146,7 +146,7 @@ public actor QueryCursor<T: Persistable> {
     public func next() async throws -> CursorResult<T> {
         await acquireExecution()
         defer { releaseExecution() }
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         guard !state.closed else {
             throw QueryCursorError.closed
         }
@@ -158,7 +158,7 @@ public actor QueryCursor<T: Persistable> {
             offset: state.nextOffset,
             remainingLimit: state.remainingLimit
         )
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         guard !state.closed else {
             throw QueryCursorError.closed
         }
