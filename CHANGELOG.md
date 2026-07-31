@@ -4,6 +4,21 @@ Release versions use CalVer in the form YY.MMDD.patch. Detailed historical
 implementation notes are kept in Git history rather than in the public
 documentation tree.
 
+## 26.0731.1 - 2026-07-31
+
+### Changed
+
+- Persistent job scheduled-work failures identify whether due-job loading,
+  job processing, wake-up scheduling, or both processing and scheduling
+  failed.
+- Task cancellation now propagates directly and never performs wake-up
+  recovery from the cancelled task.
+
+### Verification
+
+- The persistent job service suite passes all 34 tests, including phase
+  classification, combined failure preservation, and cancellation behavior.
+
 ## 26.0629.0 - 2026-06-29
 
 ### Added

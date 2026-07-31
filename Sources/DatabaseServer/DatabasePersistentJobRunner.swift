@@ -64,34 +64,20 @@ public actor DatabasePersistentJobRunner {
     }
 
     public func runScheduledWork() async throws {
-        let dueJobs = try await store.dueJobs(
-            through: clock.now,
-            limit: configuration.maximumJobsPerRun
-        )
-        var firstProcessingError: (any Error)?
-        for dueJob in dueJobs {
-            do {
-                try await run(dueJob)
-            } catch {
-                if firstProcessingError == nil {
-                    firstProcessingError = error
-                }
-            }
-        }
-        do {
-            try await scheduleNext()
-        } catch {
-            if let firstProcessingError {
-                throw DatabaseJobSchedulingRecoveryError(
-                    processingError: firstProcessingError,
-                    schedulingError: error
+        try await executePersistentJobScheduledWork(
+            loadDueJobs: {
+                try await self.store.dueJobs(
+                    through: clock.now,
+                    limit: configuration.maximumJobsPerRun
                 )
+            },
+            processJob: { dueJob in
+                try await run(dueJob)
+            },
+            scheduleNextWakeUp: {
+                try await scheduleNext()
             }
-            throw error
-        }
-        if let firstProcessingError {
-            throw firstProcessingError
-        }
+        )
     }
 
     private func run(_ dueJob: DatabasePersistentJobDueEntry) async throws {

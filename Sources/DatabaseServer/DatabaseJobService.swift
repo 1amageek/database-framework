@@ -23,5 +23,9 @@ public protocol DatabaseJobService: Sendable {
         context: DatabaseOperationContext
     ) async throws -> JobCancellationExecutionResult
 
+    /// Processes due work and persists the next required scheduler wake-up.
+    ///
+    /// Phase failures are reported as `PersistentJobScheduledWorkError`.
+    /// Task cancellation is propagated directly as `CancellationError`.
     func runScheduledWork() async throws
 }

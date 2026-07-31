@@ -691,7 +691,9 @@ struct DatabasePersistentJobServiceTests {
             )
         }
 
-        await #expect(throws: DatabaseJobUnsuccessfulOutcomeCommitError.self) {
+        await expectScheduledProcessingFailure(
+            DatabaseJobUnsuccessfulOutcomeCommitError.self
+        ) {
             try await service.runScheduledWork()
         }
 
@@ -791,7 +793,9 @@ struct DatabasePersistentJobServiceTests {
         #expect(accepted.accepted)
         #expect(accepted.state == .committingUnsuccessfulOutcome)
 
-        await #expect(throws: DatabaseJobUnsuccessfulOutcomeCommitError.self) {
+        await expectScheduledProcessingFailure(
+            DatabaseJobUnsuccessfulOutcomeCommitError.self
+        ) {
             try await service.runScheduledWork()
         }
         let awaitingRetry = try await service.status(
@@ -1619,7 +1623,9 @@ struct DatabasePersistentJobServiceTests {
         #expect(prepared.state == .committingUnsuccessfulOutcome)
         #expect(prepared.unsuccessfulOutcomeCommitAttempt == 0)
 
-        await #expect(throws: DatabaseJobUnsuccessfulOutcomeCommitError.self) {
+        await expectScheduledProcessingFailure(
+            DatabaseJobUnsuccessfulOutcomeCommitError.self
+        ) {
             try await recreatedService.runScheduledWork()
         }
 
@@ -1711,6 +1717,223 @@ struct DatabasePersistentJobServiceTests {
 
         #expect(status.state == .pending)
         #expect(await scheduler.attemptCount() == 2)
+    }
+
+    @Test("Due-job loading failures retain their scheduled-work phase")
+    func dueJobLoadingFailureRetainsPhase() async throws {
+        let jobContext = try await makePersistentJobServiceContext()
+        let request = try jobRequest()
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "due-job-loading-failure"
+        )
+        let service = try await jobContext.makeService()
+        let started = try await service.start(
+            request,
+            context: context
+        ).response
+        try await replaceDueEntry(
+            container: jobContext.container,
+            scheduledAt: jobContext.clock.now,
+            jobID: started.jobID,
+            value: [0x00]
+        )
+
+        do {
+            try await service.runScheduledWork()
+            Issue.record("Expected due-job loading to fail")
+        } catch let error as PersistentJobScheduledWorkError {
+            guard case .loadingDueJobs(let underlyingError) = error else {
+                Issue.record("Expected a due-job loading failure: \(error)")
+                return
+            }
+            #expect(underlyingError is DatabaseJobRuntimeError)
+        } catch {
+            Issue.record("Unexpected scheduled-work error: \(error)")
+        }
+    }
+
+    @Test("Wake-up scheduling failures retain their scheduled-work phase")
+    func wakeUpSchedulingFailureRetainsPhase() async throws {
+        let jobContext = try await makePersistentJobServiceContext()
+        let scheduler = WakeUpSchedulingFailureProbe(failingAttempts: [2])
+        let service = try await jobContext.makeService(scheduler: scheduler)
+        let request = try jobRequest()
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "scheduled-work-wake-up-failure"
+        )
+        _ = try await service.start(request, context: context)
+
+        do {
+            try await service.runScheduledWork()
+            Issue.record("Expected wake-up scheduling to fail")
+        } catch let error as PersistentJobScheduledWorkError {
+            guard case .schedulingNextWakeUp(let underlyingError) = error else {
+                Issue.record("Expected a wake-up scheduling failure: \(error)")
+                return
+            }
+            #expect(underlyingError is PersistentJobScenarioError)
+        } catch {
+            Issue.record("Unexpected scheduled-work error: \(error)")
+        }
+        #expect(await scheduler.attemptCount() == 2)
+    }
+
+    @Test("Processing and wake-up failures retain both causes")
+    func processingAndWakeUpFailuresRetainBothCauses() async throws {
+        let commitProbe = UnsuccessfulOutcomeCommitProbe(failureCount: 1)
+        let jobContext = try await makePersistentJobServiceContext(
+            operation: RetryingUnsuccessfulOutcomeOperation(
+                commitProbe: commitProbe
+            )
+        )
+        let scheduler = WakeUpSchedulingFailureProbe(failingAttempts: [3])
+        let service = try await jobContext.makeService(scheduler: scheduler)
+        let request = JobStartOperation.Request(
+            operation: try RetryingUnsuccessfulOutcomeJob.operation().identifier,
+            requestPayload: try encodedValue(8),
+            maximumSliceWorkUnits: 1,
+            retryPolicy: .init(
+                maximumAttempts: 1,
+                initialBackoffMilliseconds: 1,
+                maximumBackoffMilliseconds: 1
+            )
+        )
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "processing-and-wake-up-failure"
+        )
+        _ = try await service.start(request, context: context)
+        try await service.runScheduledWork()
+
+        do {
+            try await service.runScheduledWork()
+            Issue.record("Expected processing and wake-up scheduling to fail")
+        } catch let error as PersistentJobScheduledWorkError {
+            guard case .processingJobAndSchedulingNextWakeUp(
+                let processingError,
+                let schedulingError
+            ) = error else {
+                Issue.record("Expected both scheduled-work failures: \(error)")
+                return
+            }
+            #expect(processingError is DatabaseJobUnsuccessfulOutcomeCommitError)
+            #expect(schedulingError is PersistentJobScenarioError)
+        } catch {
+            Issue.record("Unexpected scheduled-work error: \(error)")
+        }
+        #expect(await scheduler.attemptCount() == 3)
+    }
+
+    @Test("Cancellation before due-job loading remains cancellation")
+    func cancellationBeforeDueJobLoadingRemainsCancellation() async throws {
+        let jobContext = try await makePersistentJobServiceContext()
+        let request = try jobRequest()
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "due-job-loading-cancellation"
+        )
+        let service = try await jobContext.makeService()
+        _ = try await service.start(request, context: context)
+        let entryGate = OperationExecutionGate()
+        let execution = Task {
+            await entryGate.waitForRelease()
+            try await service.runScheduledWork()
+        }
+        await entryGate.waitUntilEntered()
+        execution.cancel()
+        await entryGate.release()
+
+        await #expect(throws: CancellationError.self) {
+            try await execution.value
+        }
+        #expect(await jobContext.scheduler.scheduledCount() == 1)
+    }
+
+    @Test("Cancellation during job processing skips wake-up recovery")
+    func jobProcessingCancellationSkipsWakeUpRecovery() async throws {
+        let executionGate = OperationExecutionGate()
+        let jobContext = try await makePersistentJobServiceContext(
+            operation: TwoSliceResumableOperation(
+                executionGate: executionGate
+            )
+        )
+        let request = try jobRequest()
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "job-processing-task-cancellation"
+        )
+        let service = try await jobContext.makeService()
+        _ = try await service.start(request, context: context)
+        let execution = Task {
+            try await service.runScheduledWork()
+        }
+        await executionGate.waitUntilEntered()
+        execution.cancel()
+        await executionGate.release()
+
+        await #expect(throws: CancellationError.self) {
+            try await execution.value
+        }
+        #expect(await jobContext.scheduler.scheduledCount() == 1)
+    }
+
+    @Test("Cancellation after noncooperative processing skips wake-up scheduling")
+    func noncooperativeProcessingCancellationSkipsWakeUp() async {
+        let processingGate = OperationExecutionGate()
+        let scheduler = WakeUpSchedulingFailureProbe(failingAttempts: [])
+        let execution = Task {
+            try await executePersistentJobScheduledWork(
+                loadDueJobs: {
+                    [1]
+                },
+                processJob: { _ in
+                    await processingGate.waitForRelease()
+                },
+                scheduleNextWakeUp: {
+                    try await scheduler.ensureWakeUp(
+                        noLaterThan: Timestamp(secondsSinceUnixEpoch: 0)
+                    )
+                }
+            )
+        }
+        await processingGate.waitUntilEntered()
+        execution.cancel()
+        await processingGate.release()
+
+        await #expect(throws: CancellationError.self) {
+            try await execution.value
+        }
+        #expect(await scheduler.attemptCount() == 0)
+    }
+
+    @Test("Cancellation during noncooperative wake-up scheduling remains cancellation")
+    func noncooperativeWakeUpCancellationRemainsCancellation() async {
+        let schedulingGate = OperationExecutionGate()
+        let execution = Task {
+            try await executePersistentJobScheduledWork(
+                loadDueJobs: {
+                    [Int]()
+                },
+                processJob: { _ in },
+                scheduleNextWakeUp: {
+                    await schedulingGate.waitForRelease()
+                }
+            )
+        }
+        await schedulingGate.waitUntilEntered()
+        execution.cancel()
+        await schedulingGate.release()
+
+        await #expect(throws: CancellationError.self) {
+            try await execution.value
+        }
     }
 
     @Test("Successful slices do not consume the retry attempt limit")
@@ -1813,6 +2036,24 @@ struct DatabasePersistentJobServiceTests {
         #expect(completed.state == .succeeded)
         #expect(completed.executionCount == 4)
         #expect(completed.currentSliceAttempt == 1)
+    }
+
+    private func expectScheduledProcessingFailure<Failure: Error>(
+        _: Failure.Type,
+        operation: () async throws -> Void
+    ) async {
+        do {
+            try await operation()
+            Issue.record("Expected scheduled job processing to fail")
+        } catch let error as PersistentJobScheduledWorkError {
+            guard case .processingJob(let underlyingError) = error else {
+                Issue.record("Expected a job processing failure: \(error)")
+                return
+            }
+            #expect(underlyingError is Failure)
+        } catch {
+            Issue.record("Unexpected scheduled-work error: \(error)")
+        }
     }
 
     private func makePersistentJobServiceContext() async throws -> PersistentJobServiceContext {
@@ -1938,6 +2179,27 @@ struct DatabasePersistentJobServiceTests {
         )
     }
 
+    private func replaceDueEntry(
+        container: DBContainer,
+        scheduledAt: Timestamp,
+        jobID: DatabaseTypes.UUID,
+        value: ByteString
+    ) async throws {
+        let root = try await container.engine.resolveOrCreateNamespace(
+            path: ["database-framework", "persistent-jobs"]
+        )
+        let key = root.subspace("due").pack(
+            Tuple(
+                scheduledAt.secondsSinceUnixEpoch,
+                Int64(scheduledAt.nanoseconds),
+                jobID
+            )
+        )
+        try await container.engine.withTransaction { transaction in
+            try transaction.setValue(value, for: key)
+        }
+    }
+
     private func replacePersistentComponent<Value: ServerPayloadValue>(
         container: DBContainer,
         component: String,
@@ -2016,6 +2278,12 @@ struct DatabasePersistentJobServiceTests {
         let registry: DatabaseResumableOperationRegistry
 
         func makeService() async throws -> any DatabaseJobService {
+            try await makeService(scheduler: scheduler)
+        }
+
+        func makeService<Scheduler: DatabaseJobScheduler>(
+            scheduler: Scheduler
+        ) async throws -> any DatabaseJobService {
             let factory = try DatabasePersistentJobServiceFactory(
                 registry: registry,
                 scheduler: scheduler,
@@ -3081,6 +3349,29 @@ struct DatabasePersistentJobServiceTests {
             _ = timestamp
             attempts += 1
             if attempts == 1 {
+                throw PersistentJobScenarioError.schedulerFailure
+            }
+        }
+
+        func attemptCount() -> Int {
+            attempts
+        }
+    }
+
+    private actor WakeUpSchedulingFailureProbe: DatabaseJobScheduler {
+        private let failingAttempts: Set<Int>
+        private var attempts = 0
+
+        init(failingAttempts: Set<Int>) {
+            self.failingAttempts = failingAttempts
+        }
+
+        func ensureWakeUp(
+            noLaterThan timestamp: Timestamp
+        ) async throws {
+            _ = timestamp
+            attempts += 1
+            if failingAttempts.contains(attempts) {
                 throw PersistentJobScenarioError.schedulerFailure
             }
         }
