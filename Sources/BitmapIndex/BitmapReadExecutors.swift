@@ -38,6 +38,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
     func executeRows<T: Persistable>(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: IndexDescriptor,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
@@ -52,7 +53,8 @@ private struct BitmapReadExecutor: IndexReadExecutor {
         let queryContext = try context.indexQueryContext.withPartitions(partitions, for: T.self)
         var builder = BitmapQueryBuilder<T>(
             queryContext: queryContext,
-            fieldName: fieldName
+            fieldName: fieldName,
+            selectedIndexName: index.name
         )
 
         if let limit = indexScan.parameters[BitmapReadParameter.limit]?.uint64Value {
@@ -126,19 +128,17 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: PolymorphicIndexMetadata,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
         let fieldName = try requireString(BitmapReadParameter.fieldName, from: indexScan.parameters)
-        guard let descriptor = group.indexes.first(where: {
-            $0.name == indexScan.indexName
-        }),
-        descriptor.kindIdentifier == BitmapIndexSpecification.identifier,
-        descriptor.subspaceStructure == .hierarchical,
-        descriptor.fieldNames == [fieldName],
-        descriptor.metadata.isEmpty else {
+        guard index.kindIdentifier == BitmapIndexSpecification.identifier,
+              index.subspaceStructure == .hierarchical,
+              index.fieldNames == [fieldName],
+              index.metadata.isEmpty else {
             throw BitmapReadError.invalidParameter(
                 BitmapReadParameter.fieldName
             )
@@ -161,16 +161,21 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             orderBy: orderByFields
         )
 
-        let indexSubspace = try await context.container
-            .resolvePolymorphicDirectory(for: group.identifier)
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexScan.indexName)
-
         let operation = try requireString(BitmapReadParameter.operation, from: indexScan.parameters)
         let primaryKeys = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction -> [Tuple] in
-            let reader = BitmapIndexReader(subspace: indexSubspace)
+            guard let readableIndex = try await context.container
+                .readablePolymorphicIndex(
+                    index,
+                    in: group,
+                    transaction: transaction
+                ) else {
+                return []
+            }
+            let reader = BitmapIndexReader(
+                subspace: readableIndex.subspace
+            )
 
             let bitmap: RoaringBitmap
             switch operation {

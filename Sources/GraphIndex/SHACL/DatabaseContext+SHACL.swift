@@ -139,9 +139,6 @@ public struct SHACLContextAPI: Sendable {
             throw SHACLError.shapesGraphNotFound(shapesGraphIRI)
         }
 
-        // Build SPARQLQueryExecutor for the type's graph index
-        let executor = try await buildExecutor(for: type)
-
         let configuredEntailmentContext: (any SHACLEntailmentContext)?
         let configuredOntologyContext: OntologyContext?
         switch entailment {
@@ -171,6 +168,10 @@ public struct SHACLContextAPI: Sendable {
             monotonicClock: context.container.monotonicClock
         )
         return try await context.indexQueryContext.withTransaction { transaction in
+            let executor = try await buildExecutor(
+                for: type,
+                transaction: transaction
+            )
             let entailmentContext: (any SHACLEntailmentContext)?
             let ontologyContext: OntologyContext?
             if entailment == .rdfs {
@@ -248,12 +249,15 @@ public struct SHACLContextAPI: Sendable {
             throw SHACLError.shapeNotFound(shapeIdentifier)
         }
 
-        let executor = try await buildExecutor(for: type)
         let workBudget = SHACLValidationWorkBudget(
             budget: budget,
             monotonicClock: context.container.monotonicClock
         )
         return try await context.indexQueryContext.withTransaction { transaction in
+            let executor = try await buildExecutor(
+                for: type,
+                transaction: transaction
+            )
             let targetResolver = SHACLTargetResolver(
                 executor: executor,
                 transaction: transaction,
@@ -326,29 +330,40 @@ public struct SHACLContextAPI: Sendable {
     /// Build a SPARQLQueryExecutor for the given Persistable type's graph index
     private func buildExecutor<T: Persistable>(
         for type: T.Type,
-        ontologyContext: OntologyContext? = nil
+        transaction: any TransactionAccess
     ) async throws -> SPARQLQueryExecutor {
-        let candidates = try T.indexDescriptors.compactMap {
+        let candidates = try context.indexQueryContext
+            .indexDescriptors(for: T.self)
+            .compactMap {
             try RDFDatasetIndexSelection(descriptor: $0)
         }
         guard candidates.count == 1 else {
             throw SHACLError.graphIndexNotFound(T.persistableType)
         }
         let selection = candidates[0]
-
-        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(selection.indexName)
-        let source = try RDFDatasetSource(
-            entityName: T.persistableType,
-            selection: selection,
-            indexSubspace: indexSubspace
+        let readableIndex = try await context.indexQueryContext.readableIndex(
+            named: selection.indexName,
+            kindIdentifier: selection.kindIdentifier,
+            for: T.self,
+            transaction: transaction
         )
+        let sources: [RDFDatasetSource]
+        if let readableIndex {
+            sources = [
+                try RDFDatasetSource(
+                    entityName: T.persistableType,
+                    selection: selection,
+                    indexSubspace: readableIndex.subspace
+                )
+            ]
+        } else {
+            sources = []
+        }
 
         return SPARQLQueryExecutor(
             database: context.container.engine,
             wallClock: context.container.wallClock,
-            sources: [source],
-            ontologyContext: ontologyContext
+            sources: sources
         )
     }
 }

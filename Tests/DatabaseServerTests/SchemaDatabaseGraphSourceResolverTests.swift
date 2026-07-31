@@ -14,13 +14,13 @@ struct SchemaDatabaseGraphSourceResolverTests {
     @Test("property graph metadata is resolved without losing stored fields")
     func resolvesPropertyGraph() async throws {
         let container = try await makeContainer()
-        let resolver = SchemaDatabaseGraphSourceResolver(container: container)
-        let source = try await resolver.resolve(
+        let source = try await resolve(
             GraphAlgorithmOperation.Source(
                 index: "source_graph",
                 graph: .named(.identifier("calendar")),
                 edgeLabel: .identifier("contains")
-            )
+            ),
+            container: container
         )
 
         guard case .propertyGraph(let layout) = source.layout else {
@@ -40,7 +40,6 @@ struct SchemaDatabaseGraphSourceResolverTests {
     @Test("RDF terms retain typed identity and canonical binary storage")
     func resolvesRDFGraph() async throws {
         let container = try await makeContainer()
-        let resolver = SchemaDatabaseGraphSourceResolver(container: container)
         guard let descriptor = try DatabaseSHACLStatement.indexDescriptors.first(
             where: {
                 $0.kindIdentifier
@@ -50,12 +49,13 @@ struct SchemaDatabaseGraphSourceResolverTests {
             Issue.record("Expected the RDF quad index descriptor")
             return
         }
-        let source = try await resolver.resolve(
+        let source = try await resolve(
             GraphAlgorithmOperation.Source(
                 index: descriptor.name,
                 graph: .defaultGraph,
                 edgeLabel: .rdf(try RDFTerm.iri(validating: "urn:predicate"))
-            )
+            ),
+            container: container
         )
 
         guard case .rdf(let layout) = source.layout else {
@@ -78,16 +78,16 @@ struct SchemaDatabaseGraphSourceResolverTests {
     @Test("graph representations reject terms from the other model")
     func rejectsMismatchedTerms() async throws {
         let container = try await makeContainer()
-        let resolver = SchemaDatabaseGraphSourceResolver(container: container)
 
         await #expect(throws: DatabaseGraphAlgorithmError.self) {
-            try await resolver.resolve(
+            try await resolve(
                 GraphAlgorithmOperation.Source(
                     index: "source_graph",
                     edgeLabel: .rdf(
                         try RDFTerm.iri(validating: "urn:predicate")
                     )
-                )
+                ),
+                container: container
             )
         }
     }
@@ -95,16 +95,34 @@ struct SchemaDatabaseGraphSourceResolverTests {
     @Test("default-graph RDF indexes reject named graph selection")
     func rejectsNamedGraphOutsideIndexCoverage() async throws {
         let container = try await makeContainer()
-        let resolver = SchemaDatabaseGraphSourceResolver(container: container)
 
         await #expect(throws: DatabaseGraphAlgorithmError.self) {
-            try await resolver.resolve(
+            try await resolve(
                 GraphAlgorithmOperation.Source(
                     index: "default_rdf",
                     graph: .named(
                         .rdf(try RDFTerm.iri(validating: "urn:calendar"))
                     )
-                )
+                ),
+                container: container
+            )
+        }
+    }
+
+    private func resolve(
+        _ source: GraphAlgorithmOperation.Source,
+        container: DBContainer
+    ) async throws -> ResolvedDatabaseGraphSource {
+        let resolver = SchemaDatabaseGraphSourceResolver(container: container)
+        return try await StorageTransactionExecutor(
+            engine: container.engine
+        ).withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            try await resolver.resolve(
+                source,
+                transaction: transaction
             )
         }
     }

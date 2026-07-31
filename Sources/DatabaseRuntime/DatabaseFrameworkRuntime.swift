@@ -77,16 +77,24 @@ public enum DatabaseFrameworkRuntime {
     #endif
 
     public static func entity<Model: Persistable>(
-        _ model: Model.Type
+        _ model: Model.Type,
+        including additionalIndexes: [IndexDescriptor] = []
     ) throws -> EntityRuntimeRegistration {
-        try definition(model).registration()
+        try definition(
+            model,
+            including: additionalIndexes
+        ).registration()
     }
 
     #if DATABASE_RUNTIME_GRAPH_INDEXES
     public static func entity<Model: OWLClassEntity>(
-        _ model: Model.Type
+        _ model: Model.Type,
+        including additionalIndexes: [IndexDescriptor] = []
     ) throws -> EntityRuntimeRegistration {
-        var definition = try definition(model)
+        var definition = try definition(
+            model,
+            including: additionalIndexes
+        )
         try definition.register(
             OWLClassRDFIndexMaintainerProvider<Model>()
         )
@@ -112,9 +120,13 @@ public enum DatabaseFrameworkRuntime {
     }
 
     private static func definition<Model: Persistable>(
-        _ model: Model.Type
+        _ model: Model.Type,
+        including additionalIndexes: [IndexDescriptor]
     ) throws -> EntityRuntimeDefinition<Model> {
-        var definition = try EntityRuntimeDefinition(model)
+        var definition = try EntityRuntimeDefinition(
+            model,
+            including: additionalIndexes
+        )
 
         #if DATABASE_RUNTIME_VECTOR_INDEXES
         try VectorReadExecutors.register(with: &definition)

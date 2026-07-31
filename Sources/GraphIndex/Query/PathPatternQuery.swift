@@ -148,12 +148,16 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
         }
         try validateLimits()
 
-        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
-            index,
-            for: T.self,
-            in: queryContext
-        )
         return try await queryContext.withTransaction { transaction in
+            guard let resolvedIndex = try await PropertyGraphIndexResolver
+                .resolve(
+                    index,
+                    for: T.self,
+                    in: queryContext,
+                    transaction: transaction
+                ) else {
+                return []
+            }
             let snapshot = GraphReadSnapshot(
                 transaction: transaction,
                 monotonicClock: queryContext.context.container.monotonicClock
@@ -178,12 +182,17 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
         }
         try validateLimits()
 
-        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
-            index,
-            for: T.self,
-            in: queryContext
-        )
-        let identities = try await queryContext.withTransaction { transaction in
+        let identities: [GraphIdentity] = try await queryContext
+            .withTransaction { transaction in
+            guard let resolvedIndex = try await PropertyGraphIndexResolver
+                .resolve(
+                    index,
+                    for: T.self,
+                    in: queryContext,
+                    transaction: transaction
+                ) else {
+                return []
+            }
             let snapshot = GraphReadSnapshot(
                 transaction: transaction,
                 monotonicClock: queryContext.context.container.monotonicClock

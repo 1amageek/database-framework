@@ -23,7 +23,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
     let container: DBContainer
 
     let subspace: Subspace
-    let schema: Schema
+    let entity: Schema.Entity
+    private let indexDescriptors: [IndexDescriptor]
     private let logger: DatabaseLogger
 
     /// Delegate for operation callbacks (metrics, etc.)
@@ -41,13 +42,12 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Metadata subspace: [subspace]/_metadata/
     let metadataSubspace: Subspace
 
-    /// Precomputed point-read prefix for the store's default type, when known.
+    /// Precomputed point-read prefix for the store's entity.
     ///
     /// `DBContainer` creates and caches stores by `(type, path)`, so the default type
     /// is stable for hot point-read paths. Keeping the fully encoded prefix avoids
     /// repeated tuple encoding of the type name on every read.
-    private let defaultPersistableType: String?
-    private let defaultPointReadPrefix: ByteString?
+    private let defaultPointReadPrefix: ByteString
 
     /// Index state manager for checking index readability
     let indexLifecycleStore: IndexLifecycleStore
@@ -66,14 +66,15 @@ package final class DatabaseDataStore: DataStore, Sendable {
     init(
         container: DBContainer,
         subspace: Subspace,
-        persistableType: String? = nil,
+        entity: Schema.Entity,
         metricsDelegate: DataStoreDelegate? = nil,
         securityDelegate: (any DataStoreSecurityDelegate)? = nil,
         indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) {
         self.container = container
         self.subspace = subspace
-        self.schema = container.schema
+        self.entity = entity
+        self.indexDescriptors = entity.indexDescriptors
         self.logger = container.configuration.logging.logger(
             label: "com.database.framework.data-store"
         )
@@ -83,15 +84,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
         self.indexSubspace = subspace.subspace(SubspaceKey.indexes)
         self.blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         self.metadataSubspace = subspace.subspace(SubspaceKey.metadata)
-        self.defaultPersistableType = persistableType
-        if let persistableType {
-            let encodedType = Tuple([persistableType]).pack()
-            self.defaultPointReadPrefix = self.itemSubspace.prefix.appending(
-                contentsOf: encodedType
-            )
-        } else {
-            self.defaultPointReadPrefix = nil
-        }
+        let encodedType = Tuple([entity.name]).pack()
+        self.defaultPointReadPrefix = self.itemSubspace.prefix.appending(
+            contentsOf: encodedType
+        )
         self.indexLifecycleStore = IndexLifecycleStore(
             container: container,
             subspace: subspace
@@ -261,7 +257,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         guard let selection = try ScalarIndexAccessPlanner.select(
             for: predicate,
-            descriptors: T.indexDescriptors,
+            descriptors: indexDescriptors,
             forcedIndexName: query.forcedIndex?.indexName
         ) else {
             if let forcedIndex = query.forcedIndex {
@@ -335,7 +331,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     ) async throws -> IndexFetchResult<T>? {
         guard let selection = try ScalarIndexAccessPlanner.select(
             for: predicate,
-            descriptors: T.indexDescriptors,
+            descriptors: indexDescriptors,
             forcedIndexName: forcedIndexName
         ) else {
             if let forcedIndexName {
@@ -686,7 +682,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         if let predicate = combinedPredicate {
             if let selection = try ScalarIndexAccessPlanner.select(
                 for: predicate,
-                descriptors: T.indexDescriptors,
+                descriptors: indexDescriptors,
                 forcedIndexName: query.forcedIndex?.indexName
             ) {
                 let accessPath = try encodeScalarIndexAccess(selection)
@@ -991,7 +987,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     ) async throws -> IndexFetchResult<T>? {
         guard let selection = try ScalarIndexAccessPlanner.select(
             for: predicate,
-            descriptors: T.indexDescriptors,
+            descriptors: indexDescriptors,
             forcedIndexName: forcedIndexName
         ) else {
             if let forcedIndexName {
@@ -1263,7 +1259,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         if let predicate = combinedPredicate {
             if let selection = try ScalarIndexAccessPlanner.select(
                 for: predicate,
-                descriptors: T.indexDescriptors,
+                descriptors: indexDescriptors,
                 forcedIndexName: query.forcedIndex?.indexName
             ) {
                 let accessPath = try encodeScalarIndexAccess(selection)
@@ -1362,7 +1358,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         id: Tuple
     ) -> ByteString {
         let keyPrefix: ByteString
-        if persistableType == defaultPersistableType, let defaultPointReadPrefix {
+        if persistableType == entity.name {
             keyPrefix = defaultPointReadPrefix
         } else {
             let encodedType = Tuple([persistableType]).pack()

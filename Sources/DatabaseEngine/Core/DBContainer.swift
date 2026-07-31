@@ -450,6 +450,24 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> Subspace {
+        try await resolveDirectory(
+            for: entity,
+            declaredIn: schema,
+            path: path,
+            transaction: transaction
+        )
+    }
+
+    private func resolveDirectory(
+        for candidate: Schema.Entity,
+        declaredIn authoritySchema: Schema,
+        path: AnyDirectoryPath? = nil,
+        transaction: any TransactionAccess
+    ) async throws -> Subspace {
+        let entity = try schemaEntity(
+            matching: candidate,
+            declaredIn: authoritySchema
+        )
         let directoryPath: AnyDirectoryPath
         if let path {
             directoryPath = path
@@ -482,6 +500,7 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> Subspace {
+        let entity = try canonicalEntity(entity)
         let directoryPath: AnyDirectoryPath
         if let path {
             directoryPath = path
@@ -520,6 +539,7 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> Subspace? {
+        let entity = try canonicalEntity(entity)
         let directoryPath: AnyDirectoryPath
         if let path {
             directoryPath = path
@@ -528,11 +548,23 @@ public final class DBContainer: Sendable {
         }
         try directoryPath.validate()
         let components = directoryPath.resolve()
+        let partitions = directoryPath.canonicalPartitions()
+        if entity.hasDynamicDirectory {
+            guard try await partitionCatalog.contains(
+                entity: entity.name,
+                partitions: partitions,
+                transaction: transaction
+            ) else {
+                return nil
+            }
+        }
         guard try await engine.namespaceResolver.namespaceExists(
             path: components,
             transaction: transaction
         ) else {
-            return nil
+            throw IndexQueryContextError.missingDirectory(
+                entityName: entity.name
+            )
         }
 
         let subspace = try await engine.namespaceResolver.resolveExisting(
@@ -545,10 +577,6 @@ public final class DBContainer: Sendable {
         )
         try await lifecycleStore.validateReadableForRead(
             [indexName],
-            entityRange: subspace
-                .subspace(SubspaceKey.items)
-                .subspace(entity.name)
-                .range(),
             transaction: transaction
         )
         return subspace
@@ -603,7 +631,7 @@ public final class DBContainer: Sendable {
         let store = DatabaseDataStore(
             container: self,
             subspace: subspace,
-            persistableType: type.persistableType,
+            entity: entity,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
@@ -615,6 +643,7 @@ public final class DBContainer: Sendable {
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil
     ) async throws -> DatabaseDataStore {
+        let entity = try canonicalEntity(entity)
         let cacheKey = try storeCacheKey(for: entity, path: path)
         if let cached = dataStoreCache.withLock({
             $0.stores.value(for: cacheKey)
@@ -627,7 +656,7 @@ public final class DBContainer: Sendable {
         let store = DatabaseDataStore(
             container: self,
             subspace: subspace,
-            persistableType: entity.name,
+            entity: entity,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
@@ -643,6 +672,7 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> DatabaseDataStore {
+        let entity = try canonicalEntity(entity)
         let subspace = try await resolveDirectory(
             for: entity,
             path: path,
@@ -656,7 +686,7 @@ public final class DBContainer: Sendable {
         return DatabaseDataStore(
             container: self,
             subspace: subspace,
-            persistableType: entity.name,
+            entity: entity,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
@@ -720,6 +750,30 @@ public final class DBContainer: Sendable {
     ) throws -> Schema.Entity {
         guard let entity = schema.entity(named: entityName) else {
             throw ContainerSchemaError.entityNotFound(entityName)
+        }
+        return entity
+    }
+
+    private func canonicalEntity(
+        _ candidate: Schema.Entity
+    ) throws -> Schema.Entity {
+        try schemaEntity(
+            matching: candidate,
+            declaredIn: schema
+        )
+    }
+
+    private func schemaEntity(
+        matching candidate: Schema.Entity,
+        declaredIn authoritySchema: Schema
+    ) throws -> Schema.Entity {
+        guard let entity = authoritySchema.entity(named: candidate.name) else {
+            throw ContainerSchemaError.entityNotFound(candidate.name)
+        }
+        guard entity == candidate else {
+            throw ContainerSchemaError.entitySchemaMismatch(
+                candidate.name
+            )
         }
         return entity
     }
@@ -810,6 +864,42 @@ public final class DBContainer: Sendable {
         return try await engine.namespaceResolver.resolveExisting(
             path: path,
             transaction: transaction
+        )
+    }
+
+    /// Opens and admits one exact polymorphic index without creating metadata.
+    ///
+    /// `nil` means the polymorphic namespace has never existed. Every existing
+    /// namespace must have a readable lifecycle state for the selected index.
+    package func readablePolymorphicIndex(
+        _ descriptor: PolymorphicIndexMetadata,
+        in group: PolymorphicGroup,
+        transaction: any TransactionAccess
+    ) async throws -> ReadablePolymorphicIndex? {
+        guard group.indexes.contains(descriptor) else {
+            throw IndexQueryContextError.polymorphicIndexNotFound(
+                indexName: descriptor.name,
+                groupIdentifier: group.identifier
+            )
+        }
+        guard let subspace = try await openPolymorphicDirectory(
+            for: group.identifier,
+            transaction: transaction
+        ) else {
+            return nil
+        }
+        try await IndexLifecycleStore(
+            container: self,
+            subspace: subspace
+        ).validateReadableForRead(
+            [descriptor.name],
+            transaction: transaction
+        )
+        return ReadablePolymorphicIndex(
+            descriptor: descriptor,
+            subspace: subspace
+                .subspace(SubspaceKey.indexes)
+                .subspace(descriptor.name)
         )
     }
 
@@ -1401,7 +1491,16 @@ extension DBContainer {
             // Use resolveDirectory to respect #Directory definitions declared
             // by *this schema's* Swift type — V1 and V2 with the same entity
             // name may point to different directories.
-            let subspace = try await resolveDirectory(for: entity)
+            let subspace = try await transactionExecutor.withTransaction(
+                configuration: .default,
+                clock: monotonicClock
+            ) { transaction in
+                try await self.resolveDirectory(
+                    for: entity,
+                    declaredIn: schema,
+                    transaction: transaction
+                )
+            }
             let info = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),

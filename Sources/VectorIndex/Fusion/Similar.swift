@@ -143,7 +143,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// 1. Filters by kindIdentifier ("vector") for efficiency
     /// 2. Matches by fieldName within the kind
     private func findIndexDescriptor() throws -> IndexDescriptor? {
-        try T.indexDescriptors.first { descriptor in
+        queryContext.indexDescriptors(for: T.self).first { descriptor in
             // 1. Filter by kindIdentifier
             guard descriptor.kindIdentifier
                     == VectorIndexSpecification.identifier else {
@@ -208,16 +208,20 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         queryVector: [Float],
         k: Int
     ) async throws -> [(item: T, distance: Double)] {
-        // Get index subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute search within transaction
-        let primaryKeysWithDistances: [(pk: Tuple, distance: Double)] = try await queryContext.withTransaction { transaction in
-            try await self.searchVectors(
+        let primaryKeysWithDistances: [(pk: Tuple, distance: Double)] =
+            try await queryContext.withReadableIndex(
+                named: indexName,
+                kindIdentifier: VectorIndexSpecification.identifier,
+                for: T.self
+            ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            return try await self.searchVectors(
                 queryVector: queryVector,
                 k: k,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction
             )
         }

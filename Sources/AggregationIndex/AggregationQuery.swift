@@ -510,7 +510,9 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         for aggregation in aggregations {
             // If forced index is specified, try to use it
             if let forcedName = forcedIndexName {
-                guard let descriptor = queryContext.findIndex(named: forcedName) else {
+                guard let descriptor = queryContext.indexDescriptors(
+                    for: T.self
+                ).first(where: { $0.name == forcedName }) else {
                     throw AggregationQueryError.indexNotFound(forcedName)
                 }
                 let metadata = try AggregationIndexMetadata(canonical: descriptor.kind)
@@ -548,8 +550,6 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     private func executeWithIndexes(
         strategies: [String: ExecutionStrategy]
     ) async throws -> [AggregateResult<T>] {
-        let indexSubspace = try await queryContext.indexSubspace(for: T.self)
-
         // Standard idExpression for Persistable types
         let idExpression = FieldKeyExpression(fieldName: "id")
 
@@ -569,11 +569,19 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
                     continue
                 }
 
-                let maintainerSubspace = indexSubspace.subspace(descriptor.name)
+                guard let readableIndex = try await self.queryContext
+                    .readableIndex(
+                        named: descriptor.name,
+                        kindIdentifier: descriptor.kindIdentifier,
+                        for: T.self,
+                        transaction: transaction
+                    ) else {
+                    continue
+                }
                 let index = Self.buildIndex(from: descriptor, persistableType: T.persistableType)
                 let indexResults = try await self.queryFromIndex(
                     index: index,
-                    subspace: maintainerSubspace,
+                    subspace: readableIndex.subspace,
                     idExpression: idExpression,
                     aggregation: aggregation,
                     transaction: transaction

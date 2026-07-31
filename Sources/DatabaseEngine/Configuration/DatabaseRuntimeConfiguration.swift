@@ -55,6 +55,13 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             guard let entityRuntime = entityRuntimes.registration(named: entity.name) else {
                 throw .missingCompiledEntityType(entityName: entity.name)
             }
+            guard entityRuntime.entity == entity else {
+                throw .entitySchemaMismatch(
+                    entityName: entity.name,
+                    schemaEntity: entity,
+                    runtimeEntity: entityRuntime.entity
+                )
+            }
             try validateMaintainerProviders(
                 source: .entity(entity.name),
                 descriptors: entity.indexDescriptors,

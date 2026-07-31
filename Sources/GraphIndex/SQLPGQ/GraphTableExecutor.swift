@@ -764,7 +764,9 @@ extension DatabaseContext {
         _ type: T.Type,
         source: GraphTableSource
     ) async throws -> [GraphTableRow] {
-        guard let descriptor = try T.indexDescriptors.first(
+        guard let descriptor = indexQueryContext
+            .indexDescriptors(for: T.self)
+            .first(
             where: { $0.kindIdentifier == "graph" }
         ) else {
             throw GraphTableError.indexNotFound(
@@ -773,9 +775,10 @@ extension DatabaseContext {
         }
         let queryContext = indexQueryContext
         return try await queryContext.withTransaction { transaction in
-            guard let indexSubspace = try await queryContext
-                .readableIndexSubspace(
+            guard let index = try await queryContext
+                .readableIndex(
                     named: descriptor.name,
+                    kindIdentifier: descriptor.kindIdentifier,
                     for: T.self,
                     transaction: transaction
                 ) else {
@@ -783,7 +786,7 @@ extension DatabaseContext {
             }
             return try await GraphTableExecutor(
                 indexDescriptor: descriptor,
-                indexSubspace: indexSubspace,
+                indexSubspace: index.subspace,
                 graphTableSource: source
             ).execute(transaction: transaction)
         }

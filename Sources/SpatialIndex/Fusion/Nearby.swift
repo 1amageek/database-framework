@@ -163,17 +163,20 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
 
         let indexName = descriptor.name
 
-        // Get index subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute spatial search
-        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
-            try await self.searchSpatial(
+        let primaryKeys: [Tuple] = try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: descriptor.kindIdentifier,
+            for: T.self
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            return try await self.searchSpatial(
                 constraint: constraint,
                 level: level,
                 encoding: encoding,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction
             )
         }

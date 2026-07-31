@@ -125,16 +125,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Array of (item, score) tuples sorted by score descending
     public func execute() async throws -> [(item: T, score: Int64)] {
         let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
-        let results: [(pk: Tuple, score: Int64)] = try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(
-                indexSubspace: indexSubspace,
-                descriptor: descriptor,
-                indexKind: indexKind
-            )
-
+        let results: [(pk: Tuple, score: Int64)] = try await withReadableMaintainer(
+            descriptor: descriptor,
+            configuration: indexKind,
+            missing: { [] }
+        ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
 
             if let wid = self.windowId {
@@ -178,16 +174,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Array of (item, score) tuples sorted by score ascending
     public func executeBottom() async throws -> [(item: T, score: Int64)] {
         let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
-        let results: [(pk: Tuple, score: Int64)] = try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(
-                indexSubspace: indexSubspace,
-                descriptor: descriptor,
-                indexKind: indexKind
-            )
-
+        let results: [(pk: Tuple, score: Int64)] = try await withReadableMaintainer(
+            descriptor: descriptor,
+            configuration: indexKind,
+            missing: { [] }
+        ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
 
             if let wid = self.windowId {
@@ -232,15 +224,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Rank (1-based) or nil if not found
     public func rank<ID: TupleElement>(for id: ID) async throws -> Int? {
         let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
-        return try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(
-                indexSubspace: indexSubspace,
-                descriptor: descriptor,
-                indexKind: indexKind
-            )
+        return try await withReadableMaintainer(
+            descriptor: descriptor,
+            configuration: indexKind,
+            missing: { nil as Int? }
+        ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
 
             return try await maintainer.getRank(
@@ -267,15 +256,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Dense rank (1-based) or nil if not found
     public func denseRank<ID: TupleElement>(for id: ID) async throws -> Int? {
         let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
-        return try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(
-                indexSubspace: indexSubspace,
-                descriptor: descriptor,
-                indexKind: indexKind
-            )
+        return try await withReadableMaintainer(
+            descriptor: descriptor,
+            configuration: indexKind,
+            missing: { nil as Int? }
+        ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
 
             return try await maintainer.getRankDense(
@@ -297,15 +283,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Score at the given percentile, or nil if no entries
     public func percentile(_ percentile: Double) async throws -> Int64? {
         let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
-        return try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(
-                indexSubspace: indexSubspace,
-                descriptor: descriptor,
-                indexKind: indexKind
-            )
+        return try await withReadableMaintainer(
+            descriptor: descriptor,
+            configuration: indexKind,
+            missing: { nil as Int64? }
+        ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
 
             if let wid = self.windowId {
@@ -330,15 +313,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Array of window IDs (newest first)
     public func availableWindows() async throws -> [Int64] {
         let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
-        return try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(
-                indexSubspace: indexSubspace,
-                descriptor: descriptor,
-                indexKind: indexKind
-            )
+        return try await withReadableMaintainer(
+            descriptor: descriptor,
+            configuration: indexKind,
+            missing: { [] }
+        ) { maintainer, transaction in
             return try await maintainer.getAvailableWindows(transaction: transaction)
         }
     }
@@ -359,7 +339,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
         descriptor: IndexDescriptor,
         configuration: TimeWindowLeaderboardConfiguration
     )? {
-        for descriptor in try T.indexDescriptors {
+        for descriptor in queryContext.indexDescriptors(for: T.self) {
             guard descriptor.kind.identifier == "time_window_leaderboard" else {
                 continue
             }
@@ -391,6 +371,32 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
             windowCount: indexKind.windowCount,
             wallClock: queryContext.context.container.wallClock
         )
+    }
+
+    private func withReadableMaintainer<Result: Sendable>(
+        descriptor: IndexDescriptor,
+        configuration: TimeWindowLeaderboardConfiguration,
+        missing: @Sendable @escaping () -> Result,
+        _ operation: @Sendable @escaping (
+            TimeWindowLeaderboardIndexMaintainer<T>,
+            any TransactionAccess
+        ) async throws -> Result
+    ) async throws -> Result {
+        return try await queryContext.withReadableIndex(
+            named: descriptor.name,
+            kindIdentifier: descriptor.kindIdentifier,
+            for: T.self
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return missing()
+            }
+            let maintainer = createMaintainer(
+                indexSubspace: readableIndex.subspace,
+                descriptor: descriptor,
+                indexKind: configuration
+            )
+            return try await operation(maintainer, transaction)
+        }
     }
 
     private func groupingTupleElements() throws -> [any TupleElement]? {

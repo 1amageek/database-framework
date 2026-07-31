@@ -135,6 +135,9 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 retryability: .never
             )
         }
+        if let indexStateError = error as? IndexStateError {
+            return Self.map(indexStateError)
+        }
         if let mutationByteError = error as? TransactionMutationByteLimitError {
             return Self.map(mutationByteError)
         }
@@ -495,6 +498,59 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 "Database error detail keys must be unique: \(error)"
             )
         }
+    }
+
+    private static func map(
+        _ error: IndexStateError
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
+        let code: String
+        let message: String
+        let indexName: String
+
+        switch error {
+        case .invalidPersistedStateSize(let index, _),
+             .unknownPersistedStateValue(let index, _):
+            category = .internalFailure
+            code = "CORRUPTED_INDEX_STATE"
+            message = "Persisted index state is corrupted"
+            indexName = index
+        case .missingRequestedState(let index):
+            category = .internalFailure
+            code = "INDEX_STATE_INVARIANT_VIOLATION"
+            message = "Index state resolution violated its contract"
+            indexName = index
+        case .invalidTransition(_, _, let index, _):
+            category = .conflict
+            code = "INVALID_INDEX_STATE_TRANSITION"
+            message = "Index state transition is invalid"
+            indexName = index
+        case .missingStateForNonEmptyStore(let index):
+            category = .internalFailure
+            code = "MISSING_INDEX_STATE"
+            message = "Persisted index state is missing for a non-empty store"
+            indexName = index
+        case .missingPersistedState(let index):
+            category = .internalFailure
+            code = "MISSING_INDEX_STATE"
+            message = "Persisted index state is missing"
+            indexName = index
+        case .indexNotReady(let index, _):
+            category = .conflict
+            code = "INDEX_NOT_READY"
+            message = "Index is not ready"
+            indexName = index
+        }
+
+        return RemoteOperationError(
+            category: category,
+            code: code,
+            message: message,
+            retryability: .never,
+            details: Self.errorDetails([
+                (key: "index", value: .string(indexName))
+            ])
+        )
     }
 
     private static func map(
@@ -1303,6 +1359,9 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .sourceIndexNotFound:
             category = .notFound
             code = "GRAPH_SOURCE_NOT_FOUND"
+        case .sourcePartitionNotFound:
+            category = .notFound
+            code = "GRAPH_SOURCE_PARTITION_NOT_FOUND"
         case .continuationSnapshotChanged:
             category = .conflict
             code = "GRAPH_SNAPSHOT_CHANGED"

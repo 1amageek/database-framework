@@ -252,11 +252,6 @@ public struct FederatedSPARQLBuilder: Sendable {
         guard offsetCount >= 0, limitCount.map({ $0 >= 0 }) ?? true else {
             throw SPARQLQueryError.invalidPagination
         }
-        let sources = try await RDFDatasetSourcePlanner.plan(
-            namedGraph: namedGraph,
-            queryContext: queryContext
-        )
-
         let startTime = queryContext.graphClock.now()
         let projectedVars = resolveProjection()
         let workMeter = DatabaseWorkMeter(
@@ -264,7 +259,23 @@ public struct FederatedSPARQLBuilder: Sendable {
             monotonicClock: queryContext.context.container.monotonicClock
         )
 
-        if sources.isEmpty {
+        let evaluation = try await queryContext.withTransaction {
+            transaction -> ([VariableBinding], ExecutionStatistics)? in
+            let sources = try await RDFDatasetSourcePlanner.plan(
+                namedGraph: namedGraph,
+                queryContext: queryContext,
+                transaction: transaction
+            )
+            guard !sources.isEmpty else {
+                return nil
+            }
+            return try await evaluate(
+                sources: sources,
+                transaction: transaction,
+                workMeter: workMeter
+            )
+        }
+        guard let (bindings, stats) = evaluation else {
             return SPARQLResult(
                 bindings: [],
                 projectedVariables: projectedVars,
@@ -273,11 +284,6 @@ public struct FederatedSPARQLBuilder: Sendable {
                 statistics: ExecutionStatistics(durationNs: elapsed(since: startTime))
             )
         }
-
-        let (bindings, stats) = try await evaluate(
-            sources: sources,
-            workMeter: workMeter
-        )
 
         let result = try finalize(
             bindings: bindings,
@@ -341,6 +347,7 @@ public struct FederatedSPARQLBuilder: Sendable {
     /// Evaluate algebra once while atomic scans fan out across all sources.
     private func evaluate(
         sources: [RDFDatasetSource],
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         let engine = queryContext.context.container.engine
@@ -365,21 +372,18 @@ public struct FederatedSPARQLBuilder: Sendable {
             pushdownLimit = nil
         }
 
-        return try await StorageTransactionExecutor(engine: engine)
-            .withTransaction { sharedTxn in
-            let executor = SPARQLQueryExecutor(
-                database: engine,
-                wallClock: queryContext.context.container.wallClock,
-                sources: sources
-            )
-            return try await executor.executeInTransaction(
-                pattern: pattern,
-                transaction: sharedTxn,
-                limit: pushdownLimit,
-                offset: 0,
-                workMeter: workMeter
-            )
-        }
+        let executor = SPARQLQueryExecutor(
+            database: engine,
+            wallClock: queryContext.context.container.wallClock,
+            sources: sources
+        )
+        return try await executor.executeInTransaction(
+            pattern: pattern,
+            transaction: transaction,
+            limit: pushdownLimit,
+            offset: 0,
+            workMeter: workMeter
+        )
     }
 
     private func finalize(

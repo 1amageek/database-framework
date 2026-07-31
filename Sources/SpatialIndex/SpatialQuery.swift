@@ -311,17 +311,21 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
         let indexName = descriptor.name
 
-        // Get index subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute spatial search with SpatialCellScanner
-        let scanResult: SpatialScanResult = try await queryContext.withTransaction { transaction in
-            try await self.searchSpatial(
+        let scanResult: SpatialScanResult = try await queryContext
+            .withReadableIndex(
+                named: indexName,
+                kindIdentifier: descriptor.kindIdentifier,
+                for: T.self
+            ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return SpatialScanResult(keys: [], limitReason: nil)
+            }
+            return try await self.searchSpatial(
                 constraint: constraint,
                 level: level,
                 encoding: encoding,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction
             )
         }
@@ -729,8 +733,6 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         )
 
         let indexName = descriptor.name
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
 
         // Adaptive radius expansion algorithm
         var currentRadiusMeters = knnInitialRadiusKm * 1000.0
@@ -759,9 +761,17 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             )
 
             // Scan cells with per-iteration limit to prevent DoS
-            let scanResult: SpatialScanResult = try await queryContext.withTransaction { transaction in
+            let scanResult: SpatialScanResult? = try await queryContext
+                .withReadableIndex(
+                    named: indexName,
+                    kindIdentifier: descriptor.kindIdentifier,
+                    for: T.self
+                ) { readableIndex, transaction in
+                guard let readableIndex else {
+                    return nil
+                }
                 let scanner = SpatialCellScanner(
-                    indexSubspace: indexSubspace,
+                    indexSubspace: readableIndex.subspace,
                     encoding: encoding,
                     level: level
                 )
@@ -771,6 +781,14 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
                     transaction: transaction
                 )
                 return SpatialScanResult(keys: keys, limitReason: scanLimitReason)
+            }
+            guard let scanResult else {
+                return SpatialKNNResult(
+                    items: [],
+                    k: k,
+                    searchRadiusMeters: lastUsedRadiusMeters,
+                    limitReason: nil
+                )
             }
 
             totalKeysScanned += scanResult.keys.count
@@ -916,23 +934,27 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         )
 
         let indexName = descriptor.name
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
-        // Create the true KNN search instance
-        let knnSearch = SpatialKNNSearch<T>(
-            queryContext: queryContext,
-            indexSubspace: indexSubspace,
-            encoding: encoding,
-            level: level,
-            fieldName: field.name,
-            maxCellsToScan: knnMaxKeysPerIteration,
-            maxPointsToScan: knnMaxTotalKeys
-        )
 
         // Execute true KNN search
-        let results: [(item: T, distance: Double)] = try await queryContext.withTransaction { transaction in
-            try await knnSearch.findKNearest(
+        let results: [(item: T, distance: Double)] = try await queryContext
+            .withReadableIndex(
+                named: indexName,
+                kindIdentifier: descriptor.kindIdentifier,
+                for: T.self
+            ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            let knnSearch = SpatialKNNSearch<T>(
+                queryContext: queryContext,
+                indexSubspace: readableIndex.subspace,
+                encoding: encoding,
+                level: level,
+                fieldName: field.name,
+                maxCellsToScan: knnMaxKeysPerIteration,
+                maxPointsToScan: knnMaxTotalKeys
+            )
+            return try await knnSearch.findKNearest(
                 k: k,
                 from: center,
                 transaction: transaction

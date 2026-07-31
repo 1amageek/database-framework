@@ -587,7 +587,16 @@ public struct StronglyConnectedComponentsQuery<Edge: Persistable>: Sendable {
     }
 
     public func find(edgeLabel: String? = nil) async throws -> SCCResult {
-        try await withFinder { finder in
+        return try await withFinder(
+            missing: {
+                SCCResult(
+                    components: [],
+                    nodeToComponent: [:],
+                    nodesExplored: 0,
+                    durationNs: 0
+                )
+            }
+        ) { finder in
             try await finder.findSCCs(
                 edgeLabel: edgeLabel.map(GraphIdentity.identifier)
             )
@@ -599,7 +608,7 @@ public struct StronglyConnectedComponentsQuery<Edge: Persistable>: Sendable {
         _ target: String,
         edgeLabel: String? = nil
     ) async throws -> Bool {
-        try await withFinder { finder in
+        return try await withFinder(missing: { false }) { finder in
             try await finder.isStronglyConnected(
                 from: .identifier(source),
                 to: .identifier(target),
@@ -611,7 +620,11 @@ public struct StronglyConnectedComponentsQuery<Edge: Persistable>: Sendable {
     public func condensationGraph(
         edgeLabel: String? = nil
     ) async throws -> CondensationGraph {
-        try await withFinder { finder in
+        return try await withFinder(
+            missing: {
+                CondensationGraph(edges: [:], componentSizes: [])
+            }
+        ) { finder in
             try await finder.condensationGraph(
                 edgeLabel: edgeLabel.map(GraphIdentity.identifier)
             )
@@ -619,14 +632,19 @@ public struct StronglyConnectedComponentsQuery<Edge: Persistable>: Sendable {
     }
 
     private func withFinder<Result: Sendable>(
+        missing: @Sendable @escaping () -> Result,
         _ operation: @Sendable @escaping (SCCFinder) async throws -> Result
     ) async throws -> Result {
-        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
-            index,
-            for: Edge.self,
-            in: queryContext
-        )
         return try await queryContext.withTransaction { transaction in
+            guard let resolvedIndex = try await PropertyGraphIndexResolver
+                .resolve(
+                    index,
+                    for: Edge.self,
+                    in: queryContext,
+                    transaction: transaction
+                ) else {
+                return missing()
+            }
             let snapshot = GraphReadSnapshot(
                 transaction: transaction,
                 monotonicClock: queryContext.context.container.monotonicClock

@@ -220,13 +220,20 @@ struct NamedGraphStoreSQLiteTests {
     private func makeScanner(
         context: DatabaseContext
     ) async throws -> IndexedRDFDatasetScanner {
-        let typeSubspace = try await context.indexQueryContext.indexSubspace(
+        let readableIndex = try await context.indexQueryContext.withReadableIndex(
+            named: "rdf_quad",
+            kindIdentifier: IndexDefinition.rdfDataset.identifier,
             for: SQLiteNamedGraphStatement.self
-        )
+        ) { index, _ in
+            index
+        }
+        guard let readableIndex else {
+            throw SPARQLQueryError.indexNotConfigured
+        }
         let source = RDFDatasetSource(
             entityName: SQLiteNamedGraphStatement.persistableType,
             indexName: "rdf_quad",
-            indexSubspace: typeSubspace.subspace("rdf_quad"),
+            indexSubspace: readableIndex.subspace,
             coverage: .dataset
         )
         return IndexedRDFDatasetScanner(sources: [source])

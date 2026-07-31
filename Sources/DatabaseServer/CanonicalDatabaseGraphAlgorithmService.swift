@@ -34,7 +34,6 @@ public struct CanonicalDatabaseGraphAlgorithmService: DatabaseGraphAlgorithmServ
             throw DatabaseGraphAlgorithmError.continuationDoesNotMatchRequest
         }
 
-        let source = try await sourceResolver.resolve(request.source)
         let fullResponse = try await context.container.transactionExecutor
             .withTransaction(
             configuration: .default,
@@ -44,6 +43,10 @@ public struct CanonicalDatabaseGraphAlgorithmService: DatabaseGraphAlgorithmServ
             // restart both the snapshot and accounting from the same boundary.
             let workBudget = GraphAlgorithmWorkBudget(
                 maximumWorkUnits: request.budget.maximumWorkUnits
+            )
+            let source = try await sourceResolver.resolve(
+                request.source,
+                transaction: transaction
             )
             return try await executeFull(
                 request.invocation,

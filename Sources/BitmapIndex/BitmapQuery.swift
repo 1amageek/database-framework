@@ -71,14 +71,20 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
 
     private let queryContext: IndexQueryContext
     private let fieldName: String
+    private let selectedIndexName: String?
     private var operation: Operation?
     private var limitCount: UInt64?
 
     // MARK: - Initialization
 
-    internal init(queryContext: IndexQueryContext, fieldName: String) {
+    internal init(
+        queryContext: IndexQueryContext,
+        fieldName: String,
+        selectedIndexName: String? = nil
+    ) {
         self.queryContext = queryContext
         self.fieldName = fieldName
+        self.selectedIndexName = selectedIndexName
     }
 
     // MARK: - Query Methods
@@ -164,7 +170,10 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         configuration: TransactionConfiguration = .default,
         cachePolicy: CachePolicy = .server
     ) async throws -> [T] {
-        let primaryKeys: [Tuple] = try await withResolvedBitmap(configuration: configuration) { bitmap, maintainer, transaction in
+        let primaryKeys: [Tuple] = try await withResolvedBitmap(
+            configuration: configuration,
+            missing: { [] }
+        ) { bitmap, maintainer, transaction in
             var resultBitmap = bitmap
             if let limit = self.limitCount {
                 let array = bitmap.toArray()
@@ -192,7 +201,10 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     internal func countDirect(
         configuration: TransactionConfiguration = .readOnly
     ) async throws -> Int {
-        try await withResolvedBitmap(configuration: configuration) { bitmap, _, _ in
+        return try await withResolvedBitmap(
+            configuration: configuration,
+            missing: { 0 }
+        ) { bitmap, _, _ in
             bitmap.cardinality
         }
     }
@@ -207,7 +219,10 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     internal func getBitmapDirect(
         configuration: TransactionConfiguration = .readOnly
     ) async throws -> RoaringBitmap {
-        try await withResolvedBitmap(configuration: configuration) { bitmap, _, _ in
+        return try await withResolvedBitmap(
+            configuration: configuration,
+            missing: { RoaringBitmap() }
+        ) { bitmap, _, _ in
             bitmap
         }
     }
@@ -220,25 +235,35 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     /// `execute()`, `count()`, and `getBitmap()`.
     private func withResolvedBitmap<R: Sendable>(
         configuration: TransactionConfiguration,
+        missing: @Sendable @escaping () -> R,
         _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexReader, any TransactionAccess) async throws -> R
     ) async throws -> R {
         guard let op = operation else {
             throw BitmapQueryError.noOperation
         }
 
-        let indexName = buildIndexName()
-        guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
+        let indexName = try resolveIndexName()
+        guard let descriptor = queryContext.indexDescriptors(
+            for: T.self
+        ).first(where: { $0.name == indexName }) else {
             throw BitmapQueryError.indexNotFound(indexName)
         }
         guard descriptor.fieldNames == [fieldName] else {
             throw BitmapQueryError.invalidIndex(indexName)
         }
         _ = try BitmapIndexSpecification(descriptor.kind)
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
-        return try await queryContext.withTransaction(configuration: configuration) { transaction in
-            let reader = BitmapIndexReader(subspace: indexSubspace)
+        return try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: BitmapIndexSpecification.identifier,
+            for: T.self,
+            configuration: configuration
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return missing()
+            }
+            let reader = BitmapIndexReader(
+                subspace: readableIndex.subspace
+            )
 
             let bitmap: RoaringBitmap
             switch op {
@@ -258,8 +283,31 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
-    private func buildIndexName() -> String {
-        "\(T.persistableType)_bitmap_\(fieldName)"
+    private func resolveIndexName() throws -> String {
+        let matches = queryContext.indexDescriptors(for: T.self).filter {
+            $0.kindIdentifier == BitmapIndexSpecification.identifier
+                && $0.fieldNames == [fieldName]
+        }
+        if let selectedIndexName {
+            guard matches.contains(where: {
+                $0.name == selectedIndexName
+            }) else {
+                throw BitmapQueryError.indexNotFound(selectedIndexName)
+            }
+            return selectedIndexName
+        }
+        guard let match = matches.first else {
+            throw BitmapQueryError.indexNotFound(
+                "\(T.persistableType).\(fieldName)"
+            )
+        }
+        guard matches.count == 1 else {
+            throw BitmapQueryError.ambiguousIndexes(
+                entity: T.persistableType,
+                field: fieldName
+            )
+        }
+        return match.name
     }
 
     internal func toSelectQuery() throws -> SelectQuery {
@@ -299,7 +347,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             source: .table(TableRef(table: T.persistableType)),
             accessPath: .index(
                 IndexScanSource(
-                    indexName: buildIndexName(),
+                    indexName: try resolveIndexName(),
                     kindIdentifier: BitmapIndexSpecification.identifier,
                     parameters: parameters
                 )
@@ -353,6 +401,9 @@ public enum BitmapQueryError: Error, CustomStringConvertible {
     /// Index metadata does not match the requested bitmap field.
     case invalidIndex(String)
 
+    /// More than one bitmap index targets the requested field.
+    case ambiguousIndexes(entity: String, field: String)
+
     public var description: String {
         switch self {
         case .noOperation:
@@ -361,6 +412,8 @@ public enum BitmapQueryError: Error, CustomStringConvertible {
             return "Bitmap index not found: \(name)"
         case .invalidIndex(let name):
             return "Bitmap index metadata is invalid: \(name)"
+        case .ambiguousIndexes(let entity, let field):
+            return "Multiple bitmap indexes target \(entity).\(field)"
         }
     }
 }

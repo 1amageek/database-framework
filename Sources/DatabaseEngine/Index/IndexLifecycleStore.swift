@@ -6,7 +6,7 @@ import StorageKit
 /// IndexLifecycleStore enforces the following transition rules:
 /// - DISABLED → WRITE_ONLY: enable(_:)
 /// - WRITE_ONLY → READABLE: makeReadable(_:)
-/// - Any state → DISABLED: disable(_:)
+/// - Any recognized or missing state → DISABLED: disable(_:)
 ///
 /// **Thread-safety**: Uses database transactions for consistency
 ///
@@ -47,19 +47,10 @@ public final class IndexLifecycleStore: Sendable {
     /// - Throws: Error if state value is invalid
     public func state(of indexName: String) async throws -> IndexState {
         return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
-            let stateKey = self.makeStateKey(for: indexName)
-
-            guard let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
-                  let stateValue = bytes.first else {
-                // Default: new indexes start as DISABLED
-                return IndexState.disabled
-            }
-
-            guard let state = IndexState(rawValue: stateValue) else {
-                throw IndexStateError.invalidStateValue(stateValue)
-            }
-
-            return state
+            try await self.state(
+                of: indexName,
+                transaction: transaction
+            )
         }
     }
 
@@ -74,19 +65,11 @@ public final class IndexLifecycleStore: Sendable {
     /// - Returns: Current IndexState (defaults to .disabled if not found)
     /// - Throws: Error if state value is invalid
     public func state(of indexName: String, transaction: any TransactionAccess) async throws -> IndexState {
-        let stateKey = makeStateKey(for: indexName)
-
-        guard let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
-              let stateValue = bytes.first else {
-            // Default: new indexes start as DISABLED
-            return IndexState.disabled
-        }
-
-        guard let state = IndexState(rawValue: stateValue) else {
-            throw IndexStateError.invalidStateValue(stateValue)
-        }
-
-        return state
+        try await storedState(
+            of: indexName,
+            transaction: transaction,
+            snapshot: false
+        ) ?? .disabled
     }
 
     // MARK: - State Transitions
@@ -102,32 +85,10 @@ public final class IndexLifecycleStore: Sendable {
     /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
     public func enable(_ indexName: String) async throws {
         try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
-            let stateKey = self.makeStateKey(for: indexName)
-
-            // Read current state within transaction
-            let currentState: IndexState
-            if let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
-               let stateValue = bytes.first,
-               let state = IndexState(rawValue: stateValue) {
-                currentState = state
-            } else {
-                currentState = .disabled
-            }
-
-            // Validate transition: only from DISABLED
-            guard currentState == .disabled else {
-                throw IndexStateError.invalidTransition(
-                    from: currentState,
-                    to: .writeOnly,
-                    index: indexName,
-                    reason: "Index must be DISABLED before enabling"
-                )
-            }
-
-            // Write new state
-            try transaction.setValue([IndexState.writeOnly.rawValue], for: stateKey)
-
-            self.logger.info("Enabled index '\(indexName)': \(currentState) → writeOnly")
+            try await self.enable(
+                indexName,
+                transaction: transaction
+            )
         }
     }
 
@@ -149,16 +110,11 @@ public final class IndexLifecycleStore: Sendable {
         transaction: any TransactionAccess
     ) async throws {
         let stateKey = makeStateKey(for: indexName)
-        let currentState: IndexState
-        if let bytes = try await transaction.getValue(
-            for: stateKey,
+        let currentState = try await storedState(
+            of: indexName,
+            transaction: transaction,
             snapshot: false
-        ), let stateValue = bytes.first,
-           let state = IndexState(rawValue: stateValue) {
-            currentState = state
-        } else {
-            currentState = .disabled
-        }
+        ) ?? .disabled
         guard currentState == .writeOnly else {
             throw IndexStateError.invalidTransition(
                 from: currentState,
@@ -209,34 +165,35 @@ public final class IndexLifecycleStore: Sendable {
         entityRange: (begin: ByteString, end: ByteString),
         transaction: any TransactionAccess
     ) async throws {
-        let sourceRows = try await TransactionRangeCollection.collect(using: transaction,
-            from: .firstGreaterOrEqual(entityRange.begin),
-            to: .firstGreaterOrEqual(entityRange.end),
-            limit: 1,
-            reverse: false,
-            snapshot: false,
-            streamingMode: .small
-        )
-        let sourceIsEmpty = sourceRows.isEmpty
+        var sourceIsEmpty: Bool?
         for indexName in indexNames {
-            let stateKey = makeStateKey(for: indexName)
-            let storedBytes = try await transaction.getValue(
-                for: stateKey,
+            guard let currentState = try await storedState(
+                of: indexName,
+                transaction: transaction,
                 snapshot: false
-            )
-            guard let storedBytes else {
-                guard sourceIsEmpty else {
+            ) else {
+                if sourceIsEmpty == nil {
+                    let sourceRows = try await TransactionRangeCollection.collect(using: transaction,
+                        from: .firstGreaterOrEqual(entityRange.begin),
+                        to: .firstGreaterOrEqual(entityRange.end),
+                        limit: 1,
+                        reverse: false,
+                        snapshot: false,
+                        streamingMode: .small
+                    )
+                    sourceIsEmpty = sourceRows.isEmpty
+                }
+                guard sourceIsEmpty == true else {
                     throw IndexStateError.missingStateForNonEmptyStore(
                         index: indexName
                     )
                 }
-                try transaction.setValue([IndexState.readable.rawValue], for: stateKey)
+                try transaction.setValue(
+                    [IndexState.readable.rawValue],
+                    for: makeStateKey(for: indexName)
+                )
                 logger.info("Initialized index '\(indexName)' for an empty store")
                 continue
-            }
-            guard let stateValue = storedBytes.first,
-                  let currentState = IndexState(rawValue: stateValue) else {
-                throw IndexStateError.invalidStateValue(storedBytes.first ?? 0)
             }
             switch currentState {
             case .readable:
@@ -281,17 +238,11 @@ public final class IndexLifecycleStore: Sendable {
     ) async throws {
         var sourceIsEmpty: Bool?
         for indexName in indexNames {
-            let stateKey = makeStateKey(for: indexName)
-            if let storedBytes = try await transaction.getValue(
-                for: stateKey,
+            if try await storedState(
+                of: indexName,
+                transaction: transaction,
                 snapshot: false
-            ) {
-                guard let stateValue = storedBytes.first,
-                      IndexState(rawValue: stateValue) != nil else {
-                    throw IndexStateError.invalidStateValue(
-                        storedBytes.first ?? 0
-                    )
-                }
+            ) != nil {
                 continue
             }
 
@@ -313,7 +264,7 @@ public final class IndexLifecycleStore: Sendable {
             }
             try transaction.setValue(
                 [IndexState.readable.rawValue],
-                for: stateKey
+                for: makeStateKey(for: indexName)
             )
             logger.info(
                 "Initialized index '\(indexName)' for an empty store"
@@ -323,43 +274,22 @@ public final class IndexLifecycleStore: Sendable {
 
     /// Validates index readability without creating or changing index state.
     ///
-    /// A missing state is safe only while the covered entity range is empty.
-    /// This keeps query execution read-only while preserving the same
-    /// fail-fast guarantee used during declarative initialization.
+    /// A missing state is an invariant violation for every existing namespace.
+    /// Dynamic partitions that have never existed are rejected before this
+    /// method by the partition catalog and therefore never reach admission.
     func validateReadableForRead(
         _ indexNames: [String],
-        entityRange: (begin: ByteString, end: ByteString),
         transaction: any TransactionAccess
     ) async throws {
-        var sourceIsEmpty: Bool?
         for indexName in indexNames {
-            let stateKey = makeStateKey(for: indexName)
-            let storedBytes = try await transaction.getValue(
-                for: stateKey,
+            guard let currentState = try await storedState(
+                of: indexName,
+                transaction: transaction,
                 snapshot: true
-            )
-            guard let storedBytes else {
-                if sourceIsEmpty == nil {
-                    let sourceRows = try await TransactionRangeCollection.collect(using: transaction,
-                        from: .firstGreaterOrEqual(entityRange.begin),
-                        to: .firstGreaterOrEqual(entityRange.end),
-                        limit: 1,
-                        reverse: false,
-                        snapshot: true,
-                        streamingMode: .small
-                    )
-                    sourceIsEmpty = sourceRows.isEmpty
-                }
-                guard sourceIsEmpty == true else {
-                    throw IndexStateError.missingStateForNonEmptyStore(
-                        index: indexName
-                    )
-                }
-                continue
-            }
-            guard let stateValue = storedBytes.first,
-                  let currentState = IndexState(rawValue: stateValue) else {
-                throw IndexStateError.invalidStateValue(storedBytes.first ?? 0)
+            ) else {
+                throw IndexStateError.missingPersistedState(
+                    index: indexName
+                )
             }
             guard currentState.isReadable else {
                 throw IndexStateError.indexNotReady(
@@ -374,7 +304,8 @@ public final class IndexLifecycleStore: Sendable {
 
     /// Disable an index (transition to DISABLED state)
     ///
-    /// This can be called from any state.
+    /// This can be called from any recognized state or when state is absent.
+    /// A malformed persisted state fails without being overwritten.
     ///
     /// - Parameter indexName: Name of the index
     public func disable(_ indexName: String) async throws {
@@ -392,18 +323,13 @@ public final class IndexLifecycleStore: Sendable {
     ///   - transaction: The transaction to use
     public func disable(_ indexName: String, transaction: any TransactionAccess) async throws {
         let stateKey = makeStateKey(for: indexName)
+        let currentState = try await storedState(
+            of: indexName,
+            transaction: transaction,
+            snapshot: false
+        ) ?? .disabled
 
-        // Read current state within transaction (for logging)
-        let currentState: IndexState
-        if let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
-           let stateValue = bytes.first,
-           let state = IndexState(rawValue: stateValue) {
-            currentState = state
-        } else {
-            currentState = .disabled
-        }
-
-        // Write new state (no validation - can disable from any state)
+        // Every persisted state was validated before this transition.
         try transaction.setValue([IndexState.disabled.rawValue], for: stateKey)
 
         logger.info("Disabled index '\(indexName)': \(currentState) → disabled")
@@ -419,16 +345,11 @@ public final class IndexLifecycleStore: Sendable {
     /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
     public func enable(_ indexName: String, transaction: any TransactionAccess) async throws {
         let stateKey = makeStateKey(for: indexName)
-
-        // Read current state within transaction
-        let currentState: IndexState
-        if let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
-           let stateValue = bytes.first,
-           let state = IndexState(rawValue: stateValue) {
-            currentState = state
-        } else {
-            currentState = .disabled
-        }
+        let currentState = try await storedState(
+            of: indexName,
+            transaction: transaction,
+            snapshot: false
+        ) ?? .disabled
 
         // Validate transition: only from DISABLED
         guard currentState == .disabled else {
@@ -454,22 +375,10 @@ public final class IndexLifecycleStore: Sendable {
     /// - Returns: Dictionary mapping index names to states
     public func states(of indexNames: [String]) async throws -> [String: IndexState] {
         return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
-            var states: [String: IndexState] = [:]
-
-            for indexName in indexNames {
-                let stateKey = self.makeStateKey(for: indexName)
-
-                guard let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
-                      let stateValue = bytes.first,
-                      let state = IndexState(rawValue: stateValue) else {
-                    states[indexName] = .disabled
-                    continue
-                }
-
-                states[indexName] = state
-            }
-
-            return states
+            try await self.states(
+                of: indexNames,
+                transaction: transaction
+            )
         }
     }
 
@@ -484,17 +393,14 @@ public final class IndexLifecycleStore: Sendable {
     /// - Returns: Dictionary mapping index names to states
     public func states(of indexNames: [String], transaction: any TransactionAccess) async throws -> [String: IndexState] {
         var states: [String: IndexState] = [:]
+        states.reserveCapacity(indexNames.count)
 
         for indexName in indexNames {
-            let stateKey = makeStateKey(for: indexName)
-
-            guard let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
-                  let stateValue = bytes.first,
-                  let state = IndexState(rawValue: stateValue) else {
-                states[indexName] = .disabled
-                continue
-            }
-            states[indexName] = state
+            states[indexName] = try await storedState(
+                of: indexName,
+                transaction: transaction,
+                snapshot: false
+            ) ?? .disabled
         }
 
         return states
@@ -507,18 +413,55 @@ public final class IndexLifecycleStore: Sendable {
     /// Key structure: `[subspace]["state"][indexName]`
     ///
     /// - Parameter indexName: Index name
-    /// - Returns: FDB key for storing index state
+    /// - Returns: Storage key for the persisted index state
     private func makeStateKey(for indexName: String) -> ByteString {
         return subspace.subspace("state").pack(Tuple(indexName))
+    }
+
+    /// Reads the complete persisted representation without materializing it.
+    ///
+    /// A missing key means the index has not entered its lifecycle yet. Every
+    /// present value must contain exactly one known `IndexState` byte.
+    private func storedState(
+        of indexName: String,
+        transaction: any TransactionAccess,
+        snapshot: Bool
+    ) async throws -> IndexState? {
+        let stateKey = makeStateKey(for: indexName)
+        guard let bytes = try await transaction.getValue(
+            for: stateKey,
+            snapshot: snapshot
+        ) else {
+            return nil
+        }
+        guard bytes.count == 1, let value = bytes.first else {
+            throw IndexStateError.invalidPersistedStateSize(
+                index: indexName,
+                byteCount: bytes.count
+            )
+        }
+        guard let state = IndexState(rawValue: value) else {
+            throw IndexStateError.unknownPersistedStateValue(
+                index: indexName,
+                value: value
+            )
+        }
+        return state
     }
 }
 
 // MARK: - Errors
 
 /// Errors that can occur during index state management
-public enum IndexStateError: Error, CustomStringConvertible {
-    /// Invalid state value found in database
-    case invalidStateValue(UInt8)
+public enum IndexStateError: Error, Sendable, Equatable, CustomStringConvertible {
+    /// Persisted state does not contain exactly one byte.
+    case invalidPersistedStateSize(index: String, byteCount: Int)
+
+    /// Persisted state contains a one-byte value unknown to IndexState.
+    case unknownPersistedStateValue(index: String, value: UInt8)
+
+    /// A total state lookup did not resolve one of its requested indexes.
+    case missingRequestedState(index: String)
 
     /// Invalid state transition attempted
     case invalidTransition(from: IndexState, to: IndexState, index: String, reason: String)
@@ -526,17 +469,26 @@ public enum IndexStateError: Error, CustomStringConvertible {
     /// Index metadata is absent even though source entities already exist.
     case missingStateForNonEmptyStore(index: String)
 
+    /// An existing namespace has no persisted lifecycle state for an index.
+    case missingPersistedState(index: String)
+
     /// An index is explicitly incomplete or disabled.
     case indexNotReady(index: String, state: IndexState)
 
     public var description: String {
         switch self {
-        case .invalidStateValue(let value):
-            return "Invalid index state value: \(value)"
+        case .invalidPersistedStateSize(let index, let byteCount):
+            return "Invalid persisted state size for index '\(index)': expected 1 byte, found \(byteCount)"
+        case .unknownPersistedStateValue(let index, let value):
+            return "Unknown persisted state value for index '\(index)': \(value)"
+        case .missingRequestedState(let index):
+            return "State lookup omitted requested index '\(index)'"
         case .invalidTransition(let from, let to, let index, let reason):
             return "Invalid state transition for index '\(index)': \(from) → \(to). Reason: \(reason)"
         case .missingStateForNonEmptyStore(let index):
             return "Index '\(index)' has no state but its source store is not empty"
+        case .missingPersistedState(let index):
+            return "Index '\(index)' has no persisted lifecycle state"
         case .indexNotReady(let index, let state):
             return "Index '\(index)' is not readable: \(state)"
         }

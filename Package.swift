@@ -599,6 +599,7 @@ let package = Package(
                 "ScalarIndex",
                 "VectorIndex",
                 "RelationshipIndex",
+                "TestSupport",
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],

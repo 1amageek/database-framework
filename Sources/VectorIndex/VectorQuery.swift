@@ -34,6 +34,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
     private let fieldName: String
     private let dimensions: Int
+    private let selectedIndexName: String?
     private let graphCache: HNSWGraphCache
     private var graphResourceLimits: HNSWGraphResourceLimits
     private var queryVector: [Float]?
@@ -46,12 +47,14 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         queryContext: IndexQueryContext,
         fieldName: String,
         dimensions: Int,
+        selectedIndexName: String? = nil,
         graphCache: HNSWGraphCache = HNSWGraphCache(),
         graphResourceLimits: HNSWGraphResourceLimits = .default
     ) {
         self.queryContext = queryContext
         self.fieldName = fieldName
         self.dimensions = dimensions
+        self.selectedIndexName = selectedIndexName
         self.graphCache = graphCache
         self.graphResourceLimits = graphResourceLimits
     }
@@ -258,17 +261,23 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         let configs = queryContext.context.container.indexConfigurations[indexName] ?? []
         let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs)
 
-        // Get index subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace: Subspace
-        if let subspaceKey = runtimePolicy?.subspaceKey {
-            indexSubspace = typeSubspace.subspace(indexName).subspace(subspaceKey)
-        } else {
-            indexSubspace = typeSubspace.subspace(indexName)
-        }
-
         // Execute search using appropriate maintainer
-        let primaryKeysWithDistances: [(primaryKey: [any TupleElement], distance: Double)] = try await queryContext.withTransaction(configuration: configuration) { transaction in
+        let primaryKeysWithDistances: [(primaryKey: [any TupleElement], distance: Double)] =
+            try await queryContext.withReadableIndex(
+                named: indexName,
+                kindIdentifier: VectorIndexSpecification.identifier,
+                for: T.self,
+                configuration: configuration
+            ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            let indexSubspace: Subspace
+            if let subspaceKey = runtimePolicy?.subspaceKey {
+                indexSubspace = readableIndex.subspace.subspace(subspaceKey)
+            } else {
+                indexSubspace = readableIndex.subspace
+            }
             // Create index for maintainer
             let index = Index(
                 name: indexName,
@@ -456,16 +465,21 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             throw VectorQueryError.filterNotSupported("Post-filtered search requires an explicitly configured HNSW index.")
         }
 
-        // Build subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace: Subspace
-        if let subspaceKey = runtimePolicy?.subspaceKey {
-            indexSubspace = typeSubspace.subspace(indexName).subspace(subspaceKey)
-        } else {
-            indexSubspace = typeSubspace.subspace(indexName)
-        }
-
-        return try await queryContext.withTransaction(configuration: configuration) { transaction in
+        return try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: VectorIndexSpecification.identifier,
+            for: T.self,
+            configuration: configuration
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            let indexSubspace: Subspace
+            if let subspaceKey = runtimePolicy?.subspaceKey {
+                indexSubspace = readableIndex.subspace.subspace(subspaceKey)
+            } else {
+                indexSubspace = readableIndex.subspace
+            }
             // Create the HNSW maintainer
             let index = Index(
                 name: indexName,
@@ -540,21 +554,28 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     /// 1. Filters by kindIdentifier ("vector") for efficiency
     /// 2. Matches by fieldName within the kind
     private func findIndexDescriptor() throws -> IndexDescriptor? {
-        try T.indexDescriptors.first { descriptor in
-            // 1. Filter by kindIdentifier
+        try matchingIndexDescriptors().first
+    }
+
+    private func matchingIndexDescriptors() throws -> [IndexDescriptor] {
+        try queryContext.indexDescriptors(for: T.self).filter { descriptor in
             guard descriptor.kindIdentifier
-                    == VectorIndexSpecification.identifier else {
+                    == VectorIndexSpecification.identifier,
+                  descriptor.fieldNames == [fieldName] else {
                 return false
             }
-            // 2. Match by fieldName
-            return descriptor.fieldNames.contains(fieldName)
+            let specification = try VectorIndexSpecification(descriptor.kind)
+            return specification.dimensions == dimensions
+                && specification.metric.rawValue == distanceMetric.rawValue
         }
     }
 
     private func resolveVectorIndex(
         named indexName: String
     ) throws -> (IndexDescriptor, VectorIndexSpecification) {
-        guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
+        guard let descriptor = queryContext.indexDescriptors(
+            for: T.self
+        ).first(where: { $0.name == indexName }) else {
             throw VectorQueryError.indexNotFound(indexName)
         }
         let specification = try VectorIndexSpecification(descriptor.kind)
@@ -578,8 +599,23 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
     /// Resolve the declared vector index for the selected field.
     private func buildIndexName() throws -> String {
-        guard let descriptor = try findIndexDescriptor() else {
+        let matches = try matchingIndexDescriptors()
+        if let selectedIndexName {
+            guard matches.contains(where: {
+                $0.name == selectedIndexName
+            }) else {
+                throw VectorQueryError.indexNotFound(selectedIndexName)
+            }
+            return selectedIndexName
+        }
+        guard let descriptor = matches.first else {
             throw VectorQueryError.indexNotFound("\(T.persistableType).\(fieldName)")
+        }
+        guard matches.count == 1 else {
+            throw VectorQueryError.ambiguousIndexes(
+                entity: T.persistableType,
+                field: fieldName
+            )
         }
         return descriptor.name
     }
@@ -842,6 +878,9 @@ public enum VectorQueryError: Error, CustomStringConvertible {
     /// The requested metric differs from the index construction metric.
     case metricMismatch(expected: String, actual: String)
 
+    /// More than one vector index matches the requested field and semantics.
+    case ambiguousIndexes(entity: String, field: String)
+
     /// Filter not supported for this index type
     case filterNotSupported(String)
 
@@ -862,6 +901,8 @@ public enum VectorQueryError: Error, CustomStringConvertible {
             return "Vector index '\(name)' does not match the requested field"
         case .metricMismatch(let expected, let actual):
             return "Vector metric mismatch: expected \(expected), got \(actual)"
+        case .ambiguousIndexes(let entity, let field):
+            return "Multiple vector indexes match \(entity).\(field)"
         case .filterNotSupported(let reason):
             return "Filter not supported: \(reason)"
         case .closureFilterUnsupported:

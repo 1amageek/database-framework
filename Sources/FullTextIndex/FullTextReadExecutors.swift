@@ -45,6 +45,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
     func executeRows<T: Persistable>(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: IndexDescriptor,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
@@ -72,7 +73,8 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         }
         var builder = FullTextQueryBuilder<T>(
             queryContext: queryContext,
-            field: FieldIdentity(name: fieldName, number: fieldNumber)
+            field: FieldIdentity(name: fieldName, number: fieldNumber),
+            selectedIndexName: index.name
         )
             .terms(terms, mode: matchMode)
 
@@ -231,6 +233,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: PolymorphicIndexMetadata,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
@@ -264,21 +267,13 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             orderBy: orderByFields
         )
 
-        let descriptor = resolveDescriptor(
-            in: group,
-            indexName: indexScan.indexName,
-            fieldName: fieldName
-        )
-        guard let descriptor else {
-            throw FullTextReadError.invalidParameter(indexScan.indexName)
+        guard index.kindIdentifier == kindIdentifier,
+              index.fieldNames.contains(fieldName) else {
+            throw FullTextReadError.invalidParameter(index.name)
         }
         let configuration = try FullTextIndexConfiguration(
-            metadata: descriptor
+            metadata: index
         )
-        let polySubspace = try await context.container.resolvePolymorphicDirectory(for: group.identifier)
-        let indexSubspace = polySubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexScan.indexName)
 
         if includeFacets {
             let facetFields = try requireStringArray(FullTextReadParameter.facetFields, from: indexScan.parameters)
@@ -295,7 +290,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 limit: limit,
                 facetFields: facetFields,
                 facetLimit: facetLimit,
-                indexSubspace: indexSubspace,
+                index: index,
                 execution: execution
             )
             let rows = try result.items.map { entity in
@@ -329,7 +324,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 matchMode: matchMode,
                 limit: limit,
                 bm25Params: BM25Parameters(k1: Float(k1), b: Float(b)),
-                indexSubspace: indexSubspace,
+                index: index,
                 execution: execution
             )
             let rows = try results.map { result in
@@ -352,7 +347,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             terms: terms,
             matchMode: matchMode,
             limit: limit,
-            indexSubspace: indexSubspace,
+            index: index,
             execution: execution
         )
         let rows = try results.map { entity in
@@ -403,17 +398,25 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         terms: [String],
         matchMode: TextMatchMode,
         limit: Int?,
-        indexSubspace: Subspace,
+        index: PolymorphicIndexMetadata,
         execution: CanonicalReadExecution
     ) async throws -> [PolymorphicEntity] {
         let matchingIDs = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction in
+        ) { transaction -> [Tuple] in
+            guard let readableIndex = try await context.container
+                .readablePolymorphicIndex(
+                    index,
+                    in: group,
+                    transaction: transaction
+                ) else {
+                return []
+            }
             if matchMode == .phrase {
                 return try await searchPhrase(
                     configuration: configuration,
                     terms: terms,
-                    indexSubspace: indexSubspace,
+                    indexSubspace: readableIndex.subspace,
                     transaction: transaction
                 )
             }
@@ -421,7 +424,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 terms: terms,
                 matchMode: matchMode,
                 configuration: configuration,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction
             )
         }
@@ -446,18 +449,26 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         matchMode: TextMatchMode,
         limit: Int?,
         bm25Params: BM25Parameters,
-        indexSubspace: Subspace,
+        index: PolymorphicIndexMetadata,
         execution: CanonicalReadExecution
     ) async throws -> [(entity: PolymorphicEntity, score: Double)] {
         let scoredResults = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction in
+        ) { transaction -> [(id: Tuple, score: Double)] in
+            guard let readableIndex = try await context.container
+                .readablePolymorphicIndex(
+                    index,
+                    in: group,
+                    transaction: transaction
+                ) else {
+                return []
+            }
             return try await searchWithScores(
                 terms: terms,
                 matchMode: matchMode,
                 configuration: configuration,
                 bm25Params: bm25Params,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction,
                 limit: limit
             )
@@ -500,17 +511,25 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         limit: Int?,
         facetFields: [String],
         facetLimit: Int,
-        indexSubspace: Subspace,
+        index: PolymorphicIndexMetadata,
         execution: CanonicalReadExecution
     ) async throws -> (items: [PolymorphicEntity], facets: [String: [(value: String, count: Int64)]], totalCount: Int) {
         let matchingIDs = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction in
+        ) { transaction -> [Tuple] in
+            guard let readableIndex = try await context.container
+                .readablePolymorphicIndex(
+                    index,
+                    in: group,
+                    transaction: transaction
+                ) else {
+                return []
+            }
             if matchMode == .phrase {
                 return try await searchPhrase(
                     configuration: configuration,
                     terms: terms,
-                    indexSubspace: indexSubspace,
+                    indexSubspace: readableIndex.subspace,
                     transaction: transaction
                 )
             }
@@ -518,7 +537,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 terms: terms,
                 matchMode: matchMode,
                 configuration: configuration,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction
             )
         }
@@ -942,19 +961,6 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             results.append(elements)
         }
         return results
-    }
-
-    private func resolveDescriptor(
-        in group: PolymorphicGroup,
-        indexName: String,
-        fieldName: String
-    ) -> PolymorphicIndexMetadata? {
-        if let descriptor = group.indexes.first(where: { $0.name == indexName }) {
-            return descriptor
-        }
-        return group.indexes.first(where: {
-            $0.kindIdentifier == kindIdentifier && $0.fieldNames.contains(fieldName)
-        })
     }
 
     private func runtimeInteger(

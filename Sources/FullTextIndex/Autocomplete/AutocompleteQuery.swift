@@ -45,14 +45,19 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
         guard fetchLimit >= 0 else {
             throw AutocompleteError.invalidLimit(fetchLimit)
         }
-        let subspace = try await queryContext.indexSubspace(for: Item.self)
-            .subspace(resolved.descriptor.name)
-        let reader = AutocompleteIndexReader(
-            subspace: subspace,
-            minPrefixLength: resolved.configuration.minPrefixLength
-        )
-        return try await queryContext.withTransaction { transaction in
-            try await reader.suggestions(
+        return try await queryContext.withReadableIndex(
+            named: resolved.descriptor.name,
+            kindIdentifier: resolved.descriptor.kindIdentifier,
+            for: Item.self
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            let reader = AutocompleteIndexReader(
+                subspace: readableIndex.subspace,
+                minPrefixLength: resolved.configuration.minPrefixLength
+            )
+            return try await reader.suggestions(
                 field: resolved.field.name,
                 prefix: searchPrefix,
                 limit: fetchLimit,
@@ -66,14 +71,19 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
         guard fetchLimit >= 0 else {
             throw AutocompleteError.invalidLimit(fetchLimit)
         }
-        let subspace = try await queryContext.indexSubspace(for: Item.self)
-            .subspace(resolved.descriptor.name)
-        let reader = AutocompleteIndexReader(
-            subspace: subspace,
-            minPrefixLength: resolved.configuration.minPrefixLength
-        )
-        return try await queryContext.withTransaction { transaction in
-            try await reader.popularTerms(
+        return try await queryContext.withReadableIndex(
+            named: resolved.descriptor.name,
+            kindIdentifier: resolved.descriptor.kindIdentifier,
+            for: Item.self
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            let reader = AutocompleteIndexReader(
+                subspace: readableIndex.subspace,
+                minPrefixLength: resolved.configuration.minPrefixLength
+            )
+            return try await reader.popularTerms(
                 field: resolved.field.name,
                 limit: fetchLimit,
                 transaction: transaction
@@ -95,7 +105,7 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
         guard let field else {
             throw AutocompleteError.noFieldSpecified
         }
-        let matches = try Item.indexDescriptors.filter {
+        let matches = queryContext.indexDescriptors(for: Item.self).filter {
             $0.kindIdentifier == "autocomplete"
                 && $0.kind.fields.contains(where: { $0.identity == field })
         }

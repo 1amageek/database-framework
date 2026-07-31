@@ -160,14 +160,18 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
 
         let indexName = try resolvedIndexName()
 
-        // Get index subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute query using index
-        return try await queryContext.withTransaction(configuration: configuration) { transaction in
-            try await self.executeWithIndex(
-                indexSubspace: indexSubspace,
+        return try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: "rank",
+            for: T.self,
+            configuration: configuration
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            return try await self.executeWithIndex(
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction,
                 cachePolicy: cachePolicy
             )

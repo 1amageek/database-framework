@@ -139,12 +139,19 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         configuration: TransactionConfiguration = .default
     ) async throws -> [(version: Version, item: T)] {
         let indexName = try self.indexName ?? resolveIndexName()
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
 
-        let rawResults: [(version: Version, data: ByteString)] = try await queryContext.withTransaction(configuration: configuration) { transaction in
+        let rawResults: [(version: Version, data: ByteString)] = try await queryContext
+            .withReadableIndex(
+                named: indexName,
+                kindIdentifier: "version",
+                for: T.self,
+                configuration: configuration
+            ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
             let maintainer = try self.createMaintainer(
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 indexName: indexName
             )
             let pk = self.primaryKey.map { $0 as any TupleElement }
@@ -209,10 +216,6 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         if let queryLimit {
             parameters[VersionReadParameter.limit] = .uint64(queryLimit)
         }
-        if let indexName {
-            parameters[VersionReadParameter.indexName] = .string(indexName)
-        }
-
         return SelectQuery(
             projection: .all,
             source: .table(TableRef(table: T.persistableType)),
@@ -230,7 +233,9 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
     // MARK: - Private Methods
 
     private func resolveIndexName() throws -> String {
-        guard let descriptor = try T.indexDescriptors.first(where: {
+        guard let descriptor = queryContext.indexDescriptors(
+            for: T.self
+        ).first(where: {
             $0.kindIdentifier == "version"
         }) else {
             throw VersionQueryError.indexNotFound(
@@ -244,7 +249,9 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         indexSubspace: Subspace,
         indexName: String
     ) throws -> VersionIndexMaintainer<T> {
-        guard let descriptor = try T.indexDescriptors.first(where: {
+        guard let descriptor = queryContext.indexDescriptors(
+            for: T.self
+        ).first(where: {
             $0.name == indexName && $0.kindIdentifier == "version"
         }) else {
             throw VersionQueryError.indexNotFound(indexName)

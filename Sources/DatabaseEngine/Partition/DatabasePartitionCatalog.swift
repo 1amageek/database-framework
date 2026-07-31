@@ -70,6 +70,33 @@ package struct DatabasePartitionCatalog: Sendable {
         try transaction.setValue(storageBytes, for: key)
     }
 
+    package func contains(
+        entity: String,
+        partitions: FieldObject,
+        transaction: any TransactionAccess
+    ) async throws -> Bool {
+        try validate(entity: entity, partitions: partitions)
+        let entry = DatabasePartitionCatalogEntry(
+            entity: entity,
+            partitions: partitions
+        )
+        let bytes = try StorageFrameCodec.encode(
+            entry,
+            limits: storageLimits
+        )
+        let key = entryKey(entity: entity, encodedEntry: bytes)
+        guard let existing = try await transaction.getValue(
+            for: key,
+            snapshot: false
+        ) else {
+            return false
+        }
+        guard existing == bytes else {
+            throw DatabasePartitionCatalogError.digestCollision
+        }
+        return true
+    }
+
     package func page(
         entity: String? = nil,
         continuation: ByteString? = nil,

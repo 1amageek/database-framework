@@ -36,6 +36,19 @@ public struct SPARQLEntryPoint<T: Persistable>: Sendable {
         self.queryContext = queryContext
     }
 
+    /// Bind this query to one dynamic entity partition.
+    public func partition<Value: Sendable & FieldValueRepresentable>(
+        _ field: Field<T, Value>,
+        equals value: Value
+    ) throws -> SPARQLEntryPoint<T> {
+        SPARQLEntryPoint(
+            queryContext: try queryContext.withPartition(
+                field,
+                equals: value
+            )
+        )
+    }
+
     // MARK: - Index Specification
 
     /// Specify the graph index fields
@@ -53,7 +66,9 @@ public struct SPARQLEntryPoint<T: Persistable>: Sendable {
         let subjectField = subject.name
         let predicateField = predicate.name
         let objectField = object.name
-        let matches = try T.indexDescriptors.compactMap {
+        let matches = try queryContext.indexDescriptors(
+            for: T.self
+        ).compactMap {
             try RDFDatasetIndexSelection(descriptor: $0)
         }
             .filter {
@@ -71,7 +86,9 @@ public struct SPARQLEntryPoint<T: Persistable>: Sendable {
     ///
     /// - Returns: SPARQL query builder configured with the default index
     public func defaultIndex() throws -> SPARQLQueryBuilder<T> {
-        let candidates = try T.indexDescriptors.compactMap {
+        let candidates = try queryContext.indexDescriptors(
+            for: T.self
+        ).compactMap {
             try RDFDatasetIndexSelection(descriptor: $0)
         }
         return SPARQLQueryBuilder(
@@ -188,7 +205,9 @@ extension DatabaseContext {
         guard offset >= 0, limit.map({ $0 >= 0 }) ?? true else {
             throw SPARQLQueryError.invalidPagination
         }
-        let candidates = try T.indexDescriptors.compactMap {
+        let candidates = try indexQueryContext.indexDescriptors(
+            for: T.self
+        ).compactMap {
             try RDFDatasetIndexSelection(descriptor: $0)
         }
         guard candidates.count == 1 else {
@@ -196,20 +215,6 @@ extension DatabaseContext {
         }
         let selection = candidates[0]
 
-        let typeSubspace = try await indexQueryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(selection.indexName)
-        let source = try RDFDatasetSource(
-            entityName: T.persistableType,
-            selection: selection,
-            indexSubspace: indexSubspace
-        )
-
-        let executor = SPARQLQueryExecutor(
-            database: container.engine,
-            wallClock: container.wallClock,
-            sources: [source],
-            datasetScope: datasetScope
-        )
         let workMeter = DatabaseWorkMeter(
             budget: budget,
             monotonicClock: container.monotonicClock
@@ -234,12 +239,40 @@ extension DatabaseContext {
         let needsAllResults = hasOrderBy || distinct
 
         // Step 1: Pattern evaluation (WHERE + GROUP BY / HAVING)
-        var (bindings, stats) = try await executor.execute(
-            pattern: pattern,
-            limit: needsAllResults ? nil : limit,
-            offset: needsAllResults ? 0 : offset,
-            workMeter: workMeter
-        )
+        var (bindings, stats) = try await indexQueryContext
+            .withReadableIndex(
+                named: selection.indexName,
+                kindIdentifier: selection.kindIdentifier,
+                for: T.self
+            ) {
+                readableIndex,
+                transaction -> ([VariableBinding], ExecutionStatistics) in
+                let sources: [RDFDatasetSource]
+                if let readableIndex {
+                    sources = [
+                        try RDFDatasetSource(
+                            entityName: T.persistableType,
+                            selection: selection,
+                            indexSubspace: readableIndex.subspace
+                        )
+                    ]
+                } else {
+                    sources = []
+                }
+                let executor = SPARQLQueryExecutor(
+                    database: self.container.engine,
+                    wallClock: self.container.wallClock,
+                    sources: sources,
+                    datasetScope: datasetScope
+                )
+                return try await executor.executeInTransaction(
+                    pattern: pattern,
+                    transaction: transaction,
+                    limit: needsAllResults ? nil : limit,
+                    offset: needsAllResults ? 0 : offset,
+                    workMeter: workMeter
+                )
+            }
 
         // Step 2: ORDER BY (before projection, per W3C Section 15)
         if hasOrderBy {
@@ -309,35 +342,52 @@ extension DatabaseContext {
         datasetScope: SPARQLDatasetExecutionScope = .implicit,
         budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLResult {
-        let candidates = try T.indexDescriptors.compactMap {
+        let candidates = try indexQueryContext.indexDescriptors(
+            for: T.self
+        ).compactMap {
             try RDFDatasetIndexSelection(descriptor: $0)
         }
         guard candidates.count == 1 else {
             throw SPARQLQueryError.indexNotConfigured
         }
         let selection = candidates[0]
-        let typeSubspace = try await indexQueryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(selection.indexName)
-        let source = try RDFDatasetSource(
-            entityName: T.persistableType,
-            selection: selection,
-            indexSubspace: indexSubspace
-        )
-        let executor = SPARQLQueryExecutor(
-            database: container.engine,
-            wallClock: container.wallClock,
-            sources: [source],
-            datasetScope: datasetScope
-        )
         let workMeter = DatabaseWorkMeter(
             budget: budget,
             monotonicClock: container.monotonicClock
         )
         let startTime = indexQueryContext.graphClock.now()
-        var (bindings, statistics) = try await executor.execute(
-            selectPlan: plan,
-            workMeter: workMeter
-        )
+        var (bindings, statistics) = try await indexQueryContext
+            .withReadableIndex(
+                named: selection.indexName,
+                kindIdentifier: selection.kindIdentifier,
+                for: T.self
+            ) {
+                readableIndex,
+                transaction -> ([VariableBinding], ExecutionStatistics) in
+                let sources: [RDFDatasetSource]
+                if let readableIndex {
+                    sources = [
+                        try RDFDatasetSource(
+                            entityName: T.persistableType,
+                            selection: selection,
+                            indexSubspace: readableIndex.subspace
+                        )
+                    ]
+                } else {
+                    sources = []
+                }
+                let executor = SPARQLQueryExecutor(
+                    database: self.container.engine,
+                    wallClock: self.container.wallClock,
+                    sources: sources,
+                    datasetScope: datasetScope
+                )
+                return try await executor.executeInTransaction(
+                    selectPlan: plan,
+                    transaction: transaction,
+                    workMeter: workMeter
+                )
+            }
         statistics.durationNs = indexQueryContext.graphClock.now().uptimeNanoseconds
             - startTime.uptimeNanoseconds
 

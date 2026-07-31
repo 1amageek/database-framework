@@ -4,6 +4,7 @@ import DatabaseTypes
 public enum DatabaseGraphAlgorithmError: Error, Sendable, CustomStringConvertible {
     case sourceIndexNotFound(String)
     case sourceIndexHasNoUniqueOwner(String)
+    case sourcePartitionNotFound(index: String, entity: String)
     case unsupportedSourceIndex(index: String, kind: String)
     case expectedPropertyGraphIdentifier(GraphAlgorithmOperation.Term)
     case expectedRDFTerm(GraphAlgorithmOperation.Term)
@@ -29,6 +30,8 @@ public enum DatabaseGraphAlgorithmError: Error, Sendable, CustomStringConvertibl
             return "Graph source index '\(index)' was not found"
         case .sourceIndexHasNoUniqueOwner(let index):
             return "Graph source index '\(index)' must belong to exactly one schema entity"
+        case .sourcePartitionNotFound(let index, let entity):
+            return "Graph source index '\(index)' has no registered partition for entity '\(entity)'"
         case .unsupportedSourceIndex(let index, let kind):
             return "Index '\(index)' has unsupported graph kind '\(kind)'"
         case .expectedPropertyGraphIdentifier(let value):

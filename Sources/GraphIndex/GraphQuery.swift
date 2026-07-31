@@ -581,12 +581,6 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
             throw GraphQueryError.invalidLimit(limitCount)
         }
 
-        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
-            index,
-            for: T.self,
-            in: queryContext
-        )
-
         // Extract exact values from patterns
         let fromValue = fromPattern.exactValue
         let edgeValue = edgePattern.exactValue
@@ -594,6 +588,15 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
 
         // Execute scan with property filters
         return try await queryContext.withTransaction { transaction in
+            guard let resolvedIndex = try await PropertyGraphIndexResolver
+                .resolve(
+                    index,
+                    for: T.self,
+                    in: queryContext,
+                    transaction: transaction
+                ) else {
+                return []
+            }
             let snapshot = GraphReadSnapshot(
                 transaction: transaction,
                 monotonicClock: queryContext.context.container.monotonicClock

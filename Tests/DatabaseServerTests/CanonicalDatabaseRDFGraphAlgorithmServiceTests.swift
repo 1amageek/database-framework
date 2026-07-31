@@ -15,7 +15,8 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
         let source: ResolvedDatabaseGraphSource
 
         func resolve(
-            _ source: GraphAlgorithmOperation.Source
+            _ source: GraphAlgorithmOperation.Source,
+            transaction: any TransactionAccess
         ) async throws -> ResolvedDatabaseGraphSource {
             self.source
         }

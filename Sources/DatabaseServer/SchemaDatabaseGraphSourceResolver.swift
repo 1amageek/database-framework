@@ -18,7 +18,8 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
     }
 
     public func resolve(
-        _ source: GraphAlgorithmOperation.Source
+        _ source: GraphAlgorithmOperation.Source,
+        transaction: any TransactionAccess
     ) async throws -> ResolvedDatabaseGraphSource {
         let candidates = container.schema.entities.flatMap { entity in
             entity.indexDescriptors
@@ -33,11 +34,19 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
         }
 
         let queryContext = IndexQueryContext(context: container.newContext())
-        let indexRoot = try await queryContext.indexSubspace(
+        guard let readableIndex = try await queryContext.readableIndex(
+            named: owned.descriptor.name,
+            kindIdentifier: owned.descriptor.kindIdentifier,
             forEntityName: owned.entity.name,
-            partitions: source.partitions
-        )
-        let indexSubspace = indexRoot.subspace(source.index)
+            partitions: source.partitions,
+            transaction: transaction
+        ) else {
+            throw DatabaseGraphAlgorithmError.sourcePartitionNotFound(
+                index: source.index,
+                entity: owned.entity.name
+            )
+        }
+        let indexSubspace = readableIndex.subspace
 
         if owned.descriptor.kindIdentifier == "graph" {
             return try propertyGraphSource(

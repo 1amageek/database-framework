@@ -48,6 +48,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
     func executeRows<T: Persistable>(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: IndexDescriptor,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
@@ -81,6 +82,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
             queryContext: queryContext,
             fieldName: fieldName,
             dimensions: dimensions,
+            selectedIndexName: index.name,
             graphCache: graphCache,
             graphResourceLimits: graphResourceLimits
         )
@@ -149,6 +151,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: PolymorphicIndexMetadata,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
@@ -164,21 +167,16 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             throw VectorReadError.invalidParameter(VectorReadParameter.metric)
         }
 
-        let descriptor = resolveDescriptor(
-            in: group,
-            indexName: indexScan.indexName,
-            fieldName: fieldName
-        )
         let concreteDescriptor = try resolveConcreteDescriptor(
             schema: context.container.schema,
             group: group,
-            indexName: indexScan.indexName
+            indexName: index.name
         )
         let specification = try resolveSpecification(
             fieldName: fieldName,
             dimensions: dimensions,
             metricRawValue: metricRawValue,
-            groupDescriptor: descriptor,
+            groupDescriptor: index,
             concreteDescriptor: concreteDescriptor
         )
         let execution = CanonicalReadExecution.resolve(
@@ -200,22 +198,28 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             orderBy: orderByFields
         )
 
-        let polySubspace = try await context.container.resolvePolymorphicDirectory(for: group.identifier)
-        let baseIndexSubspace = polySubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexScan.indexName)
-        let indexSubspace = try resolvedIndexSubspace(
-            baseIndexSubspace: baseIndexSubspace,
-            context: context,
-            indexName: indexScan.indexName
-        )
-
         let primaryKeysWithDistances = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction in
-            try await executeSearch(
+        ) {
+            transaction -> [
+                (primaryKey: [any TupleElement], distance: Double)
+            ] in
+            guard let readableIndex = try await context.container
+                .readablePolymorphicIndex(
+                    index,
+                    in: group,
+                    transaction: transaction
+                ) else {
+                return []
+            }
+            let indexSubspace = try resolvedIndexSubspace(
+                baseIndexSubspace: readableIndex.subspace,
+                context: context,
+                indexName: index.name
+            )
+            return try await executeSearch(
                 specification: specification,
-                indexName: indexScan.indexName,
+                indexName: index.name,
                 fieldName: fieldName,
                 indexSubspace: indexSubspace,
                 queryVector: queryVector,
@@ -368,12 +372,9 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         fieldName: String,
         dimensions: Int,
         metricRawValue: String,
-        groupDescriptor: PolymorphicIndexMetadata?,
+        groupDescriptor: PolymorphicIndexMetadata,
         concreteDescriptor: IndexDescriptor
     ) throws -> VectorIndexSpecification {
-        guard let groupDescriptor else {
-            throw VectorReadError.indexNotFound(fieldName)
-        }
         guard groupDescriptor.kindIdentifier
                 == VectorIndexSpecification.identifier,
               groupDescriptor.subspaceStructure == .hierarchical,
@@ -399,19 +400,6 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             throw VectorReadError.invalidParameter(VectorReadParameter.metric)
         }
         return specification
-    }
-
-    private func resolveDescriptor(
-        in group: PolymorphicGroup,
-        indexName: String,
-        fieldName: String
-    ) -> PolymorphicIndexMetadata? {
-        if let descriptor = group.indexes.first(where: { $0.name == indexName }) {
-            return descriptor
-        }
-        return group.indexes.first(where: {
-            $0.kindIdentifier == kindIdentifier && $0.fieldNames.contains(fieldName)
-        })
     }
 
     private func resolveConcreteDescriptor(

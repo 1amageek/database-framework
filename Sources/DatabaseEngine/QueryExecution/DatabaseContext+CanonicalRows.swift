@@ -302,15 +302,31 @@ extension DatabaseContext {
                     "Polymorphic logical sources currently support only index access paths"
                 )
             }
-            guard let executor = container.runtimeConfiguration.readExecutors.polymorphicIndexExecutor(
-                for: indexScan.kindIdentifier
-            ) else {
-                throw CanonicalReadError.executorNotRegistered(indexScan.kindIdentifier)
-            }
             let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
+            guard let index = group.indexes.first(
+                where: { $0.name == indexScan.indexName }
+            ) else {
+                throw CanonicalReadError.indexHintNotFound(
+                    "Index '\(indexScan.indexName)' is not declared by polymorphic group '\(group.identifier)'"
+                )
+            }
+            guard index.kindIdentifier == indexScan.kindIdentifier else {
+                throw CanonicalReadError.unsupportedAccessPath(
+                    "Index '\(index.name)' has kind '\(index.kindIdentifier)', not '\(indexScan.kindIdentifier)'"
+                )
+            }
+            guard let executor = container.runtimeConfiguration.readExecutors
+                .polymorphicIndexExecutor(
+                    for: index.kindIdentifier
+                ) else {
+                throw CanonicalReadError.executorNotRegistered(
+                    index.kindIdentifier
+                )
+            }
             let rowSet = try await executor.executeRows(
                 context: self,
                 selectQuery: selectQuery,
+                index: index,
                 indexScan: indexScan,
                 group: group,
                 options: options,
@@ -481,6 +497,18 @@ extension DatabaseContext {
         options: ReadExecutionContext
     ) async throws -> IndexReadResult {
         let entity = try resolveEntity(named: tableRef.table)
+        guard let index = entity.indexDescriptors.first(
+            where: { $0.name == indexScan.indexName }
+        ) else {
+            throw CanonicalReadError.indexHintNotFound(
+                "Index '\(indexScan.indexName)' is not declared by entity '\(entity.name)'"
+            )
+        }
+        guard index.kindIdentifier == indexScan.kindIdentifier else {
+            throw CanonicalReadError.unsupportedAccessPath(
+                "Index '\(index.name)' has kind '\(index.kindIdentifier)', not '\(indexScan.kindIdentifier)'"
+            )
+        }
         guard let runtime = container.runtimeConfiguration
             .entityRuntimes.registration(named: entity.name) else {
             throw CanonicalReadError.unsupportedSelectQuery(
@@ -488,7 +516,7 @@ extension DatabaseContext {
             )
         }
         guard let result = try await runtime.executeIndexRows(
-            kindIdentifier: indexScan.kindIdentifier,
+            index: index,
             context: self,
             selectQuery: selectQuery,
             indexScan: indexScan,

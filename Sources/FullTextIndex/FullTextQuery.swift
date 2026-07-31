@@ -31,6 +31,7 @@ import StorageKit
 public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
     private let field: FieldIdentity
+    private let selectedIndexName: String?
     private var searchTerms: [String] = []
     private var matchMode: TextMatchMode = .all
     private var fetchLimit: Int?
@@ -40,10 +41,12 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
     internal init(
         queryContext: IndexQueryContext,
-        field: FieldIdentity
+        field: FieldIdentity,
+        selectedIndexName: String? = nil
     ) {
         self.queryContext = queryContext
         self.field = field
+        self.selectedIndexName = selectedIndexName
     }
 
     /// Set search terms and match mode
@@ -183,17 +186,21 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             named: indexName
         )
 
-        // Get index subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute search within transaction
-        let matchingIds: [Tuple] = try await queryContext.withTransaction(configuration: configuration) { transaction in
+        let matchingIds: [Tuple] = try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: "fulltext",
+            for: T.self,
+            configuration: configuration
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
             if self.matchMode == .phrase {
                 // Phrase search requires position-verified matching via maintainer
                 return try await self.searchPhrase(
                     indexName: indexName,
-                    indexSubspace: indexSubspace,
+                    indexSubspace: readableIndex.subspace,
                     transaction: transaction
                 )
             }
@@ -201,7 +208,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
                 configuration: indexConfiguration,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction
             )
         }
@@ -285,16 +292,20 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             named: indexName
         )
 
-        // Get index subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute search within transaction
-        let matchingIds: [Tuple] = try await queryContext.withTransaction(configuration: configuration) { transaction in
+        let matchingIds: [Tuple] = try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: "fulltext",
+            for: T.self,
+            configuration: configuration
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
             if self.matchMode == .phrase {
                 return try await self.searchPhrase(
                     indexName: indexName,
-                    indexSubspace: indexSubspace,
+                    indexSubspace: readableIndex.subspace,
                     transaction: transaction
                 )
             }
@@ -302,7 +313,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
                 configuration: indexConfiguration,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction
             )
         }
@@ -648,12 +659,15 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             named: indexName
         )
 
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
-        return try await queryContext.withTransaction(
+        return try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: "fulltext",
+            for: T.self,
             configuration: configuration
-        ) { transaction in
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
             // Create maintainer using makeIndexMaintainer
             let index = Index(
                 name: indexName,
@@ -669,7 +683,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 storePositions: indexConfiguration.storePositions,
                 ngramSize: indexConfiguration.ngramSize,
                 minTermLength: indexConfiguration.minTermLength,
-                subspace: indexSubspace,
+                subspace: readableIndex.subspace,
                 idExpression: FieldKeyExpression(fieldName: "id")
             )
 
@@ -760,7 +774,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
     /// Find the index descriptor using kindIdentifier and fieldName
     private func matchingIndexDescriptors() throws -> [IndexDescriptor] {
-        try T.indexDescriptors.filter { descriptor in
+        queryContext.indexDescriptors(for: T.self).filter { descriptor in
             descriptor.kindIdentifier == "fulltext"
                 && descriptor.kind.fields.contains(where: {
                     $0.identity == field
@@ -771,7 +785,9 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func resolveFullTextIndex(
         named indexName: String
     ) throws -> (IndexDescriptor, FullTextIndexConfiguration) {
-        guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
+        guard let descriptor = queryContext.indexDescriptors(
+            for: T.self
+        ).first(where: { $0.name == indexName }) else {
             throw FullTextQueryError.indexNotFound(indexName)
         }
         guard descriptor.kindIdentifier == "fulltext",
@@ -791,6 +807,14 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     /// Uses IndexDescriptor lookup for reliable index name resolution.
     private func buildIndexName() throws -> String {
         let matches = try matchingIndexDescriptors()
+        if let selectedIndexName {
+            guard matches.contains(where: {
+                $0.name == selectedIndexName
+            }) else {
+                throw FullTextQueryError.indexNotFound(selectedIndexName)
+            }
+            return selectedIndexName
+        }
         guard let descriptor = matches.first else {
             throw FullTextQueryError.indexNotFound(
                 "\(T.persistableType).\(field.name)"

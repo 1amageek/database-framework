@@ -197,9 +197,10 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         transaction: any TransactionAccess
     ) async throws -> RDFDatasetSource? {
         let queryContext = context.indexQueryContext
-        guard let indexSubspace = try await queryContext
-            .readableIndexSubspace(
+        guard let index = try await queryContext
+            .readableIndex(
                 named: resolution.indexDescriptor.name,
+                kindIdentifier: resolution.indexDescriptor.kindIdentifier,
                 forEntityName: resolution.entity.name,
                 partitions: partitions,
                 transaction: transaction
@@ -210,7 +211,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         return RDFDatasetSource(
             entityName: resolution.entity.name,
             indexName: resolution.indexDescriptor.name,
-            indexSubspace: indexSubspace,
+            indexSubspace: index.subspace,
             coverage: try resolution.metadata.graphScope.sourceCoverage,
             storedFieldNames: resolution.indexDescriptor.storedFieldNames
         )

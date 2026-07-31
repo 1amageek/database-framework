@@ -57,9 +57,20 @@ public struct ScalarIndexSearcher: Sendable {
         in subspace: Subspace,
         using reader: StorageReader
     ) async throws -> [IndexEntry] {
+        if let limit = query.limit {
+            guard limit >= 0 else {
+                throw ScalarIndexSearchError.invalidLimit(limit)
+            }
+            guard limit > 0 else {
+                return []
+            }
+        }
         if let start = query.start,
            let end = query.end,
            Tuple(start).pack() == Tuple(end).pack() {
+            guard query.startInclusive && query.endInclusive else {
+                return []
+            }
             return try await searchWithPrefix(
                 subspace: subspace,
                 prefix: start,
@@ -73,25 +84,41 @@ public struct ScalarIndexSearcher: Sendable {
         let endTuple = query.end.map(Tuple.init)
         var results: [IndexEntry] = []
 
-        for try await (key, value) in reader.scanRange(
+        var cursor = try reader.rangeCursor(
             subspace: subspace,
             start: startTuple,
             end: endTuple,
             startInclusive: query.startInclusive,
             endInclusive: query.endInclusive,
             reverse: query.reverse
-        ) {
-            results.append(
-                try indexEntry(
-                    key: key,
-                    value: value,
-                    subspace: subspace
+        )
+        do {
+            while let (key, value) = try await cursor.next() {
+                results.append(
+                    try indexEntry(
+                        key: key,
+                        value: value,
+                        subspace: subspace
+                    )
                 )
-            )
-            if let limit = query.limit, results.count >= limit {
-                break
+                if let limit = query.limit, results.count >= limit {
+                    try await cursor.finish()
+                    return results
+                }
             }
+        } catch {
+            let iterationError = error
+            do {
+                try await cursor.finish()
+            } catch {
+                throw StorageRangeCleanupError(
+                    iterationError: iterationError,
+                    cleanupError: error
+                )
+            }
+            throw iterationError
         }
+        try await cursor.finish()
         return results
     }
 
@@ -109,25 +136,41 @@ public struct ScalarIndexSearcher: Sendable {
         )
         var results: [IndexEntry] = []
 
-        for try await (key, value) in reader.scanRange(
+        var cursor = try reader.rangeCursor(
             subspace: prefixSubspace,
             start: nil,
             end: nil,
             startInclusive: true,
             endInclusive: false,
             reverse: reverse
-        ) {
-            results.append(
-                try indexEntry(
-                    key: key,
-                    value: value,
-                    subspace: subspace
+        )
+        do {
+            while let (key, value) = try await cursor.next() {
+                results.append(
+                    try indexEntry(
+                        key: key,
+                        value: value,
+                        subspace: subspace
+                    )
                 )
-            )
-            if let limit, results.count >= limit {
-                break
+                if let limit, results.count >= limit {
+                    try await cursor.finish()
+                    return results
+                }
             }
+        } catch {
+            let iterationError = error
+            do {
+                try await cursor.finish()
+            } catch {
+                throw StorageRangeCleanupError(
+                    iterationError: iterationError,
+                    cleanupError: error
+                )
+            }
+            throw iterationError
         }
+        try await cursor.finish()
         return results
     }
 
@@ -175,11 +218,14 @@ public enum ScalarIndexSearchError:
     Sendable,
     Equatable,
     CustomStringConvertible {
+    case invalidLimit(Int)
     case invalidKeyElementCount(actual: Int, minimum: Int)
     case missingKeyElement(Int)
 
     public var description: String {
         switch self {
+        case .invalidLimit(let limit):
+            return "Scalar index limit must be non-negative; received \(limit)"
         case .invalidKeyElementCount(let actual, let minimum):
             return "Scalar index key has \(actual) elements; expected at least \(minimum)"
         case .missingKeyElement(let index):

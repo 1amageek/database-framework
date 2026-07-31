@@ -248,10 +248,17 @@ struct DatabaseSHACLValidationProcessorTests {
         ) else {
             throw SHACLValidationSetupError.missingRDFDatasetIndex
         }
-        let typeSubspace = try await container.newContext()
-            .indexQueryContext.indexSubspace(
+        let readableIndex = try await container.newContext()
+            .indexQueryContext.withReadableIndex(
+                named: descriptor.name,
+                kindIdentifier: descriptor.kind.identifier,
                 for: DatabaseSHACLStatement.self
-            )
+            ) { index, _ in
+                index
+            }
+        guard let readableIndex else {
+            throw SHACLValidationSetupError.missingRDFDatasetIndex
+        }
         let data = SHACLExecuteOperation.DataSource(
             entity: DatabaseSHACLStatement.persistableType,
             index: descriptor.name,
@@ -261,7 +268,7 @@ struct DatabaseSHACLValidationProcessorTests {
         let source = RDFDatasetSource(
             entityName: DatabaseSHACLStatement.persistableType,
             indexName: descriptor.name,
-            indexSubspace: typeSubspace.subspace(descriptor.name),
+            indexSubspace: readableIndex.subspace,
             coverage: .dataset
         )
         let executor = SPARQLQueryExecutor(

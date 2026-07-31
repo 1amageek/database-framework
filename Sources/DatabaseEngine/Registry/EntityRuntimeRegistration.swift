@@ -149,13 +149,20 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
     fileprivate typealias IndexReader = @Sendable (
         _ context: DatabaseContext,
         _ selectQuery: SelectQuery,
+        _ index: IndexDescriptor,
         _ indexScan: IndexScanSource,
         _ options: ReadExecutionContext,
         _ partitions: FieldObject
     ) async throws -> IndexReadResult
 
-    public init(_ model: Model.Type) throws(SchemaEntityError) {
-        self.entity = try Schema.Entity(from: model)
+    public init(
+        _ model: Model.Type,
+        including additionalIndexes: [IndexDescriptor] = []
+    ) throws(SchemaEntityError) {
+        self.entity = try Schema.Entity(
+            from: model,
+            including: additionalIndexes
+        )
         self.indexReaders = [:]
         self.indexProviders = [:]
     }
@@ -169,12 +176,14 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
         indexReaders[executor.kindIdentifier] = {
             context,
             selectQuery,
+            index,
             indexScan,
             options,
             partitions in
             try await executor.executeRows(
                 context: context,
                 selectQuery: selectQuery,
+                index: index,
                 indexScan: indexScan,
                 as: Model.self,
                 options: options,
@@ -207,7 +216,8 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
     }
 
     public consuming func registration() -> EntityRuntimeRegistration {
-        EntityRuntimeRegistration(
+        let compiledIndexDescriptors = entity.indexDescriptors
+        return EntityRuntimeRegistration(
             entity: entity,
             indexReaders: indexReaders,
             indexProviders: indexProviders,
@@ -228,6 +238,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                 let plan = try SelectQueryPlanner.plan(
                     selectQuery,
                     as: Model.self,
+                    indexDescriptors: compiledIndexDescriptors,
                     options: options
                 )
                 let items = try await context.fetch(plan.typedQuery)
@@ -251,6 +262,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             },
             updateIndexes: Self.makeUpdateIndexesOperation(
                 entity: entity,
+                indexDescriptors: compiledIndexDescriptors,
                 providers: indexProviders
             ),
             buildIndex: Self.makeBuildIndexOperation(
@@ -264,6 +276,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
 
     private static func makeUpdateIndexesOperation(
         entity: Schema.Entity,
+        indexDescriptors: [IndexDescriptor],
         providers: [String: any EntityIndexProvider<Model>]
     ) -> EntityRuntimeRegistration.UpdateIndexes {
         {
@@ -275,20 +288,24 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             oldModel,
             newModel,
             id,
-            descriptors,
+            overrideDescriptors,
             logicalTypeName,
             transaction in
             guard oldModel != nil || newModel != nil else { return }
             let typedOld = try oldModel?.decode(as: Model.self)
             let typedNew = try newModel?.decode(as: Model.self)
-            let indexDescriptors = descriptors ?? entity.indexDescriptors
-            guard !indexDescriptors.isEmpty else { return }
+            let maintainedIndexes = overrideDescriptors ?? indexDescriptors
+            guard !maintainedIndexes.isEmpty else { return }
             let states = try await lifecycleStore.states(
-                of: indexDescriptors.map { $0.name },
+                of: maintainedIndexes.map { $0.name },
                 transaction: transaction
             )
-            for descriptor in indexDescriptors {
-                let state = states[descriptor.name] ?? .disabled
+            for descriptor in maintainedIndexes {
+                guard let state = states[descriptor.name] else {
+                    throw IndexStateError.missingRequestedState(
+                        index: descriptor.name
+                    )
+                }
                 guard state.shouldMaintain else { continue }
                 guard let provider = providers[descriptor.kindIdentifier] else {
                     throw IndexMaintainerProviderRegistryError.providerNotRegistered(
@@ -508,6 +525,7 @@ public struct EntityRuntimeRegistration: Sendable {
     fileprivate typealias IndexReader = @Sendable (
         _ context: DatabaseContext,
         _ selectQuery: SelectQuery,
+        _ index: IndexDescriptor,
         _ indexScan: IndexScanSource,
         _ options: ReadExecutionContext,
         _ partitions: FieldObject
@@ -591,19 +609,31 @@ public struct EntityRuntimeRegistration: Sendable {
     }
 
     func executeIndexRows(
-        kindIdentifier: String,
+        index: IndexDescriptor,
         context: DatabaseContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult? {
-        guard let read = indexReaders[kindIdentifier] else {
+        guard entity.indexDescriptors.contains(index) else {
+            throw CanonicalReadError.indexHintNotFound(
+                "Index '\(index.name)' is not declared by entity '\(entity.name)'"
+            )
+        }
+        guard index.name == indexScan.indexName,
+              index.kindIdentifier == indexScan.kindIdentifier else {
+            throw CanonicalReadError.unsupportedAccessPath(
+                "Index access path does not match the validated schema descriptor"
+            )
+        }
+        guard let read = indexReaders[index.kindIdentifier] else {
             return nil
         }
         return try await read(
             context,
             selectQuery,
+            index,
             indexScan,
             options,
             partitions

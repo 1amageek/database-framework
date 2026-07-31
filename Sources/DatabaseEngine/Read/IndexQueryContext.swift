@@ -17,13 +17,15 @@ import DatabaseTypes
 ///
 /// **Usage** (from index modules):
 /// ```swift
-/// // In VectorIndex/Fusion/Similar.swift
+/// // In a feature-owned index reader
 /// func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
-///     let indexSubspace = try await queryContext.indexSubspace(for: T.self)
-///         .subspace(indexName)
-///     let reader = try await queryContext.storageReader(for: T.self)
-///     // Read index directly...
-///     return try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
+///     try await queryContext.withReadableIndex(
+///         named: indexName,
+///         kindIdentifier: indexKind,
+///         for: T.self
+///     ) { index, transaction in
+///         // Read index directly with the admitted subspace and transaction.
+///     }
 /// }
 /// ```
 ///
@@ -34,7 +36,13 @@ import DatabaseTypes
 ///     #field(\Order.tenantID),
 ///     equals: "tenant_123"
 /// )
-/// let indexSubspace = try await partitionedContext.indexSubspace(for: Order.self)
+/// let rows = try await partitionedContext.withReadableIndex(
+///     named: indexName,
+///     kindIdentifier: indexKind,
+///     for: Order.self
+/// ) { index, transaction in
+///     // Read the admitted index in transaction.
+/// }
 /// ```
 public struct IndexQueryContext: Sendable {
 
@@ -69,7 +77,13 @@ public struct IndexQueryContext: Sendable {
     ///     #field(\Order.tenantID),
     ///     equals: "tenant_123"
     /// )
-    /// let indexSubspace = try await partitionedContext.indexSubspace(for: Order.self)
+    /// let rows = try await partitionedContext.withReadableIndex(
+    ///     named: indexName,
+    ///     kindIdentifier: indexKind,
+    ///     for: Order.self
+    /// ) { index, transaction in
+    ///     // Read the admitted index in transaction.
+    /// }
     /// ```
     ///
     /// - Parameters:
@@ -122,126 +136,105 @@ public struct IndexQueryContext: Sendable {
 
     // MARK: - Storage Access
 
-    /// Get the index subspace for a type
+    /// Resolves and admits a declared index using only the caller's transaction.
     ///
-    /// For types with dynamic directories, uses the partition binding if set.
-    ///
-    /// - Parameter type: The Persistable type
-    /// - Returns: The index subspace
-    public func indexSubspace<T: Persistable>(for type: T.Type) async throws -> Subspace {
-        let store: DatabaseDataStore
-        if let binding = try partitionBinding(for: type) {
-            store = try await context.container.store(for: type, path: binding)
-        } else {
-            store = try await context.container.store(for: type)
-        }
-        return store.indexSubspace
-    }
-
-    /// Resolves a declared index using only the caller's read transaction.
-    ///
-    /// Unlike `indexSubspace(for:)`, this API does not create a directory or
-    /// initialize index state. `nil` means the logical partition has never
-    /// existed and therefore has no rows to scan.
-    public func readableIndexSubspace<T: Persistable>(
+    /// This API does not create a directory or initialize index state. `nil`
+    /// means the logical partition has never existed and has no rows to scan.
+    public func readableIndex<T: Persistable>(
         named indexName: String,
+        kindIdentifier: String,
         for type: T.Type,
         transaction: any TransactionAccess
-    ) async throws -> Subspace? {
-        guard try type.indexDescriptors.contains(
-            where: { $0.name == indexName }
-        ) else {
-            throw IndexQueryContextError.indexNotFound(indexName)
-        }
+    ) async throws -> ReadableIndex? {
+        let descriptor = try indexDescriptor(
+            named: indexName,
+            kindIdentifier: kindIdentifier,
+            for: type
+        )
         let path: AnyDirectoryPath?
         if let binding = try partitionBinding(for: type) {
             path = try AnyDirectoryPath(binding)
         } else {
             path = nil
         }
-        return try await context.container.readableIndexSubspace(
-            named: indexName,
+        guard let subspace = try await context.container.readableIndexSubspace(
+            named: descriptor.name,
             for: type,
             path: path,
             transaction: transaction
+        ) else {
+            return nil
+        }
+        return ReadableIndex(
+            descriptor: descriptor,
+            subspace: subspace
         )
     }
 
     /// Resolves a declared index by entity name using only the caller's read
     /// transaction. A missing logical partition is an empty dataset and returns
     /// `nil`; this method never creates directory or index metadata.
-    public func readableIndexSubspace(
+    public func readableIndex(
         named indexName: String,
+        kindIdentifier: String,
         forEntityName entityName: String,
         partitions: FieldObject,
         transaction: any TransactionAccess
-    ) async throws -> Subspace? {
+    ) async throws -> ReadableIndex? {
+        let descriptor = try indexDescriptor(
+            named: indexName,
+            kindIdentifier: kindIdentifier,
+            forEntityName: entityName
+        )
         guard let entity = schema.entitiesByName[entityName] else {
-            throw IndexQueryContextError.indexNotFound(entityName)
+            throw IndexQueryContextError.entityNotFound(entityName)
         }
         let path = try CanonicalPartitionBinding.makeAnyBinding(
             for: entity,
             partitions: partitions
         )
-        return try await context.container.readableIndexSubspace(
-            named: indexName,
+        guard let subspace = try await context.container.readableIndexSubspace(
+            named: descriptor.name,
             for: entity,
             path: path,
             transaction: transaction
-        )
-    }
-
-    /// Get the index subspace for an entity resolved by name.
-    ///
-    /// This is the schema-driven counterpart of `indexSubspace(for:)`. Callers
-    /// that don't hold a generic `T` (for example federated SPARQL queries) use
-    /// canonical entity and partition metadata directly.
-    ///
-    /// - Parameter entityName: The entity name as registered in the schema
-    /// - Returns: The index subspace for that entity
-    /// - Throws: `IndexQueryContextError.indexNotFound` when the entity is absent
-    ///   or its `persistableType` is nil (e.g. wire-decoded schemas).
-    public func indexSubspace(forEntityName entityName: String) async throws -> Subspace {
-        try await indexSubspace(
-            forEntityName: entityName,
-            partitions: FieldObject()
-        )
-    }
-
-    /// Get an index subspace for a runtime-resolved entity and canonical partition.
-    public func indexSubspace(
-        forEntityName entityName: String,
-        partitions: FieldObject
-    ) async throws -> Subspace {
-        guard let entity = schema.entitiesByName[entityName] else {
-            throw IndexQueryContextError.indexNotFound(entityName)
+        ) else {
+            return nil
         }
-        let path = try CanonicalPartitionBinding.makeAnyBinding(
-            for: entity,
-            partitions: partitions
+        return ReadableIndex(
+            descriptor: descriptor,
+            subspace: subspace
         )
-        let store = try await context.container.store(
-            for: entity,
-            path: path
-        )
-        return store.indexSubspace
     }
 
-    /// Get a StorageReader for a type
-    ///
-    /// Feature-owned readers use this for physical index access.
-    /// For types with dynamic directories, uses the partition binding if set.
-    ///
-    /// - Parameter type: The Persistable type
-    /// - Returns: A StorageReader for index access
-    public func storageReader<T: Persistable>(for type: T.Type) async throws -> StorageReader {
-        let store: DatabaseDataStore
-        if let binding = try partitionBinding(for: type) {
-            store = try await context.container.store(for: type, path: binding)
-        } else {
-            store = try await context.container.store(for: type)
+    /// Owns the read transaction so lifecycle admission and the physical index
+    /// operation always observe the same read version.
+    public func withReadableIndex<T: Persistable, Result: Sendable>(
+        named indexName: String,
+        kindIdentifier: String,
+        for type: T.Type,
+        configuration: TransactionConfiguration = .default,
+        _ operation: @Sendable @escaping (
+            ReadableIndex?,
+            any TransactionAccess
+        ) async throws -> Result
+    ) async throws -> Result {
+        try await withTransaction(configuration: configuration) { transaction in
+            let index = try await readableIndex(
+                named: indexName,
+                kindIdentifier: kindIdentifier,
+                for: type,
+                transaction: transaction
+            )
+            return try await operation(index, transaction)
         }
-        return DatabaseStorageReaderAdapter(store: store)
+    }
+
+    /// Bind raw storage reads to one already-admitted transaction.
+    package func storageReader(
+        transaction: any TransactionAccess
+    ) -> TransactionStorageReader {
+        TransactionStorageReader(transaction: transaction)
     }
 
     /// Get the item subspace for a type (for transaction-scoped operations)
@@ -562,6 +555,46 @@ public struct IndexQueryContext: Sendable {
         schema.indexDescriptors(for: T.persistableType)
     }
 
+    /// Resolve an exact schema-owned index for a concrete entity type.
+    public func indexDescriptor<T: Persistable>(
+        named name: String,
+        kindIdentifier: String,
+        for type: T.Type
+    ) throws -> IndexDescriptor {
+        try indexDescriptor(
+            named: name,
+            kindIdentifier: kindIdentifier,
+            forEntityName: T.persistableType
+        )
+    }
+
+    /// Resolve an exact schema-owned index for a runtime entity name.
+    public func indexDescriptor(
+        named name: String,
+        kindIdentifier: String,
+        forEntityName entityName: String
+    ) throws -> IndexDescriptor {
+        guard let entity = schema.entitiesByName[entityName] else {
+            throw IndexQueryContextError.entityNotFound(entityName)
+        }
+        guard let descriptor = entity.indexDescriptors.first(
+            where: { $0.name == name }
+        ) else {
+            throw IndexQueryContextError.indexNotFound(
+                indexName: name,
+                entityName: entityName
+            )
+        }
+        guard descriptor.kindIdentifier == kindIdentifier else {
+            throw IndexQueryContextError.indexKindMismatch(
+                indexName: name,
+                expected: descriptor.kindIdentifier,
+                actual: kindIdentifier
+            )
+        }
+        return descriptor
+    }
+
     /// Find an index by kind identifier
     public func findIndexes<T: Persistable>(
         for type: T.Type,
@@ -573,149 +606,31 @@ public struct IndexQueryContext: Sendable {
         }
     }
 
-    /// Find an index by name
-    public func findIndex(named name: String) -> IndexDescriptor? {
-        schema.indexDescriptor(named: name)
-    }
 }
 
 // MARK: - Errors
 
 /// Errors for IndexQueryContext operations
-public enum IndexQueryContextError: Error, CustomStringConvertible {
-    case indexNotFound(String)
+public enum IndexQueryContextError: Error, Sendable, Equatable, CustomStringConvertible {
+    case entityNotFound(String)
+    case indexNotFound(indexName: String, entityName: String)
+    case polymorphicIndexNotFound(indexName: String, groupIdentifier: String)
+    case indexKindMismatch(indexName: String, expected: String, actual: String)
+    case missingDirectory(entityName: String)
 
     public var description: String {
         switch self {
-        case .indexNotFound(let name):
-            return "Index not found: \(name)"
+        case .entityNotFound(let name):
+            return "Entity not found: \(name)"
+        case .indexNotFound(let indexName, let entityName):
+            return "Index '\(indexName)' is not declared by entity '\(entityName)'"
+        case .polymorphicIndexNotFound(let indexName, let groupIdentifier):
+            return "Index '\(indexName)' is not declared by polymorphic group '\(groupIdentifier)'"
+        case .indexKindMismatch(let indexName, let expected, let actual):
+            return "Index '\(indexName)' has kind '\(expected)', not '\(actual)'"
+        case .missingDirectory(let entityName):
+            return "Registered directory for entity '\(entityName)' is missing"
         }
-    }
-}
-
-// MARK: - Storage Reader Adapter
-
-/// Adapter that wraps DatabaseDataStore to provide StorageReader interface
-internal struct DatabaseStorageReaderAdapter: StorageReader {
-
-    private let store: DatabaseDataStore
-
-    init(store: DatabaseDataStore) {
-        self.store = store
-    }
-
-    func scanRange(
-        subspace: Subspace,
-        start: Tuple?,
-        end: Tuple?,
-        startInclusive: Bool,
-        endInclusive: Bool,
-        reverse: Bool
-    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
-        store.scanRangeRaw(
-            subspace: subspace,
-            start: start,
-            end: end,
-            startInclusive: startInclusive,
-            endInclusive: endInclusive,
-            reverse: reverse
-        )
-    }
-
-    func getValue(key: ByteString) async throws -> ByteString? {
-        try await store.getValueRaw(key: key)
-    }
-
-}
-
-// MARK: - DatabaseDataStore Extensions
-
-extension DatabaseDataStore {
-
-    /// Scan a range within a subspace (raw key-value access)
-    func scanRangeRaw(
-        subspace: Subspace,
-        start: Tuple?,
-        end: Tuple?,
-        startInclusive: Bool,
-        endInclusive: Bool,
-        reverse: Bool,
-        limit: Int? = nil,
-        streamingMode: StreamingMode? = nil
-    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
-        let mode = streamingMode ?? StreamingMode.forQuery(limit: limit)
-        let effectiveLimit = limit ?? 0
-
-        return AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    try await self.container.transactionExecutor.withTransaction(configuration: .default, clock: self.container.monotonicClock) { transaction in
-                        let beginKey: ByteString
-                        let endKey: ByteString
-
-                        if let startTuple = start {
-                            let packed = subspace.pack(startTuple)
-                            if startInclusive {
-                                beginKey = packed
-                            } else {
-                                beginKey = self.keyAfter(packed)
-                            }
-                        } else {
-                            beginKey = subspace.prefix
-                        }
-
-                        if let endTuple = end {
-                            let packed = subspace.pack(endTuple)
-                            if endInclusive {
-                                endKey = self.keyAfter(packed)
-                            } else {
-                                endKey = packed
-                            }
-                        } else {
-                            endKey = try strinc(subspace.prefix)
-                        }
-
-                        let fromSelector: KeySelector
-                        let toSelector: KeySelector
-
-                        if reverse {
-                            fromSelector = KeySelector.lastLessThan(endKey)
-                            toSelector = KeySelector.firstGreaterOrEqual(beginKey)
-                        } else {
-                            fromSelector = KeySelector.firstGreaterOrEqual(beginKey)
-                            toSelector = KeySelector.firstGreaterOrEqual(endKey)
-                        }
-
-                        let sequence = try await TransactionRangeCollection.collect(using: transaction,
-                            from: fromSelector,
-                            to: toSelector,
-                            limit: effectiveLimit,
-                            reverse: reverse,
-                            snapshot: true,
-                            streamingMode: mode
-                        )
-                        for (key, value) in sequence {
-                            continuation.yield((key: key, value: value))
-                        }
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-        }
-    }
-
-    /// Get a single value by key (raw access)
-    func getValueRaw(key: ByteString) async throws -> ByteString? {
-        return try await self.container.transactionExecutor.withTransaction(configuration: .default, clock: self.container.monotonicClock) { transaction in
-            return try await transaction.getValue(for: key, snapshot: true)
-        }
-    }
-
-    /// Return the first key strictly greater than one exact key.
-    private func keyAfter(_ key: ByteString) -> ByteString {
-        key.appending(0x00)
     }
 }
 

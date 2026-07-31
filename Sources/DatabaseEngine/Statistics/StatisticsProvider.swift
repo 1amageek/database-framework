@@ -793,8 +793,11 @@ public struct SearchStatisticsCollector: Sendable {
         var sumNormSquared: Double = 0
         var normValues: [Double] = []
 
-        var vectorIterator = reader.scanSubspace(subspace, reverse: false).makeAsyncIterator()
-        while let (_, value) = try await vectorIterator.next() {
+        var vectorCursor = try reader.subspaceCursor(
+            subspace,
+            reverse: false
+        )
+        try await vectorCursor.consume { _, value in
             vectorCount += 1
 
             // Parse vector and compute norm (sample only)
@@ -845,8 +848,11 @@ public struct SearchStatisticsCollector: Sendable {
         var totalTermOccurrences = 0
 
         // Scan terms subspace
-        var termIterator = reader.scanSubspace(termsSubspace, reverse: false).makeAsyncIterator()
-        while let (key, _) = try await termIterator.next() {
+        var termCursor = try reader.subspaceCursor(
+            termsSubspace,
+            reverse: false
+        )
+        try await termCursor.consume { key, _ in
             // Key structure: [termsSubspace][term][docID]
             // Quick check before attempting unpack
             guard termsSubspace.contains(key) else {
@@ -907,8 +913,11 @@ public struct SearchStatisticsCollector: Sendable {
         var maxLat = -Double.infinity
         var maxLon = -Double.infinity
 
-        var spatialIterator = reader.scanSubspace(subspace, reverse: false).makeAsyncIterator()
-        while let (key, _) = try await spatialIterator.next() {
+        var spatialCursor = try reader.subspaceCursor(
+            subspace,
+            reverse: false
+        )
+        try await spatialCursor.consume { key, _ in
             // Quick check before attempting unpack
             guard subspace.contains(key) else {
                 throw StatisticsCollectionError.keyOutsideSubspace

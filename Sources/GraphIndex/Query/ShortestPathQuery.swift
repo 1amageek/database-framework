@@ -241,12 +241,6 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
             throw ShortestPathQueryError.missingTarget
         }
 
-        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
-            index,
-            for: T.self,
-            in: queryContext
-        )
-
         let config = ShortestPathConfiguration(
             maxDepth: configMaxDepth,
             bidirectional: configBidirectional,
@@ -255,6 +249,18 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try await queryContext.withTransaction { transaction in
+            guard let resolvedIndex = try await PropertyGraphIndexResolver
+                .resolve(
+                    index,
+                    for: T.self,
+                    in: queryContext,
+                    transaction: transaction
+                ) else {
+                return ShortestPathResult.notFound(
+                    nodesExplored: 0,
+                    durationNs: 0
+                )
+            }
             let finder = ShortestPathFinder(
                 snapshot: GraphReadSnapshot(
                 transaction: transaction,
@@ -286,12 +292,6 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
             throw ShortestPathQueryError.missingTarget
         }
 
-        let resolvedIndex = try await PropertyGraphIndexResolver.resolve(
-            index,
-            for: T.self,
-            in: queryContext
-        )
-
         let config = ShortestPathConfiguration(
             maxDepth: configMaxDepth,
             bidirectional: false,  // All paths requires unidirectional BFS
@@ -300,6 +300,20 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try await queryContext.withTransaction { transaction in
+            guard let resolvedIndex = try await PropertyGraphIndexResolver
+                .resolve(
+                    index,
+                    for: T.self,
+                    in: queryContext,
+                    transaction: transaction
+                ) else {
+                return AllShortestPathsResult(
+                    paths: [],
+                    distance: nil,
+                    nodesExplored: 0,
+                    durationNs: 0
+                )
+            }
             let finder = ShortestPathFinder(
                 snapshot: GraphReadSnapshot(
                 transaction: transaction,

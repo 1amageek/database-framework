@@ -284,13 +284,20 @@ struct SPARQLRuntimeSQLiteTests {
             throw SPARQLQueryError.indexNotConfigured
         }
         let selection = selections[0]
-        let typeSubspace = try await context.indexQueryContext.indexSubspace(
+        let readableIndex = try await context.indexQueryContext.withReadableIndex(
+            named: selection.indexName,
+            kindIdentifier: selection.kindIdentifier,
             for: type
-        )
+        ) { index, _ in
+            index
+        }
+        guard let readableIndex else {
+            throw SPARQLQueryError.indexNotConfigured
+        }
         return try RDFDatasetSource(
             entityName: T.persistableType,
             selection: selection,
-            indexSubspace: typeSubspace.subspace(selection.indexName)
+            indexSubspace: readableIndex.subspace
         )
     }
 

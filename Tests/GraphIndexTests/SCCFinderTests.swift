@@ -439,6 +439,32 @@ struct GraphEdgeScannerBatchTests {
         return edge
     }
 
+    private func makeGraphScanner(
+        context: DatabaseContext
+    ) async throws -> GraphEdgeScanner {
+        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
+            $0.kindIdentifier
+                == IndexDefinition.propertyGraph().identifier
+        }) else {
+            throw SCCError.graphIndexNotFound
+        }
+        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
+        let readableIndex = try await context.indexQueryContext.withReadableIndex(
+            named: descriptor.name,
+            kindIdentifier: descriptor.kind.identifier,
+            for: EdgeForSCC.self
+        ) { index, _ in
+            index
+        }
+        guard let readableIndex else {
+            throw SCCError.graphIndexNotFound
+        }
+        return GraphEdgeScanner(
+            indexSubspace: readableIndex.subspace,
+            strategy: metadata.strategy
+        )
+    }
+
     private func collectOutgoingEdges(
         scanner: GraphEdgeScanner,
         sources: [GraphIdentity],
@@ -501,21 +527,7 @@ struct GraphEdgeScannerBatchTests {
 
         try await insertEdges(edges, context: context)
 
-        // Get the graph scanner
-        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier
-                == IndexDefinition.propertyGraph().identifier
-        }) else {
-            throw SCCError.graphIndexNotFound
-        }
-        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
-
-        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
-        let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(
-            indexSubspace: graphSubspace,
-            strategy: metadata.strategy
-        )
+        let scanner = try await makeGraphScanner(context: context)
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
@@ -564,21 +576,7 @@ struct GraphEdgeScannerBatchTests {
 
         try await insertEdges(edges, context: context)
 
-        // Get the graph scanner
-        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier
-                == IndexDefinition.propertyGraph().identifier
-        }) else {
-            throw SCCError.graphIndexNotFound
-        }
-        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
-
-        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
-        let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(
-            indexSubspace: graphSubspace,
-            strategy: metadata.strategy
-        )
+        let scanner = try await makeGraphScanner(context: context)
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
@@ -620,20 +618,7 @@ struct GraphEdgeScannerBatchTests {
         ]
         try await insertEdges(edges, context: context)
 
-        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier
-                == IndexDefinition.propertyGraph().identifier
-        }) else {
-            throw SCCError.graphIndexNotFound
-        }
-        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
-
-        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
-        let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(
-            indexSubspace: graphSubspace,
-            strategy: metadata.strategy
-        )
+        let scanner = try await makeGraphScanner(context: context)
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
@@ -664,20 +649,7 @@ struct GraphEdgeScannerBatchTests {
         ]
         try await insertEdges(edges, context: context)
 
-        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier
-                == IndexDefinition.propertyGraph().identifier
-        }) else {
-            throw SCCError.graphIndexNotFound
-        }
-        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
-
-        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
-        let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(
-            indexSubspace: graphSubspace,
-            strategy: metadata.strategy
-        )
+        let scanner = try await makeGraphScanner(context: context)
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
@@ -713,20 +685,7 @@ struct GraphEdgeScannerBatchTests {
         ]
         try await insertEdges(edges, context: context)
 
-        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier
-                == IndexDefinition.propertyGraph().identifier
-        }) else {
-            throw SCCError.graphIndexNotFound
-        }
-        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
-
-        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
-        let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(
-            indexSubspace: graphSubspace,
-            strategy: metadata.strategy
-        )
+        let scanner = try await makeGraphScanner(context: context)
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
@@ -764,20 +723,7 @@ struct GraphEdgeScannerBatchTests {
         ]
         try await insertEdges(edges, context: context)
 
-        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier
-                == IndexDefinition.propertyGraph().identifier
-        }) else {
-            throw SCCError.graphIndexNotFound
-        }
-        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
-
-        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
-        let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(
-            indexSubspace: graphSubspace,
-            strategy: metadata.strategy
-        )
+        let scanner = try await makeGraphScanner(context: context)
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(
@@ -812,20 +758,7 @@ struct GraphEdgeScannerBatchTests {
         ]
         try await insertEdges(edges, context: context)
 
-        guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier
-                == IndexDefinition.propertyGraph().identifier
-        }) else {
-            throw SCCError.graphIndexNotFound
-        }
-        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
-
-        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: EdgeForSCC.self)
-        let graphSubspace = typeSubspace.subspace(descriptor.name)
-        let scanner = GraphEdgeScanner(
-            indexSubspace: graphSubspace,
-            strategy: metadata.strategy
-        )
+        let scanner = try await makeGraphScanner(context: context)
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let grouped = try await StorageTransactionExecutor(engine: database).withTransaction(

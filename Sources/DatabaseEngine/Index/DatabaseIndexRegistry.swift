@@ -228,6 +228,7 @@ public final class DatabaseIndexRegistry: Sendable {
     ///
     /// - Parameter indexName: Name of the index
     /// - Throws: DatabaseIndexRegistryError.indexNotFound if index is not registered
+    /// - Throws: IndexStateError if persisted state is malformed
     /// - Throws: Error if state write fails
     public func disable(_ indexName: String) async throws {
         guard index(named: indexName) != nil else {

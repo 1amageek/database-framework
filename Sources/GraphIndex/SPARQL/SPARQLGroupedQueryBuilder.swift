@@ -317,19 +317,6 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
             having: havingExpression
         )
 
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(selection.indexName)
-        let source = try RDFDatasetSource(
-            entityName: T.persistableType,
-            selection: selection,
-            indexSubspace: indexSubspace
-        )
-
-        let executor = SPARQLQueryExecutor(
-            database: queryContext.context.container.engine,
-            wallClock: queryContext.context.container.wallClock,
-            sources: [source]
-        )
         let workMeter = DatabaseWorkMeter(
             budget: budget,
             monotonicClock: queryContext.context.container.monotonicClock
@@ -338,12 +325,38 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         let startTime = queryContext.graphClock.now()
 
         // Step 1: Pattern evaluation + GROUP BY + HAVING
-        var (bindings, stats) = try await executor.execute(
-            pattern: groupByPattern,
-            limit: nil,
-            offset: 0,
-            workMeter: workMeter
-        )
+        var (bindings, stats) = try await queryContext.withReadableIndex(
+            named: selection.indexName,
+            kindIdentifier: selection.kindIdentifier,
+            for: T.self
+        ) {
+            readableIndex,
+            transaction -> ([VariableBinding], ExecutionStatistics) in
+            let sources: [RDFDatasetSource]
+            if let readableIndex {
+                sources = [
+                    try RDFDatasetSource(
+                        entityName: T.persistableType,
+                        selection: selection,
+                        indexSubspace: readableIndex.subspace
+                    )
+                ]
+            } else {
+                sources = []
+            }
+            let executor = SPARQLQueryExecutor(
+                database: queryContext.context.container.engine,
+                wallClock: queryContext.context.container.wallClock,
+                sources: sources
+            )
+            return try await executor.executeInTransaction(
+                pattern: groupByPattern,
+                transaction: transaction,
+                limit: nil,
+                offset: 0,
+                workMeter: workMeter
+            )
+        }
 
         // Step 2: ORDER BY (before projection, per W3C Section 15)
         if !sortKeys.isEmpty {

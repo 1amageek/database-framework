@@ -136,7 +136,9 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
 
     /// Find the index descriptor using kindIdentifier and fieldName
     private func findIndexDescriptor() throws -> IndexDescriptor? {
-        guard let descriptor = try T.indexDescriptors.first(where: {
+        guard let descriptor = queryContext.indexDescriptors(
+            for: T.self
+        ).first(where: {
             $0.kindIdentifier == BitmapIndexSpecification.identifier
                 && $0.fieldNames.contains(fieldName)
         }) else {
@@ -159,18 +161,21 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
 
         let indexName = descriptor.name
 
-        // Get index subspace using public API
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute bitmap query within transaction
-        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
+        let primaryKeys: [Tuple] = try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: BitmapIndexSpecification.identifier,
+            for: T.self
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
             switch self.predicate {
             case .equals(let value):
                 let fieldValues = [try TupleEncoder.encode(value)]
                 return try await self.readBitmapPrimaryKeys(
                     fieldValues: fieldValues,
-                    indexSubspace: indexSubspace,
+                    indexSubspace: readableIndex.subspace,
                     transaction: transaction
                 )
 
@@ -183,7 +188,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
                     let fieldValues = [try TupleEncoder.encode(value)]
                     let pks = try await self.readBitmapPrimaryKeys(
                         fieldValues: fieldValues,
-                        indexSubspace: indexSubspace,
+                        indexSubspace: readableIndex.subspace,
                         transaction: transaction
                     )
                     for pk in pks {

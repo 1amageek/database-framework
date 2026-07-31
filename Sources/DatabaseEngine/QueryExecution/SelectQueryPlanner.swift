@@ -58,6 +58,7 @@ enum SelectQueryPlanner {
     static func plan<T: Persistable>(
         _ selectQuery: SelectQuery,
         as type: T.Type,
+        indexDescriptors: [IndexDescriptor],
         options: ReadExecutionContext
     ) throws -> SelectQueryPushdownPlan<T> {
         var query = Query<T>()
@@ -140,7 +141,12 @@ enum SelectQueryPlanner {
         // the hint's existence. Applicability against the predicate is checked
         // by the fetch path, which has the Sendable IndexableCondition.
         if let accessPath = selectQuery.accessPath {
-            try applyAccessPath(accessPath, to: &query, for: T.self)
+            try applyAccessPath(
+                accessPath,
+                to: &query,
+                for: T.self,
+                indexDescriptors: indexDescriptors
+            )
         }
 
         return SelectQueryPushdownPlan(
@@ -160,7 +166,8 @@ enum SelectQueryPlanner {
     private static func applyAccessPath<T: Persistable>(
         _ accessPath: AccessPath,
         to query: inout Query<T>,
-        for type: T.Type
+        for type: T.Type,
+        indexDescriptors: [IndexDescriptor]
     ) throws {
         switch accessPath {
         case .index(let indexScan):
@@ -169,7 +176,7 @@ enum SelectQueryPlanner {
                     "accessPath with kind '\(indexScan.kindIdentifier)' is not supported for single-table queries"
                 )
             }
-            guard try T.indexDescriptors.contains(
+            guard indexDescriptors.contains(
                 where: { $0.name == indexScan.indexName }
             ) else {
                 throw CanonicalReadError.indexHintNotFound(

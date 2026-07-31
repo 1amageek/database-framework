@@ -3,6 +3,8 @@ import DatabaseEngine
 import DatabaseRuntime
 import RelationshipIndex
 import ScalarIndex
+import StorageKit
+import TestSupport
 import Testing
 import VectorIndex
 
@@ -46,6 +48,143 @@ struct DatabaseRuntimeConfigurationValidationTests {
                         RuntimeConfigurationScalarEntity.self
                     ).registration(),
                 ]
+            )
+        }
+    }
+
+    @Test("Schema validation rejects a compiled entity with different schema")
+    func mismatchedCompiledEntitySchemaFailsValidation() throws {
+        let additionalIndex = try IndexDescriptor(
+            name: "RuntimeConfigurationScalarEntity_schema_only",
+            definition: .scalar,
+            fields: [
+                RuntimeConfigurationScalarEntity.fields.name.ascending
+            ]
+        )
+        let schemaEntity = try Schema.Entity(
+            from: RuntimeConfigurationScalarEntity.self,
+            including: [additionalIndex]
+        )
+        let runtimeEntity = try Schema.Entity(
+            from: RuntimeConfigurationScalarEntity.self
+        )
+        let schema = try Schema(entities: [schemaEntity])
+        let configuration = try DatabaseFrameworkRuntime.configuration(
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationScalarEntity.self
+                )
+            ]
+        )
+
+        #expect(
+            throws: DatabaseRuntimeConfigurationError.entitySchemaMismatch(
+                entityName: RuntimeConfigurationScalarEntity.persistableType,
+                schemaEntity: schemaEntity,
+                runtimeEntity: runtimeEntity
+            )
+        ) {
+            try configuration.validate(schema: schema)
+        }
+    }
+
+    @Test("Runtime accepts additional indexes compiled with the schema")
+    func matchingAdditionalIndexesPassValidation() throws {
+        let additionalIndex = try IndexDescriptor(
+            name: "RuntimeConfigurationScalarEntity_additional",
+            definition: .scalar,
+            fields: [
+                RuntimeConfigurationScalarEntity.fields.name.ascending
+            ]
+        )
+        let schema = try Schema(
+            entities: [
+                try Schema.Entity(
+                    from: RuntimeConfigurationScalarEntity.self,
+                    including: [additionalIndex]
+                )
+            ]
+        )
+        let configuration = try DatabaseFrameworkRuntime.configuration(
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationScalarEntity.self,
+                    including: [additionalIndex]
+                )
+            ]
+        )
+
+        try configuration.validate(schema: schema)
+    }
+
+    @Test("OWL runtime retains its provider with additional indexes")
+    func owlRuntimeSupportsAdditionalIndexes() throws {
+        let additionalIndex = try IndexDescriptor(
+            name: "RuntimeConfigurationOWLEntity_additional",
+            definition: .scalar,
+            fields: [
+                RuntimeConfigurationOWLEntity.fields.name.ascending
+            ]
+        )
+        let schema = try Schema(
+            entities: [
+                try Schema.Entity(
+                    from: RuntimeConfigurationOWLEntity.self,
+                    including: [additionalIndex]
+                )
+            ]
+        )
+        let configuration = try DatabaseFrameworkRuntime.configuration(
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationOWLEntity.self,
+                    including: [additionalIndex]
+                )
+            ]
+        )
+
+        try configuration.validate(schema: schema)
+    }
+
+    @Test("Container open rejects a mismatched entity before initialization")
+    func containerOpenRejectsMismatchedEntitySchema() async throws {
+        let additionalIndex = try IndexDescriptor(
+            name: "RuntimeConfigurationScalarEntity_schema_only",
+            definition: .scalar,
+            fields: [
+                RuntimeConfigurationScalarEntity.fields.name.ascending
+            ]
+        )
+        let schemaEntity = try Schema.Entity(
+            from: RuntimeConfigurationScalarEntity.self,
+            including: [additionalIndex]
+        )
+        let runtimeEntity = try Schema.Entity(
+            from: RuntimeConfigurationScalarEntity.self
+        )
+        let schema = try Schema(entities: [schemaEntity])
+        let configuration = try DatabaseFrameworkRuntime.configuration(
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    RuntimeConfigurationScalarEntity.self
+                )
+            ]
+        )
+
+        await #expect(
+            throws: DatabaseRuntimeConfigurationError.entitySchemaMismatch(
+                entityName: RuntimeConfigurationScalarEntity.persistableType,
+                schemaEntity: schemaEntity,
+                runtimeEntity: runtimeEntity
+            )
+        ) {
+            _ = try await DBContainer.open(
+                for: schema,
+                configuration: .testing(
+                    backend: .custom(InMemoryEngine())
+                ),
+                runtimeConfiguration: configuration,
+                security: .disabled
             )
         }
     }

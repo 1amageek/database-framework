@@ -56,6 +56,7 @@ private struct RankReadExecutor: IndexReadExecutor {
     func executeRows<T: Persistable>(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: IndexDescriptor,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
@@ -74,7 +75,7 @@ private struct RankReadExecutor: IndexReadExecutor {
         var builder = RankQueryBuilder<T>(
             queryContext: queryContext,
             fieldName: fieldName,
-            selectedIndexName: indexScan.indexName
+            selectedIndexName: index.name
         )
 
         let mode = try parameters.requireString(named: RankReadParameter.mode)
@@ -131,13 +132,22 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: PolymorphicIndexMetadata,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
         let parameters = IndexReadParameters(indexScan.parameters)
-        _ = try parameters.requireString(named: RankReadParameter.fieldName)
+        let fieldName = try parameters.requireString(
+            named: RankReadParameter.fieldName
+        )
+        guard index.kindIdentifier == kindIdentifier,
+              index.fieldNames == [fieldName] else {
+            throw RankReadError.invalidParameter(
+                RankReadParameter.fieldName
+            )
+        }
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .snapshot
@@ -156,16 +166,20 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             orderBy: orderByFields
         )
 
-        let indexSubspace = try await context.container
-            .resolvePolymorphicDirectory(for: group.identifier)
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexScan.indexName)
-
-        let rankedKeys = try await context.executeCanonicalRead(
-            configuration: execution.transactionConfiguration
-        ) { transaction in
-            try await scanRanked(
-                indexSubspace: indexSubspace,
+        let rankedKeys: [(primaryKey: Tuple, rank: Int)] = try await context
+            .executeCanonicalRead(
+                configuration: execution.transactionConfiguration
+            ) { transaction in
+            guard let readableIndex = try await context.container
+                .readablePolymorphicIndex(
+                    index,
+                    in: group,
+                    transaction: transaction
+                ) else {
+                return []
+            }
+            return try await scanRanked(
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction,
                 parameters: parameters
             )

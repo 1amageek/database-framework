@@ -254,27 +254,21 @@ internal struct SPARQLFunctionRewriter: Sendable {
         // 2. Resolve type via TypeResolver
         let resolver = TypeResolver(schema: context.container.schema)
         let entity = try resolver.resolve(typeName: typeName)
+        guard !entity.hasDynamicDirectory else {
+            throw SPARQLFunctionError.invalidArguments(
+                "SPARQL() requires an explicit partition for dynamic entity '\(entity.name)'"
+            )
+        }
         guard let dataset = try RDFDatasetReadResolver.resolve(entity: entity) else {
             throw SPARQLFunctionError.invalidGraphIndex(entity.name)
         }
         let graphIndex = dataset.indexDescriptor
 
-        // 4. Resolve type directory and index subspace
-        guard context.container.runtimeConfiguration.entityRuntimes
-            .registration(named: entity.name) != nil else {
-            throw SPARQLFunctionError.invalidGraphIndex(entity.name)
-        }
-        let typeDirectory = try await resolveTypeDirectory(entity)
-        let indexSubspace = typeDirectory
-            .subspace(SubspaceKey.indexes)
-            .subspace(graphIndex.name)
-
-        // 5. Execute SPARQL within the same transaction scope
+        // 4. Admit and execute the schema-declared index in one transaction.
         let result = try await executeSPARQLWithinTransaction(
             sparqlQuery: sparqlQuery,
             entityName: entity.name,
-            indexName: graphIndex.name,
-            indexSubspace: indexSubspace,
+            indexDescriptor: graphIndex,
             metadata: dataset.metadata,
             storedFieldNames: graphIndex.storedFieldNames
         )
@@ -353,26 +347,6 @@ internal struct SPARQLFunctionRewriter: Sendable {
         return (typeName, sparqlQuery, extractVar)
     }
 
-    // MARK: - Directory Resolution
-
-    /// Resolve type directory using DBContainer
-    ///
-    /// - Parameter entity: The compiled entity to resolve
-    /// - Returns: Subspace for the type
-    /// - Throws: Directory resolution errors (including dynamic directory detection)
-    private func resolveTypeDirectory(_ entity: Schema.Entity) async throws -> Subspace {
-        // Check for dynamic directory components (not supported in SPARQL function)
-        if entity.hasDynamicDirectory {
-            throw SPARQLFunctionError.invalidArguments(
-                "Dynamic directory partitions not supported in SPARQL() function. " +
-                "Type '\(entity.name)' has dynamic directory components."
-            )
-        }
-
-        // Use DBContainer's directory resolution (handles caching)
-        return try await context.container.resolveDirectory(for: entity)
-    }
-
     // MARK: - SPARQL Execution
 
     /// Execute SPARQL within the current transaction scope
@@ -387,27 +361,37 @@ internal struct SPARQLFunctionRewriter: Sendable {
     private func executeSPARQLWithinTransaction(
         sparqlQuery: String,
         entityName: String,
-        indexName: String,
-        indexSubspace: Subspace,
+        indexDescriptor: IndexDescriptor,
         metadata: RDFDatasetIndexMetadata,
         storedFieldNames: [String]
     ) async throws -> SPARQLResult {
-        let source = RDFDatasetSource(
-            entityName: entityName,
-            indexName: indexName,
-            indexSubspace: indexSubspace,
-            coverage: try metadata.graphScope.sourceCoverage,
-            storedFieldNames: storedFieldNames
-        )
-        // Execute using database transaction (shares snapshot with parent SQL transaction)
-        return try await context.container.transactionExecutor.withTransaction(
-            configuration: .default,
-            clock: context.container.monotonicClock
-        ) { transaction in
-            try await _executeSPARQLString(
+        try await context.indexQueryContext.withTransaction { transaction in
+            let readableIndex = try await context.indexQueryContext
+                .readableIndex(
+                    named: indexDescriptor.name,
+                    kindIdentifier: indexDescriptor.kindIdentifier,
+                    forEntityName: entityName,
+                    partitions: FieldObject(),
+                    transaction: transaction
+                )
+            let sources: [RDFDatasetSource]
+            if let readableIndex {
+                sources = [
+                    RDFDatasetSource(
+                        entityName: entityName,
+                        indexName: indexDescriptor.name,
+                        indexSubspace: readableIndex.subspace,
+                        coverage: try metadata.graphScope.sourceCoverage,
+                        storedFieldNames: storedFieldNames
+                    )
+                ]
+            } else {
+                sources = []
+            }
+            return try await _executeSPARQLString(
                 sparqlQuery,
                 database: context.container.engine,
-                sources: [source],
+                sources: sources,
                 monotonicClock: context.container.monotonicClock,
                 wallClock: context.container.wallClock,
                 transaction: transaction,

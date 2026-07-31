@@ -132,6 +132,18 @@ maintenance.
 - Disabled indexes are not maintained or read.
 - Write-only indexes are maintained but are not query candidates.
 - Readable indexes are maintained and may be selected by the planner.
+- A missing lifecycle key represents an index that has not entered its
+  lifecycle and is interpreted as disabled where the operation permits it.
+  Every present lifecycle value must be exactly one known state byte; malformed
+  or unknown values fail without being overwritten.
+- Read admission is stricter than lifecycle administration. An unregistered
+  dynamic partition is an empty dataset, but an existing namespace with a
+  missing lifecycle key is corrupt metadata and fails with
+  `IndexStateError.missingPersistedState`. Only `readable` may reach a physical
+  index reader; `disabled`, `writeOnly`, malformed, and unknown states fail.
+- Namespace lookup, lifecycle admission, and the physical index read use the
+  same caller-owned transaction and read version. A read never creates a
+  namespace or initializes lifecycle metadata.
 - An online build validates its configuration before changing lifecycle state.
 - An index becomes readable only after its build, uniqueness checks, and progress
   finalization succeed.
@@ -152,6 +164,47 @@ DBContainer owns one DatabaseRuntimeConfiguration. Registries for persistable
 types, readers, mutation maintainers, index maintainers, graph executors, and
 other runtime services are resolved from that configuration. Global mutable
 registration is not part of the runtime contract.
+
+Each registered entity runtime must contain the complete `Schema.Entity` used
+by the container. Bootstrap compares identifier, fields, directories, indexes,
+relationships, authorization rules, enum metadata, ontology, and polymorphic
+membership before preparing storage. An entity name match alone never
+authorizes a typed runtime.
+
+Application-composed indexes that are not declared on the model must be passed
+in the same canonical order to both schema and runtime compilation:
+
+```swift
+let additionalIndexes: [IndexDescriptor] = [
+    applicationIndex
+]
+let entity = try Schema.Entity(
+    from: Event.self,
+    including: additionalIndexes
+)
+let runtimeEntity = try DatabaseFrameworkRuntime.entity(
+    Event.self,
+    including: additionalIndexes
+)
+```
+
+The runtime factory accepts the typed model and additional indexes rather than
+an arbitrary `Schema.Entity`, so a manually altered field schema cannot be
+paired with the model's static decoder.
+
+## Index read ownership
+
+The schema owns index identity. A read resolves the entity, exact index name,
+and exact kind from the container schema before selecting an executor. Feature
+modules receive the resolved descriptor and an admitted index subspace; they do
+not derive an index name from fields or search the schema globally.
+
+Raw key-value iteration uses a caller-owned `KeyValueCursor`. Keys and values
+remain in their backend-owned `ByteString` buffers, and readers do not
+materialize an intermediate array or `AsyncStream`. Consumers must finish a
+cursor when they stop before exhaustion. Tuple range bounds use prefix
+successors so inclusive and exclusive bounds include or exclude the complete
+set of compound keys sharing the indexed tuple prefix.
 
 ## Synchronization
 

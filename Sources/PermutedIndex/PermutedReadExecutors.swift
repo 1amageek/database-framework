@@ -37,6 +37,7 @@ private struct PermutedReadExecutor: IndexReadExecutor {
     func executeRows<T: Persistable>(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: IndexDescriptor,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
@@ -50,7 +51,7 @@ private struct PermutedReadExecutor: IndexReadExecutor {
         let queryContext = try context.indexQueryContext.withPartitions(partitions, for: T.self)
         var builder = PermutedQueryBuilder<T>(
             queryContext: queryContext,
-            indexName: indexScan.indexName,
+            indexName: index.name,
             permutation: try decodePermutation(parameters)
         )
 
@@ -136,6 +137,7 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: PolymorphicIndexMetadata,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
@@ -162,21 +164,24 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
 
         let resolved = try resolveIndex(
             parameters: parameters,
-            group: group,
-            indexName: indexScan.indexName
+            descriptor: index
         )
         let permutation = resolved.permutation
-        let indexSubspace = try await context.container
-            .resolvePolymorphicDirectory(for: group.identifier)
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexScan.indexName)
 
-        var primaryKeys = try await context.executeCanonicalRead(
+        var primaryKeys: [Tuple] = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction in
+            guard let readableIndex = try await context.container
+                .readablePolymorphicIndex(
+                    index,
+                    in: group,
+                    transaction: transaction
+                ) else {
+                return []
+            }
             let reader = PermutedIndexReader(
                 permutation: permutation,
-                subspace: indexSubspace
+                subspace: readableIndex.subspace
             )
 
             let queryType = try parameters.requireString(
@@ -235,16 +240,15 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
 
     private func resolveIndex(
         parameters: IndexReadParameters,
-        group: PolymorphicGroup,
-        indexName: String
+        descriptor: PolymorphicIndexMetadata
     ) throws -> (
         descriptor: PolymorphicIndexMetadata,
         permutation: Permutation
     ) {
-        guard let descriptor = group.indexes.first(where: {
-            $0.name == indexName && $0.kindIdentifier == kindIdentifier
-        }),
-        case .array(let encodedIndices)? = descriptor.metadata["permutation"] else {
+        guard descriptor.kindIdentifier == kindIdentifier,
+              case .array(let encodedIndices)? = descriptor.metadata[
+                "permutation"
+              ] else {
             throw PermutedReadError.missingParameter(PermutedReadParameter.permutation)
         }
         let indices = try integerValues(

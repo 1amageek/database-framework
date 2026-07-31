@@ -6,7 +6,6 @@ import StorageKit
 enum VersionReadParameter {
     static let primaryKey = "primaryKey"
     static let limit = "limit"
-    static let indexName = "indexName"
 }
 
 public enum VersionReadExecutors {
@@ -31,6 +30,7 @@ private struct VersionReadExecutor: IndexReadExecutor {
     func executeRows<T: Persistable>(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: IndexDescriptor,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionContext,
@@ -57,15 +57,7 @@ private struct VersionReadExecutor: IndexReadExecutor {
         ) {
             builder = builder.limit(limit)
         }
-        if let indexNameValue = parameters[VersionReadParameter.indexName] {
-            guard case .string(let indexName) = indexNameValue else {
-                throw IndexReadParameterError.invalid(
-                    name: VersionReadParameter.indexName,
-                    expected: "string"
-                )
-            }
-            builder = builder.index(indexName)
-        }
+        builder = builder.index(index.name)
 
         let results = try await builder.executeDirect(
             configuration: execution.transactionConfiguration
@@ -92,6 +84,7 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
+        index: PolymorphicIndexMetadata,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
@@ -116,31 +109,24 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
             requested: options.consistency,
             default: .snapshot
         )
-        let indexName: String
-        if let value = parameters[VersionReadParameter.indexName] {
-            guard case .string(let suppliedIndexName) = value else {
-                throw IndexReadParameterError.invalid(
-                    name: VersionReadParameter.indexName,
-                    expected: "string"
-                )
-            }
-            indexName = suppliedIndexName
-        } else {
-            indexName = indexScan.indexName
-        }
-        let indexSubspace = try await context.container
-            .resolvePolymorphicDirectory(for: group.identifier)
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexName)
 
         let limit = try parameters.optionalInteger(
             named: VersionReadParameter.limit
         )
         let rawResults = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction in
+        ) {
+            transaction -> [(version: Version, data: ByteString)] in
+            guard let readableIndex = try await context.container
+                .readablePolymorphicIndex(
+                    index,
+                    in: group,
+                    transaction: transaction
+                ) else {
+                return []
+            }
             return try await VersionIndexReader(
-                subspace: indexSubspace
+                subspace: readableIndex.subspace
             ).history(
                 primaryKey: primaryKey,
                 limit: limit,

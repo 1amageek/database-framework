@@ -398,7 +398,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
     ///
     /// **Reference**: "Database System Concepts" (Silberschatz) - Chapter 14.3
     private func findIndexDescriptor() throws -> IndexDescriptor? {
-        try T.indexDescriptors.first { descriptor in
+        queryContext.indexDescriptors(for: T.self).first { descriptor in
             // 1. Filter by kindIdentifier
             guard descriptor.kind.identifier == "scalar" else {
                 return false
@@ -488,16 +488,19 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
 
         let indexName = descriptor.name
 
-        // Get index subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute search within transaction
-        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
-            try await self.searchScalarEquals(
+        let primaryKeys: [Tuple] = try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: "scalar",
+            for: T.self
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            return try await self.searchScalarEquals(
                 value: value,
                 indexedFieldCount: descriptor.fieldNames.count,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction
             )
         }
@@ -536,19 +539,22 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
 
         let indexName = descriptor.name
 
-        // Get index subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute search within transaction
-        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
-            try await self.searchScalarRange(
+        let primaryKeys: [Tuple] = try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: "scalar",
+            for: T.self
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            return try await self.searchScalarRange(
                 min: min,
                 max: max,
                 minInclusive: minInclusive,
                 maxInclusive: maxInclusive,
                 indexedFieldCount: descriptor.fieldNames.count,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction
             )
         }
@@ -583,18 +589,15 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
 
         var results: [Tuple] = []
 
-        let sequence = try await TransactionRangeCollection.collect(using: transaction,
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
             snapshot: true,
-            streamingMode: .wantAll
+            streamingMode: .iterator
         )
-
-        for (key, _) in sequence {
-            guard valueSubspace.contains(key) else { break }
-
+        try await cursor.consume { key, _ in
             let keyTuple = try valueSubspace.unpack(key)
             results.append(
                 try ScalarFilterIndexEntryDecoder.primaryKey(
@@ -648,20 +651,16 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
 
         var results: [Tuple] = []
 
-        let sequence = try await TransactionRangeCollection.collect(using: transaction,
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(beginKey),
             to: .firstGreaterOrEqual(endKey),
             limit: 0,
             reverse: false,
             snapshot: true,
-            streamingMode: .wantAll
+            streamingMode: .iterator
         )
-
-        for (key, _) in sequence {
-            guard indexSubspace.contains(key) else { break }
-
+        try await cursor.consume { key, _ in
             let keyTuple = try indexSubspace.unpack(key)
-
             results.append(
                 try ScalarFilterIndexEntryDecoder.primaryKey(
                     from: keyTuple,

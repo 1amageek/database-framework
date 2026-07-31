@@ -421,19 +421,6 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             throw SPARQLQueryError.indexNotConfigured
         }
 
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(selection.indexName)
-        let source = try RDFDatasetSource(
-            entityName: T.persistableType,
-            selection: selection,
-            indexSubspace: indexSubspace
-        )
-
-        let executor = SPARQLQueryExecutor(
-            database: queryContext.context.container.engine,
-            wallClock: queryContext.context.container.wallClock,
-            sources: [source]
-        )
         let workMeter = DatabaseWorkMeter(
             budget: budget,
             monotonicClock: queryContext.context.container.monotonicClock
@@ -448,12 +435,38 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         let needsAllResults = hasOrderBy || isDistinct
 
         // Step 1: Pattern evaluation (WHERE)
-        var (bindings, stats) = try await executor.execute(
-            pattern: graphPattern,
-            limit: needsAllResults ? nil : limitCount,
-            offset: needsAllResults ? 0 : offsetCount,
-            workMeter: workMeter
-        )
+        var (bindings, stats) = try await queryContext.withReadableIndex(
+            named: selection.indexName,
+            kindIdentifier: selection.kindIdentifier,
+            for: T.self
+        ) {
+            readableIndex,
+            transaction -> ([VariableBinding], ExecutionStatistics) in
+            let sources: [RDFDatasetSource]
+            if let readableIndex {
+                sources = [
+                    try RDFDatasetSource(
+                        entityName: T.persistableType,
+                        selection: selection,
+                        indexSubspace: readableIndex.subspace
+                    )
+                ]
+            } else {
+                sources = []
+            }
+            let executor = SPARQLQueryExecutor(
+                database: queryContext.context.container.engine,
+                wallClock: queryContext.context.container.wallClock,
+                sources: sources
+            )
+            return try await executor.executeInTransaction(
+                pattern: graphPattern,
+                transaction: transaction,
+                limit: needsAllResults ? nil : limitCount,
+                offset: needsAllResults ? 0 : offsetCount,
+                workMeter: workMeter
+            )
+        }
 
         // Step 2: ORDER BY (before projection, per W3C Section 15)
         if hasOrderBy {

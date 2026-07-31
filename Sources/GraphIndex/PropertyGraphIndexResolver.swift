@@ -103,8 +103,9 @@ package enum PropertyGraphIndexResolver {
     package static func resolve<T: Persistable>(
         _ declaration: DeclaredPropertyGraphIndex,
         for type: T.Type,
-        in context: IndexQueryContext
-    ) async throws -> ResolvedPropertyGraphIndex {
+        in context: IndexQueryContext,
+        transaction: any TransactionAccess
+    ) async throws -> ResolvedPropertyGraphIndex? {
         guard declaration.entityName == T.persistableType else {
             throw PropertyGraphIndexResolutionError.entityOwnershipMismatch(
                 indexName: declaration.indexName,
@@ -112,10 +113,17 @@ package enum PropertyGraphIndexResolver {
                 actualEntity: declaration.entityName
             )
         }
-        let typeSubspace = try await context.indexSubspace(for: type)
+        guard let readableIndex = try await context.readableIndex(
+            named: declaration.indexName,
+            kindIdentifier: "graph",
+            for: type,
+            transaction: transaction
+        ) else {
+            return nil
+        }
         return ResolvedPropertyGraphIndex(
             declaration: declaration,
-            indexSubspace: typeSubspace.subspace(declaration.indexName)
+            indexSubspace: readableIndex.subspace
         )
     }
 

@@ -6,7 +6,8 @@ import StorageKit
 public struct RDFDatasetSourcePlanner: Sendable {
     public static func plan(
         namedGraph: RDFGraphName,
-        queryContext: IndexQueryContext
+        queryContext: IndexQueryContext,
+        transaction: any TransactionAccess
     ) async throws -> [RDFDatasetSource] {
         var sources: [RDFDatasetSource] = []
 
@@ -27,14 +28,20 @@ public struct RDFDatasetSourcePlanner: Sendable {
                     guard fixedGraph == namedGraph.term else { continue }
                 }
 
-                let typeSubspace = try await queryContext.indexSubspace(
-                    forEntityName: entity.name
-                )
+                guard let readableIndex = try await queryContext.readableIndex(
+                    named: descriptor.name,
+                    kindIdentifier: descriptor.kindIdentifier,
+                    forEntityName: entity.name,
+                    partitions: FieldObject(),
+                    transaction: transaction
+                ) else {
+                    continue
+                }
                 sources.append(
                     RDFDatasetSource(
                         entityName: entity.name,
                         indexName: descriptor.name,
-                        indexSubspace: typeSubspace.subspace(descriptor.name),
+                        indexSubspace: readableIndex.subspace,
                         coverage: try metadata.graphScope.sourceCoverage,
                         storedFieldNames: selection.storedFieldNames
                     )

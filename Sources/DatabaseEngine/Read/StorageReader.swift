@@ -16,12 +16,12 @@ import DatabaseKit
 /// - Feature modules receive pre-resolved subspaces and interpret their own
 ///   physical layouts
 ///
-/// **Note**: Index subspace is NOT exposed here. Use `IndexQueryContext.indexSubspace(for:)`
-/// which resolves subspace via DirectoryLayer based on Persistable type.
+/// **Note**: Index subspaces are admitted by `IndexQueryContext.readableIndex`
+/// before a transaction-bound reader is created.
 public protocol StorageReader: Sendable {
     // MARK: - Raw Key-Value Access
 
-    /// Scan a range within a subspace
+    /// Open a zero-copy cursor over a range within a subspace.
     ///
     /// - Parameters:
     ///   - subspace: The subspace to scan
@@ -30,21 +30,21 @@ public protocol StorageReader: Sendable {
     ///   - startInclusive: Whether start is inclusive (default: true)
     ///   - endInclusive: Whether end is inclusive (default: false)
     ///   - reverse: Whether to scan in reverse order
-    /// - Returns: Stream of (key, value) pairs
-    func scanRange(
+    /// - Returns: A caller-owned cursor that must be finished.
+    func rangeCursor(
         subspace: Subspace,
         start: Tuple?,
         end: Tuple?,
         startInclusive: Bool,
         endInclusive: Bool,
         reverse: Bool
-    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error>
+    ) throws -> KeyValueCursor
 
-    /// Scans every key in one already-resolved subspace.
-    func scanSubspace(
+    /// Opens a zero-copy cursor over every key in one admitted subspace.
+    func subspaceCursor(
         _ subspace: Subspace,
         reverse: Bool
-    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error>
+    ) throws -> KeyValueCursor
 
     /// Get a single value by key
     ///
@@ -56,12 +56,12 @@ public protocol StorageReader: Sendable {
 // MARK: - Default Implementations
 
 extension StorageReader {
-    /// Convenience method to scan entire subspace
-    public func scanSubspace(
+    /// Convenience method to open a cursor over an entire subspace.
+    public func subspaceCursor(
         _ subspace: Subspace,
         reverse: Bool
-    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
-        scanRange(
+    ) throws -> KeyValueCursor {
+        try rangeCursor(
             subspace: subspace,
             start: nil,
             end: nil,

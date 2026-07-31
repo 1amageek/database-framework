@@ -1,3 +1,5 @@
+import DatabaseEngine
+
 /// Executes the ordered phases of one persistent-job scheduler delivery.
 ///
 /// Cancellation is checked at every phase boundary and after a
@@ -8,38 +10,38 @@ package func executePersistentJobScheduledWork<DueJob: Sendable>(
     scheduleNextWakeUp: () async throws -> Void,
     isolation actor: isolated (any Actor)? = #isolation
 ) async throws {
-    try Task.checkCancellation()
+    try ensureDatabaseTaskIsActive()
     let dueJobs: [DueJob]
     do {
         dueJobs = try await loadDueJobs()
     } catch is CancellationError {
         throw CancellationError()
     } catch {
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         throw PersistentJobScheduledWorkError.loadingDueJobs(error)
     }
     var firstProcessingError: (any Error)?
     for dueJob in dueJobs {
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         do {
             try await processJob(dueJob)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            try Task.checkCancellation()
+            try ensureDatabaseTaskIsActive()
             if firstProcessingError == nil {
                 firstProcessingError = error
             }
         }
     }
-    try Task.checkCancellation()
+    try ensureDatabaseTaskIsActive()
     do {
         try await scheduleNextWakeUp()
     } catch {
         if error is CancellationError {
             throw CancellationError()
         }
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         if let firstProcessingError {
             throw PersistentJobScheduledWorkError
                 .processingJobAndSchedulingNextWakeUp(
@@ -50,7 +52,7 @@ package func executePersistentJobScheduledWork<DueJob: Sendable>(
         throw PersistentJobScheduledWorkError
             .schedulingNextWakeUp(error)
     }
-    try Task.checkCancellation()
+    try ensureDatabaseTaskIsActive()
     if let firstProcessingError {
         throw PersistentJobScheduledWorkError
             .processingJob(firstProcessingError)

@@ -121,14 +121,20 @@ struct PropertyPathAdvancedTests {
             throw SPARQLQueryError.indexNotConfigured
         }
         let selection = selections[0]
-        let queryContext = IndexQueryContext(context: context)
-        let typeSubspace = try await queryContext.indexSubspace(
+        let readableIndex = try await context.indexQueryContext.withReadableIndex(
+            named: selection.indexName,
+            kindIdentifier: selection.kindIdentifier,
             for: AdvancedPathEdge.self
-        )
+        ) { index, _ in
+            index
+        }
+        guard let readableIndex else {
+            throw SPARQLQueryError.indexNotConfigured
+        }
         let source = try RDFDatasetSource(
             entityName: AdvancedPathEdge.persistableType,
             selection: selection,
-            indexSubspace: typeSubspace.subspace(selection.indexName)
+            indexSubspace: readableIndex.subspace
         )
         return SPARQLQueryExecutor(
             database: container.engine,

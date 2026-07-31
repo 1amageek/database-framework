@@ -143,7 +143,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
 
     /// Find the index descriptor using kindIdentifier and fieldName
     private func resolveIndexDescriptor() throws -> IndexDescriptor {
-        let matches = try T.indexDescriptors.filter { descriptor in
+        let matches = queryContext.indexDescriptors(for: T.self).filter {
+            descriptor in
             descriptor.kindIdentifier == "fulltext"
                 && descriptor.kind.fields.contains(where: {
                     $0.identity == field
@@ -178,17 +179,21 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
 
         let indexName = descriptor.name
 
-        // Get index subspace
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute full-text search
-        let scoredIds: [(id: Tuple, score: Double)] = try await queryContext.withTransaction { transaction in
-            try await self.searchFullText(
+        let scoredIds: [(id: Tuple, score: Double)] = try await queryContext
+            .withReadableIndex(
+                named: indexName,
+                kindIdentifier: "fulltext",
+                for: T.self
+            ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            return try await self.searchFullText(
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
                 configuration: configuration,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 transaction: transaction
             )
         }

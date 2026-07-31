@@ -166,7 +166,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
     /// Find the graph index descriptor
     private func findIndexDescriptor() throws -> IndexDescriptor? {
-        try T.indexDescriptors.first { descriptor in
+        queryContext.indexDescriptors(for: T.self).first { descriptor in
             guard descriptor.kindIdentifier == "graph" else {
                 return false
             }
@@ -233,10 +233,6 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             )
         }
 
-        // Get index subspace using public API
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(descriptor.name)
-
         let strategy = try PropertyGraphIndexMetadata(
             canonical: descriptor.kind
         ).strategy
@@ -271,10 +267,17 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             }
 
             // Find neighbors within transaction
-            let neighbors = try await queryContext.withTransaction { transaction in
-                try await self.findNeighbors(
+            let neighbors = try await queryContext.withReadableIndex(
+                named: descriptor.name,
+                kindIdentifier: descriptor.kindIdentifier,
+                for: T.self
+            ) { readableIndex, transaction -> [String] in
+                guard let readableIndex else {
+                    return []
+                }
+                return try await self.findNeighbors(
                     node: currentNode,
-                    indexSubspace: indexSubspace,
+                    indexSubspace: readableIndex.subspace,
                     strategy: strategy,
                     transaction: transaction
                 )
@@ -425,7 +428,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
     /// Find a ScalarIndex that covers the field
     private func findScalarIndexForField() throws -> IndexDescriptor? {
-        try T.indexDescriptors.first { descriptor in
+        queryContext.indexDescriptors(for: T.self).first { descriptor in
             // Check if it's a ScalarIndex
             guard descriptor.kindIdentifier == "scalar" else { return false }
 
@@ -461,25 +464,31 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         nodeValues: [String],
         indexDescriptor: IndexDescriptor
     ) async throws -> [T] {
-        let indexSubspace = try await queryContext.indexSubspace(for: T.self)
-            .subspace(indexDescriptor.name)
-
-        let reader = try await queryContext.storageReader(for: T.self)
         let searcher = ScalarIndexSearcher(keyFieldCount: 1)
-
-        var allIds: [Tuple] = []
-
-        // Query index for each node value
-        for nodeValue in nodeValues {
-            let query = ScalarIndexQuery.equals([nodeValue])
-            let entries = try await searcher.search(
-                query: query,
-                in: indexSubspace,
-                using: reader
-            )
-            for entry in entries {
-                allIds.append(entry.itemID)
+        let allIds: [Tuple] = try await queryContext.withReadableIndex(
+            named: indexDescriptor.name,
+            kindIdentifier: indexDescriptor.kindIdentifier,
+            for: T.self
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
             }
+            let reader = queryContext.storageReader(
+                transaction: transaction
+            )
+            var identifiers: [Tuple] = []
+            for nodeValue in nodeValues {
+                let query = ScalarIndexQuery.equals([nodeValue])
+                let entries = try await searcher.search(
+                    query: query,
+                    in: readableIndex.subspace,
+                    using: reader
+                )
+                for entry in entries {
+                    identifiers.append(entry.itemID)
+                }
+            }
+            return identifiers
         }
 
         // Deduplicate IDs by packed representation

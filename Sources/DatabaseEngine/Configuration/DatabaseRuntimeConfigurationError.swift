@@ -10,6 +10,11 @@ public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
     case duplicatePersistableType(entityName: String)
     case duplicateAuthorizationPolicy(entityName: String)
     case missingCompiledEntityType(entityName: String)
+    case entitySchemaMismatch(
+        entityName: String,
+        schemaEntity: Schema.Entity,
+        runtimeEntity: Schema.Entity
+    )
     case missingCompiledPolymorphicMemberType(
         groupIdentifier: String,
         memberTypeName: String

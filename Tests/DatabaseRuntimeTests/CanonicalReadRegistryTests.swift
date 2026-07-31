@@ -14,6 +14,7 @@ struct CanonicalReadRegistryTests {
         func executeRows(
             context: DatabaseContext,
             selectQuery: SelectQuery,
+            index: PolymorphicIndexMetadata,
             indexScan: IndexScanSource,
             group: PolymorphicGroup,
             options: DatabaseEngine.ReadExecutionContext,

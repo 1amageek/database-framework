@@ -12,6 +12,7 @@ package struct RDFDatasetIndexMetadata: Sendable {
 
 package struct RDFDatasetIndexSelection: Sendable {
     package let indexName: String
+    package let kindIdentifier: String
     package let metadata: RDFDatasetIndexMetadata
     package let storedFieldNames: [String]
 
@@ -23,6 +24,7 @@ package struct RDFDatasetIndexSelection: Sendable {
             return nil
         }
         self.indexName = descriptor.name
+        self.kindIdentifier = descriptor.kind.identifier
         self.metadata = metadata
         self.storedFieldNames = descriptor.storedFieldNames
     }
@@ -36,6 +38,7 @@ package struct RDFDatasetIndexSelection: Sendable {
         }
         self.init(
             indexName: descriptor.name,
+            kindIdentifier: descriptor.kind.identifier,
             metadata: metadata,
             storedFieldNames: descriptor.storedFieldNames
         )
@@ -43,10 +46,12 @@ package struct RDFDatasetIndexSelection: Sendable {
 
     private init(
         indexName: String,
+        kindIdentifier: String,
         metadata: RDFDatasetIndexMetadata,
         storedFieldNames: [String]
     ) {
         self.indexName = indexName
+        self.kindIdentifier = kindIdentifier
         self.metadata = metadata
         self.storedFieldNames = storedFieldNames
     }

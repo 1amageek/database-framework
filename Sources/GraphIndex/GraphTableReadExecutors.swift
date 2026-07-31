@@ -35,9 +35,10 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
         return try await queryContext.withTransaction(
             configuration: execution.transactionConfiguration
         ) { transaction in
-            guard let indexSubspace = try await queryContext
-                .readableIndexSubspace(
+            guard let index = try await queryContext
+                .readableIndex(
                     named: resolution.indexDescriptor.name,
+                    kindIdentifier: resolution.indexDescriptor.kindIdentifier,
                     forEntityName: resolution.entity.name,
                     partitions: partitions,
                     transaction: transaction
@@ -46,7 +47,7 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
             }
             let rows = try await GraphTableExecutor(
                 indexDescriptor: resolution.indexDescriptor,
-                indexSubspace: indexSubspace,
+                indexSubspace: index.subspace,
                 graphTableSource: graphTableSource
             ).execute(transaction: transaction)
             return rows.map { row in

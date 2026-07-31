@@ -165,6 +165,18 @@ injects a monotonic clock for scheduling and a wall clock for persisted time.
 Native applications can use Foundation-backed adapters; Embedded runtimes
 provide clocks at their platform boundary. Choose one backend below.
 
+Runtime bootstrap requires every registered entity runtime to match its
+complete `Schema.Entity`; sharing only the entity name is insufficient. When
+an application adds indexes outside the model declaration, pass the same
+ordered `[IndexDescriptor]` to both `Schema.Entity(from:including:)` and
+`DatabaseFrameworkRuntime.entity(_:including:)`.
+
+Index reads resolve the exact entity, index name, and index kind from that
+schema. For an existing namespace, the selected index must have one valid
+persisted `readable` lifecycle state; missing or malformed state is a typed
+failure and is never treated as an empty result. Lifecycle admission and the
+zero-copy physical cursor share the caller's transaction.
+
 ## Backend Examples
 
 ### FoundationDB

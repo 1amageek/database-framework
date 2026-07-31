@@ -145,7 +145,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         descriptor: IndexDescriptor,
         configuration: TimeWindowLeaderboardConfiguration
     )? {
-        for descriptor in try T.indexDescriptors {
+        for descriptor in queryContext.indexDescriptors(for: T.self) {
             guard descriptor.kind.identifier == "time_window_leaderboard" else {
                 continue
             }
@@ -173,17 +173,21 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         let indexName = descriptor.name
         let windowDurationSeconds = Int64(indexKind.window.durationSeconds)
 
-        // Get index subspace using public API
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute leaderboard query within transaction
         let grouping = try groupValue.map {
             [try $0.toTupleElement() as any TupleElement]
         }
-        let topKResults: [(pk: Tuple, score: Int64)] = try await queryContext.withTransaction { transaction in
-            try await self.readTopK(
-                indexSubspace: indexSubspace,
+        let topKResults: [(pk: Tuple, score: Int64)] = try await queryContext
+            .withReadableIndex(
+                named: indexName,
+                kindIdentifier: descriptor.kindIdentifier,
+                for: T.self
+            ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
+            return try await self.readTopK(
+                indexSubspace: readableIndex.subspace,
                 k: self.k,
                 grouping: grouping,
                 windowId: self.windowId,

@@ -671,6 +671,75 @@ struct DatabaseErrorMapperTests {
         )
     }
 
+    @Test("Persisted index state corruption remains an explicit internal failure")
+    func indexStateCorruption() async throws {
+        let context = try await makeContext()
+        let mapper = CanonicalDatabaseErrorMapper()
+
+        for error in [
+            IndexStateError.invalidPersistedStateSize(
+                index: "Event_startsAt",
+                byteCount: 2
+            ),
+            IndexStateError.unknownPersistedStateValue(
+                index: "Event_startsAt",
+                value: 0xFF
+            ),
+        ] {
+            let remote = mapper.remoteError(
+                for: error,
+                context: context
+            )
+
+            expect(
+                remote,
+                category: .internalFailure,
+                code: "CORRUPTED_INDEX_STATE"
+            )
+            #expect(remote.retryability == .never)
+            #expect(remote.details["index"] == .string("Event_startsAt"))
+        }
+    }
+
+    @Test("Missing resolved index state remains an explicit invariant failure")
+    func missingResolvedIndexState() async throws {
+        let context = try await makeContext()
+
+        let remote = CanonicalDatabaseErrorMapper().remoteError(
+            for: IndexStateError.missingRequestedState(
+                index: "Event_startsAt"
+            ),
+            context: context
+        )
+
+        expect(
+            remote,
+            category: .internalFailure,
+            code: "INDEX_STATE_INVARIANT_VIOLATION"
+        )
+        #expect(remote.retryability == .never)
+    }
+
+    @Test("Missing persisted read state remains an explicit invariant failure")
+    func missingPersistedReadState() async throws {
+        let context = try await makeContext()
+
+        let remote = CanonicalDatabaseErrorMapper().remoteError(
+            for: IndexStateError.missingPersistedState(
+                index: "Event_startsAt"
+            ),
+            context: context
+        )
+
+        expect(
+            remote,
+            category: .internalFailure,
+            code: "MISSING_INDEX_STATE"
+        )
+        #expect(remote.retryability == .never)
+        #expect(remote.details["index"] == .string("Event_startsAt"))
+    }
+
     @Test("Invalid binary SPARQL datasets are rejected as invalid requests")
     func invalidSPARQLDataset() async throws {
         let context = try await makeContext()

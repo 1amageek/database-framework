@@ -7,6 +7,36 @@ import StorageKit
 @testable import ScalarIndex
 
 private final class ScalarIndexSearchReader: StorageReader, Sendable {
+    private struct RangeResult: TransactionRangeResult {
+        struct Cursor: TransactionRangeCursor {
+            private let rows: [(key: ByteString, value: ByteString)]
+            private var position = 0
+
+            init(rows: [(key: ByteString, value: ByteString)]) {
+                self.rows = rows
+            }
+
+            mutating func next() async throws -> (ByteString, ByteString)? {
+                guard position < rows.count else {
+                    return nil
+                }
+                let row = rows[position]
+                position += 1
+                return (row.key, row.value)
+            }
+
+            mutating func finish(
+                isolation actor: isolated (any Actor)?
+            ) async throws {}
+        }
+
+        let rows: [(key: ByteString, value: ByteString)]
+
+        func makeCursor() -> Cursor {
+            Cursor(rows: rows)
+        }
+    }
+
     private let entries = Mutex<[(key: ByteString, value: ByteString)]>([])
     let indexSubspace = Subspace(prefix: [0x49])
 
@@ -39,14 +69,14 @@ private final class ScalarIndexSearchReader: StorageReader, Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func scanRange(
+    func rangeCursor(
         subspace: Subspace,
         start: Tuple?,
         end: Tuple?,
         startInclusive: Bool,
         endInclusive: Bool,
         reverse: Bool
-    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
+    ) throws -> KeyValueCursor {
         var matches: [(key: ByteString, value: ByteString)] = []
         for entry in entries.withLock({ $0 }) {
             guard entry.key.starts(with: subspace.prefix) else {
@@ -54,18 +84,16 @@ private final class ScalarIndexSearchReader: StorageReader, Sendable {
             }
             if let start {
                 let key = subspace.pack(start)
-                let accepted = startInclusive
-                    ? !entry.key.lexicographicallyPrecedes(key)
-                    : key.lexicographicallyPrecedes(entry.key)
+                let boundary = startInclusive ? key : try strinc(key)
+                let accepted = !entry.key.lexicographicallyPrecedes(boundary)
                 guard accepted else {
                     continue
                 }
             }
             if let end {
                 let key = subspace.pack(end)
-                let accepted = endInclusive
-                    ? !key.lexicographicallyPrecedes(entry.key)
-                    : entry.key.lexicographicallyPrecedes(key)
+                let boundary = endInclusive ? try strinc(key) : key
+                let accepted = entry.key.lexicographicallyPrecedes(boundary)
                 guard accepted else {
                     continue
                 }
@@ -76,24 +104,8 @@ private final class ScalarIndexSearchReader: StorageReader, Sendable {
         if reverse {
             matches.reverse()
         }
-        return AsyncThrowingStream { continuation in
-            for match in matches {
-                continuation.yield(match)
-            }
-            continuation.finish()
-        }
-    }
-
-    func scanSubspace(
-        _ subspace: Subspace
-    ) -> AsyncThrowingStream<(key: ByteString, value: ByteString), Error> {
-        scanRange(
-            subspace: subspace,
-            start: nil,
-            end: nil,
-            startInclusive: true,
-            endInclusive: false,
-            reverse: false
+        return KeyValueCursor(
+            consuming: RangeResult(rows: matches)
         )
     }
 
@@ -220,6 +232,74 @@ struct ScalarIndexSearcherTests {
         )
 
         #expect(results.count == 3)
+    }
+
+    @Test("Zero limit returns no physical results")
+    func zeroLimitSearch() async throws {
+        let reader = ScalarIndexSearchReader()
+        reader.addEntry(
+            indexName: "category",
+            keyValues: ["electronics"],
+            identifier: "one"
+        )
+
+        let results = try await ScalarIndexSearcher().search(
+            query: ScalarIndexQuery(limit: 0),
+            in: reader.indexSubspace.subspace("category"),
+            using: reader
+        )
+
+        #expect(results.isEmpty)
+    }
+
+    @Test("Negative limit fails with its typed value")
+    func negativeLimitFails() async throws {
+        let reader = ScalarIndexSearchReader()
+        do {
+            _ = try await ScalarIndexSearcher().search(
+                query: ScalarIndexQuery(limit: -1),
+                in: reader.indexSubspace,
+                using: reader
+            )
+            Issue.record("Expected a negative limit to fail")
+        } catch let error as ScalarIndexSearchError {
+            #expect(error == .invalidLimit(-1))
+        }
+    }
+
+    @Test("Equal range with either exclusive bound is empty")
+    func exclusiveEqualRangeIsEmpty() async throws {
+        let reader = ScalarIndexSearchReader()
+        reader.addEntry(
+            indexName: "price",
+            keyValues: [20],
+            identifier: "twenty"
+        )
+        let subspace = reader.indexSubspace.subspace("price")
+
+        let startExclusive = try await ScalarIndexSearcher().search(
+            query: ScalarIndexQuery(
+                start: [20],
+                startInclusive: false,
+                end: [20],
+                endInclusive: true
+            ),
+            in: subspace,
+            using: reader
+        )
+        let endExclusive = try await ScalarIndexSearcher().search(
+            query: ScalarIndexQuery(
+                start: [20],
+                startInclusive: true,
+                end: [20],
+                endInclusive: false
+            ),
+            in: subspace,
+            using: reader
+        )
+
+        #expect(startExclusive.isEmpty)
+        #expect(endExclusive.isEmpty)
     }
 
     @Test("Malformed keys fail with a typed error")

@@ -109,12 +109,13 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         do {
             indexSubspace = try await IndexQueryContext(
                 context: container.newContext()
-            ).readableIndexSubspace(
+            ).readableIndex(
                 named: data.index,
+                kindIdentifier: descriptor.kindIdentifier,
                 forEntityName: data.entity,
                 partitions: data.partitions,
                 transaction: transaction
-            )
+            )?.subspace
         } catch CanonicalReadError.invalidPartition(_, let reason) {
             throw DatabaseSHACLDataSourceError.invalidPartition(
                 entity: data.entity,

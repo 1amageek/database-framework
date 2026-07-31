@@ -154,14 +154,20 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         configuration: TransactionConfiguration = .default,
         cachePolicy: CachePolicy = .server
     ) async throws -> [T] {
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         let resolved = try resolveIndex()
         let descriptor = resolved.descriptor
         let perm = resolved.permutation
 
-        let primaryKeys: [[any TupleElement]] = try await queryContext.withTransaction(configuration: configuration) { transaction in
+        let primaryKeys: [[any TupleElement]] = try await queryContext
+            .withReadableIndex(
+                named: indexName,
+                kindIdentifier: "permuted",
+                for: T.self,
+                configuration: configuration
+            ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
             let maintainer = PermutedIndexMaintainer<T>(
                 index: Index(
                     name: self.indexName,
@@ -171,7 +177,7 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
                     storedFieldNames: descriptor.storedFieldNames
                 ),
                 permutation: perm,
-                subspace: indexSubspace,
+                subspace: readableIndex.subspace,
                 idExpression: FieldKeyExpression(fieldName: "id")
             )
 
@@ -212,15 +218,19 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of (permutedFields, item) tuples
     public func executeWithFields() async throws -> [(permutedFields: [any TupleElement], item: T)] {
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         let resolved = try resolveIndex()
         let descriptor = resolved.descriptor
         let perm = resolved.permutation
 
         let rawResults: [(permutedFields: [any TupleElement], primaryKey: [any TupleElement])]
-        rawResults = try await queryContext.withTransaction { transaction in
+        rawResults = try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: "permuted",
+            for: T.self
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return []
+            }
             let maintainer = PermutedIndexMaintainer<T>(
                 index: Index(
                     name: self.indexName,
@@ -230,7 +240,7 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
                     storedFieldNames: descriptor.storedFieldNames
                 ),
                 permutation: perm,
-                subspace: indexSubspace,
+                subspace: readableIndex.subspace,
                 idExpression: FieldKeyExpression(fieldName: "id")
             )
 
@@ -265,7 +275,9 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
     }
 
     private func resolveIndex() throws -> (descriptor: IndexDescriptor, permutation: Permutation) {
-        guard let descriptor = queryContext.schema.indexDescriptor(named: indexName) else {
+        guard let descriptor = queryContext.indexDescriptors(
+            for: T.self
+        ).first(where: { $0.name == indexName }) else {
             throw PermutedQueryError.indexNotFound(indexName)
         }
         guard descriptor.kind.identifier == "permuted" else {
