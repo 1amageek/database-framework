@@ -26,6 +26,7 @@ public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
     case fieldNotRepresentable(entity: String, field: String)
     case fieldValueNotRepresentable(entity: String, type: String, reason: String)
     case invalidCompiledSchema(entity: String, reason: String)
+    case featureUnavailable(String)
     case unsupportedStatement(String)
     case fieldsRequired(EntityReference)
     case fieldsMustBeEmptyForDelete(EntityReference)
@@ -83,6 +84,8 @@ public enum DatabaseMutationError: Error, Sendable, CustomStringConvertible {
             return "Entity '\(entity)' value of type '\(type)' cannot be represented: \(reason)"
         case .invalidCompiledSchema(let entity, let reason):
             return "Entity '\(entity)' has an invalid compiled schema: \(reason)"
+        case .featureUnavailable(let reason):
+            return "Mutation feature is unavailable: \(reason)"
         case .unsupportedStatement(let reason):
             return "Statement mutation is unsupported: \(reason)"
         case .fieldsRequired(let identity):

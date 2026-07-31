@@ -35,6 +35,7 @@ extension MutationExecuteOperation: ServerOperationDeclaration {
     }
 }
 
+#if DATABASE_SERVER_GRAPH_INDEXES
 extension GraphAlgorithmOperation: ServerOperationDeclaration {
     public static var operation: DatabaseOperation<Request, Response> {
         DatabaseOperations.graphAlgorithm
@@ -52,6 +53,7 @@ extension SHACLExecuteOperation: ServerOperationDeclaration {
         DatabaseOperations.shaclExecute
     }
 }
+#endif
 
 extension CommandExecuteOperation: ServerOperationDeclaration {
     public static var operation: DatabaseOperation<Request, Response> {

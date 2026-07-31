@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseEngine
 
 public struct SPARQLLoadRequest: Sendable {
@@ -18,3 +19,5 @@ public struct SPARQLLoadRequest: Sendable {
         self.workMeter = workMeter
     }
 }
+
+#endif

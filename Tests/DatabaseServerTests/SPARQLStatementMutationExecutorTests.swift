@@ -973,15 +973,17 @@ struct SPARQLStatementMutationExecutorTests {
             maximumRows: 10,
             maximumWorkUnits: 10_000,
             maximumTimeoutMilliseconds: 30_000,
-            maximumMutations: 1,
-            maximumLoadDocumentBytes: 16
+            maximumMutations: 1
         )
         do {
             _ = try await executeRDF(
                 .load(LoadQuery(source: "https://source.test/oversized")),
                 executor: CanonicalDatabaseStatementMutationExecutor(
                     runtimeLimits: runtimeLimits,
-                    loadSource: AnySPARQLLoadSource(oversized)
+                    loadSource: AnySPARQLLoadSource(oversized),
+                    graphOperationLimits: try GraphOperationLimits(
+                        maximumLoadDocumentBytes: 16
+                    )
                 ),
                 context: context(container, idempotencyKey: "load-oversized")
             )
@@ -1268,7 +1270,7 @@ struct SPARQLStatementMutationExecutorTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),

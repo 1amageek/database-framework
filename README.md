@@ -8,10 +8,11 @@ persistence, migrations, and index maintenance. Storage is supplied through
 the backend-neutral protocols in
 [storage-kit](https://github.com/1amageek/storage-kit).
 
-FoundationDB is the default SwiftPM trait for compatibility with the original
-deployment path. It is one backend choice, not a requirement of the framework.
-The same execution layer can run with FoundationDB, SQLite, PostgreSQL, an
-in-memory engine, or another StorageEngine implementation.
+The default SwiftPM trait set is the full native host profile:
+`FoundationDB` plus `AllRuntimeFeatures`. FoundationDB is one storage adapter,
+not a dependency of the execution engine. The same execution layer can run
+with FoundationDB, SQLite, PostgreSQL, an in-memory engine, or another
+`StorageEngine` implementation.
 
 ## Architecture
 
@@ -38,8 +39,10 @@ The package separates application behavior from storage deployment:
       distributed       local/embedded     server/Cloud SQL    InMemory/remote
 
 Application model, query, and index declarations stay the same when the
-backend changes. Backend selection happens through a SwiftPM trait and a
-storage configuration at initialization.
+backend changes. A consuming package uses SwiftPM traits to include concrete
+backend adapters and optional runtime capabilities. At runtime,
+`DBConfiguration(storageEngine:)` injects the initialized engine that one
+container owns.
 
 ### Responsibilities
 
@@ -57,12 +60,12 @@ storage configuration at initialization.
 
 ## Backend Selection
 
-| Backend | Trait | Typical deployment | Storage engine | FoundationDB required |
-|---|---|---|---|---:|
-| FoundationDB | default / FoundationDB | distributed server database | FDBStorageEngine | Yes |
-| SQLite | SQLite | local, embedded, tests, single-instance services | SQLiteStorageEngine | No |
-| PostgreSQL | PostgreSQL | server, Cloud SQL, Vapor on Cloud Run | PostgreSQLStorageEngine | No |
-| Custom | application-defined | in-memory, proxy, or another storage system | any StorageEngine | No |
+| Backend | Trait | Supported package platforms | Storage engine |
+|---|---|---|---|
+| FoundationDB | `FoundationDB` (default profile) | macOS, Linux | `FDBStorageEngine` |
+| SQLite | `SQLite` | macOS, iOS, Linux | `SQLiteStorageEngine` |
+| PostgreSQL | `PostgreSQL` | macOS, iOS, Linux | `PostgreSQLStorageEngine` |
+| Custom | none in database-framework | where the implementation is available | any `StorageEngine` |
 
 The common execution path is:
 
@@ -93,22 +96,41 @@ documented semantic mapping.
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0727.1"
+            from: "26.0731.1"
         )
     ]
 
-The all-in-one Database product re-exports the model, storage, execution, and
-index modules selected by the active traits. Individual products such as
-DatabaseEngine and VectorIndex are available when smaller dependency graphs
-are preferred.
+`Database` is the package's umbrella product. It always re-exports the
+backend-neutral model, storage, execution, runtime-composition, and query
+contracts. Index and backend modules enter the `Database` target dependency
+graph and its re-exported API only when the corresponding package trait is
+active. `Database` is not itself a trait.
+
+The package that consumes database-framework selects that composition:
+
+    .package(
+        url: "https://github.com/1amageek/database-framework.git",
+        from: "26.0731.2",
+        traits: ["GraphIndexes"]
+    )
+
+Omitting `.defaults` from an explicit dependency trait set prevents
+`FoundationDB` and `AllRuntimeFeatures` from being enabled. Individual products
+such as DatabaseEngine and VectorIndex remain available when an application
+does not want the umbrella import. SwiftPM unifies traits requested through
+different dependency paths, so the final composition is the union requested by
+the complete package graph.
 
 DatabaseRuntime selects its index and relationship capabilities with SwiftPM
-traits. `AllRuntimeFeatures` is enabled by default. Embedded applications should
-pass an explicit trait set so unused implementations never enter the target
-dependency graph. `GraphIndexes`, for example, includes the scalar support
-required by graph execution without linking vector, full-text, aggregation, or
-leaderboard indexes. Runtime bootstrap still validates the compiled composition
-against the application schema and fails when a required capability is absent.
+traits. The default full-host profile includes `AllRuntimeFeatures` and
+`FoundationDB`. Embedded applications should pass an explicit trait set so
+unused implementations never enter the target dependency graph.
+`GraphIndexes`, for example, includes the scalar support required by graph
+execution without linking vector, full-text, aggregation, or leaderboard
+indexes. `Relationships` is independent and is needed only when the application
+uses RelationshipIndex. Runtime bootstrap still validates the compiled
+composition against the application schema and fails when a required capability
+is absent.
 
 ## Quick Start
 
@@ -143,7 +165,7 @@ The model and application code are backend-neutral:
     let container = try await DBContainer.open(
         for: schema,
         configuration: DBConfiguration(
-            backend: .custom(engine),
+            storageEngine: engine,
             monotonicClock: applicationMonotonicClock,
             wallClock: applicationWallClock
         ),
@@ -181,8 +203,10 @@ zero-copy physical cursor share the caller's transaction.
 
 ### FoundationDB
 
-FoundationDB is the default trait. It provides distributed transactions,
-native versionstamps, and the dynamic FoundationDB DirectoryLayer.
+FoundationDB is part of the default full-host profile on macOS and Linux. It
+provides distributed transactions, native versionstamps, and the dynamic
+FoundationDB DirectoryLayer. The FoundationDB adapter is not compiled for iOS
+or WASI.
 
     swift build
     xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS'
@@ -196,16 +220,14 @@ native versionstamps, and the dynamic FoundationDB DirectoryLayer.
         runtimeConfiguration: runtime
     )
 
-The explicit form is useful when supplying FoundationDB configuration:
+The explicit facade form accepts a FoundationDB storage configuration and
+constructs the engine before transferring it to the container:
 
-    let configuration = DBConfiguration(
-        backend: .fdb(),
-        monotonicClock: applicationMonotonicClock,
-        wallClock: applicationWallClock
-    )
     let container = try await DBContainer.open(
         for: schema,
-        configuration: configuration,
+        configuration: FDBStorageEngine.Configuration(),
+        monotonicClock: applicationMonotonicClock,
+        wallClock: applicationWallClock,
         runtimeConfiguration: runtime
     )
 
@@ -313,7 +335,7 @@ tests, local tools, storage proxies, and future backends.
     let container = try await DBContainer.open(
         for: schema,
         configuration: DBConfiguration(
-            backend: .custom(engine),
+            storageEngine: engine,
             monotonicClock: applicationMonotonicClock,
             wallClock: applicationWallClock
         ),
@@ -324,7 +346,7 @@ The same injection path is used for a custom remote or host-provided engine:
 
     let configuration = DBConfiguration(
         name: "application-storage",
-        backend: .custom(customEngine),
+        storageEngine: customEngine,
         monotonicClock: applicationMonotonicClock,
         wallClock: applicationWallClock,
         indexConfigurations: [vectorConfiguration]
@@ -351,6 +373,14 @@ for transactions.
                   owns: pending changes, read-version/cache state,
                         transaction orchestration
 
+Creating `DBConfiguration(storageEngine:)` transfers the engine lifecycle to a
+shared owner carried by that configuration. `DBContainer.open` retains that
+owner. If opening fails, the engine is shut down before the error is returned.
+For an opened container, `shutdown()` is the public terminal operation and
+deinitialization invokes it as a safety net. Repeated shutdown paths release the
+engine exactly once. The caller must not reuse or shut down the engine
+independently after transferring it.
+
     let context = container.newContext()
 
     try context.insert(user)
@@ -371,6 +401,10 @@ For direct transactional work:
 Transactions, range scans, key selectors, tuple encoding, and directory
 resolution are expressed through StorageKit. The selected backend controls
 connection management and physical implementation.
+
+At the host's terminal lifecycle boundary:
+
+    container.shutdown()
 
 ## Indexes
 
@@ -507,7 +541,7 @@ logical key/value model in their own tables and indexes.
 
 | Product | Role |
 |---|---|
-| Database | all-in-one facade and selected backend re-exports |
+| Database | stable umbrella and trait-selected adapter/index re-exports |
 | DatabaseEngine | container, context, persistence, planning, migrations |
 | DatabaseRuntime | runtime assembly for index maintainers |
 | ScalarIndex, VectorIndex, FullTextIndex, ... | individual index modules |
@@ -561,15 +595,15 @@ claim about SQLite, PostgreSQL, Cloud SQL, or Durable Object latency.
 
 | Runtime | Status |
 |---|---|
-| macOS | supported by the package manifest |
-| iOS | supported by the package manifest |
-| Linux | supported where selected dependencies are available |
-| Cloudflare Workers / WASM | use database-framework-cloudflare adapter |
+| macOS | core runtime and FoundationDB, SQLite, PostgreSQL adapters |
+| iOS | core runtime and native adapters except FoundationDB |
+| Linux | core runtime and FoundationDB, SQLite, PostgreSQL adapters where dependencies are available |
+| Cloudflare Workers / WASM | no FoundationDB adapter; use database-framework-cloudflare and an injected host storage engine |
 
-FoundationDB-specific modules and imports are conditionally compiled only for
-the FoundationDB trait. SQLite and PostgreSQL builds do not link libfdb_c. The
-core engine depends on StorageKit protocols and does not embed a FoundationDB
-client into every backend build.
+FoundationDB-specific modules and imports require both the `FoundationDB`
+trait and a macOS or Linux target. SQLite and PostgreSQL builds do not link
+libfdb_c. `DatabaseEngine` depends only on StorageKit contracts and never
+selects or constructs a concrete backend.
 
 ## Ecosystem Repositories
 

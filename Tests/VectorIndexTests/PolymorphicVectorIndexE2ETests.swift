@@ -119,7 +119,7 @@ struct PolymorphicVectorIndexE2ETests {
 
         return try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicVectorArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicVectorReport.self)]
             ),
@@ -139,7 +139,7 @@ struct PolymorphicVectorIndexE2ETests {
 
         return try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicOptionalVectorArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicOptionalVectorReport.self)]
             ),
@@ -158,7 +158,7 @@ struct PolymorphicVectorIndexE2ETests {
 
         return try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicVectorNoIndexArticle.self)]
             ),

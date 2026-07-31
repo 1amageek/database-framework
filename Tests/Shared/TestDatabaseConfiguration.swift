@@ -45,7 +45,7 @@ public extension DBConfiguration {
     /// Creates an explicitly clocked configuration for tests.
     static func testing(
         name: String? = nil,
-        backend: StorageBackend,
+        storageEngine: any StorageEngine,
         indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
@@ -53,7 +53,7 @@ public extension DBConfiguration {
     ) throws -> DBConfiguration {
         DBConfiguration(
             name: name,
-            backend: backend,
+            storageEngine: storageEngine,
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             indexConfigurations: indexConfigurations,

@@ -47,7 +47,7 @@ private struct CRUDBenchmarkContext: Sendable {
         )
         self.container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(CRUDBenchmarkEntity.self)]
             ),

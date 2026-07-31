@@ -297,8 +297,7 @@ enum FDBStageFailureMigrationPlan: SchemaMigrationPlan {
 struct MigrationExecutionFDBTests {
     private func makeSystemPriorityEngine() async throws -> any StorageEngine {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
-        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let database = FDBSystemPriorityDatabase(wrapping: engine.database)
+        let database = try FDBSystemPriorityDatabase()
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
 
@@ -333,7 +332,7 @@ struct MigrationExecutionFDBTests {
 
             let initialContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV1.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV1.self)]),
                 security: .disabled
             )
@@ -348,7 +347,7 @@ struct MigrationExecutionFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV3.self,
                 migrationPlan: FDBStageBoundaryMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
             )
             try await migratedContainer.migrateIfNeeded()
@@ -358,7 +357,7 @@ struct MigrationExecutionFDBTests {
 
             let verificationContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV3.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
                 security: .disabled
             )
@@ -383,7 +382,7 @@ struct MigrationExecutionFDBTests {
 
             let initialContainer = try await DBContainer.open(
                 for: FDBIndexLifecycleSchemaV2.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV2.self)]),
                 security: .disabled
             )
@@ -407,7 +406,7 @@ struct MigrationExecutionFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBIndexLifecycleSchemaV3.self,
                 migrationPlan: FDBIndexLifecycleMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV3.self)]),
             )
             try await migratedContainer.migrateIfNeeded()
@@ -425,7 +424,7 @@ struct MigrationExecutionFDBTests {
 
             let verificationContainer = try await DBContainer.open(
                 for: FDBIndexLifecycleSchemaV3.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV3.self)]),
                 security: .disabled
             )
@@ -456,7 +455,7 @@ struct MigrationExecutionFDBTests {
 
             let initialContainer = try await DBContainer.open(
                 for: FDBStageFailureSchemaV1.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV1.self)]),
                 security: .disabled
             )
@@ -471,7 +470,7 @@ struct MigrationExecutionFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBStageFailureSchemaV3.self,
                 migrationPlan: FDBStageFailureMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV3.self)]),
             )
 
@@ -489,7 +488,7 @@ struct MigrationExecutionFDBTests {
 
             let verificationContainer = try await DBContainer.open(
                 for: FDBStageFailureSchemaV2.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV2.self)]),
                 security: .disabled
             )
@@ -518,7 +517,7 @@ struct MigrationExecutionFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV3.self,
                 migrationPlan: FDBStageBoundaryMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
             )
             try await migratedContainer.migrateIfNeeded()

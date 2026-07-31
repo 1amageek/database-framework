@@ -8,6 +8,9 @@ public struct DatabaseServerServiceContext: Sendable {
     public let runtimeLimits: DatabaseRuntimeLimits
     public let wireLimits: DatabaseWireLimits
     public let clock: AnyDatabaseWallClock
+    #if DATABASE_SERVER_GRAPH_INDEXES
+    public let graphOperationLimits: GraphOperationLimits
+    #endif
 
     public init(
         container: DBContainer,
@@ -23,5 +26,28 @@ public struct DatabaseServerServiceContext: Sendable {
         self.runtimeLimits = runtimeLimits
         self.wireLimits = wireLimits
         self.clock = clock
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        self.graphOperationLimits = .default
+        #endif
     }
+
+    #if DATABASE_SERVER_GRAPH_INDEXES
+    public init(
+        container: DBContainer,
+        stateStore: DatabaseMutationStateStore,
+        coordinator: DatabaseTransactionalOperationCoordinator,
+        runtimeLimits: DatabaseRuntimeLimits,
+        wireLimits: DatabaseWireLimits,
+        clock: AnyDatabaseWallClock,
+        graphOperationLimits: GraphOperationLimits
+    ) {
+        self.container = container
+        self.stateStore = stateStore
+        self.coordinator = coordinator
+        self.runtimeLimits = runtimeLimits
+        self.wireLimits = wireLimits
+        self.clock = clock
+        self.graphOperationLimits = graphOperationLimits
+    }
+    #endif
 }

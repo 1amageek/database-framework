@@ -86,7 +86,7 @@ struct DirectoryMigrationSQLiteTests {
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV1.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV1.self)]),
             security: .disabled
         )
@@ -100,14 +100,14 @@ struct DirectoryMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV2.self,
             migrationPlan: SQLiteDirectoryMigrationCopyPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)])
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)]),
             security: .disabled
         )

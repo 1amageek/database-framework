@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 
@@ -39,3 +40,5 @@ struct DatabaseSHACLPageCursor: ServerPayloadValue, Hashable {
         self.offset = offset
     }
 }
+
+#endif

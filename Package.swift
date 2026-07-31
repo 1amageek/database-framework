@@ -1,10 +1,22 @@
 // swift-tools-version: 6.4
 import PackageDescription
 
-let hostPlatforms: [Platform] = [
+let nativeRuntimePlatforms: [Platform] = [
     .macOS,
     .iOS,
     .linux,
+]
+
+let foundationDBClientPlatforms: [Platform] = [
+    .macOS,
+    .linux,
+]
+
+let foundationDBClientLinkerSettings: [LinkerSetting] = [
+    .unsafeFlags(
+        ["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"],
+        .when(platforms: [.macOS], traits: ["FoundationDB"])
+    ),
 ]
 
 let package = Package(
@@ -95,7 +107,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0730.0"
+            from: "26.0731.0"
         ),
         .package(
             url: "https://github.com/1amageek/swift-hnsw.git",
@@ -103,7 +115,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            from: "26.0730.0"
+            from: "26.0731.0"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
@@ -120,13 +132,8 @@ let package = Package(
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "FDBStorage", package: "storage-kit",
-                         condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
             ],
-            exclude: ["README.md"],
-            swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
-            ]
+            exclude: ["README.md"]
         ),
         .target(
             name: "SwiftLogDatabaseLogging",
@@ -183,6 +190,7 @@ let package = Package(
             name: "DatabaseRuntime",
             dependencies: [
                 "DatabaseEngine",
+                .product(name: "DatabaseKit", package: "database-kit"),
                 .target(
                     name: "ScalarIndex",
                     condition: .when(traits: ["ScalarIndexes"])
@@ -402,35 +410,124 @@ let package = Package(
             name: "Database",
             dependencies: [
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseWire", package: "database-kit"),
                 "DatabaseEngine",
                 "DatabaseRuntime",
-                "ScalarIndex",
-                "VectorIndex",
-                "FullTextIndex",
-                "SpatialIndex",
-                "RankIndex",
-                "PermutedIndex",
-                "GraphIndex",
-                "AggregationIndex",
-                "VersionIndex",
-                "BitmapIndex",
-                "LeaderboardIndex",
-                "RelationshipIndex",
-                "OntologyIndex",
+                .target(
+                    name: "ScalarIndex",
+                    condition: .when(traits: ["ScalarIndexes"])
+                ),
+                .target(
+                    name: "VectorIndex",
+                    condition: .when(traits: ["VectorIndexes"])
+                ),
+                .target(
+                    name: "FullTextIndex",
+                    condition: .when(traits: ["FullTextIndexes"])
+                ),
+                .target(
+                    name: "SpatialIndex",
+                    condition: .when(traits: ["SpatialIndexes"])
+                ),
+                .target(
+                    name: "RankIndex",
+                    condition: .when(traits: ["RankIndexes"])
+                ),
+                .target(
+                    name: "PermutedIndex",
+                    condition: .when(traits: ["PermutedIndexes"])
+                ),
+                .target(
+                    name: "GraphIndex",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
+                .target(
+                    name: "AggregationIndex",
+                    condition: .when(traits: ["AggregationIndexes"])
+                ),
+                .target(
+                    name: "VersionIndex",
+                    condition: .when(traits: ["VersionIndexes"])
+                ),
+                .target(
+                    name: "BitmapIndex",
+                    condition: .when(traits: ["BitmapIndexes"])
+                ),
+                .target(
+                    name: "LeaderboardIndex",
+                    condition: .when(traits: ["LeaderboardIndexes"])
+                ),
+                .target(
+                    name: "RelationshipIndex",
+                    condition: .when(traits: ["Relationships"])
+                ),
+                .target(
+                    name: "OntologyIndex",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
                 "QueryAST",
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
-                         condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
+                         condition: .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
                 .product(name: "SQLiteStorage", package: "storage-kit",
-                         condition: .when(platforms: hostPlatforms, traits: ["SQLite"])),
+                         condition: .when(platforms: nativeRuntimePlatforms, traits: ["SQLite"])),
                 .product(name: "PostgreSQLStorage", package: "storage-kit",
-                         condition: .when(platforms: hostPlatforms, traits: ["PostgreSQL"])),
+                         condition: .when(platforms: nativeRuntimePlatforms, traits: ["PostgreSQL"])),
             ],
             exclude: ["README.md"],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
-                .define("SQLITE", .when(platforms: hostPlatforms, traits: ["SQLite"])),
-                .define("POSTGRESQL", .when(platforms: hostPlatforms, traits: ["PostgreSQL"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
+                .define("SQLITE", .when(platforms: nativeRuntimePlatforms, traits: ["SQLite"])),
+                .define("POSTGRESQL", .when(platforms: nativeRuntimePlatforms, traits: ["PostgreSQL"])),
+                .define(
+                    "DATABASE_SCALAR_INDEXES",
+                    .when(traits: ["ScalarIndexes"])
+                ),
+                .define(
+                    "DATABASE_VECTOR_INDEXES",
+                    .when(traits: ["VectorIndexes"])
+                ),
+                .define(
+                    "DATABASE_FULL_TEXT_INDEXES",
+                    .when(traits: ["FullTextIndexes"])
+                ),
+                .define(
+                    "DATABASE_SPATIAL_INDEXES",
+                    .when(traits: ["SpatialIndexes"])
+                ),
+                .define(
+                    "DATABASE_RANK_INDEXES",
+                    .when(traits: ["RankIndexes"])
+                ),
+                .define(
+                    "DATABASE_PERMUTED_INDEXES",
+                    .when(traits: ["PermutedIndexes"])
+                ),
+                .define(
+                    "DATABASE_GRAPH_INDEXES",
+                    .when(traits: ["GraphIndexes"])
+                ),
+                .define(
+                    "DATABASE_AGGREGATION_INDEXES",
+                    .when(traits: ["AggregationIndexes"])
+                ),
+                .define(
+                    "DATABASE_VERSION_INDEXES",
+                    .when(traits: ["VersionIndexes"])
+                ),
+                .define(
+                    "DATABASE_BITMAP_INDEXES",
+                    .when(traits: ["BitmapIndexes"])
+                ),
+                .define(
+                    "DATABASE_LEADERBOARD_INDEXES",
+                    .when(traits: ["LeaderboardIndexes"])
+                ),
+                .define(
+                    "DATABASE_RELATIONSHIPS",
+                    .when(traits: ["Relationships"])
+                ),
             ]
         ),
         // BenchmarkFramework - Performance benchmarking infrastructure
@@ -451,11 +548,11 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
-                         condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
+                         condition: .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
             exclude: ["README.md"],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ]
         ),
         // DatabaseServer - Remote client endpoint library
@@ -465,8 +562,14 @@ let package = Package(
                 "DatabaseMath",
                 "DatabaseEngine",
                 "DatabaseRuntime",
-                "GraphIndex",
-                "OntologyIndex",
+                .target(
+                    name: "GraphIndex",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
+                .target(
+                    name: "OntologyIndex",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
                 .target(
                     name: "RelationshipIndex",
                     condition: .when(traits: ["Relationships"])
@@ -478,6 +581,10 @@ let package = Package(
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_GRAPH_INDEXES",
+                    .when(traits: ["GraphIndexes"])
+                ),
                 .define(
                     "DATABASE_SERVER_RELATIONSHIPS",
                     .when(traits: ["Relationships"])
@@ -507,12 +614,9 @@ let package = Package(
             ],
             exclude: ["README.md"],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"], .when(platforms: hostPlatforms)),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"], .when(platforms: hostPlatforms))
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // Test Support (shared test utilities)
         .target(
@@ -525,14 +629,14 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
-                         condition: .when(traits: ["FoundationDB"])),
+                         condition: .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
                 .product(name: "PostgreSQLStorage", package: "storage-kit",
                          condition: .when(traits: ["PostgreSQL"])),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             path: "Tests/Shared",
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
                 .define("POSTGRESQL", .when(traits: ["PostgreSQL"])),
             ]
         ),
@@ -547,34 +651,31 @@ let package = Package(
                 .product(
                     name: "DatabaseKitFoundation",
                     package: "database-kit",
-                    condition: .when(platforms: hostPlatforms)
+                    condition: .when(platforms: nativeRuntimePlatforms)
                 ),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "StorageKitSystemClock", package: "storage-kit"),
-                .target(name: "ScalarIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "VectorIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "FullTextIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "SpatialIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "RankIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "PermutedIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "AggregationIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "VersionIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "RelationshipIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "BitmapIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "LeaderboardIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "GraphIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "TestSupport", condition: .when(platforms: hostPlatforms)),
-                .product(name: "DatabaseKit", package: "database-kit", condition: .when(platforms: hostPlatforms)),
-                .product(name: "Logging", package: "swift-log", condition: .when(platforms: hostPlatforms)),
-                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat", condition: .when(platforms: hostPlatforms)),
+                .target(name: "ScalarIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "VectorIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "FullTextIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "SpatialIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "RankIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "PermutedIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "AggregationIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "VersionIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "RelationshipIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "BitmapIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "LeaderboardIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "GraphIndex", condition: .when(platforms: nativeRuntimePlatforms)),
+                .target(name: "TestSupport", condition: .when(platforms: nativeRuntimePlatforms)),
+                .product(name: "DatabaseKit", package: "database-kit", condition: .when(platforms: nativeRuntimePlatforms)),
+                .product(name: "Logging", package: "swift-log", condition: .when(platforms: nativeRuntimePlatforms)),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat", condition: .when(platforms: nativeRuntimePlatforms)),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"], .when(platforms: hostPlatforms)),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"], .when(platforms: hostPlatforms))
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         .testTarget(
             name: "DatabaseEngineTransactionTests",
@@ -583,13 +684,7 @@ let package = Package(
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "StorageKitSystemClock", package: "storage-kit"),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"], .when(platforms: hostPlatforms)),
-                .unsafeFlags(
-                    ["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"],
-                    .when(platforms: hostPlatforms)
-                ),
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         .testTarget(
             name: "DatabaseRuntimeTests",
@@ -604,12 +699,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"], .when(platforms: hostPlatforms)),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"], .when(platforms: hostPlatforms))
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // ScalarIndex tests
         .testTarget(
@@ -622,12 +714,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // VectorIndex tests
         .testTarget(
@@ -642,12 +731,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // GraphIndex tests
         .testTarget(
@@ -664,12 +750,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // AggregationIndex tests (Count, Sum, Min, Max)
         .testTarget(
@@ -686,12 +769,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // VersionIndex tests
         .testTarget(
@@ -703,12 +783,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // SpatialIndex tests
         .testTarget(
@@ -720,12 +797,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // RankIndex tests
         .testTarget(
@@ -739,12 +813,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // FullTextIndex tests
         .testTarget(
@@ -756,12 +827,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // PermutedIndex tests
         .testTarget(
@@ -773,12 +841,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // BitmapIndex tests
         .testTarget(
@@ -790,12 +855,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // LeaderboardIndex tests
         .testTarget(
@@ -807,12 +869,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // RelationshipIndex tests
         .testTarget(
@@ -826,16 +885,13 @@ let package = Package(
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
-                         condition: .when(traits: ["FoundationDB"])),
+                         condition: .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // DatabaseServer tests
         .testTarget(
@@ -853,10 +909,7 @@ let package = Package(
                 .product(name: "StorageKit", package: "storage-kit"),
                 "TestSupport",
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // CLI tests
         .testTarget(
@@ -868,12 +921,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // QueryAST tests
         .testTarget(
@@ -885,12 +935,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // QueryIR tests (SQL/SPARQL escape, Expression operators)
         .testTarget(
@@ -915,12 +962,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // BenchmarkFramework tests
         .testTarget(
@@ -932,12 +976,9 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // Performance Benchmarks
         .testTarget(
@@ -957,12 +998,9 @@ let package = Package(
             ],
             path: "Benchmarks",
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
         // PostgreSQL backend tests (requires running PostgreSQL, no libfdb_c required)
         .testTarget(
@@ -1004,16 +1042,7 @@ let package = Package(
             swiftSettings: [
                 .define("SQLITE", .when(traits: ["SQLite"])),
             ],
-            linkerSettings: [
-                .unsafeFlags(
-                    ["-L/usr/local/lib"],
-                    .when(platforms: hostPlatforms, traits: ["FoundationDB"])
-                ),
-                .unsafeFlags(
-                    ["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"],
-                    .when(platforms: hostPlatforms, traits: ["FoundationDB"])
-                ),
-            ]
+            linkerSettings: foundationDBClientLinkerSettings
         ),
     ],
     swiftLanguageModes: [.v6]

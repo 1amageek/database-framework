@@ -5,7 +5,9 @@ import DatabaseKit
 public struct CanonicalPreparedStatementMutation: Sendable {
     enum Payload: Sendable {
         case statement(QueryStatement)
+        #if DATABASE_SERVER_GRAPH_INDEXES
         case sparql(PreparedSPARQLUpdateRequest)
+        #endif
     }
 
     let payload: Payload

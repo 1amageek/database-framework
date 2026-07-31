@@ -26,7 +26,8 @@ public enum SPARQLQueryLevelPlanCompiler {
         return try compile(
             pattern: query.pattern,
             dataset: query.dataset,
-            modifiers: query.modifiers
+            modifiers: query.modifiers,
+            structuralLimits: structuralLimits
         )
     }
 
@@ -41,7 +42,8 @@ public enum SPARQLQueryLevelPlanCompiler {
         return try compile(
             pattern: query.pattern,
             dataset: query.dataset,
-            modifiers: query.modifiers
+            modifiers: query.modifiers,
+            structuralLimits: structuralLimits
         )
     }
 
@@ -56,7 +58,8 @@ public enum SPARQLQueryLevelPlanCompiler {
         return try compile(
             pattern: query.pattern ?? .basic([]),
             dataset: query.dataset,
-            modifiers: query.modifiers
+            modifiers: query.modifiers,
+            structuralLimits: structuralLimits
         )
     }
 
@@ -79,14 +82,22 @@ public enum SPARQLQueryLevelPlanCompiler {
         if let filter {
             algebra = .filter(
                 algebra,
-                .query(try SPARQLExpressionPlan(filter))
+                .query(
+                    try SPARQLExpressionPlan(
+                        filter,
+                        limits: context.expressionLimits
+                    )
+                )
             )
         }
         let sourceVisibleVariables = algebra.outputVariables.union(
             inputVariables
         )
 
-        let groupCompilation = try compileGroupKeys(groupBy)
+        let groupCompilation = try compileGroupKeys(
+            groupBy,
+            limits: context.expressionLimits
+        )
         var rewrittenHaving: [Expression] = []
         rewrittenHaving.reserveCapacity(having.count)
         for condition in having {
@@ -144,7 +155,10 @@ public enum SPARQLQueryLevelPlanCompiler {
             aggregates.reserveCapacity(aggregateBindings.count)
             for binding in aggregateBindings {
                 aggregates.append(
-                    try GraphPatternConverter.convertAggregate(binding)
+                    try GraphPatternConverter.convertAggregate(
+                        binding,
+                        limits: context.expressionLimits
+                    )
                 )
             }
             let grouping: SPARQLGroupingPlan = groupCompilation.keys.isEmpty
@@ -160,7 +174,10 @@ public enum SPARQLQueryLevelPlanCompiler {
         for condition in rewrittenHaving {
             algebra = .filter(
                 algebra,
-                try GraphPatternConverter.convertFilter(condition)
+                try GraphPatternConverter.convertFilter(
+                    condition,
+                    limits: context.expressionLimits
+                )
             )
         }
 
@@ -177,7 +194,8 @@ public enum SPARQLQueryLevelPlanCompiler {
     package static func makeOrderedPlan(
         dataset: SPARQLDataset,
         algebra: consuming ExecutionPattern,
-        rewrittenOrderBy: [SortKey]
+        rewrittenOrderBy: [SortKey],
+        limits: SPARQLExpressionCompilationLimits
     ) throws -> SPARQLOrderedSolutionPlan {
         let visibleVariables = algebra.outputVariables
             .filter { !SPARQLInternalVariable.isInternal($0) }
@@ -185,7 +203,10 @@ public enum SPARQLQueryLevelPlanCompiler {
         return SPARQLOrderedSolutionPlan(
             datasetScope: try SPARQLDatasetExecutionScope(dataset),
             algebra: consume algebra,
-            orderKeys: try compileOrderKeys(rewrittenOrderBy),
+            orderKeys: try compileOrderKeys(
+                rewrittenOrderBy,
+                limits: limits
+            ),
             visibleVariables: visibleVariables
         )
     }
@@ -221,13 +242,16 @@ public enum SPARQLQueryLevelPlanCompiler {
     private static func compile(
         pattern: GraphPattern,
         dataset: SPARQLDataset,
-        modifiers: SPARQLSolutionModifiers
+        modifiers: SPARQLSolutionModifiers,
+        structuralLimits: QueryStructuralLimits
     ) throws -> SPARQLSolutionFormExecutionPlan {
         let slice = try SPARQLSlice(
             offset: modifiers.offset ?? 0,
             limit: modifiers.limit
         )
-        var context = SPARQLAlgebraCompilationContext()
+        var context = SPARQLAlgebraCompilationContext(
+            structuralLimits: structuralLimits
+        )
         var aggregateRewriter = SPARQLAggregateRewriter()
         let compilation = try prepare(
             source: .graphPattern(pattern),
@@ -243,7 +267,8 @@ public enum SPARQLQueryLevelPlanCompiler {
         let ordered = try makeOrderedPlan(
             dataset: dataset,
             algebra: compilation.algebra,
-            rewrittenOrderBy: compilation.rewrittenOrderBy
+            rewrittenOrderBy: compilation.rewrittenOrderBy,
+            limits: context.expressionLimits
         )
         return SPARQLSolutionFormExecutionPlan(
             ordered: consume ordered,
@@ -252,14 +277,18 @@ public enum SPARQLQueryLevelPlanCompiler {
     }
 
     private static func compileOrderKeys(
-        _ sortKeys: [SortKey]
+        _ sortKeys: [SortKey],
+        limits: SPARQLExpressionCompilationLimits
     ) throws -> [SPARQLOrderKeyPlan] {
         var plans: [SPARQLOrderKeyPlan] = []
         plans.reserveCapacity(sortKeys.count)
         for sortKey in sortKeys {
             plans.append(
                 SPARQLOrderKeyPlan(
-                    expression: try SPARQLExpressionPlan(sortKey.expression),
+                    expression: try SPARQLExpressionPlan(
+                        sortKey.expression,
+                        limits: limits
+                    ),
                     ascending: sortKey.direction == .ascending,
                     nullsLast: sortKey.nulls == .last
                 )
@@ -269,7 +298,8 @@ public enum SPARQLQueryLevelPlanCompiler {
     }
 
     private static func compileGroupKeys(
-        _ expressions: [Expression]
+        _ expressions: [Expression],
+        limits: SPARQLExpressionCompilationLimits
     ) throws -> (
         keys: [SPARQLGroupKeyPlan],
         expressionVariables: SPARQLGroupedExpressionBindings,
@@ -300,7 +330,10 @@ public enum SPARQLQueryLevelPlanCompiler {
             keys.append(
                 SPARQLGroupKeyPlan(
                     outputVariable: prefixedVariable(rawVariable),
-                    expression: try SPARQLExpressionPlan(expression)
+                    expression: try SPARQLExpressionPlan(
+                        expression,
+                        limits: limits
+                    )
                 )
             )
         }

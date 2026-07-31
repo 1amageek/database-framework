@@ -246,8 +246,8 @@ public final class DatabaseContext: Sendable {
 
     /// Point reads with `.server` consistency do not benefit from per-context store caching.
     ///
-    /// Fresh contexts used by one-shot reads would otherwise pay local cache bookkeeping
-    /// every time, even though DBContainer already shares resolved stores globally.
+    /// Fresh contexts used by one-shot reads avoid local cache bookkeeping.
+    /// Longer-lived contexts use `cachedStore` to reuse their resolved stores.
     private func pointReadStore<T: Persistable>(
         for type: T.Type
     ) async throws -> DatabaseDataStore {

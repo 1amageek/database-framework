@@ -196,7 +196,7 @@ let hasChanges = try await context.versions(Document.self)
 
 **Diff Options**:
 ```swift
-import Core
+import VersionIndex
 
 var options = DiffOptions()
 options.excludedFields = ["updatedAt", "modifiedBy"]  // Skip these fields

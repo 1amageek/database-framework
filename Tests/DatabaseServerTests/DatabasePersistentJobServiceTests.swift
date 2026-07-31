@@ -2070,7 +2070,7 @@ struct DatabasePersistentJobServiceTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .testing(backend: .custom(InMemoryEngine())),
+            configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),

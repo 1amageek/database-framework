@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 
 enum PreparedSPARQLUpdateOperation: Sendable {
@@ -12,3 +13,5 @@ enum PreparedSPARQLUpdateOperation: Sendable {
     case drop(DropQuery)
     case graphTransfer(GraphTransferQuery)
 }
+
+#endif

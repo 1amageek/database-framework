@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 @_spi(DatabaseServer) import DatabaseWire
 import DatabaseTypes
@@ -213,3 +214,5 @@ enum DatabaseGraphAlgorithmResultFingerprint {
         hasher.update(bytes)
     }
 }
+
+#endif

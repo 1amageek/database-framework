@@ -268,7 +268,7 @@ struct PolymorphicMigrationFDBTests {
 
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV1.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV1.self)]),
                 security: .disabled
             )
@@ -287,7 +287,7 @@ struct PolymorphicMigrationFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.self,
                 migrationPlan: FDBPolymorphicMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
                 security: .disabled
             )
@@ -295,7 +295,7 @@ struct PolymorphicMigrationFDBTests {
 
             let verificationContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
                 security: .disabled
             )
@@ -349,7 +349,7 @@ struct PolymorphicMigrationFDBTests {
 
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
                 security: .disabled
             )
@@ -373,7 +373,7 @@ struct PolymorphicMigrationFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV3.self,
                 migrationPlan: FDBPolymorphicRemovalMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV3.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV3.self)]),
                 security: .disabled
             )
@@ -416,7 +416,7 @@ struct PolymorphicMigrationFDBTests {
 
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
                 security: .disabled
             )
@@ -448,7 +448,7 @@ struct PolymorphicMigrationFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV4.self,
                 migrationPlan: FDBPolymorphicRebuildMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV4.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV4.self)]),
                 security: .disabled
             )
@@ -476,8 +476,7 @@ struct PolymorphicMigrationFDBTests {
 
     private static func makeSystemPriorityEngine() async throws -> any StorageEngine {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
-        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let database = FDBSystemPriorityDatabase(wrapping: engine.database)
+        let database = try FDBSystemPriorityDatabase()
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
 

@@ -1,6 +1,9 @@
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
+import DatabaseWire
 import TestHeartbeat
+import TestSupport
 import Testing
 @testable import GraphIndex
 
@@ -406,6 +409,14 @@ struct SPARQLBoundedRegularExpressionTests {
         switch try await SPARQLRuntimeExpressionEvaluator.evaluate(
             plan,
             binding: VariableBinding(),
+            workMeter: DatabaseWorkMeter(
+                budget: ExecutionBudget(
+                    maximumRows: 1,
+                    maximumWorkUnits: 100,
+                    timeoutMilliseconds: 30_000
+                ),
+                monotonicClock: TestProcessMonotonicClock()
+            ),
             resolver: resolver
         ) {
         case .value(let value):

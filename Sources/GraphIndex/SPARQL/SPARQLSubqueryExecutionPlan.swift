@@ -3,7 +3,7 @@ public enum SPARQLSubqueryInputPolicy: Sendable, Hashable {
     case lateral
 }
 
-public struct SPARQLSubqueryExecutionPlan: Sendable, Equatable {
+public struct SPARQLSubqueryExecutionPlan: Sendable {
     public let occurrenceIdentifier: UInt64
     public let select: SPARQLSelectExecutionPlan
     public let inputPolicy: SPARQLSubqueryInputPolicy

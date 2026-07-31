@@ -2,8 +2,10 @@ import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
+#if DATABASE_SERVER_GRAPH_INDEXES
 import GraphIndex
 import OntologyIndex
+#endif
 import QueryAST
 #if DATABASE_SERVER_RELATIONSHIPS
 import RelationshipIndex
@@ -93,6 +95,22 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 retryability: .never
             )
         }
+        if let endpointError = error as? DatabaseEndpointError {
+            if case .missingHandler(let operation) = endpointError {
+                return RemoteOperationError(
+                    category: .unavailable,
+                    code: "OPERATION_UNAVAILABLE",
+                    message: "The requested operation is not available in this runtime",
+                    retryability: .never,
+                    details: Self.errorDetails([
+                        (
+                            key: "operation",
+                            value: .uint64(UInt64(operation.rawValue))
+                        ),
+                    ])
+                )
+            }
+        }
         if let limitError = error as? DatabaseRuntimeLimitError {
             if case .executionTimedOut(let timeoutMilliseconds) = limitError {
                 return RemoteOperationError(
@@ -147,6 +165,15 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let queryError = error as? DatabaseQueryExecutionError {
             return Self.map(queryError)
         }
+        if let admissionError = error as? DatabaseStatementAdmissionError {
+            return RemoteOperationError(
+                category: .unavailable,
+                code: "STATEMENT_FEATURE_UNAVAILABLE",
+                message: admissionError.description,
+                retryability: .never
+            )
+        }
+        #if DATABASE_SERVER_GRAPH_INDEXES
         if let datasetError = error as? RDFDatasetValidationError {
             return RemoteOperationError(
                 category: .invalidRequest,
@@ -215,6 +242,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let graphError = error as? DatabaseGraphAlgorithmError {
             return Self.map(graphError)
         }
+        #endif
         if let bindingError = error as? QueryParameterBindingError {
             if case .invalidStructure(let structuralError) = bindingError {
                 return RemoteOperationError(
@@ -248,7 +276,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 code = "QUERY_RESOURCE_LIMIT"
             default:
                 category = .invalidRequest
-                code = "INVALID_SPARQL_SEMANTICS"
+                code = "INVALID_QUERY_SEMANTICS"
             }
             return RemoteOperationError(
                 category: category,
@@ -257,7 +285,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 retryability: .never
             )
         }
-        if error is SQLParser.ParseError || error is SPARQLParser.ParseError {
+        if error is SQLParser.ParseError {
             return RemoteOperationError(
                 category: .invalidRequest,
                 code: "INVALID_QUERY_SYNTAX",
@@ -265,6 +293,17 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 retryability: .never
             )
         }
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        if error is SPARQLParser.ParseError {
+            return RemoteOperationError(
+                category: .invalidRequest,
+                code: "INVALID_QUERY_SYNTAX",
+                message: "Query syntax is invalid",
+                retryability: .never
+            )
+        }
+        #endif
+        #if DATABASE_SERVER_GRAPH_INDEXES
         if let loadError = error as? SPARQLLoadSourceError {
             return Self.map(loadError)
         }
@@ -274,6 +313,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let graphStoreError = error as? RDFGraphStoreError {
             return Self.map(graphStoreError)
         }
+        #endif
         if let mutationError = error as? DatabaseMutationError {
             return Self.map(mutationError)
         }
@@ -315,6 +355,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let commandError = error as? DatabaseCommandRegistryError {
             return Self.map(commandError)
         }
+        #if DATABASE_SERVER_GRAPH_INDEXES
         if let documentError = error as? DatabaseRDFDocumentStoreError {
             return Self.map(documentError)
         }
@@ -330,6 +371,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let dataSourceError = error as? DatabaseSHACLDataSourceError {
             return Self.map(dataSourceError)
         }
+        #endif
         if let expressionError = error as? DatabaseExpressionEvaluationError {
             return RemoteOperationError(
                 category: .invalidRequest,
@@ -639,6 +681,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         )
     }
 
+    #if DATABASE_SERVER_GRAPH_INDEXES
     private static func map(
         _ error: SPARQLLoadSourceError
     ) -> RemoteOperationError {
@@ -738,6 +781,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             retryability: .never
         )
     }
+    #endif
 
     private static func map(
         _ error: DatabaseQueryExecutionError
@@ -745,18 +789,28 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         let category: OperationErrorCategory
         let code: String
         switch error {
+        case .featureUnavailable:
+            category = .unavailable
+            code = "QUERY_FEATURE_UNAVAILABLE"
+        #if DATABASE_SERVER_GRAPH_INDEXES
         case .rdfLiteralTooLarge:
             category = .resourceLimit
             code = "QUERY_RESOURCE_LIMIT"
+        #endif
         case .pageLimitMustBePositive, .solutionModifierMustBeNonNegative,
              .continuationNotSupported,
-             .mutationRequiresMutationOperation, .unresolvedConstructTerm,
+             .mutationRequiresMutationOperation:
+            category = .invalidRequest
+            code = "INVALID_QUERY"
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        case .unresolvedConstructTerm,
              .nonRDFBinding, .invalidRDFTermRole,
              .invalidRDFLiteralDatatype, .unsupportedRDFLiteral,
              .reifiedTripleRequiresTemplateContext,
              .describeVariableRequiresPattern, .invalidDescribeResource:
             category = .invalidRequest
             code = "INVALID_QUERY"
+        #endif
         }
         return RemoteOperationError(
             category: category,
@@ -766,6 +820,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         )
     }
 
+    #if DATABASE_SERVER_GRAPH_INDEXES
     private static func map(
         _ error: SPARQLLiteralConversionError
     ) -> RemoteOperationError {
@@ -866,6 +921,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             retryability: .never
         )
     }
+    #endif
 
     private static func map(_ error: DatabaseMutationError) -> RemoteOperationError {
         let category: OperationErrorCategory
@@ -920,6 +976,9 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .invalidCompiledSchema:
             category = .internalFailure
             code = "MUTATION_SCHEMA_INVALID"
+        case .featureUnavailable:
+            category = .unavailable
+            code = "MUTATION_FEATURE_UNAVAILABLE"
         case .unsupportedStatement:
             category = .invalidRequest
             code = "UNSUPPORTED_MUTATION_STATEMENT"
@@ -1324,6 +1383,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         )
     }
 
+    #if DATABASE_SERVER_GRAPH_INDEXES
     private static func map(
         _ error: DatabaseGraphQueryError
     ) -> RemoteOperationError {
@@ -1391,6 +1451,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             retryability: .never
         )
     }
+    #endif
 
     private static func map(
         _ error: DatabaseCommandRegistryError
@@ -1413,6 +1474,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         }
     }
 
+    #if DATABASE_SERVER_GRAPH_INDEXES
     private static func map(
         _ error: DatabaseRDFDocumentStoreError
     ) -> RemoteOperationError {
@@ -1560,6 +1622,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             retryability: .never
         )
     }
+    #endif
 
     private static func map(_ error: CanonicalReadError) -> RemoteOperationError {
         switch error {

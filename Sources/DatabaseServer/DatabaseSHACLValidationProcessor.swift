@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 import DatabaseTypes
 import DatabaseKit
@@ -360,3 +361,4 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
     }
 
 }
+#endif

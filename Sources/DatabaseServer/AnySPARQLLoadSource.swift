@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 public final class AnySPARQLLoadSource: SPARQLLoadSource, Sendable {
     private let loadDocument: @Sendable (
         SPARQLLoadRequest
@@ -25,3 +26,5 @@ private struct UnconfiguredSPARQLLoadSource: SPARQLLoadSource {
         throw SPARQLLoadSourceError.notConfigured
     }
 }
+
+#endif

@@ -307,7 +307,7 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
                     version: Schema.Version(1, 0, 0)
                 ),
                 configuration: DBConfiguration.testing(
-                    backend: .custom(engine)
+                    storageEngine: engine
                 ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]

@@ -1,11 +1,7 @@
 // SPARQLFunctionRewriter.swift
 // Database - Rewrite SelectQuery by executing SPARQL() functions
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
+#if DATABASE_GRAPH_INDEXES
 import DatabaseKit
 import QueryAST
 import GraphIndex
@@ -395,6 +391,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                 monotonicClock: context.container.monotonicClock,
                 wallClock: context.container.wallClock,
                 transaction: transaction,
+                compilationLimits: .default,
                 workMeter: workMeter
             )
         }
@@ -425,3 +422,4 @@ extension Optional {
         }
     }
 }
+#endif

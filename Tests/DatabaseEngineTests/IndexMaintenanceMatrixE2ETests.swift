@@ -249,7 +249,7 @@ struct IndexMaintenanceMatrixE2ETests {
         )
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(MatrixScalarUser.self), try DatabaseFrameworkRuntime.entity(MatrixVectorDocument.self), try DatabaseFrameworkRuntime.entity(MatrixFullTextArticle.self), try DatabaseFrameworkRuntime.entity(MatrixGraphEdge.self), try DatabaseFrameworkRuntime.entity(MatrixSpatialPlace.self), try DatabaseFrameworkRuntime.entity(MatrixRankPlayer.self), try DatabaseFrameworkRuntime.entity(MatrixAggregationOrder.self), try DatabaseFrameworkRuntime.entity(MatrixVersionDocument.self), try DatabaseFrameworkRuntime.entity(MatrixBitmapItem.self), try DatabaseFrameworkRuntime.entity(MatrixLeaderboardScore.self), try DatabaseFrameworkRuntime.entity(MatrixPermutedLocation.self), try DatabaseFrameworkRuntime.entity(MatrixRelationshipCustomer.self), try DatabaseFrameworkRuntime.entity(MatrixRelationshipOrder.self)]),
             security: .disabled
         )

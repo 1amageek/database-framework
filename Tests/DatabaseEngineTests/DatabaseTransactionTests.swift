@@ -57,7 +57,7 @@ struct DatabaseTransactionTests {
 
         return try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(TransactionUser.self), try DatabaseFrameworkRuntime.entity(TransactionProduct.self)]),
             security: .disabled,
         )

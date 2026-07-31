@@ -64,6 +64,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 )
             )
         case .ask(let query):
+            #if DATABASE_SERVER_GRAPH_INDEXES
             return .boolean(
                 try await executeAsk(
                     query,
@@ -73,7 +74,14 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     structuralLimits: structuralLimits
                 )
             )
+            #else
+            _ = query
+            throw DatabaseQueryExecutionError.featureUnavailable(
+                "ASK requires the GraphIndexes package trait"
+            )
+            #endif
         case .construct(let query):
+            #if DATABASE_SERVER_GRAPH_INDEXES
             return .rdfGraph(
                 try await DatabaseGraphQueryService(
                     queryStructuralLimits: structuralLimits
@@ -84,7 +92,14 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     workMeter: workMeter
                 )
             )
+            #else
+            _ = query
+            throw DatabaseQueryExecutionError.featureUnavailable(
+                "CONSTRUCT requires the GraphIndexes package trait"
+            )
+            #endif
         case .describe(let query):
+            #if DATABASE_SERVER_GRAPH_INDEXES
             return .rdfGraph(
                 try await DatabaseGraphQueryService(
                     queryStructuralLimits: structuralLimits
@@ -95,6 +110,12 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     workMeter: workMeter
                 )
             )
+            #else
+            _ = query
+            throw DatabaseQueryExecutionError.featureUnavailable(
+                "DESCRIBE requires the GraphIndexes package trait"
+            )
+            #endif
         default:
             throw DatabaseQueryExecutionError.mutationRequiresMutationOperation
         }
@@ -130,6 +151,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         return page
     }
 
+    #if DATABASE_SERVER_GRAPH_INDEXES
     private static func executeAsk(
         _ query: AskQuery,
         request: QueryExecuteOperation.Request,
@@ -166,6 +188,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         try workMeter.recordOutputRows(1)
         return response
     }
+    #endif
 
     private static func readExecution(
         for request: QueryExecuteOperation.Request,

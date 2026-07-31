@@ -181,7 +181,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
             _ = try await DBContainer.open(
                 for: schema,
                 configuration: .testing(
-                    backend: .custom(InMemoryEngine())
+                    storageEngine: InMemoryEngine()
                 ),
                 runtimeConfiguration: configuration,
                 security: .disabled

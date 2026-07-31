@@ -250,7 +250,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 entities: [CatalogPartitionedEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),

@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 
@@ -89,3 +90,4 @@ extension CanonicalDatabaseGraphAlgorithmService {
         return result
     }
 }
+#endif

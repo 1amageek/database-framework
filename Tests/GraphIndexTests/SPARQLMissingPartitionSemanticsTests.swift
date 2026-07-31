@@ -37,7 +37,7 @@ struct SPARQLMissingPartitionSemanticsTests {
                 entities: [try PartitionedRDFStatement.schemaEntity]
             ),
             configuration: .testing(
-                backend: .custom(InMemoryEngine())
+                storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [

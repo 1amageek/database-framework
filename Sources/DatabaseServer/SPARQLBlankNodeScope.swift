@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
@@ -22,3 +23,5 @@ struct SPARQLBlankNodeScope: Sendable {
         )
     }
 }
+
+#endif

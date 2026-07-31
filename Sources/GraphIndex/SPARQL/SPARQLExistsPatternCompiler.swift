@@ -2,7 +2,23 @@ import DatabaseKit
 
 /// Compiles EXISTS graph algebra once as part of its owning expression plan.
 enum SPARQLExistsPatternCompiler {
-    static func compile(_ query: SelectQuery) throws -> ExecutionPattern {
+    static func compile(
+        _ query: SelectQuery,
+        limits: SPARQLExpressionCompilationLimits
+    ) throws -> ExecutionPattern {
+        guard query.projection == .all,
+              query.accessPath == nil,
+              query.groupBy == nil,
+              query.having == nil,
+              query.orderBy == nil,
+              query.limit == nil,
+              query.offset == nil,
+              query.distinct == false,
+              query.subqueries == nil || query.subqueries?.isEmpty == true,
+              query.reduced == false,
+              query.dataset == .implicit else {
+            throw SPARQLExpressionCompilationError.invalidExistsSource
+        }
         let sourcePattern: GraphPattern
         switch query.source {
         case .graphPattern(let pattern):
@@ -13,19 +29,25 @@ enum SPARQLExistsPatternCompiler {
             throw SPARQLExpressionCompilationError.invalidExistsSource
         }
 
-        do {
-            var pattern = try GraphPatternConverter.convert(sourcePattern)
-            if let filter = query.filter {
-                pattern = .filter(
-                    pattern,
-                    try GraphPatternConverter.convertFilter(filter)
+        var context = SPARQLAlgebraCompilationContext(
+            expressionLimits: limits
+        )
+        var pattern = try GraphPatternConverter.convert(
+            sourcePattern,
+            prefixes: [:],
+            context: &context,
+            subqueryInputPolicy: .isolated,
+            inputVariables: []
+        )
+        if let filter = query.filter {
+            pattern = .filter(
+                pattern,
+                try GraphPatternConverter.convertFilter(
+                    filter,
+                    limits: limits
                 )
-            }
-            return pattern
-        } catch {
-            throw SPARQLExpressionCompilationError.unsupportedExpression(
-                "EXISTS graph pattern conversion failed"
             )
         }
+        return pattern
     }
 }

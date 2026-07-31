@@ -110,7 +110,15 @@ struct ExecutionPatternNamedGraphTests {
         ])
         let pattern = ExecutionPattern.graph(.named(graph), basic)
 
-        #expect(pattern == .graph(.named(graph), basic))
+        guard case .graph(
+            .named(let actualGraph),
+            .basic(let actualTriples)
+        ) = pattern else {
+            Issue.record("Expected a named graph with a basic pattern")
+            return
+        }
+        #expect(actualGraph == graph)
+        #expect(actualTriples.count == 1)
         #expect(pattern.outputVariables == Set(["?s", "?o"]))
         #expect(pattern.requiredOutputVariables == Set(["?s", "?o"]))
         #expect(pattern.patternCount == 1)
@@ -160,8 +168,16 @@ struct ExecutionPatternNamedGraphTests {
             Issue.record("Expected a named graph algebra node")
             return
         }
+        guard case .join(
+            .basic(let actualLeft),
+            .basic(let actualRight)
+        ) = scopedPattern else {
+            Issue.record("Expected the graph scope to retain the join")
+            return
+        }
         #expect(actualGraph == graph)
-        #expect(scopedPattern == joined)
+        #expect(actualLeft.count == 1)
+        #expect(actualRight.count == 1)
         #expect(pattern.patternCount == 2)
     }
 
@@ -181,13 +197,25 @@ struct ExecutionPatternNamedGraphTests {
         )
         let pattern = ExecutionPattern.graph(.named(graph), propertyPath)
 
-        #expect(pattern == .graph(.named(graph), propertyPath))
+        guard case .graph(
+            .named(let actualGraph),
+            .propertyPath(let subject, let path, let object)
+        ) = pattern else {
+            Issue.record("Expected a named graph with a property path")
+            return
+        }
+        #expect(actualGraph == graph)
+        #expect(subject == .variable("?s"))
+        #expect(path == .oneOrMore(.iri(
+            try RDFPredicateIRI("https://example.com/vocabulary/knows")
+        )))
+        #expect(object == .variable("?o"))
         #expect(pattern.outputVariables == Set(["?s", "?o"]))
         #expect(pattern.patternCount == 1)
     }
 
-    @Test("Distinct graph names produce distinct algebra")
-    func testDistinctGraphNamesProduceDistinctAlgebra() throws {
+    @Test("Graph scopes preserve distinct graph names")
+    func testGraphScopesPreserveDistinctGraphNames() throws {
         let socialGraph = try graphName("social")
         let archiveGraph = try graphName("archive")
         let knows = try term("https://example.com/vocabulary/knows")
@@ -199,10 +227,16 @@ struct ExecutionPatternNamedGraphTests {
             ),
         ])
 
-        #expect(
-            ExecutionPattern.graph(.named(socialGraph), basic)
-                != ExecutionPattern.graph(.named(archiveGraph), basic)
-        )
+        let social = ExecutionPattern.graph(.named(socialGraph), basic)
+        let archive = ExecutionPattern.graph(.named(archiveGraph), basic)
+        guard case .graph(.named(let actualSocial), _) = social,
+              case .graph(.named(let actualArchive), _) = archive else {
+            Issue.record("Expected named graph algebra nodes")
+            return
+        }
+        #expect(actualSocial == socialGraph)
+        #expect(actualArchive == archiveGraph)
+        #expect(actualSocial != actualArchive)
     }
 
     @Test("Nested graph scopes remain explicit algebra nodes")
@@ -229,7 +263,11 @@ struct ExecutionPatternNamedGraphTests {
         }
         #expect(actualOuter == outerGraph)
         #expect(actualInner == innerGraph)
-        #expect(leaf == basic)
+        guard case .basic(let leafTriples) = leaf else {
+            Issue.record("Expected the nested graph leaf to remain basic")
+            return
+        }
+        #expect(leafTriples.count == 1)
     }
 }
 

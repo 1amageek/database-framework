@@ -20,11 +20,10 @@ extension SPARQLQueryExecutor {
         let scopedBinding = try expressionContext.bindingWithExpressionScope(
             binding
         )
+        let workMeter = try requiredWorkMeter()
         let resolver = SPARQLRuntimeExpressionResolver(
-            exists: { query, correlatedBinding in
-                guard let pattern = plan.compiledExistsPattern(
-                    for: query
-                ) else {
+            exists: { handle, correlatedBinding in
+                guard let pattern = plan.compiledExistsPattern(at: handle) else {
                     return .expressionError(
                         .runtimeInvariant(
                             "EXISTS pattern was not compiled with its expression plan"
@@ -51,6 +50,7 @@ extension SPARQLQueryExecutor {
         return try await SPARQLRuntimeExpressionEvaluator.evaluate(
             plan,
             binding: scopedBinding,
+            workMeter: workMeter,
             resolver: resolver
         )
     }
@@ -107,11 +107,9 @@ extension SPARQLQueryExecutor {
             )
         case .query(let plan):
             let resolver = SPARQLRuntimeExpressionResolver(
-                exists: { query, correlatedBinding in
-                guard let pattern = plan.compiledExistsPattern(
-                    for: query
-                ) else {
-                    return .expressionError(
+                exists: { handle, correlatedBinding in
+                    guard let pattern = plan.compiledExistsPattern(at: handle) else {
+                        return .expressionError(
                         .runtimeInvariant(
                             "EXISTS pattern was not compiled with its expression plan"
                         )
@@ -137,6 +135,7 @@ extension SPARQLQueryExecutor {
             return try await SPARQLRuntimeExpressionEvaluator.evaluateAsBoolean(
                 plan,
                 binding: binding,
+                workMeter: try requiredWorkMeter(),
                 resolver: resolver
             )
         default:

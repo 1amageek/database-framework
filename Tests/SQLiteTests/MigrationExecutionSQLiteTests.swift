@@ -330,7 +330,7 @@ struct MigrationExecutionSQLiteTests {
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteStageBoundarySchemaV1.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV1.self)]),
             security: .disabled
         )
@@ -345,7 +345,7 @@ struct MigrationExecutionSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLiteStageBoundarySchemaV3.self,
             migrationPlan: SQLiteStageBoundaryMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)])
         )
         try await migratedContainer.migrateIfNeeded()
@@ -355,7 +355,7 @@ struct MigrationExecutionSQLiteTests {
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteStageBoundarySchemaV3.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)]),
             security: .disabled
         )
@@ -377,7 +377,7 @@ struct MigrationExecutionSQLiteTests {
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteIndexLifecycleSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteIndexLifecycleUserV2.self)]),
             security: .disabled
         )
@@ -405,7 +405,7 @@ struct MigrationExecutionSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLiteIndexLifecycleSchemaV3.self,
             migrationPlan: SQLiteIndexLifecycleMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteIndexLifecycleUserV3.self)])
         )
         try await migratedContainer.migrateIfNeeded()
@@ -423,7 +423,7 @@ struct MigrationExecutionSQLiteTests {
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteIndexLifecycleSchemaV3.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteIndexLifecycleUserV3.self)]),
             security: .disabled
         )
@@ -450,7 +450,7 @@ struct MigrationExecutionSQLiteTests {
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteStageFailureSchemaV1.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV1.self)]),
             security: .disabled
         )
@@ -465,7 +465,7 @@ struct MigrationExecutionSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLiteStageFailureSchemaV3.self,
             migrationPlan: SQLiteStageFailureMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV3.self)])
         )
 
@@ -483,7 +483,7 @@ struct MigrationExecutionSQLiteTests {
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteStageFailureSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV2.self)]),
             security: .disabled
         )
@@ -508,7 +508,7 @@ struct MigrationExecutionSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLiteStageBoundarySchemaV3.self,
             migrationPlan: SQLiteStageBoundaryMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)])
         )
         try await migratedContainer.migrateIfNeeded()

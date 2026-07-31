@@ -32,7 +32,7 @@ struct RoundTripDemoTests {
         let schema = try Schema(entities: [try DemoItem.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DemoItem.self)]),
             security: .disabled,
         )

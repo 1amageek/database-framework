@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 public enum DatabaseSHACLValidationError: Error, Sendable, Equatable,
     CustomStringConvertible {
     case shapesGraphNotFound(String)
@@ -33,3 +34,5 @@ public enum DatabaseSHACLValidationError: Error, Sendable, Equatable,
         }
     }
 }
+
+#endif

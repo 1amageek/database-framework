@@ -54,7 +54,7 @@ struct SCCFinderTests {
         )
         return try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForSCC.self)]
             ),
@@ -416,7 +416,7 @@ struct GraphEdgeScannerBatchTests {
         )
         return try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForSCC.self)]
             ),

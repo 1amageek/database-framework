@@ -145,7 +145,12 @@ struct GraphPatternConverterFailureTests {
         }
         #expect(triples.isEmpty)
         #expect(variable == "?value")
-        #expect(plan.expression == expression)
+        #expect(
+            try ExpressionEvaluator.evaluate(
+                plan,
+                binding: VariableBinding()
+            ) == .int64(1)
+        )
     }
 
     @Test("Group expressions compile to explicit key plans")
@@ -168,7 +173,12 @@ struct GraphPatternConverterFailureTests {
             return
         }
         #expect(keys.count == 1)
-        #expect(keys[0].expression.expression == expression)
+        #expect(
+            try ExpressionEvaluator.evaluate(
+                keys[0].expression,
+                binding: VariableBinding()
+            ) == .int64(1)
+        )
         #expect(aggregates.isEmpty)
         #expect(having == nil)
     }
@@ -184,10 +194,22 @@ struct GraphPatternConverterFailureTests {
             aggregate: .sum(expression, distinct: false)
         )
 
-        let aggregate = try GraphPatternConverter.convertAggregate(binding)
+        let aggregate = try GraphPatternConverter.convertAggregate(
+            binding,
+            limits: .default
+        )
 
         #expect(aggregate.alias == "?sum")
-        #expect(aggregate.inputExpression?.expression == expression)
+        let inputExpression = try #require(aggregate.inputExpression)
+        #expect(
+            try ExpressionEvaluator.evaluate(
+                inputExpression,
+                binding: VariableBinding([
+                    "?left": .int64(2),
+                    "?right": .int64(3),
+                ])
+            ) == .int64(5)
+        )
         #expect(!aggregate.isDistinct)
     }
 
@@ -205,7 +227,10 @@ struct GraphPatternConverterFailureTests {
         #expect(
             throws: GraphPatternConversionError.unsupportedAggregateExpression("ARRAY_AGG")
         ) {
-            try GraphPatternConverter.convertAggregate(binding)
+            try GraphPatternConverter.convertAggregate(
+                binding,
+                limits: .default
+            )
         }
     }
 }

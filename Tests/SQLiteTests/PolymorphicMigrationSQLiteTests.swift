@@ -321,7 +321,7 @@ struct PolymorphicMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV1.self)]),
             security: .disabled
         )
@@ -340,7 +340,7 @@ struct PolymorphicMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
@@ -348,7 +348,7 @@ struct PolymorphicMigrationSQLiteTests {
 
         let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
@@ -398,7 +398,7 @@ struct PolymorphicMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV1.self)]),
             security: .disabled
         )
@@ -425,7 +425,7 @@ struct PolymorphicMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
@@ -433,7 +433,7 @@ struct PolymorphicMigrationSQLiteTests {
 
         let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
@@ -456,7 +456,7 @@ struct PolymorphicMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
@@ -480,7 +480,7 @@ struct PolymorphicMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV3.self,
             migrationPlan: SQLitePolymorphicRemovalMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV3.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV3.self)]),
             security: .disabled
         )
@@ -519,7 +519,7 @@ struct PolymorphicMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
@@ -551,7 +551,7 @@ struct PolymorphicMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV4.self,
             migrationPlan: SQLitePolymorphicRebuildMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV4.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV4.self)]),
             security: .disabled
         )

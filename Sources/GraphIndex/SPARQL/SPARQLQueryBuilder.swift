@@ -618,22 +618,27 @@ extension SPARQLQueryBuilder {
         )
     }
 
-    /// Add a FILTER using a Expression
+    /// Add a FILTER using a canonical QueryIR expression.
     ///
-    /// Evaluates the expression against each binding using ExpressionEvaluator.
-    /// Follows SPARQL §17.2 semantics: evaluation errors yield `false`.
+    /// The expression is structurally validated and compiled once when the
+    /// builder is configured. Evaluation reuses the immutable compiled plan.
     ///
     /// **Example**:
     /// ```swift
     /// .filter(.greaterThanOrEqual(.var("age"), .int(18)))
     /// ```
-    public func filter(_ expression: DatabaseKit.Expression) -> Self {
-        filter(.custom { binding in
-            try ExpressionEvaluator.evaluateAsBoolean(
-                expression,
-                binding: binding
+    public func filter(
+        _ expression: consuming DatabaseKit.Expression,
+        limits: SPARQLExpressionCompilationLimits = .default
+    ) throws -> Self {
+        try filter(
+            .query(
+                SPARQLExpressionPlan(
+                    consume expression,
+                    limits: limits
+                )
             )
-        })
+        )
     }
 }
 

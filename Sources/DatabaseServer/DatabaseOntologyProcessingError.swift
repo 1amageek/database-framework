@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import OntologyIndex
 
 public enum DatabaseOntologyProcessingError: Error, Sendable, Equatable, CustomStringConvertible {
@@ -43,3 +44,4 @@ public enum DatabaseOntologyProcessingError: Error, Sendable, Equatable, CustomS
         }
     }
 }
+#endif

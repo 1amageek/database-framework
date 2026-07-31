@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 import DatabaseKit
@@ -190,3 +191,4 @@ public struct ResolvedDatabaseGraphSource: Sendable {
         try decodeVertex(value)
     }
 }
+#endif

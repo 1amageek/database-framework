@@ -41,6 +41,30 @@ storage engine or transport.
 storage-kit owns the physical storage contract and backend adapters. It does not
 interpret models, QueryIR, graph semantics, or application commands.
 
+### Storage Injection And Ownership
+
+`DatabaseEngine` depends on `StorageEngine` only. It does not import, select,
+or construct FoundationDB, SQLite, PostgreSQL, or Cloudflare adapters. Concrete
+adapter construction belongs to the composition layer; the `Database` umbrella
+provides native facade overloads only when their package traits are selected.
+
+~~~text
+composition layer
+  constructs StorageEngine
+          |
+          | DBConfiguration(storageEngine:)
+          | ownership transfer
+          v
+     DBContainer
+       |-- open failure -> engine shutdown
+       |-- shutdown() --> engine shutdown
+       `-- deinit ------> engine shutdown
+                           (exactly once across all paths)
+~~~
+
+The configuration and container share one lifecycle owner. Once injected, an
+engine must not be reused or shut down by its former caller.
+
 ## Runtime Forms
 
 Native and Embedded WASI builds use the same database-framework sources and the
@@ -74,6 +98,56 @@ runtime flag. Consequently, an application-specific Embedded reactor links only
 the index implementations and runtime registrations selected by its dependency
 traits.
 
+`Database` remains one umbrella product in every composition. Traits apply to
+the `database-framework` package and determine which optional target
+dependencies and re-exports are present inside that umbrella:
+
+~~~text
+consumer Package.swift
+  database-framework traits: [GraphIndexes]
+        |
+        v
+Database umbrella
+  DatabaseEngine + DatabaseRuntime + QueryAST
+  ScalarIndex + GraphIndex + OntologyIndex
+        |
+        x  RelationshipIndex, VectorIndex, FullTextIndex, SpatialIndex, ...
+~~~
+
+The same trait conditions control `DatabaseRuntime` provider registration.
+Therefore an implementation cannot be re-exported without being registered, or
+registered without being part of the selected dependency graph.
+
+`DatabaseServer` uses the same composition. Its operation registry and
+`capabilities.describe` response contain graph, ontology, and SHACL operations
+only when `GraphIndexes` is active. A request for an operation outside the
+compiled composition fails with the typed `OPERATION_UNAVAILABLE` error; it
+never falls back to a partial implementation.
+
+Graph algorithm, ontology, SHACL, RDF document storage, graph query paging, and
+SPARQL mutation services are compiled out of `DatabaseServer` when
+`GraphIndexes` is absent. DatabaseWire's closed query and operation algebra
+remains available so a smaller runtime can decode a request and reject an
+unavailable operation or statement deterministically.
+
+`DatabaseRuntimeLimits` contains limits shared by every server composition.
+`GraphOperationLimits`, including the SPARQL LOAD document byte limit, exists
+only in a `GraphIndexes` composition and is passed from runtime configuration
+through the service context into the graph-capable statement executor.
+
+The service composition type follows the selected traits. Without
+`GraphIndexes`, `DatabaseServerServices` requires a statement executor. With
+`GraphIndexes`, it instead requires one non-optional `GraphOperationServices`
+value containing that executor together with the graph algorithm, ontology,
+and SHACL services. The graph-enabled build has no initializer that can create
+a partial service composition, so missing graph services are rejected by the
+compiler rather than by a runtime capability assertion.
+
+When an application adds commands, it uses
+`DatabaseServerServices.replacingCommandRegistries(read:write:)`; this preserves
+the trait-specific service composition, maintenance service, and job service
+instead of disassembling and reconstructing feature state.
+
 | Trait | Runtime capability |
 |---|---|
 | `ScalarIndexes` | scalar and composite indexes |
@@ -84,16 +158,23 @@ traits.
 | `BitmapIndexes` | bitmap indexes and readers |
 | `VersionIndexes` | version indexes and readers |
 | `PermutedIndexes` | permuted indexes and readers |
-| `GraphIndexes` | property graph, RDF, and SPARQL; enables `ScalarIndexes` |
+| `GraphIndexes` | ScalarIndex, GraphIndex, OntologyIndex, RDF, and SPARQL; enables `ScalarIndexes` |
 | `AggregationIndexes` | count, numeric, distinct, and percentile indexes |
 | `LeaderboardIndexes` | time-window leaderboard indexes |
 | `Relationships` | relationship mutation maintenance and typed remote error mapping |
 | `AllRuntimeFeatures` | every runtime capability above |
 
-`AllRuntimeFeatures` is enabled by default for the standard all-in-one runtime.
-Applications that provide an explicit trait set replace that default. For
-example, a graph application can select `GraphIndexes` and `Relationships`
-without linking vector, full-text, aggregation, or leaderboard implementations.
+The default full native host profile enables `FoundationDB` and
+`AllRuntimeFeatures`. Applications that provide an explicit trait set without
+`.defaults` replace that profile. For example, a graph application can select
+`GraphIndexes` without linking FoundationDB, relationship, vector, full-text,
+aggregation, or leaderboard implementations.
+
+Backend traits are platform-gated independently from runtime feature traits.
+FoundationDB is available only on macOS and Linux. SQLite and PostgreSQL facade
+adapters are available on macOS, iOS, and Linux. WASI/Embedded compositions use
+an injected host storage engine; Cloudflare Durable Object SQLite is composed
+by database-framework-cloudflare rather than selected as a native backend trait.
 
 Feature selection never weakens runtime validation. The selected providers,
 readers, logical-source executors, and mutation maintainers are still assembled

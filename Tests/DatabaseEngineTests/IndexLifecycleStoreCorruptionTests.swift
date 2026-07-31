@@ -221,7 +221,7 @@ struct IndexLifecycleStoreCorruptionTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
@@ -268,7 +268,7 @@ struct IndexLifecycleStoreCorruptionTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
@@ -338,7 +338,7 @@ struct IndexLifecycleStoreCorruptionTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(

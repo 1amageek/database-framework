@@ -264,7 +264,7 @@ struct PolymorphicVectorMigrationFDBTests {
 
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV1.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV1.self)]),
                 security: .disabled
             )
@@ -300,7 +300,7 @@ struct PolymorphicVectorMigrationFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV2.self,
                 migrationPlan: FDBPolymorphicVectorAddMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try Self.vectorRuntimeConfiguration(
                     entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV2.self)]
                 ),
@@ -343,7 +343,7 @@ struct PolymorphicVectorMigrationFDBTests {
 
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV2.makeSchema(),
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV2.self)]),
                 security: .disabled
             )
@@ -371,7 +371,7 @@ struct PolymorphicVectorMigrationFDBTests {
             let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV3.self,
                 migrationPlan: FDBPolymorphicVectorRebuildMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try Self.vectorRuntimeConfiguration(
                     entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV3.self)]
                 ),
@@ -420,8 +420,7 @@ struct PolymorphicVectorMigrationFDBTests {
 
     private static func makeSystemPriorityEngine() async throws -> any StorageEngine {
         try await FoundationDBScenarioCoordinator.shared.initialize()
-        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let database = FDBSystemPriorityDatabase(wrapping: engine.database)
+        let database = try FDBSystemPriorityDatabase()
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
 

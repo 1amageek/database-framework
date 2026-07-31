@@ -1,11 +1,6 @@
 // DatabaseContext+SQL.swift
 // Database - DatabaseContext extension for executing SQL strings with SPARQL() function support
 
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 import DatabaseKit
 import QueryAST
 import DatabaseEngine
@@ -61,14 +56,18 @@ extension DatabaseContext {
         }
 
         // 3. Rewrite SPARQL() functions if present
-        let rewrittenQuery = try await rewriteSPARQLFunctions(
+        #if DATABASE_GRAPH_INDEXES
+        let executableQuery = try await rewriteSPARQLFunctions(
             selectQuery,
             workMeter: workMeter
         )
+        #else
+        let executableQuery = selectQuery
+        #endif
 
         // 4. Execute via DatabaseEngine layer
         let response = try await query(
-            rewrittenQuery,
+            executableQuery,
             execution: ReadExecutionContext(
                 options: ReadExecutionOptions(budget: budget),
                 monotonicClock: container.monotonicClock,
@@ -89,6 +88,7 @@ extension DatabaseContext {
         }
     }
 
+    #if DATABASE_GRAPH_INDEXES
     // MARK: - SPARQL Function Rewriting
 
     /// Rewrite SelectQuery by executing SPARQL() functions
@@ -106,6 +106,7 @@ extension DatabaseContext {
         )
         return try await rewriter.rewrite(selectQuery)
     }
+    #endif
 }
 
 // MARK: - Errors

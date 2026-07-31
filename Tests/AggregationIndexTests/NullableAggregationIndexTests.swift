@@ -18,7 +18,7 @@ struct NullableAggregationIndexTests {
                     try NullableUnsignedAggregationEntity.schemaEntity
                 ]
             ),
-            configuration: .testing(backend: .custom(InMemoryEngine())),
+            configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(NullableUnsignedAggregationEntity.self)]),
             security: .disabled
         )

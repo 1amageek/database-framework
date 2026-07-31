@@ -24,7 +24,7 @@ struct OnlineIndexerBatchDispatchTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]
             ),
@@ -117,7 +117,7 @@ struct OnlineIndexerBatchDispatchTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]
             ),
@@ -250,7 +250,7 @@ struct OnlineIndexerBatchDispatchTests {
         let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]),
             security: .disabled
         )
@@ -313,7 +313,7 @@ struct OnlineIndexerBatchDispatchTests {
         let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]),
             security: .disabled
         )
@@ -384,7 +384,7 @@ struct OnlineIndexerBatchDispatchTests {
         let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]),
             security: .disabled
         )

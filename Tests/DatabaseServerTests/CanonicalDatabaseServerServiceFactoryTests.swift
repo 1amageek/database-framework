@@ -17,7 +17,7 @@ struct CanonicalDatabaseServerServiceFactoryTests {
                 entities: [try DatabaseGraphSourceEdge.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphSourceEdge.self)]
             ),
@@ -44,6 +44,11 @@ struct CanonicalDatabaseServerServiceFactoryTests {
 
         #expect(services.readCommandRegistry.identifiers.isEmpty)
         #expect(services.writeCommandRegistry.identifiers.isEmpty)
+        let decorated = services.replacingCommandRegistries(
+            read: try DatabaseReadCommandRegistry(commands: []),
+            write: try DatabaseWriteCommandRegistry(commands: [])
+        )
+        #expect(decorated.statementExecutor === services.statementExecutor)
         await #expect(throws: UnexpectedPlatformInvocation.self) {
             try await services.jobService.runScheduledWork()
         }

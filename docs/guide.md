@@ -76,7 +76,8 @@ let container = try await DBContainer.open(
 )
 ~~~
 
-FoundationDB uses the default trait:
+FoundationDB is included in the default full native host profile on macOS and
+Linux:
 
 ~~~swift
 let container = try await DBContainer.open(
@@ -91,6 +92,20 @@ See [Backend Guide](backends.md) for trait selection and deployment
 requirements. The clocks are explicit runtime dependencies: native
 applications may use Foundation-backed adapters, while Embedded targets inject
 their platform implementations without linking Foundation.
+
+The consuming package selects optional capabilities. `Database` remains the
+umbrella import; traits change what enters that umbrella's dependency graph.
+`GraphIndexes` includes ScalarIndex, GraphIndex, and OntologyIndex.
+`Relationships` is selected separately when the schema declares relationship
+maintenance.
+
+~~~swift
+.package(
+    url: "https://github.com/1amageek/database-framework.git",
+    from: "26.0731.1",
+    traits: ["GraphIndexes"]
+)
+~~~
 
 ## 3. Change Tracking
 
@@ -108,6 +123,13 @@ try await context.save()
 
 DBContainer owns the storage engine, schema, and runtime configuration.
 DatabaseContext is the backend-neutral user-facing unit of work.
+
+Engine ownership transfers when it is passed to
+`DBConfiguration(storageEngine:)`, whether the application constructs that
+configuration directly or a facade creates it from backend configuration.
+Opening failure shuts the engine down. An opened container exposes idempotent
+`shutdown()`, and deinitialization uses the same exactly-once path. Do not
+retain a second operational owner for the injected engine.
 
 ## 4. Queries
 

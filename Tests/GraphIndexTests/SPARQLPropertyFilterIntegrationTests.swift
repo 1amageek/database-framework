@@ -118,7 +118,7 @@ struct SPARQLPropertyFilterIntegrationTests {
             entities: [try SocialConnection.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self)]), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self)]), security: .disabled)
 
 
         if try await database.namespaceExists(
@@ -344,7 +344,7 @@ struct SPARQLPropertyFilterIntegrationTests {
             entities: [try BasicEdge.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self)]), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self)]), security: .disabled)
 
 
         if try await database.namespaceExists(

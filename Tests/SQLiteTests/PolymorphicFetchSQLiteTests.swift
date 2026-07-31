@@ -236,7 +236,7 @@ struct PolymorphicFetchSQLiteTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorReport.self)]
             ),
@@ -256,7 +256,7 @@ struct PolymorphicFetchSQLiteTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicOptionalVectorArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicOptionalVectorReport.self)]
             ),
@@ -432,7 +432,7 @@ struct PolymorphicFetchSQLiteTests {
         )
         let initialContainer = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self)]
             ),
@@ -457,7 +457,7 @@ struct PolymorphicFetchSQLiteTests {
 
         let reopenedContainer = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self)]
             ),
@@ -761,7 +761,7 @@ struct PolymorphicFetchSQLiteTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSecurePolymorphicArticle.self)],
                 authorizationPolicies: [

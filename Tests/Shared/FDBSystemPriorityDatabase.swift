@@ -195,6 +195,10 @@ public final class FDBSystemPriorityDatabase: DatabaseProtocol, Sendable {
 
     private let underlying: any DatabaseProtocol
 
+    public convenience init() throws {
+        try self.init(wrapping: FDBClient.openDatabase())
+    }
+
     public init(wrapping underlying: any DatabaseProtocol) {
         self.underlying = underlying
     }

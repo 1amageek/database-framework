@@ -6,11 +6,29 @@ public enum SPARQLSelectPlanCompiler {
         additionalProjectionVariables: [String] = [],
         structuralLimits: QueryStructuralLimits = .default
     ) throws -> SPARQLSelectExecutionPlan {
+        try compile(
+            query,
+            additionalProjectionVariables: additionalProjectionVariables,
+            expressionLimits: SPARQLExpressionCompilationLimits(
+                structuralLimits: structuralLimits
+            )
+        )
+    }
+
+    /// Compiles a SELECT plan with one explicit expression limit authority
+    /// shared by the top-level query, nested subqueries, and EXISTS algebra.
+    public static func compile(
+        _ query: SelectQuery,
+        additionalProjectionVariables: [String] = [],
+        expressionLimits: SPARQLExpressionCompilationLimits
+    ) throws -> SPARQLSelectExecutionPlan {
         try SPARQLSemanticValidator.validate(
             query,
-            limits: structuralLimits
+            limits: expressionLimits.structuralLimits
         )
-        var context = SPARQLAlgebraCompilationContext()
+        var context = SPARQLAlgebraCompilationContext(
+            expressionLimits: expressionLimits
+        )
         return try compile(
             query,
             additionalProjectionVariables: additionalProjectionVariables,
@@ -30,7 +48,9 @@ public enum SPARQLSelectPlanCompiler {
             query,
             limits: structuralLimits
         )
-        var context = SPARQLAlgebraCompilationContext()
+        var context = SPARQLAlgebraCompilationContext(
+            structuralLimits: structuralLimits
+        )
         return try compile(
             query,
             additionalProjectionVariables: additionalProjectionVariables,
@@ -121,6 +141,7 @@ public enum SPARQLSelectPlanCompiler {
             .applyingProjectionExpressions(
             rewrittenProjection,
             to: queryLevel.algebra,
+            limits: context.expressionLimits,
             inputVariables: queryLevel.hasGrouping ? [] : inputVariables,
             reservedTargetVariables: queryLevel.sourceVisibleVariables,
             restrictExpressionReferencesToScope: queryLevel.hasGrouping
@@ -143,7 +164,8 @@ public enum SPARQLSelectPlanCompiler {
         let ordered = try SPARQLQueryLevelPlanCompiler.makeOrderedPlan(
             dataset: query.dataset,
             algebra: queryLevel.algebra,
-            rewrittenOrderBy: queryLevel.rewrittenOrderBy
+            rewrittenOrderBy: queryLevel.rewrittenOrderBy,
+            limits: context.expressionLimits
         )
         let distinctFromProjection: Bool
         if case .distinctItems = query.projection {

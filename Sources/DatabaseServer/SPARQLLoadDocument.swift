@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 
 public struct SPARQLLoadDocument: Sendable {
@@ -17,3 +18,5 @@ public struct SPARQLLoadDocument: Sendable {
         storage
     }
 }
+
+#endif

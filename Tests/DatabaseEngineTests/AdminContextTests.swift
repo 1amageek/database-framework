@@ -54,7 +54,7 @@ struct AdminContextTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AdminIndexedEntity.self), try DatabaseFrameworkRuntime.entity(AdminUnindexedEntity.self)]),
             security: .disabled
             )

@@ -234,7 +234,11 @@ final class CommitOutcomeUnknownEngine: StorageEngine, Sendable {
         underlying.namespaceCatalog
     }
 
-    func shutdown() {
-        underlying.shutdown()
+    func requestShutdown() {
+        underlying.requestShutdown()
+    }
+
+    func waitUntilShutdown() async {
+        await underlying.waitUntilShutdown()
     }
 }

@@ -3,6 +3,8 @@ public enum DatabaseQueryExecutionError: Error, Sendable, CustomStringConvertibl
     case solutionModifierMustBeNonNegative(name: String, value: Int)
     case continuationNotSupported(String)
     case mutationRequiresMutationOperation
+    case featureUnavailable(String)
+    #if DATABASE_SERVER_GRAPH_INDEXES
     case unresolvedConstructTerm(String)
     case nonRDFBinding(String)
     case invalidRDFTermRole(String)
@@ -12,6 +14,7 @@ public enum DatabaseQueryExecutionError: Error, Sendable, CustomStringConvertibl
     case reifiedTripleRequiresTemplateContext
     case describeVariableRequiresPattern(String)
     case invalidDescribeResource(String)
+    #endif
 
     public var description: String {
         switch self {
@@ -23,6 +26,9 @@ public enum DatabaseQueryExecutionError: Error, Sendable, CustomStringConvertibl
             return "\(statement) does not accept a continuation"
         case .mutationRequiresMutationOperation:
             return "Mutation statements must be sent through mutation.execute"
+        case .featureUnavailable(let reason):
+            return "Query feature is unavailable: \(reason)"
+        #if DATABASE_SERVER_GRAPH_INDEXES
         case .unresolvedConstructTerm(let name):
             return "CONSTRUCT template variable '\(name)' is not bound"
         case .nonRDFBinding(let value):
@@ -41,6 +47,7 @@ public enum DatabaseQueryExecutionError: Error, Sendable, CustomStringConvertibl
             return "DESCRIBE variable '\(name)' requires a WHERE pattern"
         case .invalidDescribeResource(let resource):
             return "DESCRIBE resource '\(resource)' cannot be used as an RDF subject"
+        #endif
         }
     }
 }

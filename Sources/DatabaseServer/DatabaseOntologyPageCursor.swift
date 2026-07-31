@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 
@@ -110,3 +111,5 @@ struct DatabaseOntologyPageCursor: ServerPayloadValue, Hashable {
         self.kind = kind
     }
 }
+
+#endif

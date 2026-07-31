@@ -1,26 +1,38 @@
+import DatabaseKit
+
 /// Resource limits applied when QueryIR is compiled into SPARQL expression
-/// algebra. These limits also cover expressions constructed directly in Swift,
-/// after the binary decoder boundary.
+/// algebra.
+///
+/// Depth, node, and collection budgets are derived from the request's canonical
+/// `QueryStructuralLimits`. The SPARQL-specific string limit supplements that
+/// shared structural authority.
 public struct SPARQLExpressionCompilationLimits: Sendable, Equatable {
-    public let maximumDepth: Int
-    public let maximumNodes: Int
-    public let maximumFunctionArguments: Int
-    public let maximumCollectionElements: Int
-    public let maximumStringUTF8Count: Int
+    public let structuralLimits: QueryStructuralLimits
+    public let maximumStringUTF8Count: UInt64
 
     public init(
-        maximumDepth: Int = 128,
-        maximumNodes: Int = 4_096,
-        maximumFunctionArguments: Int = 1_024,
-        maximumCollectionElements: Int = 4_096,
-        maximumStringUTF8Count: Int = 1_048_576
+        structuralLimits: QueryStructuralLimits = .default,
+        maximumStringUTF8Count: UInt64 = 1_048_576
     ) {
-        self.maximumDepth = maximumDepth
-        self.maximumNodes = maximumNodes
-        self.maximumFunctionArguments = maximumFunctionArguments
-        self.maximumCollectionElements = maximumCollectionElements
+        self.structuralLimits = structuralLimits
         self.maximumStringUTF8Count = maximumStringUTF8Count
     }
 
     public static let `default` = Self()
+
+    public var maximumDepth: UInt64 {
+        structuralLimits.maximumNestingDepth
+    }
+
+    public var maximumNodes: UInt64 {
+        structuralLimits.maximumTotalNodes
+    }
+
+    public var maximumFunctionArguments: UInt64 {
+        structuralLimits.maximumCollectionElements
+    }
+
+    public var maximumCollectionElements: UInt64 {
+        structuralLimits.maximumCollectionElements
+    }
 }

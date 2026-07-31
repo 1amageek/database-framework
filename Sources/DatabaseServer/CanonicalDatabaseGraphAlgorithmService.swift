@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 import DatabaseEngine
@@ -79,3 +80,4 @@ public struct CanonicalDatabaseGraphAlgorithmService: DatabaseGraphAlgorithmServ
         )
     }
 }
+#endif

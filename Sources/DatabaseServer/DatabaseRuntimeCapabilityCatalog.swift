@@ -1,14 +1,35 @@
 @_spi(DatabaseServer) import DatabaseWire
 
 enum DatabaseRuntimeCapabilityCatalog {
-    static let features = DatabaseOperationIdentifier.allCases
-        .sorted { $0.rawValue < $1.rawValue }
-        .map {
-            CapabilitiesDescribeOperation.Feature(
-                identifier: identifier(for: $0),
-                version: 1
-            )
-        }
+    static let operations: [DatabaseOperationIdentifier] = {
+        var operations: [DatabaseOperationIdentifier] = [
+            .capabilitiesDescribe,
+            .schemaDescribe,
+            .queryExecute,
+            .mutationExecute,
+            .commandExecute,
+            .maintenanceExecute,
+            .jobStart,
+            .jobStatus,
+            .jobResult,
+            .jobCancel,
+        ]
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        operations.append(contentsOf: [
+            .graphAlgorithm,
+            .ontologyExecute,
+            .shaclExecute,
+        ])
+        #endif
+        return operations.sorted { $0.rawValue < $1.rawValue }
+    }()
+
+    static let features = operations.map {
+        CapabilitiesDescribeOperation.Feature(
+            identifier: identifier(for: $0),
+            version: 1
+        )
+    }
 
     private static func identifier(
         for operation: DatabaseOperationIdentifier

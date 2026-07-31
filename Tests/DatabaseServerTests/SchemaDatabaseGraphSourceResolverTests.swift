@@ -137,7 +137,7 @@ struct SchemaDatabaseGraphSourceResolverTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphSourceEdge.self), try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self), try DatabaseFrameworkRuntime.entity(DefaultGraphSourceStatement.self)]
             ),

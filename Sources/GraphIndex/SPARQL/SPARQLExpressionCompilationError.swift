@@ -1,3 +1,5 @@
+import DatabaseKit
+
 public enum SPARQLExpressionCompilationError: Error, Sendable, Equatable {
     case unsupportedExpression(String)
     case unboundParameter
@@ -10,10 +12,11 @@ public enum SPARQLExpressionCompilationError: Error, Sendable, Equatable {
     case distinctScalarFunction(String)
     case invalidExistsSource
     case invalidFunctionIdentifier(String)
+    case structural(QueryStructuralValidationError)
     case resourceLimitExceeded(
-        resource: String,
-        actual: Int,
-        maximum: Int
+        resource: SPARQLExpressionCompilationResource,
+        actual: UInt64,
+        maximum: UInt64
     )
 }
 
@@ -34,8 +37,10 @@ extension SPARQLExpressionCompilationError: CustomStringConvertible {
             return "EXISTS contains an unsupported query source or modifier"
         case .invalidFunctionIdentifier(let identifier):
             return "Invalid SPARQL function identifier: \(identifier)"
+        case .structural(let error):
+            return "Invalid SPARQL expression structure: \(error)"
         case .resourceLimitExceeded(let resource, let actual, let maximum):
-            return "SPARQL expression compilation limit exceeded for \(resource): actual=\(actual), maximum=\(maximum)"
+            return "SPARQL expression compilation limit exceeded for \(resource.rawValue): actual=\(actual), maximum=\(maximum)"
         }
     }
 }

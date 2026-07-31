@@ -44,7 +44,7 @@ struct OnlineIndexerAtomicityTests {
 
             // Create container with Player schema
             let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
-            self.container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]), security: .disabled)
+            self.container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]), security: .disabled)
         }
 
         func cleanup() async throws {

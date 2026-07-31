@@ -159,8 +159,8 @@ struct MigrationTests {
     // MARK: - Helper Methods
 
     private func makeSystemPriorityEngine() async throws -> any StorageEngine {
-        let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let database = FDBSystemPriorityDatabase(wrapping: engine.database)
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let database = try FDBSystemPriorityDatabase()
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
 
@@ -173,7 +173,7 @@ struct MigrationTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
             ),
@@ -190,7 +190,7 @@ struct MigrationTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(BatchMigrationEntity.self)]
             ),
@@ -288,7 +288,7 @@ struct MigrationTests {
             // Create first container and set version
             let container1 = try await DBContainer.open(
                 for: schema,
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
                 ),
@@ -299,7 +299,7 @@ struct MigrationTests {
             // Create second container and read version
             let container2 = try await DBContainer.open(
                 for: schema,
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
                 ),
@@ -348,7 +348,7 @@ struct MigrationTests {
 
             let initialContainer = try await DBContainer.open(
                 for: SchemaRegistryAppendOnlySchemaV1.makeSchema(),
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV1.self)]),
                 security: .disabled
             )
@@ -366,14 +366,14 @@ struct MigrationTests {
             let migratedContainer = try await DBContainer.open(
                 for: SchemaRegistryAppendOnlySchemaV2.self,
                 migrationPlan: SchemaRegistryAppendOnlyMigrationPlan.self,
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV2.self)]),
             )
             try await migratedContainer.migrateIfNeeded()
 
             let verificationContainer = try await DBContainer.open(
                 for: SchemaRegistryAppendOnlySchemaV2.makeSchema(),
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV2.self)]),
                 security: .disabled
             )
@@ -440,7 +440,7 @@ struct MigrationTests {
 
             let initialContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV1.makeSchema(),
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV1.self)]),
                 security: .disabled
             )
@@ -457,7 +457,7 @@ struct MigrationTests {
             let migratedContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.self,
                 migrationPlan: SchemaRegistryCustomMigrationPlan.self,
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
             )
             try await migratedContainer.migrateIfNeeded()
@@ -476,7 +476,7 @@ struct MigrationTests {
 
             let verificationContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.makeSchema(),
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
                 security: .disabled
             )
@@ -505,7 +505,7 @@ struct MigrationTests {
 
             let initialContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV1.makeSchema(),
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV1.self)]),
                 security: .disabled
             )
@@ -531,14 +531,14 @@ struct MigrationTests {
             let migratedContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.self,
                 migrationPlan: SchemaRegistryCustomMigrationPlan.self,
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
             )
             try await migratedContainer.migrateIfNeeded()
 
             let verificationContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.makeSchema(),
-                configuration: .testing(backend: .custom(database)),
+                configuration: .testing(storageEngine: database),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
                 security: .disabled
             )

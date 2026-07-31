@@ -1,6 +1,8 @@
 import DatabaseEngine
+#if DATABASE_SERVER_GRAPH_INDEXES
 import GraphIndex
 import OntologyIndex
+#endif
 import StorageKit
 
 public final class CanonicalDatabaseServerServiceFactory:
@@ -10,8 +12,10 @@ public final class CanonicalDatabaseServerServiceFactory:
     private let jobServiceFactory: AnyDatabaseJobServiceFactory
     private let readCommands: [AnyDatabaseReadCommand]
     private let writeCommands: [AnyDatabaseWriteCommand]
+    #if DATABASE_SERVER_GRAPH_INDEXES
     private let loadSource: AnySPARQLLoadSource
     private let functionRegistry: SPARQLFunctionRegistry
+    #endif
 
     public init<
         MaintenanceFactory: DatabaseMaintenanceServiceFactory,
@@ -20,8 +24,30 @@ public final class CanonicalDatabaseServerServiceFactory:
         maintenanceServiceFactory: MaintenanceFactory,
         jobServiceFactory: JobFactory,
         readCommands: [AnyDatabaseReadCommand] = [],
+        writeCommands: [AnyDatabaseWriteCommand] = []
+    ) {
+        self.maintenanceServiceFactory = AnyDatabaseMaintenanceServiceFactory(
+            maintenanceServiceFactory
+        )
+        self.jobServiceFactory = AnyDatabaseJobServiceFactory(jobServiceFactory)
+        self.readCommands = readCommands
+        self.writeCommands = writeCommands
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        self.loadSource = .unconfigured
+        self.functionRegistry = .empty
+        #endif
+    }
+
+    #if DATABASE_SERVER_GRAPH_INDEXES
+    public init<
+        MaintenanceFactory: DatabaseMaintenanceServiceFactory,
+        JobFactory: DatabaseJobServiceFactory
+    >(
+        maintenanceServiceFactory: MaintenanceFactory,
+        jobServiceFactory: JobFactory,
+        readCommands: [AnyDatabaseReadCommand] = [],
         writeCommands: [AnyDatabaseWriteCommand] = [],
-        loadSource: AnySPARQLLoadSource = .unconfigured,
+        loadSource: AnySPARQLLoadSource,
         functionRegistry: SPARQLFunctionRegistry = .empty
     ) {
         self.maintenanceServiceFactory = AnyDatabaseMaintenanceServiceFactory(
@@ -33,10 +59,24 @@ public final class CanonicalDatabaseServerServiceFactory:
         self.loadSource = loadSource
         self.functionRegistry = functionRegistry
     }
+    #endif
 
     public func makeServices(
         context: DatabaseServerServiceContext
     ) async throws -> DatabaseServerServices {
+        let readCommandRegistry = try DatabaseReadCommandRegistry(
+            commands: readCommands
+        )
+        let writeCommandRegistry = try DatabaseWriteCommandRegistry(
+            commands: writeCommands
+        )
+        let maintenanceService = try await maintenanceServiceFactory
+            .makeMaintenanceService(context: context)
+        let jobService = try await jobServiceFactory.makeJobService(
+            context: context
+        )
+
+        #if DATABASE_SERVER_GRAPH_INDEXES
         let ontologyStore = try await DatabaseRDFDocumentStore(
             container: context.container,
             namespace: "ontology",
@@ -73,48 +113,57 @@ public final class CanonicalDatabaseServerServiceFactory:
         )
 
         return DatabaseServerServices(
+            graphOperations: GraphOperationServices(
+                statementExecutor:
+                    CanonicalDatabaseStatementMutationExecutor(
+                        runtimeLimits: context.runtimeLimits,
+                        graphStore: CanonicalRDFGraphStore(),
+                        loadSource: loadSource,
+                        functionRegistry: functionRegistry,
+                        graphOperationLimits: context.graphOperationLimits
+                    ),
+                algorithm: AnyDatabaseGraphAlgorithmService(
+                    CanonicalDatabaseGraphAlgorithmService(
+                        sourceResolver: SchemaDatabaseGraphSourceResolver(
+                            container: context.container
+                        ),
+                        wireLimits: context.wireLimits
+                    ),
+                ),
+                ontology: AnyDatabaseOntologyService(
+                    CanonicalDatabaseOntologyService(
+                        store: ontologyStore,
+                        processor: ontologyProcessor,
+                        coordinator: context.coordinator,
+                        wireLimits: context.wireLimits
+                    )
+                ),
+                shacl: AnyDatabaseSHACLService(
+                    CanonicalDatabaseSHACLService(
+                        store: shaclStore,
+                        processor: shaclProcessor,
+                        coordinator: context.coordinator,
+                        wireLimits: context.wireLimits
+                    )
+                )
+            ),
+            readCommandRegistry: readCommandRegistry,
+            writeCommandRegistry: writeCommandRegistry,
+            maintenanceService: maintenanceService,
+            jobService: jobService
+        )
+        #else
+        return DatabaseServerServices(
             statementExecutor: AnyDatabaseStatementMutationExecutor(
                 CanonicalDatabaseStatementMutationExecutor(
-                    runtimeLimits: context.runtimeLimits,
-                    loadSource: loadSource,
-                    functionRegistry: functionRegistry
+                    runtimeLimits: context.runtimeLimits
                 )
             ),
-            graphAlgorithmService: AnyDatabaseGraphAlgorithmService(
-                CanonicalDatabaseGraphAlgorithmService(
-                    sourceResolver: SchemaDatabaseGraphSourceResolver(
-                        container: context.container
-                    ),
-                    wireLimits: context.wireLimits
-                ),
-            ),
-            ontologyService: AnyDatabaseOntologyService(
-                CanonicalDatabaseOntologyService(
-                    store: ontologyStore,
-                    processor: ontologyProcessor,
-                    coordinator: context.coordinator,
-                    wireLimits: context.wireLimits
-                )
-            ),
-            shaclService: AnyDatabaseSHACLService(
-                CanonicalDatabaseSHACLService(
-                    store: shaclStore,
-                    processor: shaclProcessor,
-                    coordinator: context.coordinator,
-                    wireLimits: context.wireLimits
-                )
-            ),
-            readCommandRegistry: try DatabaseReadCommandRegistry(
-                commands: readCommands
-            ),
-            writeCommandRegistry: try DatabaseWriteCommandRegistry(
-                commands: writeCommands
-            ),
-            maintenanceService: try await maintenanceServiceFactory
-                .makeMaintenanceService(context: context),
-            jobService: try await jobServiceFactory.makeJobService(
-                context: context
-            )
+            readCommandRegistry: readCommandRegistry,
+            writeCommandRegistry: writeCommandRegistry,
+            maintenanceService: maintenanceService,
+            jobService: jobService
         )
+        #endif
     }
 }

@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 import DatabaseKit
 
@@ -15,3 +16,5 @@ extension RDFDataset {
         )
     }
 }
+
+#endif

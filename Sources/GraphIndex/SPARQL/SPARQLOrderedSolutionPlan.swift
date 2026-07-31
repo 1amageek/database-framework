@@ -2,7 +2,7 @@
 ///
 /// The executable dataset is retained with the algebra so a compiled plan
 /// cannot be evaluated against a silently different dataset scope.
-public struct SPARQLOrderedSolutionPlan: Sendable, Equatable {
+public struct SPARQLOrderedSolutionPlan: Sendable {
     public let datasetScope: SPARQLDatasetExecutionScope
     public let algebra: ExecutionPattern
     public let orderKeys: [SPARQLOrderKeyPlan]

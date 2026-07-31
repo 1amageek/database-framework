@@ -45,7 +45,7 @@ struct OrderedRankReadBenchmark {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(RankBenchmarkPlayer.self)]
             ),

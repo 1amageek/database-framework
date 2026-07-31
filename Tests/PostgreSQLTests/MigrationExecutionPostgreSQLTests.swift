@@ -251,7 +251,7 @@ struct MigrationExecutionPostgreSQLTests {
             let migratedContainer = try await DBContainer.open(
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
             )
             try await migratedContainer.migrateIfNeeded()
@@ -297,7 +297,7 @@ struct MigrationExecutionPostgreSQLTests {
             let migratedContainer = try await DBContainer.open(
                 for: PGStageFailureSchemaV3.self,
                 migrationPlan: PGStageFailureMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageFailureUserV3.self)])
             )
 
@@ -340,7 +340,7 @@ struct MigrationExecutionPostgreSQLTests {
             let migratedContainer = try await DBContainer.open(
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
             )
             try await migratedContainer.migrateIfNeeded()
@@ -378,7 +378,7 @@ struct MigrationExecutionPostgreSQLTests {
             let migratedContainer = try await DBContainer.open(
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
             )
 

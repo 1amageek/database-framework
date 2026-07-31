@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 @_spi(DatabaseServer) import DatabaseWire
 import DatabaseEngine
@@ -37,3 +38,5 @@ enum DatabaseGraphQueryResultFingerprint {
         return hasher.finalize()
     }
 }
+
+#endif

@@ -99,7 +99,7 @@ struct SPARQLFunctionIndexAdmissionTests {
                     try SPARQLFunctionAdmissionStatement.schemaEntity,
                 ]
             ),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(

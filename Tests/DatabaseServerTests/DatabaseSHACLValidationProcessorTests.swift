@@ -234,7 +234,7 @@ struct DatabaseSHACLValidationProcessorTests {
                 entities: [try DatabaseSHACLStatement.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self)]
             ),

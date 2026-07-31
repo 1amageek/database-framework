@@ -201,22 +201,27 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         })
     }
 
-    /// HAVING with a DatabaseKit.Expression
+    /// HAVING with a canonical QueryIR expression.
     ///
-    /// Evaluates the expression against each grouped binding using ExpressionEvaluator.
-    /// Follows SPARQL §17.2 semantics: evaluation errors yield `false`.
+    /// The expression is structurally validated and compiled once when the
+    /// builder is configured. Evaluation reuses the immutable compiled plan.
     ///
     /// **Example**:
     /// ```swift
     /// .having(.greaterThan(.var("friendCount"), .int(5)))
     /// ```
-    public func having(_ expression: DatabaseKit.Expression) -> Self {
-        having(.custom { binding in
-            try ExpressionEvaluator.evaluateAsBoolean(
-                expression,
-                binding: binding
+    public func having(
+        _ expression: consuming DatabaseKit.Expression,
+        limits: SPARQLExpressionCompilationLimits = .default
+    ) throws -> Self {
+        try having(
+            .query(
+                SPARQLExpressionPlan(
+                    consume expression,
+                    limits: limits
+                )
             )
-        })
+        )
     }
 
     // MARK: - Projection and Modifiers

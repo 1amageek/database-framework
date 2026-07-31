@@ -13,7 +13,6 @@ public enum DatabaseRuntimeConfigurationError:
         case maximumMutations
         case maximumPreconditions
         case maximumIdempotencyKeyBytes
-        case maximumLoadDocumentBytes
         case maximumMutationAggregateBytes
         case maximumNestingDepth
         case maximumInputTokens
@@ -33,7 +32,6 @@ public enum DatabaseRuntimeConfigurationError:
         actual: UInt64,
         maximum: UInt64
     )
-
     public var description: String {
         switch self {
         case .nonPositiveLimit(let limit):

@@ -56,17 +56,20 @@ import PostgreSQLStorage
 
 func makeDatabaseContainer(
     schema: Schema,
-    entityRuntimes: [EntityRuntimeRegistration]
+    entityRuntimes: [EntityRuntimeRegistration],
+    monotonicClock: any StorageMonotonicClock,
+    wallClock: any WallClock
 ) async throws -> DBContainer {
     let postgresConfiguration = try PostgreSQLConfiguration.cloudRunProduction()
-    let engine = try await PostgreSQLStorageEngine(configuration: postgresConfiguration)
     let runtime = try DatabaseFrameworkRuntime.configuration(
         entityRuntimes: entityRuntimes
     )
 
     return try await DBContainer.open(
         for: schema,
-        configuration: DBConfiguration(backend: .custom(engine)),
+        configuration: postgresConfiguration,
+        monotonicClock: monotonicClock,
+        wallClock: wallClock,
         runtimeConfiguration: runtime,
         security: .enabled()
     )
@@ -100,7 +103,9 @@ enum Entrypoint {
             schema: schema,
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(User.self)
-            ]
+            ],
+            monotonicClock: applicationMonotonicClock,
+            wallClock: applicationWallClock
         )
         try configureRoutes(app, database: database)
 
@@ -128,5 +133,5 @@ gcloud run deploy SERVICE_NAME \
 | Secrets | Store database credentials in Secret Manager, not plain environment variables. |
 | IAM | Give the Cloud Run service account permission to connect to the Cloud SQL instance. |
 | Lifecycle | Create one `DBContainer` at Vapor startup and reuse it for requests. |
-| Shutdown | Call `container.engine.shutdown()` from Vapor shutdown hooks if the service owns the container lifecycle. |
+| Shutdown | Call the idempotent `container.shutdown()` from the Vapor shutdown hook. Do not shut down the injected engine through a second owner. |
 | Schema | Use `assumeExists` when the Cloud SQL role is DML-only; provision the KV table separately. |

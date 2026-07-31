@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 public enum SPARQLLoadSourceError:
     Error,
     Sendable,
@@ -47,3 +48,5 @@ public enum SPARQLLoadSourceError:
         }
     }
 }
+
+#endif

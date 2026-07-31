@@ -20,7 +20,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         let initial = try await DBContainer.open(
             for: MaintenanceSchemaV1.self,
             migrationPlan: MaintenanceInitialMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
@@ -31,7 +31,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         let target = try await DBContainer.open(
             for: MaintenanceSchemaV3.self,
             migrationPlan: MaintenanceMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
@@ -104,7 +104,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         let initial = try await DBContainer.open(
             for: MaintenanceSchemaV1.self,
             migrationPlan: MaintenanceInitialMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
@@ -115,7 +115,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         let target = try await DBContainer.open(
             for: MaintenanceSchemaV3.self,
             migrationPlan: MaintenanceMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
@@ -766,7 +766,7 @@ struct DatabaseMaintenanceOperationServiceTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),

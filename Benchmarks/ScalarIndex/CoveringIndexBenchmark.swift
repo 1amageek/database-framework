@@ -54,7 +54,7 @@ struct CoveringIndexBenchmark {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(User.self)]
             ),

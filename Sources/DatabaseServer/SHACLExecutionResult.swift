@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 
 public struct SHACLExecutionResult: Sendable {
@@ -35,3 +36,5 @@ public struct SHACLExecutionResult: Sendable {
         )
     }
 }
+
+#endif

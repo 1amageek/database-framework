@@ -51,11 +51,29 @@ public struct GraphPatternConverter: Sendable {
         prefixes: [String: String] = [:],
         structuralLimits: QueryStructuralLimits = .default
     ) throws -> ExecutionPattern {
+        try convert(
+            pattern,
+            prefixes: prefixes,
+            expressionLimits: SPARQLExpressionCompilationLimits(
+                structuralLimits: structuralLimits
+            )
+        )
+    }
+
+    /// Converts a graph pattern with one explicit expression-compilation
+    /// authority shared by every nested FILTER, BIND, aggregate, and subquery.
+    public static func convert(
+        _ pattern: GraphPattern,
+        prefixes: [String: String] = [:],
+        expressionLimits: SPARQLExpressionCompilationLimits
+    ) throws -> ExecutionPattern {
         try SPARQLSemanticValidator.validate(
             pattern,
-            limits: structuralLimits
+            limits: expressionLimits.structuralLimits
         )
-        var context = SPARQLAlgebraCompilationContext()
+        var context = SPARQLAlgebraCompilationContext(
+            expressionLimits: expressionLimits
+        )
         return try convert(
             pattern,
             prefixes: prefixes,
@@ -143,7 +161,10 @@ public struct GraphPatternConverter: Sendable {
                 subqueryInputPolicy: subqueryInputPolicy,
                 inputVariables: inputVariables
             )
-            let convertedFilter = try convertFilter(expression)
+            let convertedFilter = try convertFilter(
+                expression,
+                limits: context.expressionLimits
+            )
             return .filter(
                 convertedInner,
                 convertedFilter
@@ -195,7 +216,10 @@ public struct GraphPatternConverter: Sendable {
             guard !availableVariables.contains(target) else {
                 throw GraphPatternConversionError.variableAlreadyInScope(target)
             }
-            let plan = try SPARQLExpressionPlan(expression)
+            let plan = try SPARQLExpressionPlan(
+                expression,
+                limits: context.expressionLimits
+            )
             return .extend(
                 converted,
                 variable: target,
@@ -229,7 +253,10 @@ public struct GraphPatternConverter: Sendable {
             var groupKeys: [SPARQLGroupKeyPlan] = []
             groupKeys.reserveCapacity(expressions.count)
             for (index, expression) in expressions.enumerated() {
-                let plan = try SPARQLExpressionPlan(expression)
+                let plan = try SPARQLExpressionPlan(
+                    expression,
+                    limits: context.expressionLimits
+                )
                 let outputVariable: String
                 if case .variable(let variable) = expression {
                     outputVariable = "?\(variable.name)"
@@ -250,7 +277,10 @@ public struct GraphPatternConverter: Sendable {
             var aggExprs: [AggregateExpression] = []
             aggExprs.reserveCapacity(aggregates.count)
             for binding in aggregates {
-                let aggregate = try convertAggregate(binding)
+                let aggregate = try convertAggregate(
+                    binding,
+                    limits: context.expressionLimits
+                )
                 aggExprs.append(aggregate)
             }
             return .groupBy(
@@ -570,9 +600,10 @@ public struct GraphPatternConverter: Sendable {
     ///
     /// Preserves QueryIR and expression traits for the execution layer.
     package static func convertFilter(
-        _ expression: Expression
+        _ expression: Expression,
+        limits: SPARQLExpressionCompilationLimits
     ) throws -> FilterExpression {
-        .query(try SPARQLExpressionPlan(expression))
+        .query(try SPARQLExpressionPlan(expression, limits: limits))
     }
 
     /// Adds SPARQL projection expressions as Extend algebra nodes. Aggregate
@@ -580,6 +611,7 @@ public struct GraphPatternConverter: Sendable {
     package static func applyingProjectionExpressions(
         _ projection: Projection,
         to pattern: ExecutionPattern,
+        limits: SPARQLExpressionCompilationLimits,
         inputVariables: Set<String> = [],
         reservedTargetVariables: Set<String> = [],
         restrictExpressionReferencesToScope: Bool = false
@@ -619,7 +651,10 @@ public struct GraphPatternConverter: Sendable {
                 continue
             }
 
-            let plan = try SPARQLExpressionPlan(item.expression)
+            let plan = try SPARQLExpressionPlan(
+                item.expression,
+                limits: limits
+            )
             if let dependency = plan.referencedVariables
                 .intersection(unresolvedAliases)
                 .sorted()
@@ -650,52 +685,59 @@ public struct GraphPatternConverter: Sendable {
 
     /// Convert a AggregateBinding to a GraphIndex.AggregateExpression
     package static func convertAggregate(
-        _ binding: AggregateBinding
+        _ binding: AggregateBinding,
+        limits: SPARQLExpressionCompilationLimits
     ) throws -> AggregateExpression {
+        try SPARQLExpressionValidator.validateAggregate(
+            binding.aggregate,
+            limits: limits
+        )
         let alias = "?\(binding.variable)"
         switch binding.aggregate {
         case .count(let expr, let distinct):
             return .count(
-                expression: try expr.map { try SPARQLExpressionPlan($0) },
+                expression: try expr.map {
+                    try SPARQLExpressionPlan($0, limits: limits)
+                },
                 distinct: distinct,
                 alias: alias
             )
 
         case .sum(let expr, let distinct):
             return .sum(
-                expression: try SPARQLExpressionPlan(expr),
+                expression: try SPARQLExpressionPlan(expr, limits: limits),
                 distinct: distinct,
                 alias: alias
             )
 
         case .avg(let expr, let distinct):
             return .avg(
-                expression: try SPARQLExpressionPlan(expr),
+                expression: try SPARQLExpressionPlan(expr, limits: limits),
                 distinct: distinct,
                 alias: alias
             )
 
         case .min(let expr):
             return .min(
-                expression: try SPARQLExpressionPlan(expr),
+                expression: try SPARQLExpressionPlan(expr, limits: limits),
                 alias: alias
             )
 
         case .max(let expr):
             return .max(
-                expression: try SPARQLExpressionPlan(expr),
+                expression: try SPARQLExpressionPlan(expr, limits: limits),
                 alias: alias
             )
 
         case .sample(let expr):
             return .sample(
-                expression: try SPARQLExpressionPlan(expr),
+                expression: try SPARQLExpressionPlan(expr, limits: limits),
                 alias: alias
             )
 
         case .groupConcat(let expr, let separator, let distinct):
             return .groupConcat(
-                expression: try SPARQLExpressionPlan(expr),
+                expression: try SPARQLExpressionPlan(expr, limits: limits),
                 separator: separator ?? " ",
                 distinct: distinct,
                 alias: alias

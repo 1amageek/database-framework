@@ -34,7 +34,7 @@ struct LargeValueStorageTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try LargeDataModel.schemaEntity])
-        return try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(LargeDataModel.self)]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(LargeDataModel.self)]), security: .disabled)
     }
 
     private func uniqueID(_ prefix: String) -> String {

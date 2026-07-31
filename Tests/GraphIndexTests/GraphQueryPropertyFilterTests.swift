@@ -65,7 +65,7 @@ struct GraphQueryPropertyFilterTests {
             ],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self)]), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self)]), security: .disabled)
 
 
         let path = ["test", "social_edges_query"]

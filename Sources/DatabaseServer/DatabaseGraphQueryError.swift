@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 public enum DatabaseGraphQueryError: Error, Sendable, CustomStringConvertible {
     case invalidContinuation
     case continuationDoesNotMatchRequest
@@ -23,3 +24,5 @@ public enum DatabaseGraphQueryError: Error, Sendable, CustomStringConvertible {
         }
     }
 }
+
+#endif

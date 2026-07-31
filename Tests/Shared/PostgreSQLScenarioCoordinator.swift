@@ -200,7 +200,7 @@ public actor PostgreSQLScenarioCoordinator {
         let pgEngine = try engine
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(pgEngine)),
+            configuration: .testing(storageEngine: pgEngine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: entityRuntimes
             ),

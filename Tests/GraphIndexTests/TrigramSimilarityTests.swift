@@ -108,12 +108,14 @@ struct TrigramSimilarityTests {
         #expect(filter.description.contains("TRIGRAM_SIM"))
     }
 
-    @Test("similarTo equality")
-    func testEquality() {
+    @Test("similarTo expressions preserve their evaluation semantics")
+    func testEvaluationSemantics() throws {
         let a = FilterExpression.similarTo("?name", "Google", 0.45)
         let b = FilterExpression.similarTo("?name", "Google", 0.45)
         let c = FilterExpression.similarTo("?name", "Apple", 0.45)
-        #expect(a == b)
-        #expect(a != c)
+        let binding = VariableBinding(["?name": .string("Google")])
+
+        #expect(try a.evaluate(binding) == b.evaluate(binding))
+        #expect(try a.evaluate(binding) != c.evaluate(binding))
     }
 }

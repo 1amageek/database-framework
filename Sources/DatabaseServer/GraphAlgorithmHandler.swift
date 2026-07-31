@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseEngine
 @_spi(DatabaseServer) import DatabaseWire
 
@@ -41,3 +42,5 @@ public struct GraphAlgorithmHandler: DatabaseOperationHandler {
         }
     }
 }
+
+#endif

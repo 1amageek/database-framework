@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseTypes
 import DatabaseMath
 import GraphIndex
@@ -115,3 +116,4 @@ actor DatabaseIndexedWeightedGraphNeighborSource: WeightedGraphNeighborSource {
         }
     }
 }
+#endif

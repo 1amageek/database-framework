@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 import DatabaseEngine
 import DatabaseTypes
@@ -875,3 +876,4 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         }
     }
 }
+#endif

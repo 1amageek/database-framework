@@ -252,6 +252,43 @@ struct DatabaseErrorMapperTests {
         )
     }
 
+    @Test("Uncompiled statement features are reported as unavailable")
+    func unavailableStatementFeatures() async throws {
+        let context = try await makeContext()
+        let mapper = CanonicalDatabaseErrorMapper()
+
+        expect(
+            mapper.remoteError(
+                for: DatabaseQueryExecutionError.featureUnavailable(
+                    "feature is not compiled"
+                ),
+                context: context
+            ),
+            category: .unavailable,
+            code: "QUERY_FEATURE_UNAVAILABLE"
+        )
+        expect(
+            mapper.remoteError(
+                for: DatabaseMutationError.featureUnavailable(
+                    "feature is not compiled"
+                ),
+                context: context
+            ),
+            category: .unavailable,
+            code: "MUTATION_FEATURE_UNAVAILABLE"
+        )
+        expect(
+            mapper.remoteError(
+                for: DatabaseStatementAdmissionError.featureUnavailable(
+                    "feature is not compiled"
+                ),
+                context: context
+            ),
+            category: .unavailable,
+            code: "STATEMENT_FEATURE_UNAVAILABLE"
+        )
+    }
+
     @Test("Mutation errors distinguish input, conflict, and schema failures")
     func mutationFailures() async throws {
         let context = try await makeContext()
@@ -1109,7 +1146,7 @@ struct DatabaseErrorMapperTests {
         expect(
             remote,
             category: .invalidRequest,
-            code: "INVALID_SPARQL_SEMANTICS"
+            code: "INVALID_QUERY_SEMANTICS"
         )
     }
 
@@ -1159,7 +1196,7 @@ struct DatabaseErrorMapperTests {
                 entities: [DatabaseEndpointEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),

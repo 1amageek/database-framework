@@ -6,9 +6,13 @@ database-framework service.
 ## Architecture
 
 - Select one StorageKit backend deliberately.
+- Select runtime/index capabilities through consuming-package traits; do not
+  rely on the default full-host profile for a size-constrained runtime.
 - Confirm the backend transaction and isolation semantics.
 - Create one long-lived DBContainer per service process or Durable Object
   instance.
+- Transfer one initialized engine into that container and register
+  `container.shutdown()` with the host's shutdown lifecycle.
 - Create a context per request or unit of work.
 - Keep web host and database adapter dependencies separate.
 
@@ -54,10 +58,12 @@ swift build
 xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS'
 swift build --disable-default-traits --traits SQLite
 swift build --disable-default-traits --traits PostgreSQL
+swift build --disable-default-traits --traits GraphIndexes --product Database
 swift build \
-  --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a_wasm \
-  --product DatabaseRuntime \
-  --disable-default-traits
+  --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm-embedded \
+  --product Database \
+  --disable-default-traits \
+  --traits GraphIndexes
 ~~~
 
 Run PostgreSQL integration tests only when `POSTGRES_TEST_UNIX_SOCKET` or
@@ -69,3 +75,12 @@ database-framework-cloudflare repository.
 A release is not production-ready merely because the default FoundationDB
 build passes. Every backend selected for release must have a successful build,
 its relevant integration tests, and an explicit operational configuration.
+FoundationDB artifacts are released only for macOS and Linux. iOS and
+WASI/Embedded compositions must prove their own selected storage adapter path;
+the presence of the `FoundationDB` default trait does not provide an adapter on
+those targets.
+
+Opening failure, explicit shutdown, and deinitialization must converge on the
+same exactly-once engine release. A production host must call
+`DBContainer.shutdown()` rather than reaching through to
+the engine reference or retaining a second engine owner.

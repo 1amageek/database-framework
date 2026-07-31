@@ -462,7 +462,7 @@ struct DatabaseTransactionLifecycleTests {
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration.testing(
-                backend: .custom(engine)
+                storageEngine: engine
             ),
             runtimeConfiguration: try DatabaseRuntimeConfiguration(
                 persistableMutationMaintainers: maintainers,

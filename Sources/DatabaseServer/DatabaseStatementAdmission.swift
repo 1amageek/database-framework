@@ -39,8 +39,15 @@ struct DatabaseStatementAdmission: Sendable {
                 return try SQLParser(structuralLimits: structuralLimits)
                     .parse(statement)
             case .sparql:
+                #if DATABASE_SERVER_GRAPH_INDEXES
                 return try SPARQLParser(structuralLimits: structuralLimits)
                     .parse(statement)
+                #else
+                _ = statement
+                throw DatabaseStatementAdmissionError.featureUnavailable(
+                    "SPARQL text requires the GraphIndexes package trait"
+                )
+                #endif
             }
         }
     }

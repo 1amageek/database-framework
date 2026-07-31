@@ -143,7 +143,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV1.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV1.self)]),
             security: .disabled
         )
@@ -157,14 +157,14 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV2.self,
             migrationPlan: SQLiteAppendOnlyMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV2.self)])
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV2.self)]),
             security: .disabled
         )
@@ -229,7 +229,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV1.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV1.self)]),
             security: .disabled
         )
@@ -243,7 +243,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)])
         )
         try await migratedContainer.migrateIfNeeded()
@@ -259,7 +259,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
             security: .disabled
         )
@@ -279,7 +279,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV1.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV1.self)]),
             security: .disabled
         )
@@ -299,14 +299,14 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)])
         )
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
             security: .disabled
         )

@@ -1,29 +1,15 @@
 import StorageKit
-#if FOUNDATION_DB
-import FDBStorage
-#endif
 import DatabaseKit
 
 /// Database configuration
 ///
-/// Configures the storage backend and runtime index parameters.
+/// Configures an injected storage engine and runtime index parameters.
 ///
 /// **Example usage**:
 /// ```swift
-/// // FDB with specific database instance
-/// let config = DBConfiguration(
-///     backend: .fdb(.init(database: db))
-/// )
-/// let container = try await DBContainer.open(for: schema, configuration: config)
-///
-/// // Custom backend (e.g., SQLite)
 /// let sqliteEngine = try SQLiteStorageEngine(configuration: .inMemory)
-/// let config = DBConfiguration(backend: .custom(sqliteEngine))
-/// let container = try await DBContainer.open(for: schema, configuration: config)
-///
-/// // With index configurations
 /// let config = DBConfiguration(
-///     backend: .fdb(),
+///     storageEngine: sqliteEngine,
 ///     indexConfigurations: [
 ///         VectorIndexConfiguration<Document>(
 ///             field: Document.fields.embedding,
@@ -34,30 +20,13 @@ import DatabaseKit
 /// let container = try await DBContainer.open(for: schema, configuration: config)
 /// ```
 public struct DBConfiguration: Sendable {
-
-    /// Storage backend specification
-    public enum StorageBackend: Sendable {
-        #if FOUNDATION_DB
-        /// FoundationDB
-        ///
-        /// FDB client initialization is handled automatically.
-        /// If no configuration is provided, connects to the default cluster.
-        case fdb(FDBStorageEngine.Configuration = .init())
-        #endif
-
-        /// Custom StorageEngine (e.g., SQLite, InMemory)
-        ///
-        /// Use this for non-FDB backends. The engine must already be created.
-        case custom(any StorageEngine)
-    }
-
     // MARK: - Properties
 
     /// Configuration name (optional, for debugging)
     public let name: String?
 
-    /// Storage backend
-    public let backend: StorageBackend
+    /// Single-use lifecycle that owns the injected storage engine.
+    private let storageLifecycle: DatabaseStorageLifecycle
 
     /// Index configurations for runtime parameters
     ///
@@ -89,11 +58,11 @@ public struct DBConfiguration: Sendable {
     ///
     /// - Parameters:
     ///   - name: Configuration name for debugging (default: nil)
-    ///   - backend: Storage backend
+    ///   - storageEngine: Initialized storage engine.
     ///   - indexConfigurations: Runtime index configurations (default: [])
     public init(
         name: String? = nil,
-        backend: StorageBackend,
+        storageEngine: any StorageEngine,
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         indexConfigurations: [any IndexRuntimeConfiguration] = [],
@@ -102,13 +71,35 @@ public struct DBConfiguration: Sendable {
         metrics: DatabaseMetricsConfiguration = .disabled
     ) {
         self.name = name
-        self.backend = backend
+        self.storageLifecycle = DatabaseStorageLifecycle(
+            storageEngine: storageEngine
+        )
         self.indexConfigurations = indexConfigurations
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
+    }
+
+    func claimStorageEngine() throws -> any StorageEngine {
+        try storageLifecycle.claimStorageEngine()
+    }
+
+    func finishOpeningStorageEngine() throws {
+        try storageLifecycle.finishOpening()
+    }
+
+    func shutdownStorageEngine() async {
+        await storageLifecycle.shutdown()
+    }
+
+    func shutdownStorageEngineIfUnclaimed() async {
+        await storageLifecycle.shutdownIfUnclaimed()
+    }
+
+    func requestStorageEngineShutdown() {
+        storageLifecycle.requestShutdown()
     }
 }
 
@@ -117,16 +108,7 @@ public struct DBConfiguration: Sendable {
 extension DBConfiguration: CustomDebugStringConvertible {
     public var debugDescription: String {
         let nameDesc = name ?? "unnamed"
-        let backendDesc: String
-        switch backend {
-        #if FOUNDATION_DB
-        case .fdb:
-            backendDesc = "fdb"
-        #endif
-        case .custom:
-            backendDesc = "custom"
-        }
         let indexConfigCount = indexConfigurations.count
-        return "DBConfiguration(name: \(nameDesc), backend: \(backendDesc), indexConfigs: \(indexConfigCount), itemEncoding: \(itemStorage.encoding))"
+        return "DBConfiguration(name: \(nameDesc), indexConfigs: \(indexConfigCount), itemEncoding: \(itemStorage.encoding))"
     }
 }

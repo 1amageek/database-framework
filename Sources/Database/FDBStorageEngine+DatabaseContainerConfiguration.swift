@@ -10,8 +10,9 @@ extension FDBStorageEngine.Configuration: DatabaseContainerConfiguration {
         wallClock: any WallClock,
         indexConfigurations: [any IndexRuntimeConfiguration]
     ) async throws -> DBConfiguration {
-        DBConfiguration(
-            backend: .fdb(self),
+        let engine = try await FDBStorageEngine(configuration: self)
+        return DBConfiguration(
+            storageEngine: engine,
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             indexConfigurations: indexConfigurations

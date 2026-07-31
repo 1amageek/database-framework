@@ -9,7 +9,6 @@ public final class DatabaseServerRuntime: Sendable {
         container: DBContainer,
         configuration: DatabaseServerRuntimeConfiguration
     ) async throws {
-        try configuration.runtimeLimits.validateConfiguration()
         try await container.migrateIfNeeded()
         let stateStore = try await DatabaseMutationStateStore(
             container: container
@@ -19,17 +18,33 @@ public final class DatabaseServerRuntime: Sendable {
             runtimeLimits: configuration.runtimeLimits,
             wireLimits: configuration.wireLimits
         )
-        let services = try await configuration.makeServices(
-            context: DatabaseServerServiceContext(
-                container: container,
-                stateStore: stateStore,
-                coordinator: coordinator,
-                runtimeLimits: configuration.runtimeLimits,
-                wireLimits: configuration.wireLimits,
-                clock: configuration.clock
-            )
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        let serviceContext = DatabaseServerServiceContext(
+            container: container,
+            stateStore: stateStore,
+            coordinator: coordinator,
+            runtimeLimits: configuration.runtimeLimits,
+            wireLimits: configuration.wireLimits,
+            clock: configuration.clock,
+            graphOperationLimits: configuration.graphOperationLimits
         )
-        let handlers = [
+        #else
+        let serviceContext = DatabaseServerServiceContext(
+            container: container,
+            stateStore: stateStore,
+            coordinator: coordinator,
+            runtimeLimits: configuration.runtimeLimits,
+            wireLimits: configuration.wireLimits,
+            clock: configuration.clock
+        )
+        #endif
+        let services = try await configuration.makeServices(
+            context: serviceContext
+        )
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        let graphOperations = services.graphOperations
+        #endif
+        var handlers = [
             AnyDatabaseOperationHandler(
                 CapabilitiesDescribeHandler(
                     identity: configuration.identity,
@@ -52,24 +67,30 @@ public final class DatabaseServerRuntime: Sendable {
                     wireLimits: configuration.wireLimits
                 )
             ),
+        ]
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        handlers.append(contentsOf: [
             AnyDatabaseOperationHandler(
                 GraphAlgorithmHandler(
-                    service: services.graphAlgorithmService,
+                    service: graphOperations.algorithm,
                     runtimeLimits: configuration.runtimeLimits
                 )
             ),
             AnyDatabaseOperationHandler(
                 OntologyExecuteHandler(
-                    service: services.ontologyService,
+                    service: graphOperations.ontology,
                     runtimeLimits: configuration.runtimeLimits
                 )
             ),
             AnyDatabaseOperationHandler(
                 SHACLExecuteHandler(
-                    service: services.shaclService,
+                    service: graphOperations.shacl,
                     runtimeLimits: configuration.runtimeLimits
                 )
             ),
+        ])
+        #endif
+        handlers.append(contentsOf: [
             AnyDatabaseOperationHandler(
                 CommandExecuteHandler(
                     readRegistry: services.readCommandRegistry,
@@ -99,8 +120,11 @@ public final class DatabaseServerRuntime: Sendable {
             AnyDatabaseOperationHandler(
                 JobCancelHandler(service: services.jobService)
             ),
-        ]
-        let registry = try DatabaseOperationRegistry(handlers: handlers)
+        ])
+        let registry = try DatabaseOperationRegistry(
+            handlers: handlers,
+            requiredOperations: DatabaseRuntimeCapabilityCatalog.operations
+        )
         self.jobService = services.jobService
         self.endpoint = DatabaseEndpoint(
             container: container,

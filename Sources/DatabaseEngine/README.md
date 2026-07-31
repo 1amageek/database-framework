@@ -18,17 +18,44 @@ DatabaseEngine provides the foundation for all database operations, including:
 Application-level resource manager. Does NOT create transactions.
 
 ```swift
-// Initialize container
-let container = try await DBContainer(
+// Inject one already initialized StorageEngine.
+let configuration = DBConfiguration(
+    storageEngine: storageEngine,
+    monotonicClock: applicationMonotonicClock,
+    wallClock: applicationWallClock
+)
+let container = try await DBContainer.open(
     for: schema,
-    configuration: DBConfiguration(backend: .fdb())
+    configuration: configuration,
+    runtimeConfiguration: runtime
 )
 
 // Get a new context (for user operations)
 let context = container.newContext()
 
 // Access the storage engine directly for system operations
-let engine = container.engine
+let storage = container.engine
+```
+
+DatabaseEngine does not import, select, or construct a concrete backend. The
+package that creates `storageEngine` owns that adapter choice. Creating
+`DBConfiguration(storageEngine:)` transfers the engine lifecycle to the
+configuration/container owner; the caller must not reuse or shut down that
+engine independently.
+
+Opening failure, explicit `container.shutdown()`, and container deinitialization
+all converge on one idempotent shutdown path. The underlying engine is released
+exactly once.
+
+```text
+initialized StorageEngine
+          |
+          | ownership transfer
+          v
+DBConfiguration -> DBContainer.open
+                        |-- failure --------> shutdown once
+                        |-- shutdown() -----> shutdown once
+                        `-- deinit ----------> shutdown once
 ```
 
 ### DatabaseContext

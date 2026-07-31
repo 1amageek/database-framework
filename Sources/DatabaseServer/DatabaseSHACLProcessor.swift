@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 @_spi(DatabaseServer) import DatabaseWire
 import GraphIndex
@@ -20,3 +21,4 @@ public protocol DatabaseSHACLProcessor: Sendable {
         transaction: any TransactionAccess
     ) async throws -> ValidationReport
 }
+#endif

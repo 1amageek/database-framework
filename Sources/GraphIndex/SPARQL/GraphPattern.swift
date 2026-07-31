@@ -343,14 +343,14 @@ extension ExecutionPattern: CustomStringConvertible {
         case .filter(let pattern, let expr):
             return "\(pattern) FILTER(\(expr))"
         case .extend(let pattern, let variable, let expression):
-            return "\(pattern) EXTEND(\(variable) := \(expression.expression))"
+            return "\(pattern) EXTEND(\(variable) := \(expression))"
         case .values(let table):
             return "VALUES[\(table.rowCount)x\(table.variables.count)]"
         case .graph(let selector, let pattern):
             return "GRAPH \(selector) \(pattern)"
         case .groupBy(let pattern, let grouping, let aggregates, let having):
             let keys = grouping.keys.map {
-                "\($0.expression.expression) AS \($0.outputVariable)"
+                "\($0.expression) AS \($0.outputVariable)"
             }
             var result = "\(pattern) GROUP BY \(keys.joined(separator: ", "))"
             if !aggregates.isEmpty {
@@ -368,46 +368,6 @@ extension ExecutionPattern: CustomStringConvertible {
             return "\(left) LATERAL \(right)"
         case .subquery(let plan):
             return "SUBQUERY[\(plan.occurrenceIdentifier)](\(plan.select.ordered.algebra))"
-        }
-    }
-}
-
-// MARK: - Equatable
-
-extension ExecutionPattern: Equatable {
-    public static func == (lhs: ExecutionPattern, rhs: ExecutionPattern) -> Bool {
-        switch (lhs, rhs) {
-        case (.basic(let l), .basic(let r)):
-            return l == r
-        case (.join(let ll, let lr), .join(let rl, let rr)):
-            return ll == rl && lr == rr
-        case (.optional(let ll, let lr), .optional(let rl, let rr)):
-            return ll == rl && lr == rr
-        case (.union(let ll, let lr), .union(let rl, let rr)):
-            return ll == rl && lr == rr
-        case (.filter(let lp, let le), .filter(let rp, let re)):
-            return lp == rp && le == re
-        case (
-            .extend(let lp, let lv, let le),
-            .extend(let rp, let rv, let re)
-        ):
-            return lp == rp && lv == rv && le == re
-        case (.values(let left), .values(let right)):
-            return left == right
-        case (.graph(let ls, let lp), .graph(let rs, let rp)):
-            return ls == rs && lp == rp
-        case (.groupBy(let lp, let lgv, let lagg, let lh), .groupBy(let rp, let rgv, let ragg, let rh)):
-            return lp == rp && lgv == rgv && lagg == ragg && lh == rh
-        case (.minus(let ll, let lr), .minus(let rl, let rr)):
-            return ll == rl && lr == rr
-        case (.propertyPath(let ls, let lp, let lo), .propertyPath(let rs, let rp, let ro)):
-            return ls == rs && lp == rp && lo == ro
-        case (.lateral(let ll, let lr), .lateral(let rl, let rr)):
-            return ll == rl && lr == rr
-        case (.subquery(let lhs), .subquery(let rhs)):
-            return lhs == rhs
-        default:
-            return false
         }
     }
 }

@@ -30,8 +30,12 @@ final class TransactionCountingInMemoryEngine: StorageEngine, Sendable {
         engine.namespaceCatalog
     }
 
-    func shutdown() {
-        engine.shutdown()
+    func requestShutdown() {
+        engine.requestShutdown()
+    }
+
+    func waitUntilShutdown() async {
+        await engine.waitUntilShutdown()
     }
 
     var transactionCount: Int {

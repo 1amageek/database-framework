@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 import DatabaseTypes
 
@@ -71,3 +72,5 @@ public enum DatabaseGraphAlgorithmError: Error, Sendable, CustomStringConvertibl
         }
     }
 }
+
+#endif

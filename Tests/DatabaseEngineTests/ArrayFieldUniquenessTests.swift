@@ -96,7 +96,7 @@ struct ArrayFieldUniquenessTests {
 
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(TaggedDocument.self), try DatabaseFrameworkRuntime.entity(UniqueEmail.self), try DatabaseFrameworkRuntime.entity(UUIDTaggedDocument.self), try DatabaseFrameworkRuntime.entity(Int64TaggedDocument.self)]),
             security: .disabled,
         )

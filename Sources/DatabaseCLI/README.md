@@ -1,7 +1,8 @@
 # Database CLI
 
 The `database` executable is a FoundationDB administration and inspection
-tool. Build it with the default `FoundationDB` trait.
+tool for macOS and Linux. The default full-host profile includes the
+`FoundationDB` trait.
 
 ```bash
 swift build --product database

@@ -230,6 +230,14 @@ private final class DeadlineControlledEngine: StorageEngine, Sendable {
     var namespaceCatalog: (any NamespaceCatalog)? {
         underlying.namespaceCatalog
     }
+
+    func requestShutdown() {
+        underlying.requestShutdown()
+    }
+
+    func waitUntilShutdown() async {
+        await underlying.waitUntilShutdown()
+    }
 }
 
 private final class DeadlineControlledTransaction: Transaction, Sendable {

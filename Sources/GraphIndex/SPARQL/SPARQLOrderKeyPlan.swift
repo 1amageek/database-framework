@@ -1,4 +1,4 @@
-public struct SPARQLOrderKeyPlan: Sendable, Hashable {
+public struct SPARQLOrderKeyPlan: Sendable {
     public let expression: SPARQLExpressionPlan
     public let ascending: Bool
     public let nullsLast: Bool

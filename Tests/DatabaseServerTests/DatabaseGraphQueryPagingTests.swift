@@ -955,7 +955,7 @@ struct DatabaseGraphQueryPagingTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: DBConfiguration.testing(backend: .custom(engine)),
+            configuration: DBConfiguration.testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphQueryStatement.self)]
             ),

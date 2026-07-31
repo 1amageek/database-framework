@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 
 /// Type-erased graph algorithm service for runtime composition.
@@ -22,3 +23,5 @@ public final class AnyDatabaseGraphAlgorithmService:
         try await executeAlgorithm(request, context)
     }
 }
+
+#endif

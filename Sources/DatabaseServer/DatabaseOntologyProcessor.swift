@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 @_spi(DatabaseServer) import DatabaseWire
 import StorageKit
@@ -41,3 +42,5 @@ public protocol DatabaseOntologyProcessor: Sendable {
         transaction: any TransactionAccess
     ) async throws -> ValidationReport
 }
+
+#endif

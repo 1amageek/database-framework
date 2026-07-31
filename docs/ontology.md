@@ -4,6 +4,10 @@ GraphIndex provides graph edges, RDF triples, SPARQL-oriented queries, and OWL
 metadata. It is an optional index module built on the same StorageKit
 execution layer.
 
+The consuming package selects the `GraphIndexes` trait. This adds ScalarIndex,
+GraphIndex, and OntologyIndex to the `Database` umbrella; FoundationDB and
+`Relationships` are not implied.
+
 ## Responsibility Split
 
 ~~~text
@@ -26,7 +30,6 @@ metadata without changing the persistence contract.
 
 ~~~swift
 import Database
-import Graph
 
 @Persistable
 @OWLClass("http://example.org/onto#Employee")
@@ -69,7 +72,11 @@ let runtime = try DatabaseFrameworkRuntime.configuration(
 )
 let container = try await DBContainer.open(
     for: schema,
-    configuration: configuration,
+    configuration: DBConfiguration(
+        storageEngine: engine,
+        monotonicClock: applicationMonotonicClock,
+        wallClock: applicationWallClock
+    ),
     runtimeConfiguration: runtime
 )
 ~~~

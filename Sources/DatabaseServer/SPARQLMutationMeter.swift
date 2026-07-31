@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseEngine
 import Synchronization
 
@@ -35,3 +36,5 @@ final class SPARQLMutationMeter: Sendable {
         }
     }
 }
+
+#endif

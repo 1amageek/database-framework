@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 
 public protocol DatabaseGraphAlgorithmService: Sendable {
@@ -6,3 +7,5 @@ public protocol DatabaseGraphAlgorithmService: Sendable {
         context: DatabaseOperationContext
     ) async throws -> GraphAlgorithmOperation.Response
 }
+
+#endif

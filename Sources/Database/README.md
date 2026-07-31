@@ -1,35 +1,52 @@
 # Database Module
 
-The Database module provides the unified public API for the database-framework package, re-exporting all index modules and providing high-level database operations.
+The Database module is the umbrella API for database-framework. Package traits
+select its optional dependencies and re-exports; `Database` itself is not a
+trait.
 
 ## Features
 
-- **All-in-one import**: Single `import Database` provides access to all functionality
+- **Stable umbrella import**: `import Database` is unchanged across trait sets
+- **Trait-selected indexes**: Only enabled index modules enter the dependency graph
 - **SQL Query Support**: Execute SQL queries with `executeSQL(_:as:)`
-- **SPARQL() SQL Function**: Hybrid SQL/SPARQL queries for graph pattern matching
+- **Graph query support**: `GraphIndexes` adds GraphIndex, OntologyIndex, SPARQL execution, and scalar support
 - **Unified API**: Consistent interface across all index types
 
 ## Modules
 
-The Database module re-exports the following modules:
+The core umbrella always re-exports DatabaseKit, StorageKit, DatabaseEngine,
+DatabaseRuntime, and QueryAST. Each index module is re-exported only when its
+package trait is active. `GraphIndexes` also enables `ScalarIndexes` and
+re-exports OntologyIndex because those capabilities are required by graph and
+SPARQL execution.
+
+For example, a consuming package selects a graph composition with:
 
 ```swift
-@_exported import DatabaseEngine
-@_exported import ScalarIndex
-@_exported import VectorIndex
-@_exported import FullTextIndex
-@_exported import SpatialIndex
-@_exported import RankIndex
-@_exported import PermutedIndex
-@_exported import GraphIndex
-@_exported import AggregationIndex
-@_exported import VersionIndex
-@_exported import BitmapIndex
-@_exported import LeaderboardIndex
-@_exported import RelationshipIndex
-@_exported import QueryIR
-@_exported import QueryAST
+.package(
+    url: "https://github.com/1amageek/database-framework.git",
+    from: "26.0731.2",
+    traits: ["GraphIndexes"]
+)
 ```
+
+An explicit trait list without `.defaults` replaces the default full native
+host profile (`FoundationDB` plus `AllRuntimeFeatures`). `GraphIndexes` enables
+`ScalarIndexes`; the umbrella also includes GraphIndex and OntologyIndex for
+that composition. `Relationships` remains an independent choice.
+
+Backend facade availability is both trait- and platform-dependent:
+
+| Adapter | Trait | Platforms |
+|---|---|---|
+| FoundationDB | `FoundationDB` | macOS, Linux |
+| SQLite | `SQLite` | macOS, iOS, Linux |
+| PostgreSQL | `PostgreSQL` | macOS, iOS, Linux |
+
+Every facade ultimately creates an engine and passes it to the
+backend-neutral `DBConfiguration(storageEngine:)` contract. The resulting
+container owns that engine. Opening failure, `DBContainer.shutdown()`, and
+deinitialization share one exactly-once shutdown path.
 
 ## SQL Query Execution
 
@@ -39,7 +56,6 @@ The Database module extends `DatabaseContext` with SQL query execution capabilit
 
 ```swift
 import Database
-import Core
 
 let sql = """
 SELECT * FROM User
@@ -79,30 +95,29 @@ SPARQL(TypeName, 'SPARQL_QUERY' [, 'VARIABLE'])
 
 ```swift
 import Database
-import Core
-import Graph
 
 // Define models
 @Persistable
 struct User {
     #Directory<User>("app", "users")
-    var id: String = UUID().uuidString
+    var id: String = ""
     var name: String = ""
 }
 
 @Persistable
 struct Follow {
     #Directory<Follow>("app", "follows")
-    var id: String = UUID().uuidString
+    var id: String = ""
     var follower: String = ""
+    var predicate: String = "follows"
     var following: String = ""
 
-    #Index(GraphIndexKind<Follow>(
-        from: \.follower,
-        edge: "follows",
-        to: \.following,
-        strategy: .tripleStore
-    ))
+    #Index(
+        .propertyGraph(strategy: .tripleStore),
+        from: \Follow.follower,
+        edge: \Follow.predicate,
+        to: \Follow.following
+    )
 }
 
 // Execute hybrid query
@@ -199,7 +214,7 @@ do {
 3. **SPARQL Execution**: Execute SPARQL subqueries within parent transaction
    - Resolve type name to schema entity
    - Find graph index descriptor
-   - Extract graph index metadata via `AnyGraphIndexKind`
+   - Resolve the schema-declared graph index descriptor
    - Execute SPARQL query against graph index
 4. **Result Inlining**: Replace `SPARQL()` calls with literal arrays
 5. **Query Execution**: Convert rewritten `SelectQuery` to `Query<T>` and execute
@@ -316,7 +331,7 @@ public func executeSQL<T: Persistable>(
 - `SQLParseError`: Invalid SQL syntax
 - `SPARQLFunctionError`: SPARQL execution errors
 - `CanonicalReadError`: Query conversion errors
-- `FDBError`: FoundationDB errors
+- typed errors from the selected `StorageEngine`
 
 **Example**:
 ```swift
@@ -404,14 +419,16 @@ Ensure graph indexes match your query patterns:
 @Persistable
 struct Follow {
     var follower: String
+    var predicate: String = "follows"
     var following: String
 
     // ✅ Good: Index matches query direction
-    #Index(GraphIndexKind<Follow>(
-        from: \.follower,  // Source of edge
-        edge: "follows",
-        to: \.following    // Target of edge
-    ))
+    #Index(
+        .propertyGraph(strategy: .adjacency),
+        from: \Follow.follower,
+        edge: \Follow.predicate,
+        to: \Follow.following
+    )
 }
 ```
 

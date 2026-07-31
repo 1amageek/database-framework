@@ -2,26 +2,58 @@ import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
+#if DATABASE_SERVER_GRAPH_INDEXES
 import GraphIndex
+#endif
 import StorageKit
 
 public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutationExecutor {
     private let runtimeLimits: DatabaseRuntimeLimits
+    #if DATABASE_SERVER_GRAPH_INDEXES
     private let graphStore: any RDFGraphMutationStore
     private let loadSource: AnySPARQLLoadSource
     private let functionRegistry: SPARQLFunctionRegistry
+    private let graphOperationLimits: GraphOperationLimits
+    #endif
+
+    public init(runtimeLimits: DatabaseRuntimeLimits = .default) {
+        self.runtimeLimits = runtimeLimits
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        self.graphStore = CanonicalRDFGraphStore()
+        self.loadSource = .unconfigured
+        self.functionRegistry = .empty
+        self.graphOperationLimits = .default
+        #endif
+    }
+
+    #if DATABASE_SERVER_GRAPH_INDEXES
+    public init(
+        runtimeLimits: DatabaseRuntimeLimits = .default,
+        loadSource: AnySPARQLLoadSource,
+        functionRegistry: SPARQLFunctionRegistry = .empty,
+        graphOperationLimits: GraphOperationLimits = .default
+    ) {
+        self.runtimeLimits = runtimeLimits
+        self.graphStore = CanonicalRDFGraphStore()
+        self.loadSource = loadSource
+        self.functionRegistry = functionRegistry
+        self.graphOperationLimits = graphOperationLimits
+    }
 
     public init(
         runtimeLimits: DatabaseRuntimeLimits = .default,
-        graphStore: any RDFGraphMutationStore = CanonicalRDFGraphStore(),
+        graphStore: any RDFGraphMutationStore,
         loadSource: AnySPARQLLoadSource = .unconfigured,
-        functionRegistry: SPARQLFunctionRegistry = .empty
+        functionRegistry: SPARQLFunctionRegistry = .empty,
+        graphOperationLimits: GraphOperationLimits = .default
     ) {
         self.runtimeLimits = runtimeLimits
         self.graphStore = graphStore
         self.loadSource = loadSource
         self.functionRegistry = functionRegistry
+        self.graphOperationLimits = graphOperationLimits
     }
+    #endif
 
     public func prepare(
         _ validatedStatement: ValidatedDatabaseStatement,
@@ -40,6 +72,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 structuralLimits: validatedStatement.structuralLimits
             )
         }
+        #if DATABASE_SERVER_GRAPH_INDEXES
         return CanonicalPreparedStatementMutation(
             payload: .sparql(
                 try await prepareSPARQLUpdate(
@@ -51,8 +84,15 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             workMeter: workMeter,
             structuralLimits: validatedStatement.structuralLimits
         )
+        #else
+        _ = request
+        throw DatabaseMutationError.featureUnavailable(
+            "SPARQL updates require the GraphIndexes package trait"
+        )
+        #endif
     }
 
+    #if DATABASE_SERVER_GRAPH_INDEXES
     private func prepareSPARQLUpdate(
         _ request: SPARQLUpdateRequest,
         context: DatabaseOperationContext,
@@ -114,6 +154,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             return .graphTransfer(query)
         }
     }
+    #endif
 
     public func execute(
         _ prepared: CanonicalPreparedStatementMutation,
@@ -129,6 +170,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         let workMeter = prepared.workMeter
 
         switch prepared.payload {
+        #if DATABASE_SERVER_GRAPH_INDEXES
         case .sparql(let request):
             try requireNoRDFGraphPartitions(graphPartitions)
             return .rdf(
@@ -146,6 +188,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                     workMeter: workMeter
                 )
             )
+        #endif
         case .statement(let statement):
             return try await execute(
                 statement,
@@ -220,6 +263,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         }
     }
 
+    #if DATABASE_SERVER_GRAPH_INDEXES
     private func prepareLoad(
         _ query: LoadQuery,
         operationOrdinal: UInt64,
@@ -234,16 +278,19 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             let document = try await loadSource.load(
                 SPARQLLoadRequest(
                     sourceIRI: query.source,
-                    maximumDocumentBytes: runtimeLimits.maximumLoadDocumentBytes,
+                    maximumDocumentBytes:
+                        graphOperationLimits.maximumLoadDocumentBytes,
                     maximumTriples: runtimeLimits.maximumMutations,
                     workMeter: workMeter
                 )
             )
             guard document.byteCount
-                    <= UInt64(runtimeLimits.maximumLoadDocumentBytes) else {
+                    <= UInt64(
+                        graphOperationLimits.maximumLoadDocumentBytes
+                    ) else {
                 throw SPARQLLoadSourceError.documentTooLarge(
                     actual: document.byteCount,
-                    maximum: runtimeLimits.maximumLoadDocumentBytes
+                    maximum: graphOperationLimits.maximumLoadDocumentBytes
                 )
             }
             guard document.tripleCount <= runtimeLimits.maximumMutations else {
@@ -333,6 +380,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             return term
         }
     }
+    #endif
 
     private func requireNoGraphPartitions(
         _ graphPartitions: FieldObject
@@ -344,6 +392,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         }
     }
 
+    #if DATABASE_SERVER_GRAPH_INDEXES
     private func requireNoRDFGraphPartitions(
         _ graphPartitions: FieldObject
     ) throws {
@@ -353,6 +402,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             )
         }
     }
+    #endif
 
     private func executeInsert(
         _ query: InsertQuery,
@@ -812,3 +862,8 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         let partition: AnyDirectoryPath?
     }
 }
+
+#if DATABASE_SERVER_GRAPH_INDEXES
+extension CanonicalDatabaseStatementMutationExecutor:
+    GraphStatementMutationExecutor {}
+#endif

@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
@@ -389,3 +390,5 @@ public struct DatabaseRDFDocumentStore: Sendable {
     }
 }
 import DatabaseKit
+
+#endif

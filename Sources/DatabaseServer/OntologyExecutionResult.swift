@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 
 public struct OntologyExecutionResult: Sendable {
@@ -37,3 +38,5 @@ public struct OntologyExecutionResult: Sendable {
         )
     }
 }
+
+#endif

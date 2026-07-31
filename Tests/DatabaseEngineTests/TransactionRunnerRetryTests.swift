@@ -699,6 +699,14 @@ private final class FlakyCreateTransactionEngine: StorageEngine, Sendable {
     var namespaceCatalog: (any NamespaceCatalog)? {
         engine.namespaceCatalog
     }
+
+    func requestShutdown() {
+        engine.requestShutdown()
+    }
+
+    func waitUntilShutdown() async {
+        await engine.waitUntilShutdown()
+    }
 }
 
 private enum RecordingCommitBehavior: Sendable {
@@ -800,6 +808,14 @@ private final class RecordingTransactionEngine: StorageEngine, Sendable {
 
     var namespaceCatalog: (any NamespaceCatalog)? {
         underlying.namespaceCatalog
+    }
+
+    func requestShutdown() {
+        underlying.requestShutdown()
+    }
+
+    func waitUntilShutdown() async {
+        await underlying.waitUntilShutdown()
     }
 }
 

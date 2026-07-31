@@ -104,7 +104,7 @@ struct IndexRebuildConsistencyTests {
         )
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(RebuildScalarUser.self), try DatabaseFrameworkRuntime.entity(RebuildTripleStatement.self), try DatabaseFrameworkRuntime.entity(RebuildEdge.self), try DatabaseFrameworkRuntime.entity(RebuildArticle.self), try DatabaseFrameworkRuntime.entity(RebuildCountItem.self)]),
             security: .disabled
             )

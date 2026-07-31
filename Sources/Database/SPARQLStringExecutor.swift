@@ -1,3 +1,4 @@
+#if DATABASE_GRAPH_INDEXES
 import DatabaseKit
 import DatabaseEngine
 import DatabaseWire
@@ -9,13 +10,19 @@ extension DatabaseContext {
     public func executeSPARQL<T: Persistable>(
         _ sparql: String,
         on type: T.Type,
+        compilationLimits: SPARQLExpressionCompilationLimits = .default,
         budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLResult {
-        let statement = try SPARQLParser().parse(sparql)
+        let statement = try SPARQLParser(
+            structuralLimits: compilationLimits.structuralLimits
+        ).parse(sparql)
         guard case .select(let query) = statement else {
             throw SPARQLStringError.unsupportedQueryForm(statement)
         }
-        let plan = try SPARQLSelectPlanCompiler.compile(query)
+        let plan = try SPARQLSelectPlanCompiler.compile(
+            query,
+            expressionLimits: compilationLimits
+        )
         return try await executeSPARQLSelectPlan(
             plan,
             on: type,
@@ -32,6 +39,7 @@ public func executeSPARQLString(
     monotonicClock: any StorageMonotonicClock,
     wallClock: any WallClock,
     transaction: (any TransactionAccess)? = nil,
+    compilationLimits: SPARQLExpressionCompilationLimits = .default,
     budget: ExecutionBudget
 ) async throws -> SPARQLResult {
     let workMeter = DatabaseWorkMeter(
@@ -45,6 +53,7 @@ public func executeSPARQLString(
         monotonicClock: monotonicClock,
         wallClock: wallClock,
         transaction: transaction,
+        compilationLimits: compilationLimits,
         workMeter: workMeter
     )
     guard let rowCount = UInt32(exactly: result.bindings.count) else {
@@ -66,13 +75,19 @@ func _executeSPARQLString(
     monotonicClock: any StorageMonotonicClock,
     wallClock: any WallClock,
     transaction: (any TransactionAccess)? = nil,
+    compilationLimits: SPARQLExpressionCompilationLimits,
     workMeter: DatabaseWorkMeter
 ) async throws -> SPARQLResult {
-    let statement = try SPARQLParser().parse(sparql)
+    let statement = try SPARQLParser(
+        structuralLimits: compilationLimits.structuralLimits
+    ).parse(sparql)
     guard case .select(let query) = statement else {
         throw SPARQLStringError.unsupportedQueryForm(statement)
     }
-    let plan = try SPARQLSelectPlanCompiler.compile(query)
+    let plan = try SPARQLSelectPlanCompiler.compile(
+        query,
+        expressionLimits: compilationLimits
+    )
     let executor = SPARQLQueryExecutor(
         database: database,
         wallClock: wallClock,
@@ -120,3 +135,4 @@ public enum SPARQLStringError: Error, CustomStringConvertible {
         }
     }
 }
+#endif

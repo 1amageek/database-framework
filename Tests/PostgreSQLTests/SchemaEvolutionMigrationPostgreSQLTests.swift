@@ -170,7 +170,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let migratedContainer = try await DBContainer.open(
                 for: PGSchemaEvolutionSchemaV2.self,
                 migrationPlan: PGAppendOnlyMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGSchemaEvolutionUserV2.self)])
             )
             try await migratedContainer.migrateIfNeeded()
@@ -260,7 +260,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let migratedContainer = try await DBContainer.open(
                 for: PGMigrationSchemaV2.self,
                 migrationPlan: PGCustomMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV2.self)])
             )
             try await migratedContainer.migrateIfNeeded()
@@ -314,7 +314,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let migratedContainer = try await DBContainer.open(
                 for: PGMigrationSchemaV2.self,
                 migrationPlan: PGCustomMigrationPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV2.self)])
             )
             try await migratedContainer.migrateIfNeeded()

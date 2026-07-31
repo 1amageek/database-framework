@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 
 public protocol DatabaseOntologyService: Sendable {
@@ -6,3 +7,5 @@ public protocol DatabaseOntologyService: Sendable {
         context: DatabaseOperationContext
     ) async throws -> OntologyExecutionResult
 }
+
+#endif

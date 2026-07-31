@@ -1,4 +1,4 @@
-public struct SPARQLSelectExecutionPlan: Sendable, Equatable {
+public struct SPARQLSelectExecutionPlan: Sendable {
     public let ordered: SPARQLOrderedSolutionPlan
     public let projectionVariables: [String]
     public let projectionIsIdentity: Bool

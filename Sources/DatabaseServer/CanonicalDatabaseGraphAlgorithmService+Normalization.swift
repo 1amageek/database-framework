@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import GraphIndex
 
 extension CanonicalDatabaseGraphAlgorithmService {
@@ -33,3 +34,4 @@ extension CanonicalDatabaseGraphAlgorithmService {
             .sorted { $0.lexicographicallyPrecedes($1) }
     }
 }
+#endif

@@ -38,6 +38,14 @@ final class ControlledCompactionStorageEngine: StorageEngine, Sendable {
         )
     }
 
+    func requestShutdown() {
+        underlying.requestShutdown()
+    }
+
+    func waitUntilShutdown() async {
+        await underlying.waitUntilShutdown()
+    }
+
     final class ControlledCompactionTransaction:
         Transaction,
         StorageCompactionTransaction,

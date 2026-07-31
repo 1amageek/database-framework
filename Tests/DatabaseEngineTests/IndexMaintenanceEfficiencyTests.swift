@@ -39,7 +39,7 @@ struct IndexMaintenanceEfficiencyTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try IndexMaintenanceProduct.schemaEntity])
-        return try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexMaintenanceProduct.self)]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexMaintenanceProduct.self)]), security: .disabled)
     }
 
     private func cleanup(container: DBContainer) async throws {

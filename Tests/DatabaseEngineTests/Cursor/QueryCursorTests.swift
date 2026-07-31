@@ -42,7 +42,7 @@ struct QueryCursorTests {
         let schema = try Schema(entities: [try PaginatedUser.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(PaginatedUser.self)]
             ),

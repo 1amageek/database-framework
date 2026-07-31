@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 struct PreparedSPARQLUpdateRequest: Sendable {
     let firstOperation: PreparedSPARQLUpdateOperation
     let additionalOperations: [PreparedSPARQLUpdateOperation]
@@ -21,3 +22,5 @@ struct PreparedSPARQLUpdateRequest: Sendable {
             : additionalOperations[index - 1]
     }
 }
+
+#endif

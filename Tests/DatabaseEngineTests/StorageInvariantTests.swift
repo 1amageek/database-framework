@@ -31,7 +31,7 @@ struct StorageInvariantTests {
 
             // Create container for components that need it
             let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
-            let container = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]), security: .disabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]), security: .disabled)
 
             let tracker = UniquenessViolationTracker(container: container, metadataSubspace: metadataSubspace)
             let indexName = "unique_clearFirst_idx"

@@ -102,7 +102,7 @@ struct DirectoryMigrationPostgreSQLTests {
             let migratedContainer = try await DBContainer.open(
                 for: PGDirectoryMigrationSchemaV2.self,
                 migrationPlan: PGDirectoryMigrationCopyPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV2.self)])
             )
             try await migratedContainer.migrateIfNeeded()
@@ -142,7 +142,7 @@ struct DirectoryMigrationPostgreSQLTests {
             let migratedContainer = try await DBContainer.open(
                 for: PGDirectoryMigrationSchemaV2.self,
                 migrationPlan: PGDirectoryMigrationCopyPlan.self,
-                configuration: .testing(backend: .custom(engine)),
+                configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV2.self)])
             )
             try await migratedContainer.migrateIfNeeded()

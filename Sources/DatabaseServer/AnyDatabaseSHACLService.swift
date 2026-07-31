@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 
 /// Type-erased SHACL service for runtime composition.
@@ -20,3 +21,5 @@ public final class AnyDatabaseSHACLService: DatabaseSHACLService, Sendable {
         try await executeSHACL(request, context)
     }
 }
+
+#endif

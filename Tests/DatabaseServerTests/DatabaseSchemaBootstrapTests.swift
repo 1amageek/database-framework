@@ -43,7 +43,7 @@ struct DatabaseSchemaBootstrapTests {
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self)]
             ),
@@ -77,7 +77,7 @@ struct DatabaseSchemaBootstrapTests {
                 version: Schema.Version(1, 0, 0)
             ),
             migrationPlan: BootstrapMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self), try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
@@ -98,7 +98,7 @@ struct DatabaseSchemaBootstrapTests {
         try await DBContainer.open(
             for: BootstrapSchema.self,
             migrationPlan: BootstrapMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self)]
             ),

@@ -3,6 +3,7 @@ public enum DatabaseWorkStage: String, Sendable, Hashable {
     case storageRow
     case bindingCandidate
     case filterEvaluation
+    case expressionEvaluation
     case joinCandidate
     case pathExpansion
     case aggregateInput

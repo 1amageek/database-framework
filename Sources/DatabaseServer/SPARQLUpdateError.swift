@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 import DatabaseTypes
 
@@ -26,3 +27,5 @@ public enum SPARQLUpdateError: Error, Sendable, Equatable, CustomStringConvertib
         }
     }
 }
+
+#endif

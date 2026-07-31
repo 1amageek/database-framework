@@ -5,7 +5,7 @@ import DatabaseEngine
 /// Canonical SPARQL aggregate algebra. Aggregate operands remain QueryIR plans
 /// so every solution is evaluated by the same runtime expression semantics used
 /// by FILTER, BIND, projection, and ORDER BY.
-public enum AggregateExpression: Sendable, Hashable {
+public enum AggregateExpression: Sendable {
     case count(
         expression: SPARQLExpressionPlan?,
         distinct: Bool,
@@ -59,13 +59,7 @@ public enum AggregateExpression: Sendable, Hashable {
     }
 
     public var inputVariable: String? {
-        guard let expression = inputExpression?.expression else { return nil }
-        switch expression {
-        case .variable(let variable):
-            return Self.normalizedVariable(variable.name)
-        default:
-            return nil
-        }
+        inputExpression?.directVariable.map(Self.normalizedVariable)
     }
 
     public var isDistinct: Bool {
@@ -746,19 +740,19 @@ extension AggregateExpression: CustomStringConvertible {
     public var description: String {
         switch self {
         case .count(let expression, let distinct, let alias):
-            return "(COUNT(\(distinct ? "DISTINCT " : "")\(expression.map { SPARQLExpressionSemanticName.describe($0.expression) } ?? "*")) AS \(alias))"
+            return "(COUNT(\(distinct ? "DISTINCT " : "")\(expression.map(String.init(describing:)) ?? "*")) AS \(alias))"
         case .sum(let expression, let distinct, let alias):
-            return "(SUM(\(distinct ? "DISTINCT " : "")\(expression.expression)) AS \(alias))"
+            return "(SUM(\(distinct ? "DISTINCT " : "")\(expression)) AS \(alias))"
         case .avg(let expression, let distinct, let alias):
-            return "(AVG(\(distinct ? "DISTINCT " : "")\(expression.expression)) AS \(alias))"
+            return "(AVG(\(distinct ? "DISTINCT " : "")\(expression)) AS \(alias))"
         case .min(let expression, let alias):
-            return "(MIN(\(expression.expression)) AS \(alias))"
+            return "(MIN(\(expression)) AS \(alias))"
         case .max(let expression, let alias):
-            return "(MAX(\(expression.expression)) AS \(alias))"
+            return "(MAX(\(expression)) AS \(alias))"
         case .sample(let expression, let alias):
-            return "(SAMPLE(\(expression.expression)) AS \(alias))"
+            return "(SAMPLE(\(expression)) AS \(alias))"
         case .groupConcat(let expression, let separator, let distinct, let alias):
-            return "(GROUP_CONCAT(\(distinct ? "DISTINCT " : "")\(expression.expression); separator=\"\(separator)\") AS \(alias))"
+            return "(GROUP_CONCAT(\(distinct ? "DISTINCT " : "")\(expression); separator=\"\(separator)\") AS \(alias))"
         }
     }
 }

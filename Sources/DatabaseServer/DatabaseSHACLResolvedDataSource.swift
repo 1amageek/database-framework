@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 import GraphIndex
@@ -32,3 +33,4 @@ public struct DatabaseSHACLResolvedDataSource: Sendable {
         self.snapshotFingerprint = snapshotFingerprint
     }
 }
+#endif

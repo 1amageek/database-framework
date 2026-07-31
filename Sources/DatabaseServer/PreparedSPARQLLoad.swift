@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 
 struct PreparedSPARQLLoad: Sendable {
@@ -9,3 +10,5 @@ struct PreparedSPARQLLoad: Sendable {
         self.triples = consume triples
     }
 }
+
+#endif

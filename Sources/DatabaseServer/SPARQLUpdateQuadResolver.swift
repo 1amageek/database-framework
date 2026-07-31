@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
@@ -310,3 +311,4 @@ struct SPARQLUpdateQuadResolver: Sendable {
         return "?" + name
     }
 }
+#endif

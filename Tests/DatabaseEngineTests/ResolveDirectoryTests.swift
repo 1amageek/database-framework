@@ -65,7 +65,7 @@ struct ResolveDirectoryTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]),
             security: .disabled
             )
@@ -240,8 +240,8 @@ struct ResolveDirectoryTests {
 
             let schema = try Schema(entities: [try DirectoryUser.schemaEntity], version: Schema.Version(1, 0, 0))
 
-            let container1 = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]), security: .disabled)
-            let container2 = try await DBContainer.open(for: schema, configuration: .testing(backend: .custom(database)), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]), security: .disabled)
+            let container1 = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]), security: .disabled)
+            let container2 = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]), security: .disabled)
 
             let subspace1 = try await container1.resolveDirectory(for: DirectoryUser.self)
             let subspace2 = try await container2.resolveDirectory(for: DirectoryUser.self)

@@ -974,7 +974,7 @@ struct DatabaseFrameworkE2ETests {
         let schema = try Schema(entities: [try DatabaseFrameworkE2ELargeDocument.schemaEntity], version: .init(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ELargeDocument.self)]
             ),
@@ -1643,7 +1643,7 @@ struct DatabaseFrameworkE2ETests {
 
         let initialContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV1.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV1.self)]),
             security: .disabled
         )
@@ -1668,7 +1668,7 @@ struct DatabaseFrameworkE2ETests {
         let migratedContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV2.self,
             migrationPlan: DatabaseFrameworkE2EMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)])
         )
         try await migratedContainer.migrateIfNeeded()
@@ -1676,7 +1676,7 @@ struct DatabaseFrameworkE2ETests {
 
         let verificationContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)]),
             security: .disabled
         )

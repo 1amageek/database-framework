@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 
 public struct DatabaseRDFStoredDocumentPage: Sendable, Hashable {
@@ -25,3 +26,5 @@ public struct DatabaseRDFStoredDocumentPage: Sendable, Hashable {
     }
 }
 import DatabaseKit
+
+#endif

@@ -105,7 +105,7 @@ struct MinMaxAggregationQueryTests {
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MinimumOrder.self)]
             ),
@@ -163,7 +163,7 @@ struct MinMaxAggregationQueryTests {
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MaximumOrder.self)]
             ),
@@ -221,7 +221,7 @@ struct MinMaxAggregationQueryTests {
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MixedAggregationOrder.self)]
             ),
@@ -308,7 +308,7 @@ struct MinMaxAggregationQueryTests {
         let engine = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(Int64AggregationOrder.self)]
             ),

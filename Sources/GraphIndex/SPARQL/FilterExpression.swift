@@ -240,7 +240,7 @@ public indirect enum FilterExpression: Sendable {
 
         case .query(let plan):
             return try ExpressionEvaluator.evaluateAsBoolean(
-                plan.expression,
+                plan,
                 binding: binding
             )
 
@@ -483,72 +483,11 @@ extension FilterExpression: CustomStringConvertible {
         case .customWithVariables(_, let vars):
             return "CUSTOM(vars: \(vars.sorted().joined(separator: ", ")))"
         case .query(let plan):
-            return "QUERY_IR(\(plan.expression))"
+            return "QUERY_IR(\(plan))"
         case .alwaysTrue:
             return "TRUE"
         case .alwaysFalse:
             return "FALSE"
-        }
-    }
-}
-
-// MARK: - Equatable
-
-extension FilterExpression: Equatable {
-    public static func == (lhs: FilterExpression, rhs: FilterExpression) -> Bool {
-        switch (lhs, rhs) {
-        case (.equals(let l1, let l2), .equals(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.notEquals(let l1, let l2), .notEquals(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.lessThan(let l1, let l2), .lessThan(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.lessThanOrEqual(let l1, let l2), .lessThanOrEqual(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.greaterThan(let l1, let l2), .greaterThan(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.greaterThanOrEqual(let l1, let l2), .greaterThanOrEqual(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.variableEquals(let l1, let l2), .variableEquals(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.variableNotEquals(let l1, let l2), .variableNotEquals(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.bound(let l), .bound(let r)):
-            return l == r
-        case (.notBound(let l), .notBound(let r)):
-            return l == r
-        case (.regex(let l1, let l2), .regex(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.regexWithFlags(let l1, let l2, let l3), .regexWithFlags(let r1, let r2, let r3)):
-            return l1 == r1 && l2 == r2 && l3 == r3
-        case (.contains(let l1, let l2), .contains(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.startsWith(let l1, let l2), .startsWith(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.endsWith(let l1, let l2), .endsWith(let r1, let r2)):
-            return l1 == r1 && l2 == r2
-        case (.similarTo(let l1, let l2, let l3), .similarTo(let r1, let r2, let r3)):
-            return l1 == r1 && l2 == r2 && l3 == r3
-        case (.and(let ll, let lr), .and(let rl, let rr)):
-            return ll == rl && lr == rr
-        case (.or(let ll, let lr), .or(let rl, let rr)):
-            return ll == rl && lr == rr
-        case (.not(let l), .not(let r)):
-            return l == r
-        case (.alwaysTrue, .alwaysTrue):
-            return true
-        case (.alwaysFalse, .alwaysFalse):
-            return true
-        case (.custom, .custom):
-            // Custom closures can't be compared
-            return false
-        case (.customWithVariables(_, let lv), .customWithVariables(_, let rv)):
-            // Compare by variables only (closures can't be compared)
-            return lv == rv
-        case (.query(let left), .query(let right)):
-            return left == right
-        default:
-            return false
         }
     }
 }

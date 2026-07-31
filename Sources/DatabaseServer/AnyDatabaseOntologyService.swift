@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 
 /// Type-erased ontology service for runtime composition.
@@ -22,3 +23,5 @@ public final class AnyDatabaseOntologyService:
         try await executeOntology(request, context)
     }
 }
+
+#endif

@@ -214,7 +214,9 @@ struct DatabaseCLI: ParsableCommand {
     )
 
     mutating func run() throws {
-        print("Error: This CLI requires FoundationDB. Build with default traits or --traits FoundationDB.")
+        throw ValidationError(
+            "This CLI requires the FoundationDB trait. Build with default traits or --traits FoundationDB."
+        )
     }
 }
 #endif

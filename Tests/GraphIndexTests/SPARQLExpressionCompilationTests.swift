@@ -67,14 +67,67 @@ struct SPARQLExpressionCompilationTests {
     @Test("Directly constructed expressions obey the compilation depth limit")
     func compilationDepthIsBounded() {
         let expression = Expression.not(
-            .not(.not(.literal(.bool(true))))
+            .not(.not(.not(.literal(.bool(true)))))
         )
 
-        #expect(throws: SPARQLExpressionCompilationError.self) {
+        #expect(
+            throws: SPARQLExpressionCompilationError.structural(
+                .resourceLimitExceeded(
+                    resource: .nestingDepth,
+                    actual: 4,
+                    maximum: 3
+                )
+            )
+        ) {
             try SPARQLExpressionValidator.validate(
                 expression,
                 limits: SPARQLExpressionCompilationLimits(
-                    maximumDepth: 3
+                    structuralLimits: QueryStructuralLimits(
+                        maximumNestingDepth: 3
+                    )
+                )
+            )
+        }
+    }
+
+    @Test("Collection limits are cumulative across an expression")
+    func expressionCollectionsShareTheCanonicalLedger() {
+        let expression = Expression.and(
+            .function(
+                FunctionCall(
+                    name: "urn:example:left",
+                    arguments: [
+                        .literal(.int(1)),
+                        .literal(.int(2)),
+                    ]
+                )
+            ),
+            .function(
+                FunctionCall(
+                    name: "urn:example:right",
+                    arguments: [
+                        .literal(.int(3)),
+                        .literal(.int(4)),
+                    ]
+                )
+            )
+        )
+
+        #expect(
+            throws: SPARQLExpressionCompilationError.structural(
+                .resourceLimitExceeded(
+                    resource: .collectionElements,
+                    actual: 4,
+                    maximum: 3
+                )
+            )
+        ) {
+            _ = try SPARQLExpressionPlan(
+                expression,
+                limits: SPARQLExpressionCompilationLimits(
+                    structuralLimits: QueryStructuralLimits(
+                        maximumCollectionElements: 3
+                    )
                 )
             )
         }
@@ -97,7 +150,9 @@ struct SPARQLExpressionCompilationTests {
             try SPARQLExpressionValidator.validate(
                 expression,
                 limits: SPARQLExpressionCompilationLimits(
-                    maximumFunctionArguments: 2
+                    structuralLimits: QueryStructuralLimits(
+                        maximumCollectionElements: 2
+                    )
                 )
             )
         }
@@ -117,9 +172,70 @@ struct SPARQLExpressionCompilationTests {
 
     @Test("Expression plans cannot bypass bounded compilation")
     func expressionPlanUsesCompilerLimits() {
-        #expect(throws: SPARQLExpressionCompilationError.self) {
+        #expect(
+            throws: SPARQLExpressionCompilationError.resourceLimitExceeded(
+                resource: .stringUTF8,
+                actual: 4,
+                maximum: 3
+            )
+        ) {
             _ = try SPARQLExpressionPlan(
                 .literal(.string("four")),
+                limits: SPARQLExpressionCompilationLimits(
+                    maximumStringUTF8Count: 3
+                )
+            )
+        }
+    }
+
+    @Test("SELECT compilation preserves the explicit string limit")
+    func selectCompilationUsesExplicitStringLimit() {
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(
+                    .literal(.string("four")),
+                    alias: "value"
+                ),
+            ]),
+            source: .graphPattern(.basic([]))
+        )
+
+        #expect(
+            throws: SPARQLExpressionCompilationError.resourceLimitExceeded(
+                resource: .stringUTF8,
+                actual: 4,
+                maximum: 3
+            )
+        ) {
+            _ = try SPARQLSelectPlanCompiler.compile(
+                query,
+                expressionLimits: SPARQLExpressionCompilationLimits(
+                    maximumStringUTF8Count: 3
+                )
+            )
+        }
+    }
+
+    @Test("GROUP_CONCAT separators obey the expression string limit")
+    func aggregateSeparatorsAreBounded() {
+        let binding = AggregateBinding(
+            variable: "joined",
+            aggregate: .groupConcat(
+                .variable(Variable("value")),
+                separator: "four",
+                distinct: false
+            )
+        )
+
+        #expect(
+            throws: SPARQLExpressionCompilationError.resourceLimitExceeded(
+                resource: .stringUTF8,
+                actual: 4,
+                maximum: 3
+            )
+        ) {
+            _ = try GraphPatternConverter.convertAggregate(
+                binding,
                 limits: SPARQLExpressionCompilationLimits(
                     maximumStringUTF8Count: 3
                 )
@@ -144,6 +260,73 @@ struct SPARQLExpressionCompilationTests {
 
         #expect(throws: SPARQLExpressionCompilationError.self) {
             _ = try SPARQLExpressionPlan(expression)
+        }
+    }
+
+    @Test("EXISTS cannot hide a VALUES row beyond canonical limits")
+    func existsUsesCanonicalSpecializedLimits() {
+        let expression = Expression.exists(
+            SelectQuery(
+                projection: .all,
+                source: .graphPattern(
+                    .values(
+                        variables: ["value"],
+                        bindings: [[.int(1)]]
+                    )
+                )
+            )
+        )
+
+        #expect(
+            throws: SPARQLExpressionCompilationError.structural(
+                .resourceLimitExceeded(
+                    resource: .valuesRows,
+                    actual: 1,
+                    maximum: 0
+                )
+            )
+        ) {
+            _ = try SPARQLExpressionPlan(
+                expression,
+                limits: SPARQLExpressionCompilationLimits(
+                    structuralLimits: QueryStructuralLimits(
+                        maximumValuesRows: 0
+                    )
+                )
+            )
+        }
+    }
+
+    @Test("EXISTS rejects query modifiers that its algebra cannot preserve")
+    func existsRejectsIgnoredQuerySemantics() {
+        let sources = [
+            SelectQuery(
+                projection: .items([
+                    ProjectionItem(.variable(Variable("value"))),
+                ]),
+                source: .graphPattern(.basic([]))
+            ),
+            SelectQuery(
+                projection: .all,
+                source: .graphPattern(.basic([])),
+                distinct: true
+            ),
+            SelectQuery(
+                projection: .all,
+                source: .graphPattern(.basic([])),
+                dataset: .explicit(
+                    defaultGraphs: ["urn:example:graph"],
+                    namedGraphs: []
+                )
+            ),
+        ]
+
+        for query in sources {
+            #expect(
+                throws: SPARQLExpressionCompilationError.invalidExistsSource
+            ) {
+                _ = try SPARQLExpressionPlan(.exists(query))
+            }
         }
     }
 }

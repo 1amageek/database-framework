@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 @_spi(DatabaseServer) import DatabaseWire
 import GraphIndex
 import StorageKit
@@ -11,3 +12,4 @@ public protocol DatabaseSHACLDataSourceResolver: Sendable {
         transaction: any TransactionAccess
     ) async throws -> DatabaseSHACLResolvedDataSource
 }
+#endif

@@ -182,13 +182,15 @@ struct SPARQLRuntimeExpressionExecutionTests {
         let falseAndFailure = ExecutionPattern.filter(
             .basic([]),
             try GraphPatternConverter.convertFilter(
-                .and(.literal(.bool(false)), failure)
+                .and(.literal(.bool(false)), failure),
+                limits: .default
             )
         )
         let trueOrFailure = ExecutionPattern.filter(
             .basic([]),
             try GraphPatternConverter.convertFilter(
-                .or(.literal(.bool(true)), failure)
+                .or(.literal(.bool(true)), failure),
+                limits: .default
             )
         )
 
@@ -505,7 +507,8 @@ struct SPARQLRuntimeExpressionExecutionTests {
         ])
         let pattern = try GraphPatternConverter.applyingProjectionExpressions(
             projection,
-            to: source
+            to: source,
+            limits: .default
         )
 
         let rows = try await execute(pattern)
@@ -534,7 +537,8 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
         let pattern = try GraphPatternConverter.applyingProjectionExpressions(
             projection,
-            to: .basic([])
+            to: .basic([]),
+            limits: .default
         )
         #expect(pattern.outputVariables.contains("?first"))
         #expect(pattern.outputVariables.contains("?second"))
@@ -553,7 +557,8 @@ struct SPARQLRuntimeExpressionExecutionTests {
         ) {
             try GraphPatternConverter.applyingProjectionExpressions(
                 projection,
-                to: .basic([])
+                to: .basic([]),
+                limits: .default
             )
         }
     }

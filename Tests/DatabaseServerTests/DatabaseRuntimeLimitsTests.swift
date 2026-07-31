@@ -75,7 +75,6 @@ struct DatabaseRuntimeLimitsTests {
             maximumMutations: 1,
             maximumPreconditions: 1,
             maximumIdempotencyKeyBytes: 1,
-            maximumLoadDocumentBytes: 1,
             maximumMutationAggregateBytes: 1,
             queryStructuralLimits: structuralLimits
         )
@@ -108,9 +107,6 @@ struct DatabaseRuntimeLimitsTests {
         #expect(throws: configurationError(.maximumIdempotencyKeyBytes)) {
             _ = try makeLimits(maximumIdempotencyKeyBytes: 0)
         }
-        #expect(throws: configurationError(.maximumLoadDocumentBytes)) {
-            _ = try makeLimits(maximumLoadDocumentBytes: 0)
-        }
         #expect(throws: configurationError(.maximumMutationAggregateBytes)) {
             _ = try makeLimits(maximumMutationAggregateBytes: 0)
         }
@@ -126,9 +122,6 @@ struct DatabaseRuntimeLimitsTests {
         }
         #expect(throws: configurationError(.maximumIdempotencyKeyBytes)) {
             _ = try makeLimits(maximumIdempotencyKeyBytes: -1)
-        }
-        #expect(throws: configurationError(.maximumLoadDocumentBytes)) {
-            _ = try makeLimits(maximumLoadDocumentBytes: -1)
         }
         #expect(throws: configurationError(.maximumMutationAggregateBytes)) {
             _ = try makeLimits(maximumMutationAggregateBytes: -1)
@@ -269,7 +262,6 @@ struct DatabaseRuntimeLimitsTests {
         maximumMutations: Int = 1_000,
         maximumPreconditions: Int = 1_000,
         maximumIdempotencyKeyBytes: Int = 512,
-        maximumLoadDocumentBytes: Int = 8 * 1_024 * 1_024,
         maximumMutationAggregateBytes: Int = 8 * 1_024 * 1_024,
         queryStructuralLimits: QueryStructuralLimits = .default
     ) throws -> DatabaseRuntimeLimits {
@@ -282,7 +274,6 @@ struct DatabaseRuntimeLimitsTests {
             maximumMutations: maximumMutations,
             maximumPreconditions: maximumPreconditions,
             maximumIdempotencyKeyBytes: maximumIdempotencyKeyBytes,
-            maximumLoadDocumentBytes: maximumLoadDocumentBytes,
             maximumMutationAggregateBytes: maximumMutationAggregateBytes,
             queryStructuralLimits: queryStructuralLimits
         )

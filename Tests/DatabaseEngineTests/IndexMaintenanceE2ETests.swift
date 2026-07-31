@@ -101,7 +101,7 @@ struct IndexMaintenanceE2ETests {
 
         return try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(E2EFullTextArticle.self), try DatabaseFrameworkRuntime.entity(E2EGraphEdge.self), try DatabaseFrameworkRuntime.entity(E2EScalarUser.self), try DatabaseFrameworkRuntime.entity(E2ECountItem.self)]),
             security: .disabled,
         )

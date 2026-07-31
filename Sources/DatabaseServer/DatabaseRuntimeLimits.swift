@@ -10,7 +10,6 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
     public let maximumMutations: Int
     public let maximumPreconditions: Int
     public let maximumIdempotencyKeyBytes: Int
-    public let maximumLoadDocumentBytes: Int
     public let maximumMutationAggregateBytes: Int
     public let queryStructuralLimits: QueryStructuralLimits
 
@@ -23,7 +22,6 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
         maximumMutations: Int = 1_000,
         maximumPreconditions: Int = 1_000,
         maximumIdempotencyKeyBytes: Int = 512,
-        maximumLoadDocumentBytes: Int = 8 * 1_024 * 1_024,
         maximumMutationAggregateBytes: Int = 8 * 1_024 * 1_024,
         queryStructuralLimits: QueryStructuralLimits = .default
     ) throws {
@@ -36,7 +34,6 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
             maximumMutations: maximumMutations,
             maximumPreconditions: maximumPreconditions,
             maximumIdempotencyKeyBytes: maximumIdempotencyKeyBytes,
-            maximumLoadDocumentBytes: maximumLoadDocumentBytes,
             maximumMutationAggregateBytes: maximumMutationAggregateBytes,
             queryStructuralLimits: queryStructuralLimits
         )
@@ -48,7 +45,6 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
         self.maximumMutations = maximumMutations
         self.maximumPreconditions = maximumPreconditions
         self.maximumIdempotencyKeyBytes = maximumIdempotencyKeyBytes
-        self.maximumLoadDocumentBytes = maximumLoadDocumentBytes
         self.maximumMutationAggregateBytes = maximumMutationAggregateBytes
         self.queryStructuralLimits = queryStructuralLimits
     }
@@ -62,12 +58,11 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
         maximumMutations: 1_000,
         maximumPreconditions: 1_000,
         maximumIdempotencyKeyBytes: 512,
-        maximumLoadDocumentBytes: 8 * 1_024 * 1_024,
         maximumMutationAggregateBytes: 8 * 1_024 * 1_024,
         queryStructuralLimits: .default
     )
 
-    public func validateConfiguration() throws {
+    public func validateConfiguration() throws(DatabaseRuntimeConfigurationError) {
         try Self.validatePositive(
             maximumRows: maximumRows,
             maximumWorkUnits: maximumWorkUnits,
@@ -77,7 +72,6 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
             maximumMutations: maximumMutations,
             maximumPreconditions: maximumPreconditions,
             maximumIdempotencyKeyBytes: maximumIdempotencyKeyBytes,
-            maximumLoadDocumentBytes: maximumLoadDocumentBytes,
             maximumMutationAggregateBytes: maximumMutationAggregateBytes,
             queryStructuralLimits: queryStructuralLimits
         )
@@ -129,7 +123,6 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
         maximumMutations: Int,
         maximumPreconditions: Int,
         maximumIdempotencyKeyBytes: Int,
-        maximumLoadDocumentBytes: Int,
         maximumMutationAggregateBytes: Int,
         queryStructuralLimits: QueryStructuralLimits
     ) {
@@ -141,7 +134,6 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
         self.maximumMutations = maximumMutations
         self.maximumPreconditions = maximumPreconditions
         self.maximumIdempotencyKeyBytes = maximumIdempotencyKeyBytes
-        self.maximumLoadDocumentBytes = maximumLoadDocumentBytes
         self.maximumMutationAggregateBytes = maximumMutationAggregateBytes
         self.queryStructuralLimits = queryStructuralLimits
     }
@@ -155,10 +147,9 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
         maximumMutations: Int,
         maximumPreconditions: Int,
         maximumIdempotencyKeyBytes: Int,
-        maximumLoadDocumentBytes: Int,
         maximumMutationAggregateBytes: Int,
         queryStructuralLimits: QueryStructuralLimits
-    ) throws {
+    ) throws(DatabaseRuntimeConfigurationError) {
         let unsignedLimits: [
             (DatabaseRuntimeConfigurationError.Limit, UInt64)
         ] = [
@@ -200,7 +191,6 @@ public struct DatabaseRuntimeLimits: Sendable, Hashable {
             (.maximumMutations, maximumMutations),
             (.maximumPreconditions, maximumPreconditions),
             (.maximumIdempotencyKeyBytes, maximumIdempotencyKeyBytes),
-            (.maximumLoadDocumentBytes, maximumLoadDocumentBytes),
             (.maximumMutationAggregateBytes, maximumMutationAggregateBytes),
         ]
         for (limit, value) in integerLimits where value <= 0 {

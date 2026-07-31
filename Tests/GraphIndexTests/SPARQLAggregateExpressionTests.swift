@@ -275,7 +275,7 @@ struct SPARQLAggregateExpressionTests {
         do throws(SPARQLExpressionEvaluationError) {
             return .value(
                 try ExpressionEvaluator.evaluate(
-                    plan.expression,
+                    plan,
                     binding: binding
                 )
             )

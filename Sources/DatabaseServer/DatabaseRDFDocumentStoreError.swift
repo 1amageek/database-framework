@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 public enum DatabaseRDFDocumentStoreError: Error, Sendable, CustomStringConvertible {
     case emptyIdentifier
     case invalidPage(offset: Int, limit: Int)
@@ -29,3 +30,5 @@ public enum DatabaseRDFDocumentStoreError: Error, Sendable, CustomStringConverti
         }
     }
 }
+
+#endif

@@ -1,8 +1,5 @@
 import DatabaseTypes
 import StorageKit
-#if FOUNDATION_DB
-import FDBStorage
-#endif
 import DatabaseKit
 import Synchronization
 
@@ -23,7 +20,7 @@ import Synchronization
 ///
 /// **Responsibilities**:
 /// - Schema management
-/// - StorageEngine lifecycle (creates engine from configuration)
+/// - StorageEngine lifecycle (retains the injected engine)
 /// - Directory resolution from Persistable type metadata
 /// - DataStore factory
 ///
@@ -60,7 +57,7 @@ import Synchronization
 /// )
 /// let container = try await DBContainer.open(
 ///     for: schema,
-///     configuration: DBConfiguration(backend: .custom(engine)),
+///     configuration: DBConfiguration(storageEngine: engine),
 ///     runtimeConfiguration: runtime
 /// )
 ///
@@ -75,10 +72,6 @@ public final class DBContainer: Sendable {
         let format: DatabaseFormatDescriptor
         let partitionCatalog: DatabasePartitionCatalog
         let metadataSubspace: Subspace
-    }
-
-    private struct DataStoreCache: Sendable {
-        var stores = DatabaseStoreCache<DatabaseDataStore>()
     }
 
     // MARK: - Properties
@@ -137,12 +130,6 @@ public final class DBContainer: Sendable {
     /// Database event logger selected by the container configuration.
     private let logger: DatabaseLogger
 
-    /// DataStore cache keyed by resolved directory path
-    ///
-    /// Stores are immutable wrappers around a resolved subspace, so sharing them
-    /// avoids rebuilding helper services on repeated point reads and saves.
-    private let dataStoreCache: Mutex<DataStoreCache>
-
     /// Persistent catalog of every resolved dynamic partition.
     private let partitionCatalog: DatabasePartitionCatalog
 
@@ -197,60 +184,68 @@ public final class DBContainer: Sendable {
         persistSchemaCatalog: Bool,
         initializeIndexes: Bool
     ) async throws -> DBContainer {
-        guard !schema.entities.isEmpty else {
-            throw DatabaseRuntimeError.internalError(
-                "Schema must contain at least one entity"
+        let storageEngine = try configuration.claimStorageEngine()
+        do {
+            guard !schema.entities.isEmpty else {
+                throw DatabaseRuntimeError.internalError(
+                    "Schema must contain at least one entity"
+                )
+            }
+            try runtimeConfiguration.validate(schema: schema)
+            try IndexRuntimeConfigurationValidator.validate(
+                configuration.indexConfigurations,
+                schema: schema,
+                entityRuntimes: runtimeConfiguration.entityRuntimes
             )
-        }
-        try runtimeConfiguration.validate(schema: schema)
-        try IndexRuntimeConfigurationValidator.validate(
-            configuration.indexConfigurations,
-            schema: schema,
-            entityRuntimes: runtimeConfiguration.entityRuntimes
-        )
 
-        let preparedStorage = try await prepareStorage(
-            configuration: configuration
-        )
-        let container = DBContainer(
-            schema: schema,
-            configuration: configuration,
-            runtimeConfiguration: runtimeConfiguration,
-            security: security,
-            preparedStorage: preparedStorage
-        )
-
-        if initializeIndexes {
-            try await container.ensureIndexesReady()
-        }
-
-        if persistSchemaCatalog {
-            let registry = SchemaRegistry(
-                database: container.engine,
-                clock: container.monotonicClock
+            let preparedStorage = try await prepareStorage(
+                storageEngine: storageEngine,
+                configuration: configuration
             )
-            try await registry.persist(schema)
+            let container = DBContainer(
+                schema: schema,
+                configuration: configuration,
+                runtimeConfiguration: runtimeConfiguration,
+                security: security,
+                preparedStorage: preparedStorage
+            )
+
+            if initializeIndexes {
+                try await container.ensureIndexesReady()
+            }
+
+            if persistSchemaCatalog {
+                let registry = SchemaRegistry(
+                    database: container.engine,
+                    clock: container.monotonicClock
+                )
+                try await registry.persist(schema)
+            }
+            try configuration.finishOpeningStorageEngine()
+            return container
+        } catch {
+            await configuration.shutdownStorageEngine()
+            throw error
         }
-        return container
     }
 
     /// Opens DBContainer with schema and configuration.
     ///
-    /// Creates the storage engine based on the configuration's backend,
-    /// then initializes all indexes to `readable` state.
+    /// Prepares the injected storage engine, then initializes all indexes to
+    /// `readable` state.
     ///
     /// **Example**:
     /// ```swift
-    /// // Explicit backend configuration
+    /// // Explicit storage engine
     /// let container = try await DBContainer.open(
     ///     for: schema,
-    ///     configuration: .init(backend: .custom(engine))
+    ///     configuration: .init(storageEngine: engine)
     /// )
     ///
     /// // With security
     /// let container = try await DBContainer.open(
     ///     for: schema,
-    ///     configuration: .init(backend: .custom(engine)),
+    ///     configuration: .init(storageEngine: engine),
     ///     security: .enabled(adminRoles: ["admin"])
     /// )
     /// ```
@@ -266,33 +261,25 @@ public final class DBContainer: Sendable {
     ///   2. **Schema persistence** — writes `Schema.Entity` via `SchemaRegistry.persist()`,
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
     private static func prepareStorage(
+        storageEngine: any StorageEngine,
         configuration: DBConfiguration
     ) async throws -> PreparedStorage {
-        let resolvedEngine: any StorageEngine
-        switch configuration.backend {
-        #if FOUNDATION_DB
-        case .fdb(let fdbConfig):
-            resolvedEngine = try await FDBStorageEngine(configuration: fdbConfig)
-        #endif
-        case .custom(let engine):
-            resolvedEngine = engine
-        }
         let expectedFormat = DatabaseFormatDescriptor.v1(
             itemStorage: configuration.itemStorage
         )
         let persistedFormat = try await DatabaseFormatCatalog(
-            database: resolvedEngine,
+            database: storageEngine,
             clock: configuration.monotonicClock
         ).installIfEmptyOrValidate(expectedFormat)
         let partitionCatalog = try await DatabasePartitionCatalog(
-            engine: resolvedEngine,
+            engine: storageEngine,
             clock: configuration.monotonicClock
         )
-        let metadataSubspace = try await resolvedEngine.resolveOrCreateNamespace(
+        let metadataSubspace = try await storageEngine.resolveOrCreateNamespace(
             path: ["_metadata"]
         )
         return PreparedStorage(
-            engine: resolvedEngine,
+            engine: storageEngine,
             format: persistedFormat,
             partitionCatalog: partitionCatalog,
             metadataSubspace: metadataSubspace
@@ -336,9 +323,20 @@ public final class DBContainer: Sendable {
             label: "com.database.framework.container"
         )
         self.migrationPlanStorage = Mutex(nil)
-        self.dataStoreCache = Mutex(DataStoreCache())
         self.partitionCatalog = preparedStorage.partitionCatalog
         self.metadataSubspace = preparedStorage.metadataSubspace
+    }
+
+    /// Releases the storage engine owned by this container.
+    ///
+    /// Shutdown is thread-safe and idempotent. It rejects new operations, waits
+    /// for admitted operations to finish, and then releases the storage engine.
+    public func shutdown() async {
+        await configuration.shutdownStorageEngine()
+    }
+
+    deinit {
+        configuration.requestStorageEngineShutdown()
     }
 
     // MARK: - Index Initialization
@@ -616,27 +614,15 @@ public final class DBContainer: Sendable {
         path: DirectoryPath<T> = DirectoryPath()
     ) async throws -> DatabaseDataStore {
         let entity = try schemaEntity(named: T.persistableType)
-        let cacheKey = try storeCacheKey(
-            for: entity,
-            path: AnyDirectoryPath(path)
-        )
-        if let cached = dataStoreCache.withLock({
-            $0.stores.value(for: cacheKey)
-        }) {
-            return cached
-        }
-
         let subspace = try await resolveDirectory(for: type, path: path)
         try await initializeIndexStates(for: entity, subspace: subspace)
-        let store = DatabaseDataStore(
+        return DatabaseDataStore(
             container: self,
             subspace: subspace,
             entity: entity,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
-        dataStoreCache.withLock { $0.stores.insert(store, for: cacheKey) }
-        return store
     }
 
     internal func store(
@@ -644,29 +630,19 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil
     ) async throws -> DatabaseDataStore {
         let entity = try canonicalEntity(entity)
-        let cacheKey = try storeCacheKey(for: entity, path: path)
-        if let cached = dataStoreCache.withLock({
-            $0.stores.value(for: cacheKey)
-        }) {
-            return cached
-        }
-
         let subspace = try await resolveDirectory(for: entity, path: path)
         try await initializeIndexStates(for: entity, subspace: subspace)
-        let store = DatabaseDataStore(
+        return DatabaseDataStore(
             container: self,
             subspace: subspace,
             entity: entity,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
-        dataStoreCache.withLock { $0.stores.insert(store, for: cacheKey) }
-        return store
     }
 
-    /// Build a store whose directory and index state participate in the caller's
-    /// transaction. The store is intentionally not inserted into the global
-    /// cache until that transaction has committed.
+    /// Build a store whose directory and index state participate in the
+    /// caller's transaction.
     internal func store(
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil,
@@ -725,23 +701,6 @@ public final class DBContainer: Sendable {
                 .subspace(entity.name)
                 .range(),
             transaction: transaction
-        )
-    }
-
-    private func storeCacheKey(
-        for entity: Schema.Entity,
-        path: AnyDirectoryPath?
-    ) throws -> DatabaseStoreCacheKey {
-        let directoryPath: AnyDirectoryPath
-        if let path {
-            directoryPath = path
-        } else {
-            directoryPath = try AnyDirectoryPath(for: entity)
-        }
-        let components = directoryPath.resolve()
-        return DatabaseStoreCacheKey(
-            entity: entity.name,
-            components: components
         )
     }
 
@@ -1026,7 +985,12 @@ extension DBContainer {
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
-        try P.validate()
+        do {
+            try P.validate()
+        } catch {
+            await configuration.shutdownStorageEngineIfUnclaimed()
+            throw error
+        }
         let container = try await open(
             for: schema,
             configuration: configuration,
@@ -1050,8 +1014,14 @@ extension DBContainer {
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
-        try P.validate()
-        let schemaInstance = try S.makeSchema()
+        let schemaInstance: Schema
+        do {
+            try P.validate()
+            schemaInstance = try S.makeSchema()
+        } catch {
+            await configuration.shutdownStorageEngineIfUnclaimed()
+            throw error
+        }
         let container = try await open(
             for: schemaInstance,
             configuration: configuration,

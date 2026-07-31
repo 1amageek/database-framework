@@ -132,6 +132,37 @@ struct DatabaseEndpointTests {
         }
     }
 
+    @Test("uncompiled operations return a typed unavailable failure")
+    func uncompiledOperationIsUnavailable() async throws {
+        let endpoint = try await makeDescribeEndpoint()
+        let request = try makeRequest(
+            operation: DatabaseOperations.schemaDescribe,
+            requestID: 45,
+            payload: EmptyOperationPayload()
+        )
+
+        let responseBytes = try await endpoint.execute(request)
+        let response = try DatabaseWireDecoder().decodeResponse(
+            DatabaseOperations.schemaDescribe,
+            from: responseBytes,
+            matching: 45
+        )
+
+        guard case .failure(let error) = response else {
+            Issue.record("Expected an unavailable operation failure")
+            return
+        }
+        #expect(error.category == .unavailable)
+        #expect(error.code == "OPERATION_UNAVAILABLE")
+        #expect(error.retryability == .never)
+        #expect(
+            error.details["operation"]
+                == .uint64(
+                    UInt64(DatabaseOperationIdentifier.schemaDescribe.rawValue)
+                )
+        )
+    }
+
     @Test("Oversized mapped details reduce to an encodable typed failure")
     func oversizedFailureDetailsUseBoundedFallback() async throws {
         let container = try await makeContainer()
@@ -292,7 +323,7 @@ struct DatabaseEndpointTests {
         )
         return try await DBContainer.open(
             for: schema,
-            configuration: DBConfiguration.testing(backend: .custom(InMemoryEngine())),
+            configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),

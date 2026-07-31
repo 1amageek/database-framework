@@ -53,7 +53,7 @@ struct DBConfigurationTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(
-                backend: .custom(database),
+                storageEngine: database,
                 monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock(),
                 indexConfigurations: [
@@ -83,7 +83,7 @@ struct DBConfigurationTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(
-                backend: .custom(database),
+                storageEngine: database,
                 monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock(),
                 indexConfigurations: [
@@ -111,7 +111,7 @@ struct DBConfigurationTests {
 
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .testing(backend: .custom(database)),
+            configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
             security: .disabled,
         )
@@ -191,7 +191,7 @@ struct DBConfigurationTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(
-                backend: .custom(database),
+                storageEngine: database,
                 monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock(),
                 indexConfigurations: [
@@ -224,7 +224,7 @@ struct DBConfigurationTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .init(
-                backend: .custom(database),
+                storageEngine: database,
                 monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock(),
                 indexConfigurations: [
@@ -246,67 +246,6 @@ struct DBConfigurationTests {
         let languages = Set(ftConfigs.map { $0.language })
         #expect(languages.contains("en"))
         #expect(languages.contains("ja"))
-    }
-}
-
-// MARK: - DBConfiguration Properties Tests
-
-@Suite("DBConfiguration Properties Tests", .heartbeat)
-struct DBConfigurationPropertiesTests {
-
-    @Persistable
-    struct IndexConfigurationUser {
-        #Directory<IndexConfigurationUser>("config_tests", "users")
-        var id: String = ""
-        var name: String = ""
-        var embedding: Vector = Vector(int8: [])
-    }
-
-    @Test("DBConfiguration stores all properties correctly")
-    func allPropertiesStored() {
-        let configs: [any IndexRuntimeConfiguration] = [
-            ContainerEmbeddingConfiguration(fieldName: "embedding", entityName: "IndexConfigurationUser", profileIdentifier: "test")
-        ]
-
-        let config = DBConfiguration(
-            name: "test-config",
-            backend: .fdb(),
-            monotonicClock: TestProcessMonotonicClock(),
-            wallClock: FixedTestWallClock(),
-            indexConfigurations: configs
-        )
-
-        #expect(config.name == "test-config")
-        #expect(config.indexConfigurations.count == 1)
-    }
-
-    @Test("DBConfiguration initializer stores common defaults")
-    func initializerDefaults() {
-        let config = DBConfiguration(
-            backend: .fdb(),
-            monotonicClock: TestProcessMonotonicClock(),
-            wallClock: FixedTestWallClock()
-        )
-
-        #expect(config.name == nil)
-        #expect(config.indexConfigurations.isEmpty)
-    }
-
-    @Test("DBConfiguration debugDescription includes all info")
-    func debugDescriptionComplete() {
-        let config = DBConfiguration(
-            name: "debug-test",
-            backend: .fdb(),
-            monotonicClock: TestProcessMonotonicClock(),
-            wallClock: FixedTestWallClock(),
-            indexConfigurations: [
-                ContainerEmbeddingConfiguration(fieldName: "embedding", entityName: "IndexConfigurationUser", profileIdentifier: "test")
-            ]
-        )
-
-        let desc = config.debugDescription
-        #expect(desc.contains("debug-test"))
-        #expect(desc.contains("indexConfigs: 1"))
     }
 }
 

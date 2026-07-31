@@ -256,7 +256,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV1.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV1.self)]),
             security: .disabled
         )
@@ -292,7 +292,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV2.self,
             migrationPlan: SQLitePolymorphicVectorAddMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try Self.vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self)]
             ),
@@ -331,7 +331,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV2.makeSchema(),
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self)]),
             security: .disabled
         )
@@ -359,7 +359,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV3.self,
             migrationPlan: SQLitePolymorphicVectorRebuildMigrationPlan.self,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try Self.vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV3.self)]
             ),

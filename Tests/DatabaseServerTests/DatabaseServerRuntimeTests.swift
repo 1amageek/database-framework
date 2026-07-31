@@ -11,8 +11,8 @@ import Testing
 
 @Suite("Database server runtime", .serialized)
 struct DatabaseServerRuntimeTests {
-    @Test("runtime registers every canonical operation handler")
-    func registersEveryOperationHandler() async throws {
+    @Test("runtime registers every compiled operation handler")
+    func registersEveryCompiledOperationHandler() async throws {
         let container = try await makeContainer()
         let runtime = try await makeRuntime(container: container)
 
@@ -28,6 +28,7 @@ struct DatabaseServerRuntimeTests {
         )
 
         #expect(response.runtimeVersion == "test-runtime")
+        #expect(response.features == DatabaseRuntimeCapabilityCatalog.features)
         #expect(
             response.jobOperations == [
                 try JobOperationIdentifier(
@@ -218,7 +219,7 @@ struct DatabaseServerRuntimeTests {
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration.testing(
-                backend: .custom(InMemoryEngine())
+                storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
@@ -235,7 +236,7 @@ struct DatabaseServerRuntimeTests {
     ) async throws -> DatabaseServerRuntime {
         try await DatabaseServerRuntime(
             container: container,
-            configuration: DatabaseServerRuntimeConfiguration(
+            configuration: try DatabaseServerRuntimeConfiguration(
                 identity: DatabaseRuntimeIdentity(version: "test-runtime"),
                 serviceFactory: AnyDatabaseServerServiceFactory(
                     ConfiguredCommandServiceFactory(
@@ -405,23 +406,24 @@ struct DatabaseServerRuntimeTests {
             context: DatabaseServerServiceContext
         ) async throws -> DatabaseServerServices {
             let unavailable = try UnavailableServices()
+            let readRegistry = try DatabaseReadCommandRegistry(
+                commands: readCommands
+            )
+            let writeRegistry = try DatabaseWriteCommandRegistry(
+                commands: writeCommands
+            )
             return DatabaseServerServices(
-                statementExecutor: AnyDatabaseStatementMutationExecutor(
-                    CanonicalDatabaseStatementMutationExecutor(
-                        runtimeLimits: context.runtimeLimits
-                    )
+                graphOperations: GraphOperationServices(
+                    statementExecutor:
+                        CanonicalDatabaseStatementMutationExecutor(
+                            runtimeLimits: context.runtimeLimits
+                        ),
+                    algorithm: AnyDatabaseGraphAlgorithmService(unavailable),
+                    ontology: AnyDatabaseOntologyService(unavailable),
+                    shacl: AnyDatabaseSHACLService(unavailable)
                 ),
-                graphAlgorithmService: AnyDatabaseGraphAlgorithmService(
-                    unavailable
-                ),
-                ontologyService: AnyDatabaseOntologyService(unavailable),
-                shaclService: AnyDatabaseSHACLService(unavailable),
-                readCommandRegistry: try DatabaseReadCommandRegistry(
-                    commands: readCommands
-                ),
-                writeCommandRegistry: try DatabaseWriteCommandRegistry(
-                    commands: writeCommands
-                ),
+                readCommandRegistry: readRegistry,
+                writeCommandRegistry: writeRegistry,
                 maintenanceService: AnyDatabaseMaintenanceService(unavailable),
                 jobService: AnyDatabaseJobService(unavailable)
             )

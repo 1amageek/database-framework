@@ -785,7 +785,7 @@ struct SPARQLSubSelectExecutionTests {
     }
 
     @Test("The optimizer preserves the SubSelect algebra boundary")
-    func optimizerPreservesSubSelectBoundary() throws {
+    func optimizerPreservesSubSelectBoundary() async throws {
         let subquery = try GraphPatternConverter.convert(
             .subquery(
                 SelectQuery(
@@ -814,7 +814,14 @@ struct SPARQLSubSelectExecutionTests {
             return
         }
         #expect(variable == "?visible")
-        #expect(optimizedPlan == originalPlan)
+        #expect(
+            optimizedPlan.occurrenceIdentifier
+                == originalPlan.occurrenceIdentifier
+        )
+        #expect(optimizedPlan.inputPolicy == originalPlan.inputPolicy)
+        let optimizedResults = try await execute(optimized)
+        let originalResults = try await execute(subquery)
+        #expect(optimizedResults == originalResults)
     }
 
     private func correlatedQuery() -> SelectQuery {

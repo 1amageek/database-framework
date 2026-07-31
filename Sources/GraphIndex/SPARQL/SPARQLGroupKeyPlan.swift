@@ -1,6 +1,6 @@
 import DatabaseKit
 
-public struct SPARQLGroupKeyPlan: Sendable, Hashable {
+public struct SPARQLGroupKeyPlan: Sendable {
     public let outputVariable: String
     public let expression: SPARQLExpressionPlan
 

@@ -167,9 +167,13 @@ let vectorConfig = VectorIndexConfiguration<Product>(
 
 let container = try await DBContainer.open(
     for: schema,
-    configuration: configuration,
-    runtimeConfiguration: runtime,
-    indexConfigurations: [vectorConfig]
+    configuration: DBConfiguration(
+        storageEngine: engine,
+        monotonicClock: applicationMonotonicClock,
+        wallClock: applicationWallClock,
+        indexConfigurations: [vectorConfig]
+    ),
+    runtimeConfiguration: runtime
 )
 ```
 

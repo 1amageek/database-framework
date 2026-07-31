@@ -1,5 +1,5 @@
 /// The terminal solution sequence consumed by ASK, CONSTRUCT, and DESCRIBE.
-public struct SPARQLSolutionFormExecutionPlan: Sendable, Equatable {
+public struct SPARQLSolutionFormExecutionPlan: Sendable {
     public let ordered: SPARQLOrderedSolutionPlan
     public let slice: SPARQLSlice
 

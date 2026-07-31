@@ -1,6 +1,6 @@
 /// Distinguishes the SPARQL implicit aggregate group from an explicit
 /// `GROUP BY` clause. Their empty-input semantics are intentionally different.
-public enum SPARQLGroupingPlan: Sendable, Hashable {
+public enum SPARQLGroupingPlan: Sendable {
     case implicitSingleGroup
     case explicit([SPARQLGroupKeyPlan])
 

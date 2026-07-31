@@ -88,7 +88,7 @@ struct PostgreSQLPointReadTests {
         let schema = try Schema(entities: [try PGSecuredPointReadItem.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(backend: .custom(engine)),
+            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGPointReadItem.self), try DatabaseFrameworkRuntime.entity(PGSecuredPointReadItem.self), try DatabaseFrameworkRuntime.entity(TenantOrder.self)],
                 authorizationPolicies: [

@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
@@ -40,3 +41,5 @@ public enum DatabaseSHACLDataSourceError: Error, Sendable, Equatable,
         }
     }
 }
+
+#endif

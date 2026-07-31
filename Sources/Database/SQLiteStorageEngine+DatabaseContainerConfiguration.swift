@@ -12,7 +12,7 @@ extension SQLiteStorageEngine.Configuration: DatabaseContainerConfiguration {
     ) async throws -> DBConfiguration {
         let engine = try SQLiteStorageEngine(configuration: self)
         return DBConfiguration(
-            backend: .custom(engine),
+            storageEngine: engine,
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             indexConfigurations: indexConfigurations

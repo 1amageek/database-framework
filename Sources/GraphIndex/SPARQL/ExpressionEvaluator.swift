@@ -17,13 +17,33 @@ import OntologyIndex
 /// Local SPARQL expression errors become `false` only at a FILTER boundary.
 /// Resource exhaustion, unsupported expressions, and runtime failures propagate.
 public struct ExpressionEvaluator: Sendable {
+    private struct OperandView: RandomAccessCollection {
+        typealias Index = Int
+        typealias Element = FieldValue
+
+        private let storage: ArraySlice<FieldValue>
+
+        init(_ storage: consuming ArraySlice<FieldValue>) {
+            self.storage = consume storage
+        }
+
+        var startIndex: Int { 0 }
+        var endIndex: Int { storage.count }
+
+        func index(after index: Int) -> Int {
+            index + 1
+        }
+
+        func index(before index: Int) -> Int {
+            index - 1
+        }
+
+        subscript(position: Int) -> FieldValue {
+            storage[storage.startIndex + position]
+        }
+    }
 
     private init() {}
-
-    /// Convert a canonical sigil-free QueryIR variable into a binding key.
-    private static func bindingKey(_ v: Variable) -> String {
-        "?\(v.name)"
-    }
 
     // MARK: - Boolean Evaluation (FILTER)
 
@@ -38,6 +58,22 @@ public struct ExpressionEvaluator: Sendable {
         do throws(SPARQLExpressionEvaluationError) {
             return try effectiveBooleanValue(
                 evaluate(expr, binding: binding)
+            )
+        } catch let error
+            where error.isSPARQLEvaluationError {
+            return false
+        }
+    }
+
+    /// Evaluates an already compiled expression plan without rebuilding its
+    /// flat program for each solution.
+    public static func evaluateAsBoolean(
+        _ plan: SPARQLExpressionPlan,
+        binding: VariableBinding
+    ) throws(SPARQLExpressionEvaluationError) -> Bool {
+        do throws(SPARQLExpressionEvaluationError) {
+            return try effectiveBooleanValue(
+                evaluate(plan, binding: binding)
             )
         } catch let error
             where error.isSPARQLEvaluationError {
@@ -65,311 +101,126 @@ public struct ExpressionEvaluator: Sendable {
     ///
     /// DatabaseKit.Expression errors are typed and never collapsed into an absent value.
     public static func evaluate(
-        _ expr: DatabaseKit.Expression,
+        _ expr: consuming DatabaseKit.Expression,
         binding: VariableBinding
     ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
-        switch expr {
-        // Identifiers
-        case .variable(let v):
-            let key = bindingKey(v)
-            guard let value = binding[key] else {
-                throw SPARQLExpressionEvaluationError.unboundVariable(key)
-            }
-            return value
-        case .column(let col):
-            guard let value = binding[col.column] else {
-                throw SPARQLExpressionEvaluationError.unboundVariable(col.column)
-            }
-            return value
-        case .literal(let lit):
-            do throws(SPARQLLiteralConversionError) {
-                return try lit.toSPARQLFieldValue()
-            } catch let error {
-                throw mapLiteralConversionError(error)
-            }
-
-        // Arithmetic
-        case .add(let lhs, let rhs):
-            return try numericBinary(lhs, rhs, binding: binding, operation: .add)
-        case .subtract(let lhs, let rhs):
-            return try numericBinary(lhs, rhs, binding: binding, operation: .subtract)
-        case .multiply(let lhs, let rhs):
-            return try numericBinary(lhs, rhs, binding: binding, operation: .multiply)
-        case .divide(let lhs, let rhs):
-            return try numericBinary(lhs, rhs, binding: binding, operation: .divide)
-        case .modulo(let lhs, let rhs):
-            return try numericBinary(lhs, rhs, binding: binding, operation: .modulo)
-        case .negate(let inner):
-            let value = try evaluate(inner, binding: binding)
-            guard let numeric = SPARQLNumericValue(value) else {
-                throw typeError("unary negation requires a numeric operand")
-            }
-            do {
-                return try numeric.negated().fieldValue()
-            } catch let error {
-                throw mapNumericError(error)
-            }
-
-        // Comparisons → Bool
-        case .equal(let lhs, let rhs):
-            return try booleanValue(equalValues(lhs, rhs, binding: binding))
-        case .notEqual(let lhs, let rhs):
-            return try booleanValue(!equalValues(lhs, rhs, binding: binding))
-        case .lessThan(let lhs, let rhs):
-            let comparison = try compareValues(lhs, rhs, binding: binding)
-            return try booleanValue(comparison == .ascending)
-        case .lessThanOrEqual(let lhs, let rhs):
-            let comparison = try compareValues(lhs, rhs, binding: binding)
-            return try booleanValue(
-                comparison == .ascending || comparison == .same
+        let program: SPARQLExpressionProgram
+        do throws(SPARQLExpressionCompilationError) {
+            try SPARQLExpressionValidator.validate(
+                expr,
+                limits: .default
             )
-        case .greaterThan(let lhs, let rhs):
-            let comparison = try compareValues(lhs, rhs, binding: binding)
-            return try booleanValue(comparison == .descending)
-        case .greaterThanOrEqual(let lhs, let rhs):
-            let comparison = try compareValues(lhs, rhs, binding: binding)
-            return try booleanValue(
-                comparison == .descending || comparison == .same
+            program = try SPARQLExpressionProgram(
+                consume expr,
+                limits: .default,
+                compileExistsPatterns: false
             )
-
-        // Logical
-        case .and(let lhs, let rhs):
-            return try evaluateLogicalAnd(lhs, rhs, binding: binding)
-        case .or(let lhs, let rhs):
-            return try evaluateLogicalOr(lhs, rhs, binding: binding)
-        case .not(let inner):
-            return try booleanValue(
-                !effectiveBooleanValue(evaluate(inner, binding: binding))
-            )
-
-        // Null / Bound checks
-        case .isNull(let inner):
-            return try booleanValue(evaluate(inner, binding: binding) == .null)
-        case .isNotNull(let inner):
-            return try booleanValue(evaluate(inner, binding: binding) != .null)
-        case .bound(let v):
-            return try booleanValue(binding.isBound(bindingKey(v)))
-
-        // Pattern matching
-        case .regex(let inner, let pattern, let flags):
-            let string = try evaluateAsString(inner, binding: binding)
-            return try booleanValue(
-                matchRegex(string, pattern: pattern, flags: flags)
-            )
-        case .like(let inner, let pattern):
-            let string = try evaluateAsString(inner, binding: binding)
-            let regex = try likeToRegex(pattern)
-            return try booleanValue(
-                matchRegex(string, pattern: regex, flags: nil)
-            )
-
-        // IN list
-        case .inList(let inner, let values):
-            return try evaluateInList(
-                inner,
-                values: values,
-                binding: binding,
-                negated: false
-            )
-
-        // NOT IN list
-        case .notInList(let inner, let values):
-            return try evaluateInList(
-                inner,
-                values: values,
-                binding: binding,
-                negated: true
-            )
-
-        // Functions
-        case .function(let call):
-            return try evaluateFunction(call, binding: binding)
-
-        // Conditional
-        case .caseWhen(let cases, let elseResult):
-            for pair in cases {
-                let condition = try effectiveBooleanValue(
-                    evaluate(pair.condition, binding: binding)
+        } catch let error {
+            switch error {
+            case .structural(
+                .resourceLimitExceeded(
+                    let resource,
+                    let actual,
+                    let maximum
                 )
-                if condition {
-                    return try evaluate(pair.result, binding: binding)
-                }
+            ):
+                throw .resourceLimitExceeded(
+                    stage: "compilation.\(resource.rawValue)",
+                    required: actual,
+                    maximum: maximum
+                )
+            case .resourceLimitExceeded(
+                let resource,
+                let actual,
+                let maximum
+            ):
+                throw .resourceLimitExceeded(
+                    stage: "compilation.\(resource.rawValue)",
+                    required: actual,
+                    maximum: maximum
+                )
+            case .invalidFunctionArity(let function, _, _):
+                throw .invalidFunctionArguments(function)
+            default:
+                throw .unsupportedExpression(error.description)
             }
-            if let elseExpr = elseResult {
-                return try evaluate(elseExpr, binding: binding)
-            }
-            return .null
+        }
+        return try evaluate(program, binding: binding)
+    }
 
-        case .coalesce(let exprs):
-            for expr in exprs {
-                do throws(SPARQLExpressionEvaluationError) {
-                    let value = try evaluate(expr, binding: binding)
-                    if value != .null { return value }
-                } catch let error
-                    where error.isSPARQLEvaluationError {
-                    continue
-                }
-            }
-            throw typeError("COALESCE has no expression without an error")
+    public static func evaluate(
+        _ plan: SPARQLExpressionPlan,
+        binding: VariableBinding
+    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
+        try evaluate(plan.program, binding: binding)
+    }
 
-        case .nullIf(let lhs, let rhs):
-            let left = try evaluate(lhs, binding: binding)
-            let right = try evaluate(rhs, binding: binding)
-            return try equalFieldValues(left, right) ? .null : left
-
-        // RDF-star operations (W3C RDF-star / SPARQL-star)
-        case .triple(let s, let p, let o):
-            let sv = try evaluate(s, binding: binding)
-            let pv = try evaluate(p, binding: binding)
-            let ov = try evaluate(o, binding: binding)
-            guard
-                  case .rdfTerm(let subject) = sv,
-                  case .rdfTerm(let predicate) = pv,
-                  case .rdfTerm(let object) = ov else {
-                throw typeError("TRIPLE requires RDF subject, predicate, and object terms")
-            }
-            let validatedSubject: RDFSubject
-            switch subject {
-            case .iri(let iri):
-                validatedSubject = .iri(iri)
-            case .blankNode(let identifier):
-                validatedSubject = .blankNode(identifier)
-            case .literal, .tripleTerm:
-                throw typeError(
-                    "TRIPLE requires an IRI or blank-node subject"
+    private static func evaluate(
+        _ program: SPARQLExpressionProgram,
+        binding: VariableBinding
+    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
+        var machine = SPARQLExpressionEvaluationMachine(
+            program: program,
+            binding: binding
+        )
+        while true {
+            switch machine.advance() {
+            case .finished(.value(let value)):
+                return value
+            case .finished(.expressionError(let error)):
+                throw error
+            case .action(.exists):
+                throw .unsupportedExpression(
+                    "EXISTS requires a runtime resolver"
+                )
+            case .action(.function(let name, _)):
+                throw .unsupportedExpression(
+                    "function \(name) requires a runtime resolver"
                 )
             }
-            guard case .iri(let predicateIRI) = predicate else {
-                throw typeError("TRIPLE requires an IRI predicate")
-            }
-            return .rdfTerm(
-                .tripleTerm(
-                    subject: validatedSubject,
-                    predicate: RDFPredicateIRI(predicateIRI),
-                    object: object
-                )
-            )
-
-        case .isTriple(let e):
-            let value = try evaluate(e, binding: binding)
-            guard case .rdfTerm(.tripleTerm) = value else {
-                return try booleanValue(false)
-            }
-            return try booleanValue(true)
-
-        case .subject(let e):
-            let value = try evaluate(e, binding: binding)
-            guard case .rdfTerm(.tripleTerm(let subject, _, _)) = value else {
-                throw typeError("SUBJECT requires an RDF triple term")
-            }
-            return .rdfTerm(subject.term)
-
-        case .predicate(let e):
-            let value = try evaluate(e, binding: binding)
-            guard case .rdfTerm(.tripleTerm(_, let predicate, _)) = value else {
-                throw typeError("PREDICATE requires an RDF triple term")
-            }
-            return .rdfTerm(predicate.term)
-
-        case .object(let e):
-            let value = try evaluate(e, binding: binding)
-            guard case .rdfTerm(.tripleTerm(_, _, let object)) = value else {
-                throw typeError("OBJECT requires an RDF triple term")
-            }
-            return .rdfTerm(object)
-
-        case .between(let value, let low, let high):
-            let lower = try compareValues(value, low, binding: binding)
-            let upper = try compareValues(value, high, binding: binding)
-            return try booleanValue(
-                lower != .ascending && upper != .descending
-            )
-
-        case .parameter, .inSubquery, .aggregate, .cast, .subquery, .exists:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                SPARQLExpressionSemanticName.describe(expr)
-            )
         }
     }
 
     // MARK: - Built-in Functions
 
-    private static func evaluateFunction(
-        _ call: FunctionCall,
-        binding: VariableBinding
-    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
-        let args = call.arguments
-        let identifier: SPARQLFunctionIdentifier
-        do {
-            identifier = try SPARQLFunctionIdentifier.resolve(call.name)
-        } catch {
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "function \(call.name)"
-            )
-        }
-
-        switch identifier {
-        case .extensionFunction:
-            throw SPARQLExpressionEvaluationError.unsupportedExpression(
-                "extension function \(call.name) requires a runtime resolver"
-            )
-        case .datatypeConstructor(let datatype):
-            try requireArgumentCount(
-                args,
-                count: 1,
-                function: datatype.rawValue
-            )
-            return try SPARQLDatatypeConstructor.evaluate(
-                identifier: datatype,
-                argument: evaluate(args[0], binding: binding)
-            )
-        case .builtIn(let builtIn):
-            return try evaluateBuiltIn(
-                builtIn,
-                arguments: args,
-                binding: binding
-            )
-        }
-    }
-
-    private static func evaluateBuiltIn(
+    static func evaluateBuiltIn(
         _ builtIn: SPARQLFunctionIdentifier.BuiltIn,
-        arguments args: [DatabaseKit.Expression],
-        binding: VariableBinding
+        arguments: consuming ArraySlice<FieldValue>
     ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
+        let args = OperandView(consume arguments)
         let name = builtIn.rawValue
 
         switch name {
         case "STR":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard let string = stringRepresentation(value) else {
                 throw typeError("STR requires an RDF term or scalar value")
             }
             return try stringValue(string)
         case "STRLEN":
             try requireArgumentCount(args, count: 1, function: name)
-            let string = try evaluateAsString(args[0], binding: binding)
+            let string = try evaluateAsString(args[0])
             guard let length = Int64(exactly: string.unicodeScalars.count) else {
                 throw resourceLimit(stage: "STRLEN", required: UInt64(string.utf8.count))
             }
             return try integerValue(length)
         case "UCASE":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluateStringValue(args[0], binding: binding)
+            let value = try evaluateStringValue(args[0])
             return try stringValue(
                 value.replacingLexicalForm(value.lexicalForm.uppercased())
             )
         case "LCASE":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluateStringValue(args[0], binding: binding)
+            let value = try evaluateStringValue(args[0])
             return try stringValue(
                 value.replacingLexicalForm(value.lexicalForm.lowercased())
             )
         case "CONTAINS":
             try requireArgumentCount(args, count: 2, function: name)
-            let string = try evaluateStringValue(args[0], binding: binding)
-            let substring = try evaluateStringValue(args[1], binding: binding)
+            let string = try evaluateStringValue(args[0])
+            let substring = try evaluateStringValue(args[1])
             guard string.acceptsArgument(substring) else {
                 throw typeError("CONTAINS arguments have incompatible language annotations")
             }
@@ -381,8 +232,8 @@ public struct ExpressionEvaluator: Sendable {
             )
         case "STRSTARTS":
             try requireArgumentCount(args, count: 2, function: name)
-            let string = try evaluateStringValue(args[0], binding: binding)
-            let prefix = try evaluateStringValue(args[1], binding: binding)
+            let string = try evaluateStringValue(args[0])
+            let prefix = try evaluateStringValue(args[1])
             guard string.acceptsArgument(prefix) else {
                 throw typeError("STRSTARTS arguments have incompatible language annotations")
             }
@@ -391,8 +242,8 @@ public struct ExpressionEvaluator: Sendable {
             )
         case "STRENDS":
             try requireArgumentCount(args, count: 2, function: name)
-            let string = try evaluateStringValue(args[0], binding: binding)
-            let suffix = try evaluateStringValue(args[1], binding: binding)
+            let string = try evaluateStringValue(args[0])
+            let suffix = try evaluateStringValue(args[1])
             guard string.acceptsArgument(suffix) else {
                 throw typeError("STRENDS arguments have incompatible language annotations")
             }
@@ -403,8 +254,8 @@ public struct ExpressionEvaluator: Sendable {
             guard args.count == 2 || args.count == 3 else {
                 throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
             }
-            let string = try evaluateStringValue(args[0], binding: binding)
-            let start = try evaluateAsInt64(args[1], binding: binding)
+            let string = try evaluateStringValue(args[0])
+            let start = try evaluateAsInt64(args[1])
             guard let platformStart = Int(exactly: start) else {
                 throw typeError("SUBSTR start is outside the platform index range")
             }
@@ -415,7 +266,7 @@ public struct ExpressionEvaluator: Sendable {
             }
             let from = scalars.index(scalars.startIndex, offsetBy: startOffset)
             if args.count == 3 {
-                let length = try evaluateAsInt64(args[2], binding: binding)
+                let length = try evaluateAsInt64(args[2])
                 guard length >= 0, let platformLength = Int(exactly: length) else {
                     throw typeError("SUBSTR length must be a representable non-negative integer")
                 }
@@ -435,7 +286,7 @@ public struct ExpressionEvaluator: Sendable {
             values.reserveCapacity(args.count)
             for argument in args {
                 values.append(
-                    try evaluateStringValue(argument, binding: binding)
+                    try evaluateStringValue(argument)
                 )
             }
             var requiredUTF8Count: UInt64 = 0
@@ -467,14 +318,14 @@ public struct ExpressionEvaluator: Sendable {
             guard args.count == 3 || args.count == 4 else {
                 throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
             }
-            let string = try evaluateStringValue(args[0], binding: binding)
-            let pattern = try evaluateStringValue(args[1], binding: binding)
-            let replacement = try evaluateStringValue(args[2], binding: binding)
+            let string = try evaluateStringValue(args[0])
+            let pattern = try evaluateStringValue(args[1])
+            let replacement = try evaluateStringValue(args[2])
             guard pattern.kind == .string, replacement.kind == .string else {
                 throw typeError("REPLACE pattern and replacement must be xsd:string")
             }
             let flags = args.count == 4
-                ? try evaluateAsString(args[3], binding: binding)
+                ? try evaluateAsString(args[3])
                 : nil
             return try stringValue(
                 string.replacingLexicalForm(
@@ -489,8 +340,8 @@ public struct ExpressionEvaluator: Sendable {
 
         case "STRBEFORE", "STRAFTER":
             try requireArgumentCount(args, count: 2, function: name)
-            let source = try evaluateStringValue(args[0], binding: binding)
-            let search = try evaluateStringValue(args[1], binding: binding)
+            let source = try evaluateStringValue(args[0])
+            let search = try evaluateStringValue(args[1])
             guard source.acceptsArgument(search) else {
                 throw typeError("\(name) arguments have incompatible language annotations")
             }
@@ -509,7 +360,7 @@ public struct ExpressionEvaluator: Sendable {
 
         case "ENCODE_FOR_URI":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluateStringValue(args[0], binding: binding)
+            let value = try evaluateStringValue(args[0])
             guard value.kind == .string else {
                 throw typeError("ENCODE_FOR_URI requires an xsd:string argument")
             }
@@ -517,7 +368,7 @@ public struct ExpressionEvaluator: Sendable {
 
         case "IRI", "URI":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             if case .rdfTerm(.iri) = value { return value }
             guard let string = SPARQLStringValue(value),
                   string.kind == .string else {
@@ -531,14 +382,14 @@ public struct ExpressionEvaluator: Sendable {
 
         case "LANGMATCHES":
             try requireArgumentCount(args, count: 2, function: name)
-            let language = try evaluateAsString(args[0], binding: binding)
-            let range = try evaluateAsString(args[1], binding: binding)
+            let language = try evaluateAsString(args[0])
+            let range = try evaluateAsString(args[1])
             return try booleanValue(languageMatches(language, range: range))
 
         case "SAMETERM":
             try requireArgumentCount(args, count: 2, function: name)
-            let lhs = try evaluate(args[0], binding: binding)
-            let rhs = try evaluate(args[1], binding: binding)
+            let lhs = args[0]
+            let rhs = args[1]
             guard case .rdfTerm(let lhsTerm) = lhs,
                   case .rdfTerm(let rhsTerm) = rhs else {
                 throw typeError("sameTerm requires RDF terms")
@@ -547,8 +398,8 @@ public struct ExpressionEvaluator: Sendable {
 
         case "STRDT":
             try requireArgumentCount(args, count: 2, function: name)
-            let lexical = try evaluateStringValue(args[0], binding: binding)
-            let datatype = try evaluate(args[1], binding: binding)
+            let lexical = try evaluateStringValue(args[0])
+            let datatype = args[1]
             guard lexical.kind == .string,
                   case .rdfTerm(.iri(let datatypeIRI)) = datatype else {
                 throw typeError("STRDT requires xsd:string and IRI arguments")
@@ -564,8 +415,8 @@ public struct ExpressionEvaluator: Sendable {
 
         case "STRLANG":
             try requireArgumentCount(args, count: 2, function: name)
-            let lexical = try evaluateStringValue(args[0], binding: binding)
-            let language = try evaluateStringValue(args[1], binding: binding)
+            let lexical = try evaluateStringValue(args[0])
+            let language = try evaluateStringValue(args[1])
             guard lexical.kind == .string, language.kind == .string else {
                 throw typeError("STRLANG requires xsd:string arguments")
             }
@@ -582,14 +433,14 @@ public struct ExpressionEvaluator: Sendable {
             guard args.count == 2 || args.count == 3 else {
                 throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
             }
-            let text = try evaluateAsString(args[0], binding: binding)
-            let pattern = try evaluateStringValue(args[1], binding: binding)
+            let text = try evaluateAsString(args[0])
+            let pattern = try evaluateStringValue(args[1])
             guard pattern.kind == .string else {
                 throw typeError("REGEX pattern must be xsd:string")
             }
             let flags: String?
             if args.count == 3 {
-                let flagValue = try evaluateStringValue(args[2], binding: binding)
+                let flagValue = try evaluateStringValue(args[2])
                 guard flagValue.kind == .string else {
                     throw typeError("REGEX flags must be xsd:string")
                 }
@@ -603,7 +454,7 @@ public struct ExpressionEvaluator: Sendable {
 
         case "ABS":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard let numeric = SPARQLNumericValue(value) else {
                 throw typeError("ABS requires a numeric operand")
             }
@@ -614,7 +465,7 @@ public struct ExpressionEvaluator: Sendable {
             }
         case "ROUND":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard let numeric = SPARQLNumericValue(value) else {
                 throw typeError("ROUND requires a numeric operand")
             }
@@ -625,7 +476,7 @@ public struct ExpressionEvaluator: Sendable {
             }
         case "CEIL":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard let numeric = SPARQLNumericValue(value) else {
                 throw typeError("CEIL requires a numeric operand")
             }
@@ -636,7 +487,7 @@ public struct ExpressionEvaluator: Sendable {
             }
         case "FLOOR":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard let numeric = SPARQLNumericValue(value) else {
                 throw typeError("FLOOR requires a numeric operand")
             }
@@ -648,33 +499,33 @@ public struct ExpressionEvaluator: Sendable {
 
         case "ISIRI", "ISURI":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard case .rdfTerm(.iri) = value else {
                 return try booleanValue(false)
             }
             return try booleanValue(true)
         case "ISBLANK":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard case .rdfTerm(.blankNode) = value else {
                 return try booleanValue(false)
             }
             return try booleanValue(true)
         case "ISLITERAL":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard case .rdfTerm(.literal) = value else {
                 return try booleanValue(false)
             }
             return try booleanValue(true)
         case "ISNUMERIC":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             return try booleanValue(SPARQLNumericValue(value) != nil)
 
         case "MD5", "SHA1", "SHA256", "SHA384", "SHA512":
             try requireArgumentCount(args, count: 1, function: name)
-            let string = try evaluateStringValue(args[0], binding: binding)
+            let string = try evaluateStringValue(args[0])
             guard string.kind == .string else {
                 throw typeError("\(name) requires an xsd:string argument")
             }
@@ -692,7 +543,7 @@ public struct ExpressionEvaluator: Sendable {
 
         case "DATATYPE":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard let datatype = xsdDatatype(value) else {
                 throw typeError("DATATYPE requires a literal")
             }
@@ -706,7 +557,7 @@ public struct ExpressionEvaluator: Sendable {
 
         case "LANG":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard case .rdfTerm(.literal(let literal)) = value else {
                 throw typeError("LANG requires an RDF literal")
             }
@@ -714,7 +565,7 @@ public struct ExpressionEvaluator: Sendable {
 
         case "LANGDIR":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard case .rdfTerm(.literal(let literal)) = value else {
                 throw typeError("LANGDIR requires an RDF literal")
             }
@@ -722,7 +573,7 @@ public struct ExpressionEvaluator: Sendable {
 
         case "HASLANG":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard case .rdfTerm(.literal(let literal)) = value else {
                 return try booleanValue(false)
             }
@@ -730,7 +581,7 @@ public struct ExpressionEvaluator: Sendable {
 
         case "HASLANGDIR":
             try requireArgumentCount(args, count: 1, function: name)
-            let value = try evaluate(args[0], binding: binding)
+            let value = args[0]
             guard case .rdfTerm(.literal(let literal)) = value else {
                 return try booleanValue(false)
             }
@@ -738,8 +589,8 @@ public struct ExpressionEvaluator: Sendable {
 
         case "TRIGRAM_SIM":
             try requireArgumentCount(args, count: 2, function: name)
-            let string = try evaluateAsString(args[0], binding: binding)
-            let pattern = try evaluateAsString(args[1], binding: binding)
+            let string = try evaluateAsString(args[0])
+            let pattern = try evaluateAsString(args[1])
             guard let numeric = SPARQLNumericValue(
                 .float64(TrigramSimilarity.score(string, pattern))
             ) else {
@@ -755,9 +606,9 @@ public struct ExpressionEvaluator: Sendable {
 
         case "STRLANGDIR":
             try requireArgumentCount(args, count: 3, function: name)
-            let string = try evaluateAsString(args[0], binding: binding)
-            let languageValue = try evaluateAsString(args[1], binding: binding)
-            let directionValue = try evaluateAsString(args[2], binding: binding)
+            let string = try evaluateAsString(args[0])
+            let languageValue = try evaluateAsString(args[1])
+            let directionValue = try evaluateAsString(args[2])
             let language: RDFLanguageTag
             do {
                 language = try RDFLanguageTag(languageValue)
@@ -779,31 +630,9 @@ public struct ExpressionEvaluator: Sendable {
                 )
             )
 
-        case "IF":
-            try requireArgumentCount(args, count: 3, function: name)
-            let condition = try effectiveBooleanValue(
-                evaluate(args[0], binding: binding)
-            )
-            return try evaluate(args[condition ? 1 : 2], binding: binding)
-
-        case "BOUND":
-            try requireArgumentCount(args, count: 1, function: name)
-            guard case .variable(let variable) = args[0] else {
-                throw SPARQLExpressionEvaluationError.invalidFunctionArguments(name)
-            }
-            return try booleanValue(binding.isBound(bindingKey(variable)))
-
-        case "COALESCE":
-            for arg in args {
-                do throws(SPARQLExpressionEvaluationError) {
-                    let value = try evaluate(arg, binding: binding)
-                    if value != .null { return value }
-                } catch let error
-                    where error.isSPARQLEvaluationError {
-                    continue
-                }
-            }
-            throw typeError("COALESCE has no expression without an error")
+        case "IF", "BOUND", "COALESCE":
+            throw SPARQLExpressionEvaluationError
+                .invalidFunctionArguments(name)
 
         default:
             throw SPARQLExpressionEvaluationError.unsupportedExpression(
@@ -815,17 +644,14 @@ public struct ExpressionEvaluator: Sendable {
     // MARK: - Helpers
 
     private static func evaluateAsString(
-        _ expr: DatabaseKit.Expression,
-        binding: VariableBinding
+        _ value: FieldValue
     ) throws(SPARQLExpressionEvaluationError) -> String {
-        try evaluateStringValue(expr, binding: binding).lexicalForm
+        try evaluateStringValue(value).lexicalForm
     }
 
     private static func evaluateStringValue(
-        _ expr: DatabaseKit.Expression,
-        binding: VariableBinding
+        _ value: FieldValue
     ) throws(SPARQLExpressionEvaluationError) -> SPARQLStringValue {
-        let value = try evaluate(expr, binding: binding)
         guard let string = SPARQLStringValue(value) else {
             throw typeError("string function requires a string literal")
         }
@@ -833,10 +659,8 @@ public struct ExpressionEvaluator: Sendable {
     }
 
     private static func evaluateAsInt64(
-        _ expr: DatabaseKit.Expression,
-        binding: VariableBinding
+        _ value: FieldValue
     ) throws(SPARQLExpressionEvaluationError) -> Int64 {
-        let value = try evaluate(expr, binding: binding)
         guard let integer = SPARQLNumericValue(value)?.exactInteger else {
             throw typeError("integer argument is required")
         }
@@ -912,114 +736,6 @@ public struct ExpressionEvaluator: Sendable {
             }
             return !numeric.isZero && !numeric.isNaN
         }
-    }
-
-    private enum EffectiveBooleanResult {
-        case value(Bool)
-        case expressionError(SPARQLExpressionEvaluationError)
-    }
-
-    private static func recoverableEffectiveBooleanValue(
-        _ expression: DatabaseKit.Expression,
-        binding: VariableBinding
-    ) throws(SPARQLExpressionEvaluationError) -> EffectiveBooleanResult {
-        do throws(SPARQLExpressionEvaluationError) {
-            return try .value(
-                effectiveBooleanValue(evaluate(expression, binding: binding))
-            )
-        } catch let error
-            where error.isSPARQLEvaluationError {
-            return .expressionError(error)
-        }
-    }
-
-    private static func evaluateLogicalAnd(
-        _ lhs: DatabaseKit.Expression,
-        _ rhs: DatabaseKit.Expression,
-        binding: VariableBinding
-    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
-        let left = try recoverableEffectiveBooleanValue(lhs, binding: binding)
-        switch left {
-        case .value(false):
-            return try booleanValue(false)
-        case .value(true):
-            return try booleanValue(
-                effectiveBooleanValue(evaluate(rhs, binding: binding))
-            )
-        case .expressionError(let leftError):
-            let right = try recoverableEffectiveBooleanValue(rhs, binding: binding)
-            if case .value(false) = right {
-                return try booleanValue(false)
-            }
-            throw leftError
-        }
-    }
-
-    private static func evaluateLogicalOr(
-        _ lhs: DatabaseKit.Expression,
-        _ rhs: DatabaseKit.Expression,
-        binding: VariableBinding
-    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
-        let left = try recoverableEffectiveBooleanValue(lhs, binding: binding)
-        switch left {
-        case .value(true):
-            return try booleanValue(true)
-        case .value(false):
-            return try booleanValue(
-                effectiveBooleanValue(evaluate(rhs, binding: binding))
-            )
-        case .expressionError(let leftError):
-            let right = try recoverableEffectiveBooleanValue(rhs, binding: binding)
-            if case .value(true) = right {
-                return try booleanValue(true)
-            }
-            throw leftError
-        }
-    }
-
-    private static func evaluateInList(
-        _ expression: DatabaseKit.Expression,
-        values: [DatabaseKit.Expression],
-        binding: VariableBinding,
-        negated: Bool
-    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
-        let value = try evaluate(expression, binding: binding)
-        var firstExpressionError: SPARQLExpressionEvaluationError?
-        for candidateExpression in values {
-            do throws(SPARQLExpressionEvaluationError) {
-                let candidate = try evaluate(candidateExpression, binding: binding)
-                if try equalFieldValues(value, candidate) {
-                    return try booleanValue(!negated)
-                }
-            } catch let error
-                where error.isSPARQLEvaluationError {
-                if firstExpressionError == nil { firstExpressionError = error }
-            }
-        }
-        if let firstExpressionError { throw firstExpressionError }
-        return try booleanValue(negated)
-    }
-
-    private static func equalValues(
-        _ lhs: DatabaseKit.Expression,
-        _ rhs: DatabaseKit.Expression,
-        binding: VariableBinding
-    ) throws(SPARQLExpressionEvaluationError) -> Bool {
-        try equalFieldValues(
-            evaluate(lhs, binding: binding),
-            evaluate(rhs, binding: binding)
-        )
-    }
-
-    private static func compareValues(
-        _ lhs: DatabaseKit.Expression,
-        _ rhs: DatabaseKit.Expression,
-        binding: VariableBinding
-    ) throws(SPARQLExpressionEvaluationError) -> SPARQLComparisonOrder? {
-        try compareFieldValues(
-            evaluate(lhs, binding: binding),
-            evaluate(rhs, binding: binding)
-        )
     }
 
     private static func compareFieldValues(
@@ -1100,73 +816,84 @@ public struct ExpressionEvaluator: Sendable {
         _ left: RDFTerm,
         _ right: RDFTerm
     ) throws(SPARQLExpressionEvaluationError) -> Bool {
-        switch (left, right) {
-        case (.iri(let lhs), .iri(let rhs)):
-            return lhs == rhs
-        case (.blankNode(let lhs), .blankNode(let rhs)):
-            return lhs == rhs
-        case (.literal(let lhs), .literal(let rhs)):
-            if lhs.languageTag != nil || rhs.languageTag != nil
-                || lhs.baseDirection != nil || rhs.baseDirection != nil {
-                return lhs == rhs
-            }
-            let comparison: SPARQLValueComparison
-            do throws(XSDValidationFailure) {
-                comparison = try SPARQLValueComparator().compare(lhs, rhs)
-            } catch let failure {
-                throw mapXSDValidationFailure(failure)
-            }
-            switch comparison {
-            case .equal: return true
-            case .less, .greater, .unordered: return false
-            case .typeError:
-                throw typeError("RDF literals are not value-comparable")
-            }
-        case (
-            .tripleTerm(let leftSubject, let leftPredicate, let leftObject),
-            .tripleTerm(let rightSubject, let rightPredicate, let rightObject)
-        ):
-            guard try equalRDFTerms(leftSubject.term, rightSubject.term) else {
+        var pending = [(left, right)]
+        while let (lhs, rhs) = pending.popLast() {
+            switch (lhs, rhs) {
+            case (.iri(let leftIRI), .iri(let rightIRI)):
+                guard leftIRI == rightIRI else {
+                    return false
+                }
+            case (
+                .blankNode(let leftIdentifier),
+                .blankNode(let rightIdentifier)
+            ):
+                guard leftIdentifier == rightIdentifier else {
+                    return false
+                }
+            case (
+                .literal(let leftLiteral),
+                .literal(let rightLiteral)
+            ):
+                if leftLiteral.languageTag != nil
+                    || rightLiteral.languageTag != nil
+                    || leftLiteral.baseDirection != nil
+                    || rightLiteral.baseDirection != nil {
+                    guard leftLiteral == rightLiteral else {
+                        return false
+                    }
+                    continue
+                }
+                let comparison: SPARQLValueComparison
+                do throws(XSDValidationFailure) {
+                    comparison = try SPARQLValueComparator().compare(
+                        leftLiteral,
+                        rightLiteral
+                    )
+                } catch let failure {
+                    throw mapXSDValidationFailure(failure)
+                }
+                switch comparison {
+                case .equal:
+                    continue
+                case .less, .greater, .unordered:
+                    return false
+                case .typeError:
+                    throw typeError(
+                        "RDF literals are not value-comparable"
+                    )
+                }
+            case (
+                .tripleTerm(
+                    let leftSubject,
+                    let leftPredicate,
+                    let leftObject
+                ),
+                .tripleTerm(
+                    let rightSubject,
+                    let rightPredicate,
+                    let rightObject
+                )
+            ):
+                pending.append((leftObject, rightObject))
+                pending.append(
+                    (leftPredicate.term, rightPredicate.term)
+                )
+                pending.append((leftSubject.term, rightSubject.term))
+            default:
                 return false
             }
-            guard try equalRDFTerms(
-                leftPredicate.term,
-                rightPredicate.term
-            ) else {
-                return false
-            }
-            return try equalRDFTerms(leftObject, rightObject)
-        default:
-            return false
         }
+        return true
     }
 
-    private static func numericBinary(
-        _ lhs: DatabaseKit.Expression,
-        _ rhs: DatabaseKit.Expression,
-        binding: VariableBinding,
-        operation: SPARQLNumericValue.ArithmeticOperation
-    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
-        let lhsValue = try evaluate(lhs, binding: binding)
-        let rhsValue = try evaluate(rhs, binding: binding)
-        guard let left = SPARQLNumericValue(lhsValue),
-              let right = SPARQLNumericValue(rhsValue) else {
-            throw typeError("arithmetic requires numeric operands")
-        }
-        do {
-            return try left.applying(operation, to: right).fieldValue()
-        } catch let error {
-            throw mapNumericError(error)
-        }
-    }
-
-    private static func requireArgumentCount(
-        _ arguments: [DatabaseKit.Expression],
+    private static func requireArgumentCount<Arguments: Collection>(
+        _ arguments: borrowing Arguments,
         count: Int,
         function: String
     ) throws(SPARQLExpressionEvaluationError) {
         guard arguments.count == count else {
-            throw SPARQLExpressionEvaluationError.invalidFunctionArguments(function)
+            throw SPARQLExpressionEvaluationError
+                .invalidFunctionArguments(function)
         }
     }
 
@@ -1536,5 +1263,303 @@ public struct ExpressionEvaluator: Sendable {
 
     private static func lowercaseHexDigit(_ nibble: UInt8) -> UInt8 {
         nibble < 10 ? 48 + nibble : 87 + nibble
+    }
+}
+
+extension ExpressionEvaluator {
+    static func evaluateImmediate(
+        _ opcode: SPARQLExpressionProgram.Opcode,
+        operands: ArraySlice<FieldValue>,
+        binding: VariableBinding
+    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
+        func operand(
+            _ offset: Int
+        ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
+            guard offset >= 0, offset < operands.count else {
+                throw .runtimeInvariant(
+                    "expression opcode received an invalid operand count"
+                )
+            }
+            return operands[operands.startIndex + offset]
+        }
+
+        func requireOperandCount(
+            _ expected: Int
+        ) throws(SPARQLExpressionEvaluationError) {
+            guard operands.count == expected else {
+                throw .runtimeInvariant(
+                    "expression opcode expected \(expected) operands; "
+                        + "actual=\(operands.count)"
+                )
+            }
+        }
+
+        func arithmetic(
+            _ operation: SPARQLNumericValue.ArithmeticOperation
+        ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
+            try requireOperandCount(2)
+            guard let left = SPARQLNumericValue(try operand(0)),
+                  let right = SPARQLNumericValue(try operand(1)) else {
+                throw typeError("arithmetic requires numeric operands")
+            }
+            do {
+                return try left.applying(operation, to: right).fieldValue()
+            } catch let error {
+                throw mapNumericError(error)
+            }
+        }
+
+        func comparison(
+            _ predicate: (SPARQLComparisonOrder?) -> Bool
+        ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
+            try requireOperandCount(2)
+            return try booleanValue(
+                predicate(
+                    try compareFieldValues(
+                        operand(0),
+                        operand(1)
+                    )
+                )
+            )
+        }
+
+        switch opcode {
+        case .literal(let literal):
+            try requireOperandCount(0)
+            do throws(SPARQLLiteralConversionError) {
+                return try literal.toSPARQLFieldValue()
+            } catch let error {
+                throw mapLiteralConversionError(error)
+            }
+
+        case .column(let column):
+            try requireOperandCount(0)
+            guard let value = binding[column] else {
+                throw .unboundVariable(column)
+            }
+            return value
+
+        case .variable(let variable):
+            try requireOperandCount(0)
+            let key = "?\(variable)"
+            guard let value = binding[key] else {
+                throw .unboundVariable(key)
+            }
+            return value
+
+        case .parameter:
+            throw .unsupportedExpression("unbound parameter")
+
+        case .add:
+            return try arithmetic(.add)
+        case .subtract:
+            return try arithmetic(.subtract)
+        case .multiply:
+            return try arithmetic(.multiply)
+        case .divide:
+            return try arithmetic(.divide)
+        case .modulo:
+            return try arithmetic(.modulo)
+        case .negate:
+            try requireOperandCount(1)
+            guard let numeric = SPARQLNumericValue(try operand(0)) else {
+                throw typeError(
+                    "unary negation requires a numeric operand"
+                )
+            }
+            do {
+                return try numeric.negated().fieldValue()
+            } catch let error {
+                throw mapNumericError(error)
+            }
+
+        case .equal:
+            try requireOperandCount(2)
+            return try booleanValue(
+                equalFieldValues(operand(0), operand(1))
+            )
+        case .notEqual:
+            try requireOperandCount(2)
+            return try booleanValue(
+                !equalFieldValues(operand(0), operand(1))
+            )
+        case .lessThan:
+            return try comparison { $0 == .ascending }
+        case .lessThanOrEqual:
+            return try comparison {
+                $0 == .ascending || $0 == .same
+            }
+        case .greaterThan:
+            return try comparison { $0 == .descending }
+        case .greaterThanOrEqual:
+            return try comparison {
+                $0 == .descending || $0 == .same
+            }
+
+        case .negation:
+            try requireOperandCount(1)
+            return try booleanValue(
+                !effectiveBooleanValue(operand(0))
+            )
+
+        case .isNull:
+            try requireOperandCount(1)
+            return try booleanValue(operand(0) == .null)
+        case .isNotNull:
+            try requireOperandCount(1)
+            return try booleanValue(operand(0) != .null)
+        case .bound(let variable):
+            try requireOperandCount(0)
+            return try booleanValue(binding.isBound("?\(variable)"))
+
+        case .like(let pattern):
+            try requireOperandCount(1)
+            let string = try evaluateAsString(operand(0))
+            return try booleanValue(
+                matchRegex(
+                    string,
+                    pattern: likeToRegex(pattern),
+                    flags: nil
+                )
+            )
+        case .regularExpression(let pattern, let flags):
+            try requireOperandCount(1)
+            let string = try evaluateAsString(operand(0))
+            return try booleanValue(
+                matchRegex(string, pattern: pattern, flags: flags)
+            )
+        case .between:
+            try requireOperandCount(3)
+            let lower = try compareFieldValues(
+                operand(0),
+                operand(1)
+            )
+            let upper = try compareFieldValues(
+                operand(0),
+                operand(2)
+            )
+            return try booleanValue(
+                lower != .ascending && upper != .descending
+            )
+
+        case .function(
+            let name,
+            let identifier,
+            let distinct
+        ):
+            guard !distinct else {
+                throw .invalidFunctionArguments(name)
+            }
+            switch identifier {
+            case .builtIn(let builtIn):
+                return try evaluateBuiltIn(
+                    builtIn,
+                    arguments: operands
+                )
+            case .datatypeConstructor(let datatype):
+                try requireOperandCount(1)
+                return try SPARQLDatatypeConstructor.evaluate(
+                    identifier: datatype,
+                    argument: operand(0)
+                )
+            case .extensionFunction:
+                throw .runtimeInvariant(
+                    "extension function reached immediate evaluation"
+                )
+            }
+
+        case .nullIf:
+            try requireOperandCount(2)
+            let left = try operand(0)
+            return try equalFieldValues(left, operand(1))
+                ? .null
+                : left
+
+        case .triple:
+            try requireOperandCount(3)
+            guard case .rdfTerm(let subject) = try operand(0),
+                  case .rdfTerm(let predicate) = try operand(1),
+                  case .rdfTerm(let object) = try operand(2) else {
+                throw typeError(
+                    "TRIPLE requires RDF subject, predicate, and object terms"
+                )
+            }
+            let validatedSubject: RDFSubject
+            switch subject {
+            case .iri(let iri):
+                validatedSubject = .iri(iri)
+            case .blankNode(let identifier):
+                validatedSubject = .blankNode(identifier)
+            case .literal, .tripleTerm:
+                throw typeError(
+                    "TRIPLE requires an IRI or blank-node subject"
+                )
+            }
+            guard case .iri(let predicateIRI) = predicate else {
+                throw typeError("TRIPLE requires an IRI predicate")
+            }
+            return .rdfTerm(
+                .tripleTerm(
+                    subject: validatedSubject,
+                    predicate: RDFPredicateIRI(predicateIRI),
+                    object: object
+                )
+            )
+
+        case .isTriple:
+            try requireOperandCount(1)
+            guard case .rdfTerm(.tripleTerm) = try operand(0) else {
+                return try booleanValue(false)
+            }
+            return try booleanValue(true)
+
+        case .subject:
+            try requireOperandCount(1)
+            guard case .rdfTerm(
+                .tripleTerm(let subject, _, _)
+            ) = try operand(0) else {
+                throw typeError(
+                    "SUBJECT requires an RDF triple term"
+                )
+            }
+            return .rdfTerm(subject.term)
+
+        case .predicate:
+            try requireOperandCount(1)
+            guard case .rdfTerm(
+                .tripleTerm(_, let predicate, _)
+            ) = try operand(0) else {
+                throw typeError(
+                    "PREDICATE requires an RDF triple term"
+                )
+            }
+            return .rdfTerm(predicate.term)
+
+        case .object:
+            try requireOperandCount(1)
+            guard case .rdfTerm(
+                .tripleTerm(_, _, let object)
+            ) = try operand(0) else {
+                throw typeError("OBJECT requires an RDF triple term")
+            }
+            return .rdfTerm(object)
+
+        case .cast(let target):
+            throw .unsupportedExpression("cast to \(target)")
+        case .unsupported(let name):
+            throw .unsupportedExpression(name)
+
+        case .conjunction, .disjunction, .membership,
+             .conditional, .coalesce, .caseSelection, .exists:
+            throw .runtimeInvariant(
+                "lazy expression opcode reached immediate evaluation"
+            )
+        }
+    }
+
+    static func canonicalBoolean(
+        _ value: Bool
+    ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
+        try booleanValue(value)
     }
 }

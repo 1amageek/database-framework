@@ -1,3 +1,4 @@
+#if DATABASE_SERVER_GRAPH_INDEXES
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
@@ -262,3 +263,4 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         let graphScope: SHACLDataGraphScope
     }
 }
+#endif
