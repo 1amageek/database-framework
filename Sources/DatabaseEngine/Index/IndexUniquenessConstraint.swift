@@ -5,7 +5,7 @@ import StorageKit
 enum IndexUniquenessConstraint {
     static func enforce<Item: Persistable>(
         index: Index,
-        item: borrowing Item,
+        item: Item,
         id: Tuple,
         state: IndexState,
         maintainer: any IndexUniquenessMaintainer<Item>,
