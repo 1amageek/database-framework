@@ -4,11 +4,14 @@ public enum ProductQuantizationError: Error, Sendable, Equatable, CustomStringCo
     case incompatibleSubspaceCount(dimensions: Int, subquantizers: Int)
     case emptyTrainingSet
     case vectorDimensionMismatch(expected: Int, actual: Int)
+    case nonFiniteTrainingElement(vector: Int, element: Int)
+    case nonFiniteInputElement(Int)
     case untrained
     case emptyCodebooks
     case inconsistentCentroidCount(subspace: Int, expected: Int, actual: Int)
     case invalidCentroidCount(Int)
     case centroidDimensionMismatch(subspace: Int, centroid: Int, expected: Int, actual: Int)
+    case nonFiniteCentroidElement(subspace: Int, centroid: Int, element: Int)
     case codeCountMismatch(expected: Int, actual: Int)
     case centroidCodeOutOfRange(subspace: Int, code: Int, centroidCount: Int)
     case subspaceOutOfRange(Int)
@@ -25,6 +28,10 @@ public enum ProductQuantizationError: Error, Sendable, Equatable, CustomStringCo
             return "Product quantization requires at least one training vector"
         case .vectorDimensionMismatch(let expected, let actual):
             return "Product quantization vector dimension mismatch: expected \(expected), got \(actual)"
+        case .nonFiniteTrainingElement(let vector, let element):
+            return "Product quantization training vector \(vector) contains a non-finite element at index \(element)"
+        case .nonFiniteInputElement(let element):
+            return "Product quantization input contains a non-finite element at index \(element)"
         case .untrained:
             return "Product quantizer has no trained codebooks"
         case .emptyCodebooks:
@@ -35,6 +42,8 @@ public enum ProductQuantizationError: Error, Sendable, Equatable, CustomStringCo
             return "Product quantization requires between 1 and 256 centroids per subspace, got \(count)"
         case .centroidDimensionMismatch(let subspace, let centroid, let expected, let actual):
             return "Product quantization centroid \(centroid) in subspace \(subspace) has dimension \(actual); expected \(expected)"
+        case .nonFiniteCentroidElement(let subspace, let centroid, let element):
+            return "Product quantization centroid \(centroid) in subspace \(subspace) contains a non-finite element at index \(element)"
         case .codeCountMismatch(let expected, let actual):
             return "Product quantization code count mismatch: expected \(expected), got \(actual)"
         case .centroidCodeOutOfRange(let subspace, let code, let centroidCount):

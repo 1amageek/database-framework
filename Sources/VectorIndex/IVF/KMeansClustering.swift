@@ -18,18 +18,18 @@ import DatabaseMath
 /// - Space: O(k × d) for centroids
 ///
 /// where n = vectors, k = clusters, d = dimensions
-public struct KMeansClustering: Sendable {
+struct KMeansClustering: Sendable {
     /// Number of clusters
-    public let k: Int
+    let k: Int
 
     /// Vector dimensions
-    public let dimensions: Int
+    let dimensions: Int
 
     /// Maximum iterations
-    public let maxIterations: Int
+    let maxIterations: Int
 
     /// Convergence threshold (stop if centroid movement < threshold)
-    public let convergenceThreshold: Double
+    let convergenceThreshold: Double
 
     /// Create K-means clustering configuration
     ///
@@ -38,7 +38,7 @@ public struct KMeansClustering: Sendable {
     ///   - dimensions: Vector dimensions
     ///   - maxIterations: Maximum iterations (default: 20)
     ///   - convergenceThreshold: Stop threshold (default: 1e-4)
-    public init(
+    init(
         k: Int,
         dimensions: Int,
         maxIterations: Int = 20,
@@ -58,7 +58,7 @@ public struct KMeansClustering: Sendable {
     ///
     /// - Parameter vectors: Training vectors (n × d)
     /// - Returns: Trained centroids (k × d)
-    public func train(vectors: [[Float]]) -> [[Float]] {
+    func train(vectors: [[Float]]) -> [[Float]] {
         guard !vectors.isEmpty else { return [] }
         guard vectors.count >= k else {
             // Not enough vectors for k clusters, use all vectors as centroids
@@ -93,7 +93,10 @@ public struct KMeansClustering: Sendable {
     ///   - vector: Vector to assign
     ///   - centroids: Current centroids
     /// - Returns: Index of nearest centroid
-    public func assignToNearestCentroid(vector: [Float], centroids: [[Float]]) -> Int {
+    private func assignToNearestCentroid(
+        vector: [Float],
+        centroids: [[Float]]
+    ) -> Int {
         var bestIndex = 0
         var bestDistance = Double.infinity
 
@@ -106,30 +109,6 @@ public struct KMeansClustering: Sendable {
         }
 
         return bestIndex
-    }
-
-    /// Find the nprobe nearest centroids to a query vector
-    ///
-    /// - Parameters:
-    ///   - query: Query vector
-    ///   - centroids: All centroids
-    ///   - nprobe: Number of nearest centroids to find
-    /// - Returns: Indices of nearest centroids sorted by distance
-    public func findNearestCentroids(
-        query: [Float],
-        centroids: [[Float]],
-        nprobe: Int
-    ) -> [Int] {
-        var distances: [(index: Int, distance: Double)] = []
-
-        for (i, centroid) in centroids.enumerated() {
-            let distance = VectorConversion.euclideanDistanceSquared(query, centroid)
-            distances.append((i, distance))
-        }
-
-        // Sort by distance and take top nprobe
-        distances.sort { $0.distance < $1.distance }
-        return Array(distances.prefix(nprobe).map { $0.index })
     }
 
     // MARK: - Private Methods

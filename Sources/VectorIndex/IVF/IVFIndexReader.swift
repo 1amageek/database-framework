@@ -29,7 +29,7 @@ struct IVFIndexReader: Sendable {
     }
 
     func search(
-        queryVector: [Float],
+        queryVector: Vector,
         k: Int,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
@@ -48,15 +48,24 @@ struct IVFIndexReader: Sendable {
             throw VectorIndexError.invalidStructure("IVF index not trained")
         }
 
-        let clustering = KMeansClustering(
-            k: parameters.nlist,
-            dimensions: dimensions
-        )
-        let nearestClusters = clustering.findNearestCentroids(
-            query: queryVector,
-            centroids: centroids,
-            nprobe: parameters.nprobe
-        )
+        var centroidDistances: [(index: Int, distance: Double)] = []
+        centroidDistances.reserveCapacity(centroids.count)
+        for (index, centroid) in centroids.enumerated() {
+            centroidDistances.append(
+                (
+                    index: index,
+                    distance: try VectorConversion.distance(
+                        metric: .euclidean,
+                        from: queryVector,
+                        to: centroid
+                    )
+                )
+            )
+        }
+        centroidDistances.sort { $0.distance < $1.distance }
+        let nearestClusters = centroidDistances
+            .prefix(parameters.nprobe)
+            .map { $0.index }
 
         var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
             maxSize: k,
@@ -88,14 +97,18 @@ struct IVFIndexReader: Sendable {
                         "Invalid IVF list primary key"
                     )
                 }
-                let vector = try VectorConversion.decodeFloatArray(
+                let vector = try VectorConversion.persistedVector(
                     value,
                     expectedCount: dimensions
                 )
                 nearest.insert(
                     (
                         primaryKey: try primaryKey.elements(),
-                        distance: distance(from: queryVector, to: vector)
+                        distance: try VectorConversion.distance(
+                            metric: metric,
+                            from: queryVector,
+                            to: vector
+                        )
                     )
                 )
             }
@@ -106,7 +119,7 @@ struct IVFIndexReader: Sendable {
 
     func loadCentroids(
         transaction: any TransactionAccess
-    ) async throws -> [[Float]] {
+    ) async throws -> [PersistedVectorView] {
         let centroidSubspace = subspace.subspace(
             IVFIndexStorageKey.centroids.rawValue
         )
@@ -121,27 +134,38 @@ struct IVFIndexReader: Sendable {
             streamingMode: .wantAll
         )
 
-        var centroids: [[Float]] = []
+        var centroids: [PersistedVectorView] = []
         centroids.reserveCapacity(entries.count)
-        for (_, value) in entries {
+        for (expectedIndex, entry) in entries.enumerated() {
+            let (key, value) = entry
+            do {
+                let keyTuple = try centroidSubspace.unpack(key)
+                guard keyTuple.count == 1,
+                      case .signedInteger(let encodedIndex) = try keyTuple.value(at: 0),
+                      Int(exactly: encodedIndex) == expectedIndex else {
+                    throw VectorIndexError.invalidStructure(
+                        "Invalid IVF centroid key sequence"
+                    )
+                }
+            } catch let error as VectorIndexError {
+                throw error
+            } catch {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid IVF centroid key sequence"
+                )
+            }
             centroids.append(
-                try VectorConversion.decodeFloatArray(
+                try VectorConversion.persistedVector(
                     value,
                     expectedCount: dimensions
                 )
             )
         }
-        return centroids
-    }
-
-    private func distance(from query: [Float], to candidate: [Float]) -> Double {
-        switch metric {
-        case .cosine:
-            return VectorConversion.cosineDistance(query, candidate)
-        case .euclidean:
-            return VectorConversion.euclideanDistance(query, candidate)
-        case .dotProduct:
-            return VectorConversion.dotProductDistance(query, candidate)
+        guard centroids.count <= parameters.nlist else {
+            throw VectorIndexError.invalidStructure(
+                "IVF centroid count exceeds the configured cluster count"
+            )
         }
+        return centroids
     }
 }

@@ -19,7 +19,7 @@ struct FlatVectorIndexReader: Sendable {
     }
 
     func search(
-        queryVector: [Float],
+        queryVector: Vector,
         k: Int,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
@@ -57,29 +57,22 @@ struct FlatVectorIndexReader: Sendable {
             } catch {
                 throw VectorIndexError.invalidStructure("Invalid Flat vector primary key")
             }
-            let vector = try VectorConversion.decodeFloatArray(
+            let vector = try VectorConversion.persistedVector(
                 value,
                 expectedCount: dimensions
             )
             nearest.insert(
                 (
                     primaryKey: try primaryKey.elements(),
-                    distance: distance(from: queryVector, to: vector)
+                    distance: try VectorConversion.distance(
+                        metric: metric,
+                        from: queryVector,
+                        to: vector
+                    )
                 )
             )
         }
 
         return nearest.sorted()
-    }
-
-    private func distance(from query: [Float], to candidate: [Float]) -> Double {
-        switch metric {
-        case .cosine:
-            return VectorConversion.cosineDistance(query, candidate)
-        case .euclidean:
-            return VectorConversion.euclideanDistance(query, candidate)
-        case .dotProduct:
-            return VectorConversion.dotProductDistance(query, candidate)
-        }
     }
 }

@@ -9,6 +9,10 @@ final class DatabaseStorageOperationLease: Sendable {
         self.lifecycle = lifecycle
     }
 
+    func belongs(to lifecycle: DatabaseStorageLifecycle) -> Bool {
+        self.lifecycle === lifecycle
+    }
+
     func finish() {
         let shouldFinish = didFinish.withLock { didFinish in
             guard !didFinish else { return false }

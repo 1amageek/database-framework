@@ -59,6 +59,203 @@ struct VectorAlgorithmMaintainerTests {
         #expect(throws: ProductQuantizationError.self) {
             _ = try quantizer.distance(for: [UInt8(2)], using: table)
         }
+        #expect(throws: ProductQuantizationError.nonFiniteCentroidElement(
+            subspace: 0,
+            centroid: 0,
+            element: 1
+        )) {
+            _ = try ProductQuantizer(
+                dimensions: 2,
+                codebooks: [[[1, .nan]]]
+            )
+        }
+        #expect(throws: ProductQuantizationError.nonFiniteInputElement(1)) {
+            _ = try quantizer.encode(vector: [1, .infinity])
+        }
+
+        let untrained = try ProductQuantizer(
+            dimensions: 2,
+            parameters: PQParameters(m: 1)
+        )
+        #expect(throws: ProductQuantizationError.nonFiniteTrainingElement(
+            vector: 0,
+            element: 1
+        )) {
+            _ = try untrained.train(vectors: [[1, .nan]])
+        }
+    }
+
+    @Test("IVF training rejects invalid input without marking the index trained")
+    func ivfTrainingRejectsInvalidInput() async throws {
+        let database = InMemoryEngine()
+        let context = makeContext(name: "ivf-invalid-training")
+        let maintainer = IVFIndexMaintainer<HNSWDocument>(
+            index: context.index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: context.indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: IVFParameters(
+                nlist: 2,
+                nprobe: 2,
+                kmeansIterations: 3
+            )
+        )
+
+        await #expect(throws: VectorIndexError.self) {
+            try await database.withTransaction { transaction in
+                try await maintainer.train(
+                    vectors: [],
+                    transaction: transaction
+                )
+            }
+        }
+        await #expect(throws: VectorIndexError.self) {
+            try await database.withTransaction { transaction in
+                try await maintainer.train(
+                    vectors: [[1, 0]],
+                    transaction: transaction
+                )
+            }
+        }
+        await #expect(throws: VectorIndexError.self) {
+            try await database.withTransaction { transaction in
+                try await maintainer.train(
+                    vectors: [[1, 0, .nan, 0]],
+                    transaction: transaction
+                )
+            }
+        }
+
+        let isTrained = try await database.withTransaction { transaction in
+            try await maintainer.isTrained(transaction: transaction)
+        }
+        #expect(!isTrained)
+
+        let invalidDimensionMaintainer = IVFIndexMaintainer<HNSWDocument>(
+            index: context.index,
+            dimensions: 0,
+            metric: .euclidean,
+            subspace: context.indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: IVFParameters(
+                nlist: 2,
+                nprobe: 2,
+                kmeansIterations: 3
+            )
+        )
+        await #expect(throws: VectorIndexError.self) {
+            try await database.withTransaction { transaction in
+                try await invalidDimensionMaintainer.train(
+                    vectors: [[1]],
+                    transaction: transaction
+                )
+            }
+        }
+    }
+
+    @Test("IVF training and retraining atomically redistribute stored vectors")
+    func ivfTrainingRedistributesStoredVectors() async throws {
+        let database = InMemoryEngine()
+        let context = makeContext(name: "ivf-retraining")
+        let maintainer = IVFIndexMaintainer<HNSWDocument>(
+            index: context.index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: context.indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: IVFParameters(
+                nlist: 2,
+                nprobe: 2,
+                kmeansIterations: 3
+            )
+        )
+        let docs = try algorithmDocuments()
+
+        try await database.withTransaction { transaction in
+            try await maintainer.scanItems(
+                docs.map { (item: $0, id: Tuple($0.id)) },
+                transaction: transaction
+            )
+            try await maintainer.train(
+                vectors: [[1, 0, 0, 0], [0, 1, 0, 0]],
+                transaction: transaction
+            )
+        }
+        #expect(try await collectValues(
+            database: database,
+            subspace: context.indexSubspace.subspace(0)
+        ).count == 2)
+
+        try await database.withTransaction { transaction in
+            try await maintainer.train(
+                vectors: [[1, 0, 0, 0]],
+                transaction: transaction
+            )
+        }
+        #expect(try await collectValues(
+            database: database,
+            subspace: context.indexSubspace.subspace(0)
+        ).count == 1)
+        #expect(try await collectValues(
+            database: database,
+            subspace: context.indexSubspace.subspace(2)
+        ).count == docs.count)
+        #expect(try await collectValues(
+            database: database,
+            subspace: context.indexSubspace.subspace(3)
+        ).count == docs.count)
+
+        let results = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [1, 0, 0, 0],
+                k: docs.count,
+                transaction: transaction
+            )
+        }
+        #expect(results.count == docs.count)
+        #expect(results.first?.primaryKey.first as? String == "exact")
+    }
+
+    @Test("IVF rejects non-contiguous persisted centroid keys")
+    func ivfRejectsNonContiguousCentroidKeys() async throws {
+        let database = InMemoryEngine()
+        let context = makeContext(name: "ivf-centroid-key-corrupt")
+        let maintainer = IVFIndexMaintainer<HNSWDocument>(
+            index: context.index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: context.indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: IVFParameters(nlist: 2, nprobe: 1, kmeansIterations: 3)
+        )
+
+        try await database.withTransaction { transaction in
+            try await maintainer.train(
+                vectors: [[1, 0, 0, 0], [0, 1, 0, 0]],
+                transaction: transaction
+            )
+            let centroidSubspace = context.indexSubspace.subspace(0)
+            let originalKey = centroidSubspace.pack(Tuple(0))
+            let payload = try #require(
+                try await transaction.getValue(for: originalKey)
+            )
+            try transaction.clear(key: originalKey)
+            try transaction.setValue(
+                payload,
+                for: centroidSubspace.pack(Tuple(2))
+            )
+        }
+
+        await #expect(throws: VectorIndexError.self) {
+            _ = try await database.withTransaction { transaction in
+                try await maintainer.search(
+                    queryVector: [1, 0, 0, 0],
+                    k: 1,
+                    transaction: transaction
+                )
+            }
+        }
     }
 
     @Test("IVF stores contiguous Float32 vector payloads and returns nearest neighbors after training")
@@ -219,6 +416,93 @@ struct VectorAlgorithmMaintainerTests {
         await #expect(throws: VectorIndexError.self) {
             _ = try await database.withTransaction { transaction in
                 try await maintainer.search(queryVector: [1, 0, 0, 0], k: 2, transaction: transaction)
+            }
+        }
+    }
+
+    @Test("PQ retraining replaces every persisted compressed code")
+    func pqRetrainingRebuildsPersistedCodes() async throws {
+        let database = InMemoryEngine()
+        let context = makeContext(name: "pq-retraining")
+        let maintainer = try PQIndexMaintainer<HNSWDocument>(
+            index: context.index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: context.indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: PQParameters(m: 2, niter: 2)
+        )
+        let docs = try algorithmDocuments()
+        let codesSubspace = context.indexSubspace.subspace(2)
+
+        try await database.withTransaction { transaction in
+            try await maintainer.scanItems(
+                docs.map { (item: $0, id: Tuple($0.id)) },
+                transaction: transaction
+            )
+            try await maintainer.train(transaction: transaction)
+            try transaction.setValue(
+                ByteString([0, 0]),
+                for: codesSubspace.pack(Tuple("orphan"))
+            )
+            try await maintainer.train(transaction: transaction)
+        }
+
+        let codeCount = try await collectValues(
+            database: database,
+            subspace: codesSubspace
+        ).count
+        #expect(codeCount == docs.count)
+
+        let results = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [1, 0, 0, 0],
+                k: docs.count,
+                transaction: transaction
+            )
+        }
+        #expect(results.count == docs.count)
+    }
+
+    @Test("PQ rejects non-contiguous persisted codebook keys")
+    func pqRejectsNonContiguousCodebookKeys() async throws {
+        let database = InMemoryEngine()
+        let context = makeContext(name: "pq-codebook-key-corrupt")
+        let maintainer = try PQIndexMaintainer<HNSWDocument>(
+            index: context.index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: context.indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: PQParameters(m: 2, niter: 2)
+        )
+        let docs = try algorithmDocuments()
+
+        try await database.withTransaction { transaction in
+            try await maintainer.scanItems(
+                docs.map { (item: $0, id: Tuple($0.id)) },
+                transaction: transaction
+            )
+            try await maintainer.train(transaction: transaction)
+            let codebookSubspace = context.indexSubspace.subspace(0)
+            let originalKey = codebookSubspace.pack(Tuple(0))
+            let payload = try #require(
+                try await transaction.getValue(for: originalKey)
+            )
+            try transaction.clear(key: originalKey)
+            try transaction.setValue(
+                payload,
+                for: codebookSubspace.pack(Tuple(2))
+            )
+        }
+
+        await #expect(throws: VectorIndexError.self) {
+            _ = try await database.withTransaction { transaction in
+                try await maintainer.search(
+                    queryVector: [1, 0, 0, 0],
+                    k: 1,
+                    transaction: transaction
+                )
             }
         }
     }

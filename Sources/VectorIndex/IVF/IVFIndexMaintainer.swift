@@ -41,6 +41,18 @@ import StorageKit
 /// )
 /// ```
 public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
+    private struct StoredListEntry: Sendable {
+        let primaryKey: Tuple
+        let payload: ByteString
+        let vector: PersistedVectorView
+    }
+
+    private struct ReassignedListEntry: Sendable {
+        let primaryKey: Tuple
+        let payload: ByteString
+        let clusterID: Int
+    }
+
     // MARK: - Properties
 
     public let index: Index
@@ -144,6 +156,30 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         vectors: [[Float]],
         transaction: any TransactionAccess
     ) async throws {
+        guard dimensions > 0 else {
+            throw VectorIndexError.invalidArgument(
+                "IVF vector dimensions must be positive"
+            )
+        }
+        guard !vectors.isEmpty else {
+            throw VectorIndexError.invalidArgument(
+                "IVF training requires at least one vector"
+            )
+        }
+        for (vectorIndex, vector) in vectors.enumerated() {
+            guard vector.count == dimensions else {
+                throw VectorIndexError.dimensionMismatch(
+                    expected: dimensions,
+                    actual: vector.count
+                )
+            }
+            guard vector.allSatisfy({ $0.isFinite }) else {
+                throw VectorIndexError.invalidArgument(
+                    "IVF training vector \(vectorIndex) contains a non-finite element"
+                )
+            }
+        }
+
         let clustering = KMeansClustering(
             k: parameters.nlist,
             dimensions: dimensions,
@@ -151,7 +187,38 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         )
 
         let centroids = clustering.train(vectors: vectors)
+        let storedEntries = try await loadStoredListEntries(
+            transaction: transaction
+        )
+        let centroidVectors = try centroids.map { centroid in
+            try Vector(float32: centroid)
+        }
+        let reassignedEntries = try storedEntries.map { entry in
+            var bestIndex = 0
+            var bestDistance = Double.infinity
+            for (index, centroid) in centroidVectors.enumerated() {
+                let distance = try VectorConversion.distance(
+                    metric: .euclidean,
+                    from: centroid,
+                    to: entry.vector
+                )
+                if distance < bestDistance {
+                    bestDistance = distance
+                    bestIndex = index
+                }
+            }
+            return ReassignedListEntry(
+                primaryKey: entry.primaryKey,
+                payload: entry.payload,
+                clusterID: bestIndex
+            )
+        }
+
         try await storeCentroids(centroids, transaction: transaction)
+        try rebuildStoredLists(
+            reassignedEntries,
+            transaction: transaction
+        )
 
         // Store metadata
         let metadata = IVFMetadata(
@@ -187,6 +254,19 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Returns: Array of (primaryKey, distance) sorted by distance
     public func search(
         queryVector: [Float],
+        k: Int,
+        transaction: any TransactionAccess
+    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        let retainedQuery = try Vector(float32: queryVector)
+        return try await search(
+            queryVector: retainedQuery,
+            k: k,
+            transaction: transaction
+        )
+    }
+
+    func search(
+        queryVector: Vector,
         k: Int,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
@@ -242,7 +322,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Add a vector to its inverted list
     private func addToInvertedList(
         id: Tuple,
-        vector: [Float],
+        vector: Vector,
         item: Item,
         transaction: any TransactionAccess
     ) async throws {
@@ -259,14 +339,26 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         if centroids.isEmpty {
             clusterId = 0
         } else {
-            let clustering = KMeansClustering(k: parameters.nlist, dimensions: dimensions)
-            clusterId = clustering.assignToNearestCentroid(vector: vector, centroids: centroids)
+            var bestIndex = 0
+            var bestDistance = Double.infinity
+            for (index, centroid) in centroids.enumerated() {
+                let distance = try VectorConversion.distance(
+                    metric: .euclidean,
+                    from: vector,
+                    to: centroid
+                )
+                if distance < bestDistance {
+                    bestDistance = distance
+                    bestIndex = index
+                }
+            }
+            clusterId = bestIndex
         }
 
         // Add to inverted list
         let listSubspace = subspace.subspace(IVFIndexStorageKey.lists.rawValue)
         let listKey = listSubspace.subspace(clusterId).pack(id)
-        let vectorValue = VectorConversion.floatArrayToBytes(vector)
+        let vectorValue = try VectorConversion.float32VectorToBytes(vector)
         try transaction.setValue(vectorValue, for: listKey)
 
         // Store assignment
@@ -277,19 +369,24 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Extract vector from item using VectorConversion
-    private func extractVector(from item: Item) throws -> [Float] {
+    private func extractVector(from item: Item) throws -> Vector {
         let fieldValues = try DataAccess.evaluate(
             item: item,
             expression: index.rootExpression
         )
 
-        let floatArray = try VectorConversion.extractFloatArray(from: fieldValues)
+        let vector = try VectorConversion.extractFloat32Vector(
+            from: fieldValues
+        )
 
-        guard floatArray.count == dimensions else {
-            throw VectorIndexError.dimensionMismatch(expected: dimensions, actual: floatArray.count)
+        guard vector.count == dimensions else {
+            throw VectorIndexError.dimensionMismatch(
+                expected: dimensions,
+                actual: vector.count
+            )
         }
 
-        return floatArray
+        return vector
     }
 
     /// Store centroids
@@ -298,12 +395,180 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionAccess
     ) async throws {
         let centroidSubspace = subspace.subspace(IVFIndexStorageKey.centroids.rawValue)
+        let (begin, end) = centroidSubspace.range()
+        try transaction.clearRange(beginKey: begin, endKey: end)
 
         // Store each centroid with its index
         for (i, centroid) in centroids.enumerated() {
             let key = centroidSubspace.pack(Tuple([i]))
-            let value = VectorConversion.floatArrayToBytes(centroid)
+            let value = try VectorConversion.floatMatrixToBytesForPersistence(
+                [centroid],
+                columnCount: dimensions
+            )
             try transaction.setValue(value, for: key)
+        }
+    }
+
+    /// Loads and validates the complete list/assignment state before training
+    /// mutates it. Persisted vector payloads remain retained byte views.
+    private func loadStoredListEntries(
+        transaction: any TransactionAccess
+    ) async throws -> [StoredListEntry] {
+        let listSubspace = subspace.subspace(
+            IVFIndexStorageKey.lists.rawValue
+        )
+        let assignmentSubspace = subspace.subspace(
+            IVFIndexStorageKey.assignments.rawValue
+        )
+        let listRange = listSubspace.range()
+        let assignmentRange = assignmentSubspace.range()
+        let listEntries = try await TransactionRangeCollection.collect(
+            using: transaction,
+            from: .firstGreaterOrEqual(listRange.begin),
+            to: .firstGreaterOrEqual(listRange.end),
+            limit: 0,
+            reverse: false,
+            snapshot: false,
+            streamingMode: .wantAll
+        )
+        let assignmentEntries = try await TransactionRangeCollection.collect(
+            using: transaction,
+            from: .firstGreaterOrEqual(assignmentRange.begin),
+            to: .firstGreaterOrEqual(assignmentRange.end),
+            limit: 0,
+            reverse: false,
+            snapshot: false,
+            streamingMode: .wantAll
+        )
+
+        var assignmentsByPrimaryKey: [ByteString: Int] = [:]
+        assignmentsByPrimaryKey.reserveCapacity(assignmentEntries.count)
+        for (key, value) in assignmentEntries {
+            let primaryKey: Tuple
+            let clusterID: Int
+            do {
+                primaryKey = try assignmentSubspace.unpack(key)
+                let assignment = try Tuple(packed: value)
+                guard assignment.count == 1,
+                      case .signedInteger(let encodedClusterID) = try assignment.value(at: 0),
+                      let decodedClusterID = Int(exactly: encodedClusterID),
+                      decodedClusterID >= 0 else {
+                    throw VectorIndexError.invalidStructure(
+                        "Invalid IVF assignment payload"
+                    )
+                }
+                clusterID = decodedClusterID
+            } catch let error as VectorIndexError {
+                throw error
+            } catch {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid IVF assignment state"
+                )
+            }
+            let packedPrimaryKey = primaryKey.pack()
+            guard assignmentsByPrimaryKey.updateValue(
+                clusterID,
+                forKey: packedPrimaryKey
+            ) == nil else {
+                throw VectorIndexError.invalidStructure(
+                    "Duplicate IVF assignment primary key"
+                )
+            }
+        }
+
+        var storedEntries: [StoredListEntry] = []
+        storedEntries.reserveCapacity(listEntries.count)
+        var observedPrimaryKeys: Set<ByteString> = []
+        observedPrimaryKeys.reserveCapacity(listEntries.count)
+        for (key, value) in listEntries {
+            let listKey: Tuple
+            let clusterID: Int
+            let primaryKey: Tuple
+            do {
+                listKey = try listSubspace.unpack(key)
+                guard listKey.count >= 2,
+                      case .signedInteger(let encodedClusterID) = try listKey.value(at: 0),
+                      let decodedClusterID = Int(exactly: encodedClusterID),
+                      decodedClusterID >= 0 else {
+                    throw VectorIndexError.invalidStructure(
+                        "Invalid IVF list key"
+                    )
+                }
+                clusterID = decodedClusterID
+                primaryKey = Tuple(
+                    try listKey.elements(in: 1..<listKey.count)
+                )
+            } catch let error as VectorIndexError {
+                throw error
+            } catch {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid IVF list key"
+                )
+            }
+
+            let packedPrimaryKey = primaryKey.pack()
+            guard observedPrimaryKeys.insert(packedPrimaryKey).inserted else {
+                throw VectorIndexError.invalidStructure(
+                    "Duplicate IVF list primary key"
+                )
+            }
+            guard assignmentsByPrimaryKey[packedPrimaryKey] == clusterID else {
+                throw VectorIndexError.invalidStructure(
+                    "IVF list and assignment state disagree"
+                )
+            }
+            storedEntries.append(
+                StoredListEntry(
+                    primaryKey: primaryKey,
+                    payload: value,
+                    vector: try VectorConversion.persistedVector(
+                        value,
+                        expectedCount: dimensions
+                    )
+                )
+            )
+        }
+
+        guard observedPrimaryKeys.count == assignmentsByPrimaryKey.count else {
+            throw VectorIndexError.invalidStructure(
+                "IVF assignment state contains an orphan primary key"
+            )
+        }
+        return storedEntries
+    }
+
+    /// Rebuilds list membership and assignments together in the caller's
+    /// transaction after every training pass.
+    private func rebuildStoredLists(
+        _ entries: [ReassignedListEntry],
+        transaction: any TransactionAccess
+    ) throws {
+        let listSubspace = subspace.subspace(
+            IVFIndexStorageKey.lists.rawValue
+        )
+        let assignmentSubspace = subspace.subspace(
+            IVFIndexStorageKey.assignments.rawValue
+        )
+        let listRange = listSubspace.range()
+        let assignmentRange = assignmentSubspace.range()
+        try transaction.clearRange(
+            beginKey: listRange.begin,
+            endKey: listRange.end
+        )
+        try transaction.clearRange(
+            beginKey: assignmentRange.begin,
+            endKey: assignmentRange.end
+        )
+
+        for entry in entries {
+            let listKey = listSubspace
+                .subspace(entry.clusterID)
+                .pack(entry.primaryKey)
+            try transaction.setValue(entry.payload, for: listKey)
+            try transaction.setValue(
+                Tuple(Int64(entry.clusterID)).pack(),
+                for: assignmentSubspace.pack(entry.primaryKey)
+            )
         }
     }
 

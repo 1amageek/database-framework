@@ -37,7 +37,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     private let selectedIndexName: String?
     private let graphCache: HNSWGraphCache
     private var graphResourceLimits: HNSWGraphResourceLimits
-    private var queryVector: [Float]?
+    private var queryVector: Vector?
     private var k: Int = 10
     private var distanceMetric: VectorDistanceMetric = .cosine
     private var filterPredicate: (@Sendable (T) async throws -> Bool)?
@@ -71,6 +71,28 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     ) throws(VectorQueryError) -> Self {
         guard k > 0 else {
             throw .invalidResultCount(k)
+        }
+        var copy = self
+        do {
+            copy.queryVector = try Vector(float32: vector)
+        } catch let error {
+            throw .invalidVectorElement(error)
+        }
+        copy.k = k
+        return copy
+    }
+
+    /// Sets a retained canonical query vector without copying its element
+    /// storage at the builder boundary.
+    public func query(
+        _ vector: Vector,
+        k: Int
+    ) throws(VectorQueryError) -> Self {
+        guard k > 0 else {
+            throw .invalidResultCount(k)
+        }
+        guard vector.elementType == .float32 else {
+            throw .invalidVectorElementType(vector.elementType)
         }
         var copy = self
         copy.queryVector = vector
@@ -248,7 +270,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     /// search.
     private func executeVectorSearch(
         indexName: String,
-        queryVector: [Float],
+        queryVector: Vector,
         k: Int,
         configuration: TransactionConfiguration,
         cachePolicy: CachePolicy
@@ -375,24 +397,28 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             }
         }
 
-        // Convert primary keys to Tuple for fetchItems
+        // Convert primary keys to Tuple without changing result order.
         let tuples = primaryKeysWithDistances.map { Tuple($0.primaryKey) }
 
-        // Fetch items by primary keys
-        let items = try await queryContext.fetchItems(ids: tuples, type: T.self, cachePolicy: cachePolicy)
-
-        var itemByIdentifier: [ByteString: T] = [:]
-        itemByIdentifier.reserveCapacity(items.count)
-        for item in items {
-            itemByIdentifier[try item.persistableIdentifierTuple().pack()] = item
-        }
+        // A vector index entry and its entity mutation share one transaction.
+        // A missing entity therefore indicates storage corruption and must not
+        // be reduced to a shorter successful result set.
+        let items = try await queryContext.fetchItemsPreservingOrder(
+            ids: tuples,
+            type: T.self,
+            cachePolicy: cachePolicy
+        )
 
         var results: [(item: T, distance: Double)] = []
         results.reserveCapacity(primaryKeysWithDistances.count)
-        for result in primaryKeysWithDistances {
-            if let item = itemByIdentifier[Tuple(result.primaryKey).pack()] {
-                results.append((item: item, distance: result.distance))
+        for (position, result) in primaryKeysWithDistances.enumerated() {
+            guard let item = items[position] else {
+                throw VectorQueryError.indexedItemMissing(
+                    index: indexName,
+                    primaryKey: tuples[position].pack()
+                )
             }
+            results.append((item: item, distance: result.distance))
         }
 
         return results.sorted { $0.distance < $1.distance }
@@ -411,7 +437,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             VectorReadParameter.fieldName: .string(fieldName),
             VectorReadParameter.dimensions: .int64(Int64(dimensions)),
             VectorReadParameter.queryVector: .vector(
-                try Vector(float32: vector)
+                vector
             ),
             VectorReadParameter.k: .int64(Int64(k)),
             VectorReadParameter.metric: .string(distanceMetric.rawValue)
@@ -434,7 +460,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     /// Execute HNSW search followed by application predicate evaluation.
     private func executeWithFilter(
         indexName: String,
-        queryVector: [Float],
+        queryVector: Vector,
         predicate: @escaping @Sendable (T) async throws -> Bool,
         configuration: TransactionConfiguration,
         cachePolicy: CachePolicy
@@ -645,7 +671,7 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
     private var base: PolymorphicQuery<Member>
     private let fieldName: String
     private let dimensions: Int
-    private var queryVector: [Float]?
+    private var queryVector: Vector?
     private var k: Int = 10
     private var distanceMetric: VectorDistanceMetric = .cosine
 
@@ -666,6 +692,29 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
     ) throws(VectorQueryError) -> Self {
         guard k > 0 else {
             throw .invalidResultCount(k)
+        }
+        var copy = self
+        do {
+            copy.queryVector = try Vector(float32: vector)
+        } catch let error {
+            throw .invalidVectorElement(error)
+        }
+        copy.k = k
+        copy.base = copy.base.limit(UInt64(k))
+        return copy
+    }
+
+    /// Sets a retained canonical query vector without copying its element
+    /// storage at the builder boundary.
+    public func query(
+        _ vector: Vector,
+        k: Int
+    ) throws(VectorQueryError) -> Self {
+        guard k > 0 else {
+            throw .invalidResultCount(k)
+        }
+        guard vector.elementType == .float32 else {
+            throw .invalidVectorElementType(vector.elementType)
         }
         var copy = self
         copy.queryVector = vector
@@ -730,7 +779,7 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
             VectorReadParameter.fieldName: .string(fieldName),
             VectorReadParameter.dimensions: .int64(Int64(dimensions)),
             VectorReadParameter.queryVector: .vector(
-                try Vector(float32: vector)
+                vector
             ),
             VectorReadParameter.k: .int64(Int64(k)),
             VectorReadParameter.metric: .string(distanceMetric.rawValue)
@@ -866,6 +915,12 @@ public enum VectorQueryError: Error, CustomStringConvertible {
     /// The nearest-neighbor result count must be positive.
     case invalidResultCount(Int)
 
+    /// Query vector contains a non-finite Float32 element.
+    case invalidVectorElement(VectorError)
+
+    /// Query vector does not use the Float32 index execution width.
+    case invalidVectorElementType(VectorElementType)
+
     /// Query vector dimension mismatch
     case dimensionMismatch(expected: Int, actual: Int)
 
@@ -887,12 +942,19 @@ public enum VectorQueryError: Error, CustomStringConvertible {
     /// Closure-based filters cannot be lowered into
     case closureFilterUnsupported
 
+    /// An index entry references an entity that is not present in storage.
+    case indexedItemMissing(index: String, primaryKey: ByteString)
+
     public var description: String {
         switch self {
         case .noQueryVector:
             return "No query vector provided for vector similarity search"
         case .invalidResultCount(let count):
             return "Vector result count must be positive, got \(count)"
+        case .invalidVectorElement(let error):
+            return "Vector query contains an invalid element: \(error)"
+        case .invalidVectorElementType(let elementType):
+            return "Vector query must use Float32 elements, got \(elementType)"
         case .dimensionMismatch(let expected, let actual):
             return "Vector dimension mismatch: expected \(expected), got \(actual)"
         case .indexNotFound(let name):
@@ -907,6 +969,8 @@ public enum VectorQueryError: Error, CustomStringConvertible {
             return "Filter not supported: \(reason)"
         case .closureFilterUnsupported:
             return "Closure-based vector filters are not supported on the canonical read path"
+        case .indexedItemMissing(let index, let primaryKey):
+            return "Vector index '\(index)' references missing item \(primaryKey)"
         }
     }
 }

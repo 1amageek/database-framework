@@ -12,12 +12,12 @@ import DatabaseKit
 /// The table owns one scalar contribution per centroid. Search evaluates a
 /// stored code by indexing these contributions without reconstructing a vector.
 public struct ProductQuantizedDistanceTable: Sendable {
-    fileprivate let metric: VectorMetric
-    fileprivate let contributions: [[Float]]
-    fileprivate let queryNormSquared: Float
-    fileprivate let centroidNormsSquared: [[Float]]
-    fileprivate let subquantizerCount: Int
-    fileprivate let centroidCount: Int
+    let metric: VectorMetric
+    let contributions: [Double]
+    let queryNormSquared: Double
+    let centroidNormsSquared: [Double]
+    let subquantizerCount: Int
+    let centroidCount: Int
 }
 
 /// Product Quantizer for compressing high-dimensional vectors
@@ -129,6 +129,15 @@ public struct ProductQuantizer: Sendable {
                         actual: centroid.count
                     )
                 }
+                if let elementIndex = centroid.firstIndex(where: {
+                    !$0.isFinite
+                }) {
+                    throw .nonFiniteCentroidElement(
+                        subspace: subspaceIndex,
+                        centroid: centroidIndex,
+                        element: elementIndex
+                    )
+                }
             }
         }
 
@@ -152,11 +161,21 @@ public struct ProductQuantizer: Sendable {
         guard !vectors.isEmpty else {
             throw .emptyTrainingSet
         }
-        for vector in vectors where vector.count != dimensions {
-            throw .vectorDimensionMismatch(
-                expected: dimensions,
-                actual: vector.count
-            )
+        for (vectorIndex, vector) in vectors.enumerated() {
+            guard vector.count == dimensions else {
+                throw .vectorDimensionMismatch(
+                    expected: dimensions,
+                    actual: vector.count
+                )
+            }
+            if let elementIndex = vector.firstIndex(where: {
+                !$0.isFinite
+            }) {
+                throw .nonFiniteTrainingElement(
+                    vector: vectorIndex,
+                    element: elementIndex
+                )
+            }
         }
 
         // Train each subquantizer independently
@@ -202,6 +221,7 @@ public struct ProductQuantizer: Sendable {
                 actual: vector.count
             )
         }
+        try validateFiniteInput(vector)
 
         var codes: [UInt8] = []
         codes.reserveCapacity(m)
@@ -260,36 +280,38 @@ public struct ProductQuantizer: Sendable {
                 actual: query.count
             )
         }
+        try validateFiniteInput(query)
 
-        var contributions: [[Float]] = []
-        contributions.reserveCapacity(m)
-        var centroidNormsSquared: [[Float]] = []
+        let (tableEntryCount, tableSizeOverflow) = m
+            .multipliedReportingOverflow(by: ksub)
+        guard !tableSizeOverflow else {
+            throw .incompatibleDistanceTable
+        }
+        var contributions: [Double] = []
+        contributions.reserveCapacity(tableEntryCount)
+        var centroidNormsSquared: [Double] = []
         if metric == .cosine {
-            centroidNormsSquared.reserveCapacity(m)
+            centroidNormsSquared.reserveCapacity(tableEntryCount)
         }
 
-        var queryNormSquared: Float = 0
+        var queryNormSquared = 0.0
         if metric == .cosine {
             for component in query {
-                queryNormSquared += component * component
+                let widened = Double(component)
+                queryNormSquared += widened * widened
             }
         }
 
         for subIndex in 0..<m {
             let queryOffset = subIndex * dsub
-            var subspaceContributions: [Float] = []
-            subspaceContributions.reserveCapacity(ksub)
-            var subspaceCentroidNormsSquared: [Float] = []
-            if metric == .cosine {
-                subspaceCentroidNormsSquared.reserveCapacity(ksub)
-            }
-
             for centroid in codebooks[subIndex] {
-                var contribution: Float = 0
-                var centroidNormSquared: Float = 0
+                var contribution = 0.0
+                var centroidNormSquared = 0.0
                 for componentIndex in 0..<dsub {
-                    let queryComponent = query[queryOffset + componentIndex]
-                    let centroidComponent = centroid[componentIndex]
+                    let queryComponent = Double(
+                        query[queryOffset + componentIndex]
+                    )
+                    let centroidComponent = Double(centroid[componentIndex])
                     switch metric {
                     case .euclidean:
                         let difference = queryComponent - centroidComponent
@@ -301,14 +323,10 @@ public struct ProductQuantizer: Sendable {
                         centroidNormSquared += centroidComponent * centroidComponent
                     }
                 }
-                subspaceContributions.append(contribution)
+                contributions.append(contribution)
                 if metric == .cosine {
-                    subspaceCentroidNormsSquared.append(centroidNormSquared)
+                    centroidNormsSquared.append(centroidNormSquared)
                 }
-            }
-            contributions.append(subspaceContributions)
-            if metric == .cosine {
-                centroidNormsSquared.append(subspaceCentroidNormsSquared)
             }
         }
 
@@ -333,38 +351,41 @@ public struct ProductQuantizer: Sendable {
         using table: ProductQuantizedDistanceTable
     ) throws(ProductQuantizationError) -> Double where Codes.Element == UInt8, Codes.Index == Int {
         try validate(codes)
+        let (expectedEntryCount, entryCountOverflow) = m
+            .multipliedReportingOverflow(by: ksub)
         guard table.subquantizerCount == m,
               table.centroidCount == ksub,
-              table.contributions.count == m,
-              table.contributions.allSatisfy({ $0.count == ksub }),
+              !entryCountOverflow,
+              table.contributions.count == expectedEntryCount,
               table.metric != .cosine || (
-                table.centroidNormsSquared.count == m
-                    && table.centroidNormsSquared.allSatisfy({ $0.count == ksub })
+                table.centroidNormsSquared.count == expectedEntryCount
               ) else {
             throw .incompatibleDistanceTable
         }
 
-        var contribution: Float = 0
-        var reconstructedNormSquared: Float = 0
+        var contribution = 0.0
+        var reconstructedNormSquared = 0.0
         for (subIndex, code) in codes.enumerated() {
-            contribution += table.contributions[subIndex][Int(code)]
+            let tableIndex = subIndex * ksub + Int(code)
+            contribution += table.contributions[tableIndex]
             if table.metric == .cosine {
-                reconstructedNormSquared += table.centroidNormsSquared[subIndex][Int(code)]
+                reconstructedNormSquared += table.centroidNormsSquared[
+                    tableIndex
+                ]
             }
         }
 
         switch table.metric {
         case .euclidean:
-            return DatabaseMath.squareRoot(Double(contribution))
+            return DatabaseMath.squareRoot(contribution)
         case .dotProduct:
-            return -Double(contribution)
+            return -contribution
         case .cosine:
-            let queryNorm = DatabaseMath.squareRoot(Double(table.queryNormSquared))
-            let reconstructedNorm = DatabaseMath.squareRoot(Double(reconstructedNormSquared))
-            guard queryNorm > 0 && reconstructedNorm > 0 else {
-                return 2.0
-            }
-            return 1.0 - Double(contribution) / (queryNorm * reconstructedNorm)
+            return productQuantizedCosineDistance(
+                dotProduct: contribution,
+                queryNormSquared: table.queryNormSquared,
+                reconstructedNormSquared: reconstructedNormSquared
+            )
         }
     }
 
@@ -377,15 +398,16 @@ public struct ProductQuantizer: Sendable {
     public func squaredEuclideanDistance(
         from query: [Float],
         to codes: [UInt8]
-    ) throws(ProductQuantizationError) -> Float {
+    ) throws(ProductQuantizationError) -> Double {
         guard query.count == dimensions else {
             throw .vectorDimensionMismatch(
                 expected: dimensions,
                 actual: query.count
             )
         }
+        try validateFiniteInput(query)
         let reconstructed = try decode(codes: codes)
-        return VectorConversion.euclideanDistanceSquaredFloat(query, reconstructed)
+        return VectorConversion.euclideanDistanceSquared(query, reconstructed)
     }
 
     // MARK: - Codebook Access
@@ -420,22 +442,27 @@ public struct ProductQuantizer: Sendable {
     // MARK: - Private Methods
 
     /// Extract subvector for a specific subspace
-    private func extractSubvector(from vector: [Float], subIndex: Int) -> [Float] {
+    private func extractSubvector(
+        from vector: [Float],
+        subIndex: Int
+    ) -> ArraySlice<Float> {
         let start = subIndex * dsub
         let end = start + dsub
-        return Array(vector[start..<end])
+        return vector[start..<end]
     }
 
     /// Find the nearest centroid without materializing the source subvector.
     private func findNearestCentroid(in vector: [Float], subIndex: Int) -> Int {
         let vectorOffset = subIndex * dsub
         var bestIdx = 0
-        var bestDist = Float.infinity
+        var bestDist = Double.infinity
 
         for (idx, centroid) in codebooks[subIndex].enumerated() {
-            var dist: Float = 0
+            var dist = 0.0
             for componentIndex in 0..<dsub {
-                let difference = vector[vectorOffset + componentIndex] - centroid[componentIndex]
+                let difference = Double(
+                    vector[vectorOffset + componentIndex]
+                ) - Double(centroid[componentIndex])
                 dist += difference * difference
             }
             if dist < bestDist {
@@ -466,6 +493,16 @@ public struct ProductQuantizer: Sendable {
             }
         }
     }
+
+    private func validateFiniteInput(
+        _ vector: [Float]
+    ) throws(ProductQuantizationError) {
+        if let elementIndex = vector.firstIndex(where: {
+            !$0.isFinite
+        }) {
+            throw .nonFiniteInputElement(elementIndex)
+        }
+    }
 }
 
 // MARK: - Subspace K-Means
@@ -485,13 +522,15 @@ private struct SubspaceKMeans {
     }
 
     /// Train centroids
-    func train(vectors: [[Float]]) -> [[Float]] {
+    func train(vectors: [ArraySlice<Float>]) -> [[Float]] {
         guard vectors.count >= k else {
             // Not enough vectors, pad with random duplicates
-            var centroids = vectors
+            var centroids = vectors.map(Array.init)
             while centroids.count < k {
                 let idx = Int.random(in: 0..<vectors.count)
-                centroids.append(vectors[idx])
+                // Centroids are mutable training outputs and therefore own
+                // their storage independently from the input training set.
+                centroids.append(Array(vectors[idx]))
             }
             return centroids
         }
@@ -516,48 +555,55 @@ private struct SubspaceKMeans {
         return centroids
     }
 
-    private func kMeansPlusPlusInit(vectors: [[Float]]) -> [[Float]] {
+    private func kMeansPlusPlusInit(
+        vectors: [ArraySlice<Float>]
+    ) -> [[Float]] {
         var centroids: [[Float]] = []
 
         // First centroid: random
         let firstIdx = Int.random(in: 0..<vectors.count)
-        centroids.append(vectors[firstIdx])
+        centroids.append(Array(vectors[firstIdx]))
 
         // Subsequent centroids
         for _ in 1..<k {
-            var distances: [Float] = []
-            var total: Float = 0
+            var distances: [Double] = []
+            var total = 0.0
 
             for vector in vectors {
-                let minDist = centroids.map { VectorConversion.euclideanDistanceSquaredFloat(vector, $0) }.min() ?? 0
+                let minDist = centroids.map {
+                    squaredDistance(vector, $0)
+                }.min() ?? 0
                 distances.append(minDist)
                 total += minDist
             }
 
             if total > 0 {
-                var target = Float.random(in: 0..<total)
+                var target = Double.random(in: 0..<total)
                 for (i, dist) in distances.enumerated() {
                     target -= dist
                     if target <= 0 {
-                        centroids.append(vectors[i])
+                        centroids.append(Array(vectors[i]))
                         break
                     }
                 }
             } else {
                 let idx = Int.random(in: 0..<vectors.count)
-                centroids.append(vectors[idx])
+                centroids.append(Array(vectors[idx]))
             }
         }
 
         return centroids
     }
 
-    private func assign(vectors: [[Float]], centroids: [[Float]]) -> [Int] {
+    private func assign(
+        vectors: [ArraySlice<Float>],
+        centroids: [[Float]]
+    ) -> [Int] {
         vectors.map { vector in
             var bestIdx = 0
-            var bestDist = Float.infinity
+            var bestDist = Double.infinity
             for (i, c) in centroids.enumerated() {
-                let d = VectorConversion.euclideanDistanceSquaredFloat(vector, c)
+                let d = squaredDistance(vector, c)
                 if d < bestDist {
                     bestDist = d
                     bestIdx = i
@@ -567,13 +613,22 @@ private struct SubspaceKMeans {
         }
     }
 
-    private func updateCentroids(vectors: [[Float]], assignments: [Int]) -> [[Float]] {
-        var sums: [[Float]] = Array(repeating: Array(repeating: 0, count: dimensions), count: k)
+    private func updateCentroids(
+        vectors: [ArraySlice<Float>],
+        assignments: [Int]
+    ) -> [[Float]] {
+        var sums: [[Double]] = Array(
+            repeating: Array(repeating: 0, count: dimensions),
+            count: k
+        )
         var counts: [Int] = Array(repeating: 0, count: k)
 
         for (i, assignment) in assignments.enumerated() {
             for d in 0..<dimensions {
-                sums[assignment][d] += vectors[i][d]
+                let vector = vectors[i]
+                sums[assignment][d] += Double(
+                    vector[vector.startIndex + d]
+                )
             }
             counts[assignment] += 1
         }
@@ -581,11 +636,13 @@ private struct SubspaceKMeans {
         var centroids: [[Float]] = []
         for i in 0..<k {
             if counts[i] > 0 {
-                let centroid = sums[i].map { $0 / Float(counts[i]) }
+                let centroid = sums[i].map { value in
+                    Float(value / Double(counts[i]))
+                }
                 centroids.append(centroid)
             } else {
                 let idx = Int.random(in: 0..<vectors.count)
-                centroids.append(vectors[idx])
+                centroids.append(Array(vectors[idx]))
             }
         }
 
@@ -593,12 +650,49 @@ private struct SubspaceKMeans {
     }
 
     private func hasConverged(old: [[Float]], new: [[Float]]) -> Bool {
-        let threshold: Float = 1e-4
+        let threshold = 1e-4
         for (o, n) in zip(old, new) {
-            if DatabaseMath.squareRoot(VectorConversion.euclideanDistanceSquaredFloat(o, n)) > threshold {
+            if DatabaseMath.squareRoot(
+                VectorConversion.euclideanDistanceSquared(o, n)
+            ) > threshold {
                 return false
             }
         }
         return true
     }
+
+    private func squaredDistance(
+        _ vector: ArraySlice<Float>,
+        _ centroid: [Float]
+    ) -> Double {
+        precondition(vector.count == dimensions)
+        precondition(centroid.count == dimensions)
+        var result = 0.0
+        for offset in 0..<dimensions {
+            let difference = Double(vector[vector.startIndex + offset])
+                - Double(centroid[offset])
+            result += difference * difference
+        }
+        return result
+    }
+}
+
+@inline(__always)
+func productQuantizedCosineDistance(
+    dotProduct: Double,
+    queryNormSquared: Double,
+    reconstructedNormSquared: Double
+) -> Double {
+    let queryNorm = DatabaseMath.squareRoot(queryNormSquared)
+    let reconstructedNorm = DatabaseMath.squareRoot(
+        reconstructedNormSquared
+    )
+    // Match the canonical cosine contract and SwiftHNSW: a zero vector is
+    // treated as orthogonal, yielding `1 - 0`.
+    guard queryNorm > 0, reconstructedNorm > 0 else { return 1.0 }
+    let similarity = min(
+        1.0,
+        max(-1.0, dotProduct / (queryNorm * reconstructedNorm))
+    )
+    return 1.0 - similarity
 }

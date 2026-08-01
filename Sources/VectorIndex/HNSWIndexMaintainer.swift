@@ -18,7 +18,7 @@ public let hnswMaxInlineNodes: Int64 = 10_000
 
 private struct HNSWStagedVector: Sendable {
     let label: UInt64
-    let vector: [Float]
+    let vector: Vector
 }
 
 // MARK: - HNSW Parameters
@@ -273,7 +273,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Insert a vector into the index
     private func insertVector(
         primaryKey: Tuple,
-        vector: [Float],
+        vector: Vector,
         transaction: any TransactionAccess
     ) async throws {
         let stagedVector = try await stageVector(
@@ -294,7 +294,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Stage vector storage and label mappings inside the current transaction.
     private func stageVector(
         primaryKey: Tuple,
-        vector: [Float],
+        vector: Vector,
         transaction: any TransactionAccess
     ) async throws -> HNSWStagedVector {
         // Get or create label for this primary key
@@ -302,7 +302,10 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         // Store vector data
         let vectorKey = vectorsSubspace.pack(Tuple(Int64(label)))
-        try transaction.setValue(VectorConversion.floatArrayToBytes(vector), for: vectorKey)
+        try transaction.setValue(
+            VectorConversion.float32VectorToBytes(vector),
+            for: vectorKey
+        )
 
         // Store bidirectional mapping
         let labelKey = labelsSubspace.pack(primaryKey)
@@ -311,7 +314,10 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let pkKey = primaryKeysSubspace.pack(Tuple(Int64(label)))
         try transaction.setValue(primaryKey.pack(), for: pkKey)
 
-        return HNSWStagedVector(label: label, vector: vector)
+        return HNSWStagedVector(
+            label: label,
+            vector: try storage.graphVector(from: vector)
+        )
     }
 
     /// Add staged vectors to an in-memory HNSW graph.
@@ -325,9 +331,15 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         )
 
         for stagedVector in stagedVectors {
-            try stagedVector.vector.withUnsafeBufferPointer { buffer in
+            guard let result = try stagedVector.vector.withFloat32Elements({ buffer in
                 try hnswIndex.add(buffer, label: stagedVector.label)
+                return ()
+            }) else {
+                throw VectorIndexError.invalidStructure(
+                    "Staged HNSW vector does not contain Float32 elements"
+                )
             }
+            _ = result
         }
     }
 
@@ -374,6 +386,21 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         searchParams: HNSWSearchParameters,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        let retainedQuery = try Vector(float32: queryVector)
+        return try await search(
+            queryVector: retainedQuery,
+            k: k,
+            searchParams: searchParams,
+            transaction: transaction
+        )
+    }
+
+    func search(
+        queryVector: Vector,
+        k: Int,
+        searchParams: HNSWSearchParameters,
+        transaction: any TransactionAccess
+    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         try await HNSWIndexReader(storage: storage).search(
             queryVector: queryVector,
             k: k,
@@ -389,6 +416,22 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let searchParams = HNSWSearchParameters(ef: max(k, parameters.efSearch))
+        return try await search(
+            queryVector: queryVector,
+            k: k,
+            searchParams: searchParams,
+            transaction: transaction
+        )
+    }
+
+    func search(
+        queryVector: Vector,
+        k: Int,
+        transaction: any TransactionAccess
+    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        let searchParams = HNSWSearchParameters(
+            ef: max(k, parameters.efSearch)
+        )
         return try await search(
             queryVector: queryVector,
             k: k,
@@ -414,6 +457,27 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Returns: Array of (primaryKey, distance) for items passing the predicate
     public func searchWithPostFilter(
         queryVector: [Float],
+        k: Int,
+        predicate: @escaping @Sendable (Item) async throws -> Bool,
+        fetchItem: @escaping @Sendable (Tuple, any TransactionAccess) async throws -> Item?,
+        postFilterParameters: HNSWPostFilterParameters = .default,
+        searchParams: HNSWSearchParameters = HNSWSearchParameters(),
+        transaction: any TransactionAccess
+    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        let retainedQuery = try Vector(float32: queryVector)
+        return try await searchWithPostFilter(
+            queryVector: retainedQuery,
+            k: k,
+            predicate: predicate,
+            fetchItem: fetchItem,
+            postFilterParameters: postFilterParameters,
+            searchParams: searchParams,
+            transaction: transaction
+        )
+    }
+
+    func searchWithPostFilter(
+        queryVector: Vector,
         k: Int,
         predicate: @escaping @Sendable (Item) async throws -> Bool,
         fetchItem: @escaping @Sendable (Tuple, any TransactionAccess) async throws -> Item?,
@@ -469,9 +533,10 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             )
         }
 
+        let graphQueryVector = try storage.graphVector(from: queryVector)
         let snapshot = try await storage.loadSearchSnapshot(transaction: transaction)
         let results = try snapshot.search(
-            queryVector: queryVector,
+            queryVector: graphQueryVector,
             k: expandedK,
             efSearch: expandedEf
         )
@@ -500,7 +565,14 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
                 if passes {
                     let elements = try pk.elements()
-                    output.append((primaryKey: elements, distance: Double(result.distance)))
+                    output.append(
+                        (
+                            primaryKey: elements,
+                            distance: try storage.canonicalDistance(
+                                from: result.distance
+                            )
+                        )
+                    )
 
                     // Stop if we have enough results
                     if output.count >= k {
@@ -614,13 +686,15 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Extract vector from item using VectorConversion
-    public func extractVector(from item: Item) throws -> [Float] {
+    public func extractVector(from item: Item) throws -> Vector {
         let fieldValues = try DataAccess.evaluate(
             item: item,
             expression: index.rootExpression
         )
 
-        let result = try VectorConversion.extractFloatArray(from: fieldValues)
+        let result = try VectorConversion.extractFloat32Vector(
+            from: fieldValues
+        )
 
         guard result.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(

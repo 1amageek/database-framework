@@ -499,7 +499,7 @@ struct IndexMaintenanceMatrixE2ETests {
 
             let results = try await context.findSimilar(MatrixVectorDocument.self)
                 .vector(MatrixVectorDocument.fields.embedding, dimensions: 3)
-                .query([1, 0, 0], k: 1)
+                .query(try Vector(float32: [1, 0, 0]), k: 1)
                 .execute()
             #expect(results.first?.item.id == close.id)
 

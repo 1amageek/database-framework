@@ -56,7 +56,10 @@ private struct VectorReadExecutor: IndexReadExecutor {
     ) async throws -> IndexReadResult {
         let fieldName = try requireString(VectorReadParameter.fieldName, from: indexScan.parameters)
         let dimensions = try requireInt(VectorReadParameter.dimensions, from: indexScan.parameters)
-        let queryVector = try requireFloatArray(VectorReadParameter.queryVector, from: indexScan.parameters)
+        let queryVector = try requireFloat32Vector(
+            VectorReadParameter.queryVector,
+            from: indexScan.parameters
+        )
         let k = try requireInt(VectorReadParameter.k, from: indexScan.parameters)
         let metricRawValue = try requireString(VectorReadParameter.metric, from: indexScan.parameters)
 
@@ -119,23 +122,21 @@ private struct VectorReadExecutor: IndexReadExecutor {
         guard let value = parameters[key]?.int64Value else {
             throw VectorReadError.missingParameter(key)
         }
-        return Int(value)
+        guard let result = Int(exactly: value) else {
+            throw VectorReadError.invalidParameter(key)
+        }
+        return result
     }
 
-    private func requireFloatArray(
+    private func requireFloat32Vector(
         _ key: String,
         from parameters: [String: FieldValue]
-    ) throws -> [Float] {
+    ) throws -> Vector {
         guard let vector = parameters[key]?.vectorValue,
               vector.elementType == .float32 else {
             throw VectorReadError.missingParameter(key)
         }
-        guard let values = vector.withFloat32Elements({ elements in
-            Array(elements)
-        }) else {
-            throw VectorReadError.invalidParameter(key)
-        }
-        return values
+        return vector
     }
 }
 
@@ -159,7 +160,10 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     ) async throws -> IndexReadResult {
         let fieldName = try requireString(VectorReadParameter.fieldName, from: indexScan.parameters)
         let dimensions = try requireInt(VectorReadParameter.dimensions, from: indexScan.parameters)
-        let queryVector = try requireFloatArray(VectorReadParameter.queryVector, from: indexScan.parameters)
+        let queryVector = try requireFloat32Vector(
+            VectorReadParameter.queryVector,
+            from: indexScan.parameters
+        )
         let k = try requireInt(VectorReadParameter.k, from: indexScan.parameters)
         let metricRawValue = try requireString(VectorReadParameter.metric, from: indexScan.parameters)
 
@@ -249,7 +253,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         indexName: String,
         fieldName: String,
         indexSubspace: Subspace,
-        queryVector: [Float],
+        queryVector: Vector,
         k: Int,
         context: DatabaseContext,
         transaction: any TransactionAccess
@@ -450,23 +454,21 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         guard let value = parameters[key]?.int64Value else {
             throw VectorReadError.missingParameter(key)
         }
-        return Int(value)
+        guard let result = Int(exactly: value) else {
+            throw VectorReadError.invalidParameter(key)
+        }
+        return result
     }
 
-    private func requireFloatArray(
+    private func requireFloat32Vector(
         _ key: String,
         from parameters: [String: FieldValue]
-    ) throws -> [Float] {
+    ) throws -> Vector {
         guard let vector = parameters[key]?.vectorValue,
               vector.elementType == .float32 else {
             throw VectorReadError.missingParameter(key)
         }
-        guard let values = vector.withFloat32Elements({ elements in
-            Array(elements)
-        }) else {
-            throw VectorReadError.invalidParameter(key)
-        }
-        return values
+        return vector
     }
 
     private func authorizationValue(

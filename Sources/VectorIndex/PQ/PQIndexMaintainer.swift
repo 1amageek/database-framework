@@ -164,7 +164,18 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Store codebooks
         try await storeCodebooks(trainedQuantizer.trainedCodebooks, transaction: transaction)
 
-        // Re-encode all vectors with new codebooks
+        // Rebuild the entire code set so retraining cannot retain an orphan or
+        // a code produced by an older codebook generation.
+        let codesSubspace = subspace.subspace(
+            PQIndexStorageKey.codes.rawValue
+        )
+        let codesRange = codesSubspace.range()
+        try transaction.clearRange(
+            beginKey: codesRange.begin,
+            endKey: codesRange.end
+        )
+
+        // Re-encode all vectors with new codebooks.
         for storedVector in storedVectors {
             let codes = try trainedQuantizer.encode(vector: storedVector.vector)
             try await storeCodes(codes, for: storedVector.primaryKey, transaction: transaction)
@@ -207,6 +218,19 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         k: Int,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        let retainedQuery = try Vector(float32: queryVector)
+        return try await search(
+            queryVector: retainedQuery,
+            k: k,
+            transaction: transaction
+        )
+    }
+
+    func search(
+        queryVector: Vector,
+        k: Int,
+        transaction: any TransactionAccess
+    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         try await PQIndexReader(
             subspace: subspace,
             dimensions: dimensions,
@@ -240,13 +264,13 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Add entry for a vector
     private func addEntry(
         id: Tuple,
-        vector: [Float],
+        vector: Vector,
         transaction: any TransactionAccess
     ) async throws {
         // Store original vector (for retraining)
         let vectorsSubspace = subspace.subspace(PQIndexStorageKey.vectors.rawValue)
         let vectorKey = vectorsSubspace.pack(id)
-        let vectorValue = floatArrayToBytes(vector)
+        let vectorValue = try VectorConversion.float32VectorToBytes(vector)
         try transaction.setValue(vectorValue, for: vectorKey)
 
         // If trained, also store codes
@@ -255,10 +279,15 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
             dimensions: dimensions,
             metric: metric,
             parameters: parameters
-        ).loadCodebooks(transaction: transaction)
+        ).loadCodebookViews(transaction: transaction)
         if !codebooks.isEmpty {
-            let quantizer = try ProductQuantizer(dimensions: dimensions, codebooks: codebooks)
-            let codes = try quantizer.encode(vector: vector)
+            let quantizer = try PersistedProductQuantizer(
+                dimensions: dimensions,
+                subquantizerCount: parameters.m,
+                centroidCount: parameters.ksub,
+                codebooks: codebooks
+            )
+            let codes = try quantizer.encode(vector)
             try await storeCodes(codes, for: id, transaction: transaction)
         }
     }
@@ -280,16 +309,15 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionAccess
     ) async throws {
         let codebooksSubspace = subspace.subspace(PQIndexStorageKey.codebooks.rawValue)
+        let range = codebooksSubspace.range()
+        try transaction.clearRange(beginKey: range.begin, endKey: range.end)
 
         for (m, subspaceCodebook) in codebooks.enumerated() {
-            // Flatten centroids for this subspace: [256][dsub] -> [256 * dsub]
-            var flattened: [Float] = []
-            for centroid in subspaceCodebook {
-                flattened.append(contentsOf: centroid)
-            }
-
             let key = codebooksSubspace.pack(Tuple([m]))
-            let value = floatArrayToBytes(flattened)
+            let value = try VectorConversion.floatMatrixToBytesForPersistence(
+                subspaceCodebook,
+                columnCount: dimensions / parameters.m
+            )
             try transaction.setValue(value, for: key)
         }
     }
@@ -305,7 +333,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
             to: .firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
-            snapshot: true,
+            snapshot: false,
             streamingMode: .wantAll
         )
 
@@ -318,7 +346,13 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
             } catch {
                 throw VectorIndexError.invalidStructure("Invalid PQ vector primary key")
             }
-            let vector = try VectorConversion.decodeFloatArray(value, expectedCount: dimensions)
+            // PQ training updates and revisits every element over multiple
+            // iterations, so it requires independent mutable-indexed arrays.
+            // This is an offline training boundary, not a search-path copy.
+            let vector = try VectorConversion.materializeFloatArrayForTraining(
+                value,
+                expectedCount: dimensions
+            )
             vectors.append(StoredVector(primaryKey: primaryKey, vector: vector))
         }
 
@@ -357,26 +391,24 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Extract vector from item using VectorConversion
-    private func extractVector(from item: Item) throws -> [Float] {
+    private func extractVector(from item: Item) throws -> Vector {
         let fieldValues = try DataAccess.evaluate(
             item: item,
             expression: index.rootExpression
         )
 
-        let floatArray = try VectorConversion.extractFloatArray(from: fieldValues)
+        let vector = try VectorConversion.extractFloat32Vector(
+            from: fieldValues
+        )
 
-        guard floatArray.count == dimensions else {
-            throw VectorIndexError.dimensionMismatch(expected: dimensions, actual: floatArray.count)
+        guard vector.count == dimensions else {
+            throw VectorIndexError.dimensionMismatch(
+                expected: dimensions,
+                actual: vector.count
+            )
         }
 
-        return floatArray
-    }
-
-    // MARK: - Serialization Helpers
-
-    /// Convert float array to bytes using VectorConversion
-    private func floatArrayToBytes(_ floats: [Float]) -> ByteString {
-        VectorConversion.floatArrayToBytes(floats)
+        return vector
     }
 
 }

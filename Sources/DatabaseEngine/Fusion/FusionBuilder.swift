@@ -181,7 +181,7 @@ public struct FusionBuilder<T: Persistable>: Sendable {
         // Filter all results to final candidate set
         // This ensures items filtered out in later stages don't appear in fusion
         let filteredResults: [[ScoredResult<T>]]
-        if let finalCandidates = candidateIDs, !finalCandidates.isEmpty {
+        if let finalCandidates = candidateIDs {
             filteredResults = allResults.map { results in
                 results.filter { finalCandidates.contains($0.item.id) }
             }

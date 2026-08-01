@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 import SwiftHNSW
 
@@ -9,7 +10,7 @@ struct HNSWIndexReader: Sendable {
     }
 
     func search(
-        queryVector: [Float],
+        queryVector: Vector,
         k: Int,
         parameters: HNSWSearchParameters,
         transaction: any TransactionAccess
@@ -27,11 +28,12 @@ struct HNSWIndexReader: Sendable {
             throw VectorIndexError.invalidArgument("ef must be positive")
         }
 
+        let graphQueryVector = try storage.graphVector(from: queryVector)
         let snapshot = try await storage.loadSearchSnapshot(
             transaction: transaction
         )
         let results = try snapshot.search(
-            queryVector: queryVector,
+            queryVector: graphQueryVector,
             k: k,
             efSearch: parameters.ef
         )
@@ -47,7 +49,9 @@ struct HNSWIndexReader: Sendable {
             output.append(
                 (
                     primaryKey: try primaryKey.elements(),
-                    distance: Double(result.distance)
+                    distance: try storage.canonicalDistance(
+                        from: result.distance
+                    )
                 )
             )
         }

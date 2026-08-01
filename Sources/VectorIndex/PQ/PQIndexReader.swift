@@ -37,7 +37,7 @@ struct PQIndexReader: Sendable {
     }
 
     func search(
-        queryVector: [Float],
+        queryVector: Vector,
         k: Int,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
@@ -51,13 +51,15 @@ struct PQIndexReader: Sendable {
             throw VectorIndexError.invalidArgument("k must be positive")
         }
 
-        let codebooks = try await loadCodebooks(transaction: transaction)
+        let codebooks = try await loadCodebookViews(transaction: transaction)
         guard !codebooks.isEmpty else {
             throw VectorIndexError.invalidStructure("PQ index not trained")
         }
 
-        let quantizer = try ProductQuantizer(
+        let quantizer = try PersistedProductQuantizer(
             dimensions: dimensions,
+            subquantizerCount: parameters.m,
+            centroidCount: parameters.ksub,
             codebooks: codebooks
         )
         let distanceTable = try quantizer.distanceTable(
@@ -106,9 +108,9 @@ struct PQIndexReader: Sendable {
         return nearest.sorted()
     }
 
-    func loadCodebooks(
+    func loadCodebookViews(
         transaction: any TransactionAccess
-    ) async throws -> [[[Float]]] {
+    ) async throws -> [PersistedVectorView] {
         let codebooksSubspace = subspace.subspace(
             PQIndexStorageKey.codebooks.rawValue
         )
@@ -124,22 +126,39 @@ struct PQIndexReader: Sendable {
         )
 
         let dimensionsPerSubquantizer = dimensions / parameters.m
-        var codebooks: [[[Float]]] = []
-        codebooks.reserveCapacity(entries.count)
-        for (_, value) in entries {
-            let flattened = try VectorConversion.decodeFloatArray(
-                value,
-                expectedCount: parameters.ksub * dimensionsPerSubquantizer
+        let (expectedCodebookValueCount, overflow) = parameters.ksub
+            .multipliedReportingOverflow(by: dimensionsPerSubquantizer)
+        guard !overflow else {
+            throw VectorIndexError.invalidArgument(
+                "PQ codebook shape exceeds the current platform limit"
             )
-            var centroids: [[Float]] = []
-            centroids.reserveCapacity(parameters.ksub)
-            for index in 0..<parameters.ksub {
-                let start = index * dimensionsPerSubquantizer
-                centroids.append(
-                    Array(flattened[start..<(start + dimensionsPerSubquantizer)])
+        }
+        var codebooks: [PersistedVectorView] = []
+        codebooks.reserveCapacity(entries.count)
+        for (expectedIndex, entry) in entries.enumerated() {
+            let (key, value) = entry
+            do {
+                let keyTuple = try codebooksSubspace.unpack(key)
+                guard keyTuple.count == 1,
+                      case .signedInteger(let encodedIndex) = try keyTuple.value(at: 0),
+                      Int(exactly: encodedIndex) == expectedIndex else {
+                    throw VectorIndexError.invalidStructure(
+                        "Invalid PQ codebook key sequence"
+                    )
+                }
+            } catch let error as VectorIndexError {
+                throw error
+            } catch {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid PQ codebook key sequence"
                 )
             }
-            codebooks.append(centroids)
+            codebooks.append(
+                try VectorConversion.persistedVector(
+                    value,
+                    expectedCount: expectedCodebookValueCount
+                )
+            )
         }
 
         guard codebooks.isEmpty || codebooks.count == parameters.m else {

@@ -1,5 +1,6 @@
 import DatabaseTypes
 import DatabaseKit
+import DatabaseMath
 import StorageKit
 import SwiftHNSW
 
@@ -32,7 +33,7 @@ struct HNSWIndexStorage: Sendable {
 
     private let subspace: Subspace
     let dimensions: Int
-    private let metric: VectorMetric
+    let metric: VectorMetric
     private let parameters: HNSWParameters
     private let graphCache: HNSWGraphCache
     private let resourceLimits: HNSWGraphResourceLimits
@@ -59,6 +60,115 @@ struct HNSWIndexStorage: Sendable {
         self.graphChunksSubspace = subspace.subspace("_graphChunks")
         self.graphMetadataKey = subspace.pack(Tuple("_graphMetadata"))
         self.nextLabelKey = subspace.pack(Tuple("_nextLabel"))
+    }
+
+    /// Converts SwiftHNSW's public metric values to the canonical database
+    /// distance contract. SwiftHNSW reports inner product as `1 - dot`, while
+    /// the other vector backends report `-dot`.
+    func canonicalDistance(
+        from hnswDistance: Float
+    ) throws -> Double {
+        guard hnswDistance.isFinite else {
+            throw VectorIndexError.invalidStructure(
+                "HNSW produced a non-finite comparison distance"
+            )
+        }
+        switch metric {
+        case .dotProduct:
+            return Double(hnswDistance) - 1.0
+        case .cosine, .euclidean:
+            return Double(hnswDistance)
+        }
+    }
+
+    /// Prepares values for SwiftHNSW's Float32 comparison arithmetic. Cosine
+    /// inputs whose norm would overflow Float32 are normalized with Double
+    /// intermediates. L2 and inner-product inputs cannot be rescaled without
+    /// changing their metric, so an unsafe magnitude is rejected explicitly.
+    func graphVector(from vector: Vector) throws -> Vector {
+        guard vector.elementType == .float32 else {
+            throw VectorIndexError.invalidArgument(
+                "HNSW graph vectors require Float32 elements"
+            )
+        }
+        guard vector.count == dimensions else {
+            throw VectorIndexError.dimensionMismatch(
+                expected: dimensions,
+                actual: vector.count
+            )
+        }
+
+        var maximumMagnitude = 0.0
+        guard vector.withFloat32Elements({ elements in
+            for element in elements {
+                maximumMagnitude = max(
+                    maximumMagnitude,
+                    abs(Double(element))
+                )
+            }
+            return ()
+        }) != nil else {
+            throw VectorIndexError.invalidStructure(
+                "HNSW graph vector storage is inconsistent"
+            )
+        }
+
+        let dimensionCount = Double(max(dimensions, 1))
+        let comparisonScale: Double
+        switch metric {
+        case .euclidean:
+            comparisonScale = 4.0 * dimensionCount
+        case .dotProduct, .cosine:
+            comparisonScale = dimensionCount
+        }
+        let safeMagnitude = 0.5 * DatabaseMath.squareRoot(
+            Double(Float.greatestFiniteMagnitude) / comparisonScale
+        )
+        guard maximumMagnitude > safeMagnitude else {
+            return vector
+        }
+
+        guard metric == .cosine else {
+            throw VectorIndexError.invalidArgument(
+                "HNSW Float32 comparison arithmetic cannot represent this vector magnitude"
+            )
+        }
+        guard maximumMagnitude > 0 else {
+            return vector
+        }
+
+        var scaledNormSquared = 0.0
+        var normalized: [Float] = []
+        normalized.reserveCapacity(dimensions)
+        guard vector.withFloat32Elements({ elements in
+            for element in elements {
+                let scaled = Double(element) / maximumMagnitude
+                scaledNormSquared += scaled * scaled
+            }
+            let inverseNorm = 1.0 / DatabaseMath.squareRoot(
+                scaledNormSquared
+            )
+            for element in elements {
+                normalized.append(
+                    Float(
+                        (Double(element) / maximumMagnitude)
+                            * inverseNorm
+                    )
+                )
+            }
+            return ()
+        }) != nil else {
+            throw VectorIndexError.invalidStructure(
+                "HNSW graph vector storage is inconsistent"
+            )
+        }
+        do {
+            return try Vector(float32: normalized)
+        } catch {
+            throw VectorIndexError.invalidStructure(
+                "HNSW cosine normalization produced an invalid vector"
+            )
+        }
     }
 
     func loadOrCreateIndex(

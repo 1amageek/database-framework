@@ -31,15 +31,20 @@ internal final class HNSWGraphCache: Sendable {
         }
 
         func search(
-            queryVector: [Float],
+            queryVector: Vector,
             k: Int,
             efSearch: Int
         ) throws -> [SearchResult] {
             try searchLock.withLock { _ in
                 try index.setEfSearch(efSearch)
-                return try queryVector.withUnsafeBufferPointer { buffer in
+                guard let results = try queryVector.withFloat32Elements({ buffer in
                     try index.search(buffer, k: k)
+                }) else {
+                    throw VectorIndexError.invalidStructure(
+                        "HNSW query does not contain Float32 elements"
+                    )
                 }
+                return results
             }
         }
     }

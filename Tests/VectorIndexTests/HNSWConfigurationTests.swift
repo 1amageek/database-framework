@@ -800,6 +800,184 @@ struct HNSWBasicBehaviorTests {
             try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
+
+    @Test("HNSW exposes the canonical negative dot-product distance")
+    func dotProductDistanceMatchesExactBackendContract() async throws {
+        let database = InMemoryEngine()
+        let subspace = Subspace(
+            prefix: Tuple("test", "hnsw", "dotProductContract").pack()
+        )
+        let indexSubspace = subspace.subspace("I").subspace(
+            "HNSWDocument_embedding"
+        )
+        let specification = try VectorIndexSpecification(
+            vectorIndexMetadata(dimensions: 4, metric: .dotProduct)
+        )
+        let index = Index(
+            name: "HNSWDocument_embedding",
+            kind: specification.metadata,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            subspaceKey: "HNSWDocument_embedding",
+            itemTypes: Set(["HNSWDocument"])
+        )
+        let maintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: index,
+            dimensions: 4,
+            metric: .dotProduct,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: HNSWParameters(m: 4, efConstruction: 20, efSearch: 20)
+        )
+        let documents = [
+            HNSWDocument(
+                id: "strongest",
+                title: "Strongest",
+                embedding: try Vector(float32: [2, 0, 0, 0])
+            ),
+            HNSWDocument(
+                id: "weaker",
+                title: "Weaker",
+                embedding: try Vector(float32: [1, 0, 0, 0])
+            ),
+        ]
+
+        try await database.withTransaction { transaction in
+            try await maintainer.scanItems(
+                documents.map { (item: $0, id: Tuple($0.id)) },
+                transaction: transaction
+            )
+        }
+        let results = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [1, 0, 0, 0],
+                k: 2,
+                transaction: transaction
+            )
+        }
+        let filtered = try await database.withTransaction { transaction in
+            try await maintainer.searchWithPostFilter(
+                queryVector: [1, 0, 0, 0],
+                k: 1,
+                predicate: { _ in true },
+                fetchItem: { primaryKey, _ in
+                    let id = try decodePrimaryKeyString(
+                        try primaryKey.elements()
+                    )
+                    return documents.first { $0.id == id }
+                },
+                transaction: transaction
+            )
+        }
+
+        #expect(try results.map { try decodePrimaryKeyString($0.primaryKey) } == [
+            "strongest",
+            "weaker",
+        ])
+        #expect(results.map(\.distance) == [-2, -1])
+        #expect(filtered.map(\.distance) == [-2])
+    }
+
+    @Test("HNSW handles Float32 magnitude limits without non-finite distances")
+    func hnswHandlesFloat32MagnitudeLimitsExplicitly() async throws {
+        let database = InMemoryEngine()
+        let cosineSubspace = Subspace(
+            prefix: Tuple("test", "hnsw", "largeCosine").pack()
+        )
+        let cosineIndex = Index(
+            name: "HNSWDocument_embedding",
+            kind: vectorIndexMetadata(dimensions: 4, metric: .cosine),
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            subspaceKey: "HNSWDocument_embedding",
+            itemTypes: Set(["HNSWDocument"])
+        )
+        let cosineMaintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: cosineIndex,
+            dimensions: 4,
+            metric: .cosine,
+            subspace: cosineSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: HNSWParameters(
+                m: 4,
+                efConstruction: 20,
+                efSearch: 20
+            )
+        )
+        let magnitude = Float.greatestFiniteMagnitude
+        let documents = [
+            HNSWDocument(
+                id: "same",
+                title: "Same",
+                embedding: try Vector(float32: [magnitude, 0, 0, 0])
+            ),
+            HNSWDocument(
+                id: "orthogonal",
+                title: "Orthogonal",
+                embedding: try Vector(float32: [0, magnitude, 0, 0])
+            ),
+        ]
+
+        try await database.withTransaction { transaction in
+            try await cosineMaintainer.scanItems(
+                documents.map { (item: $0, id: Tuple($0.id)) },
+                transaction: transaction
+            )
+        }
+        let cosineResults = try await database.withTransaction { transaction in
+            try await cosineMaintainer.search(
+                queryVector: [magnitude, 0, 0, 0],
+                k: 2,
+                transaction: transaction
+            )
+        }
+        #expect(cosineResults.allSatisfy { $0.distance.isFinite })
+        #expect(
+            try decodePrimaryKeyString(
+                try #require(cosineResults.first).primaryKey
+            ) == "same"
+        )
+
+        let dotSubspace = Subspace(
+            prefix: Tuple("test", "hnsw", "largeDotProduct").pack()
+        )
+        let dotIndex = Index(
+            name: "HNSWDocument_embedding",
+            kind: vectorIndexMetadata(dimensions: 4, metric: .dotProduct),
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            subspaceKey: "HNSWDocument_embedding",
+            itemTypes: Set(["HNSWDocument"])
+        )
+        let dotMaintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: dotIndex,
+            dimensions: 4,
+            metric: .dotProduct,
+            subspace: dotSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: HNSWParameters(
+                m: 4,
+                efConstruction: 20,
+                efSearch: 20
+            )
+        )
+        let oversizedDotProduct = HNSWDocument(
+            id: "unsafe",
+            title: "Unsafe",
+            embedding: try Vector(float32: [magnitude, 0, 0, 0])
+        )
+
+        await #expect(throws: VectorIndexError.self) {
+            try await database.withTransaction { transaction in
+                try await dotMaintainer.updateIndex(
+                    oldItem: nil,
+                    newItem: oversizedDotProduct,
+                    transaction: transaction
+                )
+            }
+        }
+        let dotNodeCount = try await database.withTransaction { transaction in
+            try await dotMaintainer.getNodeCount(transaction: transaction)
+        }
+        #expect(dotNodeCount == 0)
+    }
 }
 
 private enum HNSWTestError: Error {

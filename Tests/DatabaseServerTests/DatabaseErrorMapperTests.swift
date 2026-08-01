@@ -79,7 +79,7 @@ struct DatabaseErrorMapperTests {
 
         let resourceLimit = mapper.remoteError(
             for: SPARQLExpressionCompilationError.resourceLimitExceeded(
-                resource: "depth",
+                resource: .stringUTF8,
                 actual: 65,
                 maximum: 64
             ),

@@ -137,6 +137,19 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
         k: Int,
         transaction: any TransactionAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        let retainedQuery = try Vector(float32: queryVector)
+        return try await search(
+            queryVector: retainedQuery,
+            k: k,
+            transaction: transaction
+        )
+    }
+
+    func search(
+        queryVector: Vector,
+        k: Int,
+        transaction: any TransactionAccess
+    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         try await FlatVectorIndexReader(
             subspace: subspace,
             dimensions: dimensions,
@@ -177,18 +190,19 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
             expression: index.rootExpression
         )
 
-        // Convert to Float array using VectorConversion
-        let floatArray = try VectorConversion.extractFloatArray(from: fieldValues)
+        let vector = try VectorConversion.extractFloat32Vector(
+            from: fieldValues
+        )
 
         // Validate dimensions
-        guard floatArray.count == dimensions else {
+        guard vector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
                 expected: dimensions,
-                actual: floatArray.count
+                actual: vector.count
             )
         }
 
-        return VectorConversion.floatArrayToBytes(floatArray)
+        return try VectorConversion.float32VectorToBytes(vector)
     }
 
 }

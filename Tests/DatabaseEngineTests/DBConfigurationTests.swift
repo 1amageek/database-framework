@@ -236,6 +236,49 @@ struct DBConfigurationOwnershipTests {
         #expect(engine.shutdownCount == 1)
     }
 
+    @Test("Namespace operations reject bare and foreign container transactions")
+    func namespaceOperationsRequireOwnedTransaction() async throws {
+        let firstEngine = ShutdownRecordingEngine()
+        let secondEngine = ShutdownRecordingEngine()
+        let firstContainer = try await makeContainer(engine: firstEngine)
+        let secondContainer = try await makeContainer(engine: secondEngine)
+        let resolver = firstContainer.engine.namespaceResolver
+
+        var ownedTransaction: (any Transaction)? = try firstContainer.engine
+            .createOwnedTransaction()
+        _ = try await resolver.resolveOrCreate(
+            path: ["owned"],
+            transaction: try #require(ownedTransaction)
+        )
+
+        var foreignTransaction: (any Transaction)? = try secondContainer.engine
+            .createOwnedTransaction()
+        await #expect(throws: StorageError.self) {
+            _ = try await resolver.resolveOrCreate(
+                path: ["foreign"],
+                transaction: try #require(foreignTransaction)
+            )
+        }
+
+        var bareTransaction: (any Transaction)? = try firstEngine
+            .createTransaction()
+        await #expect(throws: StorageError.self) {
+            _ = try await resolver.resolveOrCreate(
+                path: ["bare"],
+                transaction: try #require(bareTransaction)
+            )
+        }
+
+        try await #require(ownedTransaction).cancel()
+        try await #require(foreignTransaction).cancel()
+        try await #require(bareTransaction).cancel()
+        ownedTransaction = nil
+        foreignTransaction = nil
+        bareTransaction = nil
+        await firstContainer.shutdown()
+        await secondContainer.shutdown()
+    }
+
     private func makeContainer(
         engine: ShutdownRecordingEngine
     ) async throws -> DBContainer {

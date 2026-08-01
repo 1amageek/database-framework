@@ -15,6 +15,23 @@ final class ContainerTransactionAccess: TransactionAccess, Sendable {
         self.operationLease = operationLease
     }
 
+    /// The backend-owned access used only when the container delegates a
+    /// backend-specific namespace operation. The wrapper remains retained by
+    /// the caller, so its operation lease stays active for the entire borrow.
+    func namespaceTransactionBorrow(
+        for lifecycle: DatabaseStorageLifecycle
+    ) throws -> ContainerNamespaceTransactionBorrow {
+        guard operationLease.belongs(to: lifecycle) else {
+            throw StorageError.invalidOperation(
+                "Namespace operations require a transaction admitted by the same database container"
+            )
+        }
+        return ContainerNamespaceTransactionBorrow(
+            transaction: transaction,
+            operationLease: operationLease
+        )
+    }
+
     var capabilities: TransactionCapabilities {
         transaction.capabilities
     }
