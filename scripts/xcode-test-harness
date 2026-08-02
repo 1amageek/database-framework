@@ -445,8 +445,8 @@ if [[ -n "${FDB_CLUSTER_FILE:-}" ]]; then
     exit 1
   fi
   build_arguments+=(
-    "HEADER_SEARCH_PATHS=$fdb_include_directory"
-    "LIBRARY_SEARCH_PATHS=$fdb_library_directory"
+    "HEADER_SEARCH_PATHS=\$(inherited) $fdb_include_directory"
+    "LIBRARY_SEARCH_PATHS=\$(inherited) $fdb_library_directory"
   )
 fi
 if (( ${#ONLY_TESTING[@]} > 0 )); then
