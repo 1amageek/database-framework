@@ -139,35 +139,42 @@ enum SQLiteCustomMigrationPlan: SchemaMigrationPlan {
 struct SchemaEvolutionMigrationSQLiteTests {
     @Test("Lightweight migration keeps existing SQLite data readable end-to-end")
     func lightweightMigrationPreservesExistingDataEndToEnd() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "schema-evolution-lightweight")
+        defer { database.remove() }
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV1.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
         var user = SQLiteSchemaEvolutionUserV1(name: "Alice", email: "alice@example.com")
         user.id = "sqlite-lightweight-user"
         try initialContext.insert(user)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV2.self,
             migrationPlan: SQLiteAppendOnlyMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV2.self)])
-        )
-        try await migratedContainer.migrateIfNeeded()
-
-        let verificationContainer = try await DBContainer.open(
-            for: SQLiteSchemaEvolutionSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV2.self)]),
             security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
+        try await migratedContainer.migrateIfNeeded()
+        await migratedContainer.shutdown()
+
+        let verificationContainer = try await DBContainer.open(
+            for: SQLiteSchemaEvolutionSchemaV2.makeSchema(),
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV2.self)]),
+            security: .disabled
+        )
+        defer { await verificationContainer.shutdown() }
         let migratedContext = verificationContainer.newContext()
         let migratedUsers = try await migratedContext.fetch(SQLiteSchemaEvolutionUserV2.self).execute()
 
@@ -181,6 +188,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
     @Test("SchemaRegistry accepts append-only fields on SQLite")
     func schemaRegistryAcceptsAppendOnlyFields() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        defer { await engine.waitUntilShutdown() }
         let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
 
         try await registry.persist(Schema(entities: [try SQLiteSchemaEvolutionUserV1.schemaEntity]))
@@ -195,6 +203,7 @@ struct SchemaEvolutionMigrationSQLiteTests {
     @Test("SchemaRegistry rejects reordered fields on SQLite")
     func schemaRegistryRejectsReorderedFields() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        defer { await engine.waitUntilShutdown() }
         let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
         let typeName = SQLiteSchemaEvolutionUserV1.persistableType
 
@@ -224,31 +233,39 @@ struct SchemaEvolutionMigrationSQLiteTests {
 
     @Test("Custom migration persists breaking schema changes on SQLite")
     func customMigrationPersistsBreakingSchemaChanges() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "schema-evolution-breaking")
+        defer { database.remove() }
         let seededID = "sqlite-breaking-\(UUID().uuidString)"
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV1.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
         var seededUser = SQLiteMigratedUserV1(name: "Charlie", email: "charlie@example.com")
         seededUser.id = seededID
         try initialContext.insert(seededUser)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)])
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
+            security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
         try await migratedContainer.migrateIfNeeded()
 
-        let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
+        let registry = SchemaRegistry(
+            database: migratedContainer.engine,
+            clock: TestProcessMonotonicClock()
+        )
         let entity = try await registry.load(typeName: SQLiteMigratedUserV1.persistableType)
         let version = try await migratedContainer.getCurrentSchemaVersion()
 
@@ -256,13 +273,15 @@ struct SchemaEvolutionMigrationSQLiteTests {
         #expect(entity?.fieldMapByName["fullName"]?.fieldNumber == 2)
         #expect(entity?.fieldMapByName["email"]?.fieldNumber == 3)
         #expect(entity?.fieldMapByName["name"] == nil)
+        await migratedContainer.shutdown()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let migratedUsers = try await verificationContainer.newContext()
             .fetch(SQLiteMigratedUserV2.self)
             .execute()
@@ -275,14 +294,16 @@ struct SchemaEvolutionMigrationSQLiteTests {
 
     @Test("Custom migration transforms SQLite data end-to-end")
     func customMigrationTransformsDataEndToEnd() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "schema-evolution-transform")
+        defer { database.remove() }
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV1.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
 
         var firstUser = SQLiteMigratedUserV1(name: "Alice", email: "alice@example.com")
@@ -295,21 +316,26 @@ struct SchemaEvolutionMigrationSQLiteTests {
 
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)])
-        )
-        try await migratedContainer.migrateIfNeeded()
-
-        let verificationContainer = try await DBContainer.open(
-            for: SQLiteMigrationSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
             security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
+        try await migratedContainer.migrateIfNeeded()
+        await migratedContainer.shutdown()
+
+        let verificationContainer = try await DBContainer.open(
+            for: SQLiteMigrationSchemaV2.makeSchema(),
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
+            security: .disabled
+        )
+        defer { await verificationContainer.shutdown() }
         let migratedContext = verificationContainer.newContext()
         let migratedUsers = try await migratedContext
             .fetch(SQLiteMigratedUserV2.self)

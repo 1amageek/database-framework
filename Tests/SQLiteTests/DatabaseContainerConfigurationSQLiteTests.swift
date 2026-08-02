@@ -71,6 +71,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
 
         let context = container.newContext()
         var user = SQLiteFacadeUserV1(name: "Alice")
@@ -103,6 +104,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
         var user = SQLiteFacadeUserV1(name: "Bob")
         user.id = "sqlite-facade-migration"
@@ -114,8 +116,10 @@ struct DatabaseContainerConfigurationSQLiteTests {
             for: SQLiteFacadeSchemaV2.self,
             migrationPlan: SQLiteFacadeMigrationPlan.self,
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)])
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)]),
+            security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
@@ -124,6 +128,7 @@ struct DatabaseContainerConfigurationSQLiteTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)]),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
         let fetched = try await verificationContext.fetch(SQLiteFacadeUserV2.self).execute()
 

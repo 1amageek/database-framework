@@ -422,7 +422,10 @@ struct PolymorphicFetchSQLiteTests {
 
     @Test("public SQLite container reopen keeps polymorphic data and shared indexes queryable")
     func publicSQLiteContainerReopenKeepsPolymorphicDataAndSharedIndexesQueryable() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(
+            prefix: "polymorphic-fetch-reopen"
+        )
+        defer { database.remove() }
         let schema = try Schema(
             entities: [
                 try SQLitePolymorphicArticle.schemaEntity,
@@ -430,12 +433,16 @@ struct PolymorphicFetchSQLiteTests {
             ],
             version: Schema.Version(1, 0, 0)
         )
-        let initialContainer = try await DBContainer.open(
+        let runtimeConfiguration = try DatabaseFrameworkRuntime.configuration(
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self),
+                try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self),
+            ]
+        )
+        let initialContainer = try await DBContainer.sqlite(
             for: schema,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self)]
-            ),
+            path: database.path,
+            runtimeConfiguration: runtimeConfiguration,
             security: .disabled
         )
         let initialContext = initialContainer.newContext()
@@ -449,20 +456,23 @@ struct PolymorphicFetchSQLiteTests {
         try initialContext.insert(report)
         try await initialContext.save()
 
-        let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
+        let registry = SchemaRegistry(
+            database: initialContainer.engine,
+            clock: TestProcessMonotonicClock()
+        )
         let persistedEntities = try await registry.loadAll()
         let persistedEntityNames = persistedEntities.map(\.name)
         #expect(persistedEntityNames.contains(SQLitePolymorphicArticle.persistableType))
         #expect(persistedEntityNames.contains(SQLitePolymorphicReport.persistableType))
+        await initialContainer.shutdown()
 
-        let reopenedContainer = try await DBContainer.open(
+        let reopenedContainer = try await DBContainer.sqlite(
             for: schema,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self)]
-            ),
+            path: database.path,
+            runtimeConfiguration: runtimeConfiguration,
             security: .disabled
         )
+        defer { await reopenedContainer.shutdown() }
         let reopenedContext = reopenedContainer.newContext()
         let fetched = try await reopenedContext.fetchPolymorphic(SQLitePolymorphicArticle.self)
         let fullTextResults = try await reopenedContext.findPolymorphic(SQLitePolymorphicArticle.self)

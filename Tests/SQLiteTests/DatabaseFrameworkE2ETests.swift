@@ -253,6 +253,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await writer.shutdown() }
         let writeContext = writer.newContext()
 
         var alice = DatabaseFrameworkE2EAccount(email: "alice@example.com", age: 31)
@@ -273,6 +274,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await reader.shutdown() }
         let readContext = reader.newContext()
         let adults = try await readContext.fetch(DatabaseFrameworkE2EAccount.self)
             .where(DatabaseFrameworkE2EAccount.fields.age >= 18)
@@ -293,6 +295,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verifier.shutdown() }
         let remaining = try await verifier.newContext()
             .fetch(DatabaseFrameworkE2EAccount.self)
             .orderBy(DatabaseFrameworkE2EAccount.fields.email)
@@ -324,6 +327,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
         let context = container.newContext()
 
         var original = DatabaseFrameworkE2EAccount(email: "old@example.com", age: 31)
@@ -385,6 +389,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
 
         var original = DatabaseFrameworkE2EAccount(email: "stale-original@example.com", age: 31)
         original.id = "database-framework-stale-account"
@@ -414,6 +419,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
 
         let stored = try await verificationContext.model(
@@ -460,6 +466,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
 
         var original = DatabaseFrameworkE2EAccount(email: "delete-original@example.com", age: 31)
         original.id = "database-framework-stale-delete-account"
@@ -486,6 +493,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
 
         let stored = try await verificationContext.model(
@@ -527,6 +535,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
 
         var original = DatabaseFrameworkE2EAccount(email: "default-delete-original@example.com", age: 31)
         original.id = "database-framework-default-stale-delete-account"
@@ -553,6 +562,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
 
         let stored = try await verificationContext.model(
@@ -597,6 +607,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .enabled()
         )
+        defer { await container.shutdown() }
 
         var original = DatabaseFrameworkE2ESecuredDocument(ownerID: "alice", title: "Original")
         original.id = "database-framework-secure-stale-delete-document"
@@ -642,6 +653,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let stored = try await verificationContainer.newContext().model(
             for: original.id,
             as: DatabaseFrameworkE2ESecuredDocument.self
@@ -674,6 +686,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
 
         var original = DatabaseFrameworkE2EAccount(email: "create-original@example.com", age: 31)
         original.id = "database-framework-duplicate-create-account"
@@ -708,6 +721,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
 
         let stored = try await verificationContext.model(
@@ -750,6 +764,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
 
         var original = DatabaseFrameworkE2EAccount(email: "upsert-original@example.com", age: 31)
         original.id = "database-framework-upsert-account"
@@ -779,6 +794,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
 
         let stored = try await verificationContext.model(
@@ -825,6 +841,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
         let context = container.newContext()
 
         var tenantA = DatabaseFrameworkE2ETenantAccount(
@@ -912,6 +929,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
 
         var original = DatabaseFrameworkE2ETenantAccount(
             tenantID: "tenant-move-a",
@@ -940,6 +958,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let oldPartitionAll = try await verificationContainer.newContext()
             .fetch(DatabaseFrameworkE2ETenantAccount.self)
             .partition(DatabaseFrameworkE2ETenantAccount.fields.tenantID, equals: "tenant-move-a")
@@ -970,16 +989,15 @@ struct DatabaseFrameworkE2ETests {
 
     @Test("SQLite large blob indexed update delete and rollback keep blobs and indexes consistent")
     func sqliteLargeBlobIndexedUpdateDeleteAndRollbackKeepBlobsAndIndexesConsistent() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
         let schema = try Schema(entities: [try DatabaseFrameworkE2ELargeDocument.schemaEntity], version: .init(1, 0, 0))
-        let container = try await DBContainer.open(
+        let container = try await DBContainer.inMemory(
             for: schema,
-            configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ELargeDocument.self)]
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
         let subspace = try await container.resolveDirectory(for: DatabaseFrameworkE2ELargeDocument.self)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
@@ -994,7 +1012,7 @@ struct DatabaseFrameworkE2ETests {
 
         let blobCountAfterInsert = try await databaseFrameworkE2ECountKeys(
             in: blobsSubspace,
-            engine: engine
+            engine: container.engine
         )
         let originalTitleHits = try await container.newContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
@@ -1013,7 +1031,7 @@ struct DatabaseFrameworkE2ETests {
 
         let blobCountAfterCompact = try await databaseFrameworkE2ECountKeys(
             in: blobsSubspace,
-            engine: engine
+            engine: container.engine
         )
         let oldTitleHits = try await container.newContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
@@ -1047,7 +1065,7 @@ struct DatabaseFrameworkE2ETests {
 
         let blobCountAfterRollback = try await databaseFrameworkE2ECountKeys(
             in: blobsSubspace,
-            engine: engine
+            engine: container.engine
         )
         let rolledBackTitleHits = try await container.newContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
@@ -1068,7 +1086,7 @@ struct DatabaseFrameworkE2ETests {
 
         let blobCountAfterDelete = try await databaseFrameworkE2ECountKeys(
             in: blobsSubspace,
-            engine: engine
+            engine: container.engine
         )
         let compactAfterDeleteHits = try await container.newContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
@@ -1102,6 +1120,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
 
         var original = DatabaseFrameworkE2EAccount(
             email: "transaction-delete-original@example.com",
@@ -1132,6 +1151,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let stored = try await verificationContainer.newContext().model(
             for: original.id,
             as: DatabaseFrameworkE2EAccount.self
@@ -1173,6 +1193,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
         let retryingContext = container.newContext()
 
         var original = DatabaseFrameworkE2EAccount(email: "before@example.com", age: 29)
@@ -1204,6 +1225,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await afterFailureContainer.shutdown() }
         let afterFailureContext = afterFailureContainer.newContext()
 
         let pendingView = try await retryingContext.model(
@@ -1236,6 +1258,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
         let stored = try await verificationContext.model(
             for: "database-framework-retry-account",
@@ -1277,6 +1300,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
         let retryingContext = container.newContext()
 
         var created = DatabaseFrameworkE2EAccount(email: "created@example.com", age: 21)
@@ -1311,6 +1335,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await afterFailureContainer.shutdown() }
         let afterFailureContext = afterFailureContainer.newContext()
 
         let pendingCreated = try await retryingContext.model(
@@ -1349,6 +1374,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
         let storedCreated = try await verificationContext.model(
             for: created.id,
@@ -1401,6 +1427,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
         let retryingContext = container.newContext()
 
         var staticCreated = DatabaseFrameworkE2EAccount(email: "cross-store-created@example.com", age: 20)
@@ -1442,6 +1469,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await afterFailureContainer.shutdown() }
         let afterFailureContext = afterFailureContainer.newContext()
         let leakedStatic = try await afterFailureContext.fetch(DatabaseFrameworkE2EAccount.self)
             .where(DatabaseFrameworkE2EAccount.fields.email == "cross-store-created@example.com")
@@ -1473,6 +1501,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
         let storedStatic = try await verificationContext.fetch(DatabaseFrameworkE2EAccount.self)
             .where(DatabaseFrameworkE2EAccount.fields.email == "cross-store-created@example.com")
@@ -1518,6 +1547,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
         let context = container.newContext()
 
         do {
@@ -1575,6 +1605,7 @@ struct DatabaseFrameworkE2ETests {
             ),
             security: .disabled
         )
+        defer { await container.shutdown() }
         let context = container.newContext()
 
         let tenantA = "tenant-a"
@@ -1639,14 +1670,16 @@ struct DatabaseFrameworkE2ETests {
 
     @Test("SQLite migration rewrites legacy entities and serves them through the new indexed schema")
     func sqliteMigrationRewritesLegacyEntitiesAndServesNewIndexedSchema() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "e2e-schema-migration")
+        defer { database.remove() }
 
         let initialContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV1.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
 
         var alice = DatabaseFrameworkE2EMigratedAccountV1(
@@ -1664,22 +1697,27 @@ struct DatabaseFrameworkE2ETests {
         try initialContext.insert(bob)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV2.self,
             migrationPlan: DatabaseFrameworkE2EMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)])
-        )
-        try await migratedContainer.migrateIfNeeded()
-        let migratedVersion = try await migratedContainer.getCurrentSchemaVersion()
-
-        let verificationContainer = try await DBContainer.open(
-            for: DatabaseFrameworkE2EMigrationSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)]),
             security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
+        try await migratedContainer.migrateIfNeeded()
+        let migratedVersion = try await migratedContainer.getCurrentSchemaVersion()
+        await migratedContainer.shutdown()
+
+        let verificationContainer = try await DBContainer.open(
+            for: DatabaseFrameworkE2EMigrationSchemaV2.makeSchema(),
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)]),
+            security: .disabled
+        )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
 
         let migratedAlice = try await verificationContext.fetch(DatabaseFrameworkE2EMigratedAccountV2.self)

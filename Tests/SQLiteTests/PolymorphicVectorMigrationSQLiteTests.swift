@@ -253,13 +253,15 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
     @Test("SQLite migration backfills polymorphic entity vector index")
     func sqliteMigrationBackfillsPolymorphicEntityVectorIndex() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "polymorphic-vector-backfill")
+        defer { database.remove() }
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV1.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
 
         var anchor = SQLitePolymorphicVectorPersonV1(
@@ -288,16 +290,18 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV2.self,
             migrationPlan: SQLitePolymorphicVectorAddMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try Self.vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self)]
             ),
             security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
         try await migratedContainer.migrateIfNeeded()
 
         #expect(try await Self.countEntityVectorIndexEntries(container: migratedContainer) == 107)
@@ -328,13 +332,15 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
     @Test("SQLite custom migration rebuilds polymorphic entity vector index")
     func sqliteCustomMigrationRebuildsPolymorphicEntityVectorIndex() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "polymorphic-vector-rebuild")
+        defer { database.remove() }
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let context = initialContainer.newContext()
 
         var person = SQLitePolymorphicVectorPersonV2(
@@ -355,16 +361,18 @@ struct PolymorphicVectorMigrationSQLiteTests {
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
         try await Self.clearEntityVectorIndexEntries(container: initialContainer)
         #expect(try await Self.countEntityVectorIndexEntries(container: initialContainer) == 0)
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV3.self,
             migrationPlan: SQLitePolymorphicVectorRebuildMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try Self.vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV3.self)]
             ),
             security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
         try await migratedContainer.migrateIfNeeded()
 
         let page = try await migratedContainer.newContext()

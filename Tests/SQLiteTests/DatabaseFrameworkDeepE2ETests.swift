@@ -227,7 +227,10 @@ struct DatabaseFrameworkDeepE2ETests {
             for: schema,
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2EIndexedTicket.self)]
         )
-        defer { deepE2ERemoveTemporaryDirectory(directory) }
+        defer {
+            await container.shutdown()
+            deepE2ERemoveTemporaryDirectory(directory)
+        }
 
         let context = container.newContext()
         let first = deepE2ETicket(
@@ -347,7 +350,10 @@ struct DatabaseFrameworkDeepE2ETests {
             for: schema,
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2EIndexedTicket.self)]
         )
-        defer { deepE2ERemoveTemporaryDirectory(directory) }
+        defer {
+            await container.shutdown()
+            deepE2ERemoveTemporaryDirectory(directory)
+        }
 
         let context = container.newContext()
         for priority in Int64(1)...6 {
@@ -419,7 +425,10 @@ struct DatabaseFrameworkDeepE2ETests {
             for: schema,
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2ECustomer.self), try DatabaseFrameworkRuntime.entity(DeepE2ERelationshipOrder.self)]
         )
-        defer { deepE2ERemoveTemporaryDirectory(directory) }
+        defer {
+            await container.shutdown()
+            deepE2ERemoveTemporaryDirectory(directory)
+        }
 
         var alice = DeepE2ECustomer(name: "Alice")
         alice.id = "deep-customer-alice"
@@ -494,7 +503,10 @@ struct DatabaseFrameworkDeepE2ETests {
             ],
             security: .enabled()
         )
-        defer { deepE2ERemoveTemporaryDirectory(directory) }
+        defer {
+            await container.shutdown()
+            deepE2ERemoveTemporaryDirectory(directory)
+        }
 
         var original = DeepE2ESecureTenantDocument()
         original.id = "deep-secure-document"
@@ -596,7 +608,10 @@ struct DatabaseFrameworkDeepE2ETests {
             for: schema,
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2EIndexedTicket.self)]
         )
-        defer { deepE2ERemoveTemporaryDirectory(directory) }
+        defer {
+            await container.shutdown()
+            deepE2ERemoveTemporaryDirectory(directory)
+        }
 
         let contextInsert = container.newContext()
         try contextInsert.insert(
@@ -690,7 +705,10 @@ struct DatabaseFrameworkDeepE2ETests {
             for: schema,
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2EIndexedTicket.self)]
         )
-        defer { deepE2ERemoveTemporaryDirectory(directory) }
+        defer {
+            await container.shutdown()
+            deepE2ERemoveTemporaryDirectory(directory)
+        }
 
         let context = container.newContext()
         let tickets = [

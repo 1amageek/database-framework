@@ -1,7 +1,36 @@
 #if SQLITE
+import Foundation
 import Database
 import DatabaseEngine
 import TestSupport
+import Testing
+
+struct SQLiteTestDatabase {
+    let directory: URL
+    let path: String
+
+    init(prefix: String) throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "\(prefix)-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        self.directory = directory
+        self.path = directory.appendingPathComponent("database.sqlite").path
+    }
+
+    func remove() {
+        do {
+            try FileManager.default.removeItem(at: directory)
+        } catch {
+            Issue.record("Failed to remove SQLite test database: \(error)")
+        }
+    }
+}
 
 extension DBContainer {
     static func open(

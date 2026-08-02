@@ -104,28 +104,33 @@ enum SQLiteConcurrentMigrationPlan: SchemaMigrationPlan {
 struct ConcurrentMigrationSQLiteTests {
     @Test("Re-entrant migrateIfNeeded is idempotent")
     func reEntrantMigrateIsIdempotent() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "concurrent-migration-reentrant")
+        defer { database.remove() }
         await concurrentMigrationCounter.reset()
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
         var user = SQLiteConcurrentMigrationUserV1(name: "Alice", email: "alice@example.com")
         user.id = "sqlite-reentrant-user"
         try initialContext.insert(user)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        await initialContainer.shutdown()
 
         let container = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)])
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
+            security: .disabled
         )
+        defer { await container.shutdown() }
 
         try await container.migrateIfNeeded()
         let afterFirst = await concurrentMigrationCounter.snapshot()
@@ -142,15 +147,17 @@ struct ConcurrentMigrationSQLiteTests {
 
     @Test("Concurrent migrateIfNeeded preserves final state correctness")
     func concurrentMigrateConvergesToTarget() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "concurrent-migration")
+        defer { database.remove() }
         await concurrentMigrationCounter.reset()
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
 
         for i in 0..<5 {
@@ -163,19 +170,24 @@ struct ConcurrentMigrationSQLiteTests {
         }
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        await initialContainer.shutdown()
 
         let containerA = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)])
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
+            security: .disabled
         )
+        defer { await containerA.shutdown() }
         let containerB = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)])
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
+            security: .disabled
         )
+        defer { await containerB.shutdown() }
 
         async let migrationA: Void = containerA.migrateIfNeeded()
         async let migrationB: Void = containerB.migrateIfNeeded()
@@ -183,13 +195,16 @@ struct ConcurrentMigrationSQLiteTests {
 
         let versionA = try await containerA.getCurrentSchemaVersion()
         let versionB = try await containerB.getCurrentSchemaVersion()
+        await containerA.shutdown()
+        await containerB.shutdown()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let users = try await verificationContainer.newContext()
             .fetch(SQLiteConcurrentMigrationUserV2.self)
             .orderBy(SQLiteConcurrentMigrationUserV2.fields.fullName)

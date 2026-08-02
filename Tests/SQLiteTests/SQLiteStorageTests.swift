@@ -70,6 +70,16 @@ struct SQLiteStorageTests {
             ),
             security: .disabled
         )
+        defer {
+            await container.shutdown()
+            if FileManager.default.fileExists(atPath: dbPath) {
+                do {
+                    try FileManager.default.removeItem(atPath: dbPath)
+                } catch {
+                    Issue.record("Failed to remove SQLite test database: \(error)")
+                }
+            }
+        }
 
         // Insert and verify persistence
         let context = container.newContext()
@@ -84,13 +94,6 @@ struct SQLiteStorageTests {
         #expect(results.count == 1)
         #expect(results.first?.name == "Persisted")
 
-        if FileManager.default.fileExists(atPath: dbPath) {
-            do {
-                try FileManager.default.removeItem(atPath: dbPath)
-            } catch {
-                Issue.record("Failed to remove SQLite test database: \(error)")
-            }
-        }
     }
 
     @Test("Container creation with multiple entity types")

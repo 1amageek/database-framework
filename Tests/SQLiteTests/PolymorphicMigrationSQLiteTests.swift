@@ -318,13 +318,15 @@ struct PolymorphicMigrationSQLiteTests {
 
     @Test("SQLite migration backfills added polymorphic indexes and keeps them maintained")
     func sqliteMigrationBackfillsAddedPolymorphicIndexesAndKeepsThemMaintained() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "polymorphic-migration-backfill")
+        defer { database.remove() }
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
 
         var article = SQLitePolymorphicMigrationArticleV1(title: "Legacy Needle Article", body: "Body")
@@ -336,22 +338,26 @@ struct PolymorphicMigrationSQLiteTests {
         try initialContext.insert(report)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
         try await migratedContainer.migrateIfNeeded()
+        await migratedContainer.shutdown()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
         let migratedResults = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV2.self)
@@ -395,13 +401,15 @@ struct PolymorphicMigrationSQLiteTests {
 
     @Test("SQLite migration backfills polymorphic indexes across batch boundaries")
     func sqliteMigrationBackfillsPolymorphicIndexesAcrossBatchBoundaries() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "polymorphic-migration-batches")
+        defer { database.remove() }
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
 
         for offset in 0..<105 {
@@ -421,22 +429,26 @@ struct PolymorphicMigrationSQLiteTests {
 
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.self,
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
         try await migratedContainer.migrateIfNeeded()
+        await migratedContainer.shutdown()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
+        defer { await verificationContainer.shutdown() }
         let verificationContext = verificationContainer.newContext()
         let results = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV2.self)
@@ -453,13 +465,15 @@ struct PolymorphicMigrationSQLiteTests {
 
     @Test("SQLite migration removes polymorphic index data and disables index state")
     func sqliteMigrationRemovesPolymorphicIndexDataAndDisablesIndexState() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "polymorphic-migration-removal")
+        defer { database.remove() }
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
 
         var article = SQLitePolymorphicMigrationArticleV2(title: "Removal Needle Article", body: "Body")
@@ -476,14 +490,16 @@ struct PolymorphicMigrationSQLiteTests {
             container: initialContainer,
             indexName: "SQLitePolymorphicMigrationDocument_title"
         ) == 2)
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV3.self,
             migrationPlan: SQLitePolymorphicRemovalMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV3.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV3.self)]),
             security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
         try await migratedContainer.migrateIfNeeded()
 
         #expect(try await Self.countPolymorphicIndexEntries(
@@ -516,13 +532,15 @@ struct PolymorphicMigrationSQLiteTests {
 
     @Test("SQLite custom migration rebuilds corrupted polymorphic indexes")
     func sqliteCustomMigrationRebuildsCorruptedPolymorphicIndexes() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "polymorphic-migration-rebuild")
+        defer { database.remove() }
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
 
         var article = SQLitePolymorphicMigrationArticleV2(title: "Rebuild Needle Article", body: "Body")
@@ -547,14 +565,16 @@ struct PolymorphicMigrationSQLiteTests {
             container: initialContainer,
             indexName: "SQLitePolymorphicMigrationDocument_title"
         ) == 0)
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV4.self,
             migrationPlan: SQLitePolymorphicRebuildMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV4.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV4.self)]),
             security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
         try await migratedContainer.migrateIfNeeded()
 
         let verificationContext = migratedContainer.newContext()

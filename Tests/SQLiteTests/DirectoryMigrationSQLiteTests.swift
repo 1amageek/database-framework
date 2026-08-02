@@ -81,36 +81,43 @@ enum SQLiteDirectoryMigrationCopyPlan: SchemaMigrationPlan {
 struct DirectoryMigrationSQLiteTests {
     @Test("Custom migration copies data across changed #Directory paths on SQLite")
     func customMigrationCopiesAcrossDirectoryChange() async throws {
-        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let database = try SQLiteTestDatabase(prefix: "directory-migration")
+        defer { database.remove() }
         let seededID = "sqlite-dir-migration-\(UUID().uuidString)"
 
         let initialContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV1.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV1.self)]),
             security: .disabled
         )
+        defer { await initialContainer.shutdown() }
         let initialContext = initialContainer.newContext()
         var seededUser = SQLiteDirectoryMigrationUserV1(name: "Alice", email: "alice@example.com")
         seededUser.id = seededID
         try initialContext.insert(seededUser)
         try await initialContext.save()
         try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV2.self,
             migrationPlan: SQLiteDirectoryMigrationCopyPlan.self,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)])
-        )
-        try await migratedContainer.migrateIfNeeded()
-
-        let verificationContainer = try await DBContainer.open(
-            for: SQLiteDirectoryMigrationSchemaV2.makeSchema(),
-            configuration: .testing(storageEngine: engine),
+            configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)]),
             security: .disabled
         )
+        defer { await migratedContainer.shutdown() }
+        try await migratedContainer.migrateIfNeeded()
+        await migratedContainer.shutdown()
+
+        let verificationContainer = try await DBContainer.open(
+            for: SQLiteDirectoryMigrationSchemaV2.makeSchema(),
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)]),
+            security: .disabled
+        )
+        defer { await verificationContainer.shutdown() }
         let rows = try await verificationContainer.newContext()
             .fetch(SQLiteDirectoryMigrationUserV2.self)
             .execute()
