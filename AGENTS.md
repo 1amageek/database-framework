@@ -33,6 +33,9 @@
   warnings, and internal compiler, macro-plugin, or profiler errors.
 - The strict backend contracts are 3,918 FoundationDB tests, 101 SQLite tests,
   and 71 PostgreSQL tests. PostgreSQL tests require an isolated real server.
+- FoundationDB verification requires the C SDK header and client library under
+  `/usr/local/include` and `/usr/local/lib`, or explicit
+  `FDB_CLIENT_INCLUDE_DIRECTORY` and `FDB_CLIENT_LIBRARY_DIRECTORY` values.
 - Standard WASM, Embedded WASM, and static Musl Linux verification use the exact
   Swift 6.4 snapshot SDK identifiers and release commands in
   `docs/production-readiness.md`.

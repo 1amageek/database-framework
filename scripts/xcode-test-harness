@@ -433,6 +433,22 @@ build_arguments=(
   -onlyUsePackageVersionsFromResolvedFile
   -skipPackageUpdates
 )
+if [[ -n "${FDB_CLUSTER_FILE:-}" ]]; then
+  fdb_include_directory="${FDB_CLIENT_INCLUDE_DIRECTORY:-/usr/local/include}"
+  fdb_library_directory="${FDB_CLIENT_LIBRARY_DIRECTORY:-/usr/local/lib}"
+  if [[ ! -f "$fdb_include_directory/foundationdb/fdb_c.h" ]]; then
+    echo "error: FoundationDB C header not found under $fdb_include_directory" >&2
+    exit 1
+  fi
+  if [[ ! -f "$fdb_library_directory/libfdb_c.dylib" ]]; then
+    echo "error: FoundationDB client library not found under $fdb_library_directory" >&2
+    exit 1
+  fi
+  build_arguments+=(
+    "HEADER_SEARCH_PATHS=$fdb_include_directory"
+    "LIBRARY_SEARCH_PATHS=$fdb_library_directory"
+  )
+fi
 if (( ${#ONLY_TESTING[@]} > 0 )); then
   for identifier in "${ONLY_TESTING[@]}"; do
     build_arguments+=("-only-testing:$identifier")
