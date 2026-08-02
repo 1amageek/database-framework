@@ -1,5 +1,7 @@
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Musl)
+import Musl
 #elseif canImport(Glibc)
 import Glibc
 #elseif canImport(WASILibc)
@@ -14,6 +16,8 @@ public enum DatabaseMath {
     public static func naturalLogarithm(_ value: Double) -> Double {
 #if canImport(Darwin)
         Darwin.log(value)
+#elseif canImport(Musl)
+        Musl.log(value)
 #elseif canImport(Glibc)
         Glibc.log(value)
 #else
@@ -25,6 +29,8 @@ public enum DatabaseMath {
     public static func binaryLogarithm(_ value: Double) -> Double {
 #if canImport(Darwin)
         Darwin.log2(value)
+#elseif canImport(Musl)
+        Musl.log2(value)
 #elseif canImport(Glibc)
         Glibc.log2(value)
 #else
@@ -36,6 +42,8 @@ public enum DatabaseMath {
     public static func logarithmOfOnePlus(_ value: Double) -> Double {
 #if canImport(Darwin)
         Darwin.log1p(value)
+#elseif canImport(Musl)
+        Musl.log1p(value)
 #elseif canImport(Glibc)
         Glibc.log1p(value)
 #else
@@ -47,6 +55,8 @@ public enum DatabaseMath {
     public static func exponential(_ value: Double) -> Double {
 #if canImport(Darwin)
         Darwin.exp(value)
+#elseif canImport(Musl)
+        Musl.exp(value)
 #elseif canImport(Glibc)
         Glibc.exp(value)
 #else
@@ -58,6 +68,8 @@ public enum DatabaseMath {
     public static func power(_ base: Double, _ exponent: Double) -> Double {
 #if canImport(Darwin)
         Darwin.pow(base, exponent)
+#elseif canImport(Musl)
+        Musl.pow(base, exponent)
 #elseif canImport(Glibc)
         Glibc.pow(base, exponent)
 #else
@@ -69,6 +81,8 @@ public enum DatabaseMath {
     public static func sine(_ value: Double) -> Double {
 #if canImport(Darwin)
         Darwin.sin(value)
+#elseif canImport(Musl)
+        Musl.sin(value)
 #elseif canImport(Glibc)
         Glibc.sin(value)
 #else
@@ -80,6 +94,8 @@ public enum DatabaseMath {
     public static func cosine(_ value: Double) -> Double {
 #if canImport(Darwin)
         Darwin.cos(value)
+#elseif canImport(Musl)
+        Musl.cos(value)
 #elseif canImport(Glibc)
         Glibc.cos(value)
 #else
@@ -91,6 +107,8 @@ public enum DatabaseMath {
     public static func arcSine(_ value: Double) -> Double {
 #if canImport(Darwin)
         Darwin.asin(value)
+#elseif canImport(Musl)
+        Musl.asin(value)
 #elseif canImport(Glibc)
         Glibc.asin(value)
 #else
@@ -102,6 +120,8 @@ public enum DatabaseMath {
     public static func arcTangent(y: Double, x: Double) -> Double {
 #if canImport(Darwin)
         Darwin.atan2(y, x)
+#elseif canImport(Musl)
+        Musl.atan2(y, x)
 #elseif canImport(Glibc)
         Glibc.atan2(y, x)
 #else

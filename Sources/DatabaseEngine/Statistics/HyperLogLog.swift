@@ -2,6 +2,8 @@ import DatabaseTypes
 import DatabaseKit
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Musl)
+import Musl
 #elseif canImport(Glibc)
 import Glibc
 #elseif canImport(WASILibc)
