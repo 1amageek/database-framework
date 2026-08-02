@@ -27,8 +27,15 @@ which backend one container uses.
 ## SwiftPM Traits
 
 ~~~bash
-swift build
-xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64'
+scripts/fdb-test-env run --clean -- \
+  scripts/xcode-test-harness \
+    --traits FoundationDB,AllRuntimeFeatures \
+    --skip-testing BenchmarkFrameworkTests \
+    --skip-testing PerformanceBenchmarks \
+    --expected-count 3918 \
+    --require-zero-skips \
+    --require-zero-expected-failures \
+    --require-zero-runtime-warnings
 ~~~
 
 The default full-host profile enables both `FoundationDB` and
@@ -50,15 +57,30 @@ SwiftPM unifies traits from every dependency path, so the effective package
 composition is the union requested by the complete consuming graph.
 
 ~~~bash
-swift build --disable-default-traits --traits SQLite
-xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64'
+scripts/xcode-test-harness \
+  --traits SQLite,AllRuntimeFeatures \
+  --only-testing SQLiteTests \
+  --expected-count 101 \
+  --require-zero-skips \
+  --require-zero-expected-failures \
+  --require-zero-runtime-warnings
 ~~~
 
 SQLite builds do not link libfdb_c.
 
 ~~~bash
-swift build --disable-default-traits --traits PostgreSQL
-xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64'
+POSTGRES_TEST_HOST=database.test \
+POSTGRES_TEST_PORT=5432 \
+POSTGRES_TEST_USER=postgres \
+POSTGRES_TEST_PASSWORD=test \
+POSTGRES_TEST_DB=database_framework_test \
+scripts/xcode-test-harness \
+  --traits PostgreSQL,AllRuntimeFeatures \
+  --only-testing PostgreSQLTests \
+  --expected-count 71 \
+  --require-zero-skips \
+  --require-zero-expected-failures \
+  --require-zero-runtime-warnings
 ~~~
 
 PostgreSQL builds require the PostgreSQL dependency but not a running server

@@ -209,8 +209,15 @@ provides distributed transactions, native versionstamps, and the dynamic
 FoundationDB DirectoryLayer. The FoundationDB adapter is not compiled for iOS
 or WASI.
 
-    swift build
-    xcodebuild test -scheme database-framework-Package -destination 'platform=macOS'
+    scripts/fdb-test-env run --clean -- \
+      scripts/xcode-test-harness \
+        --traits FoundationDB,AllRuntimeFeatures \
+        --skip-testing BenchmarkFrameworkTests \
+        --skip-testing PerformanceBenchmarks \
+        --expected-count 3918 \
+        --require-zero-skips \
+        --require-zero-expected-failures \
+        --require-zero-runtime-warnings
 
     import Database
 
@@ -235,17 +242,27 @@ constructs the engine before transferring it to the container:
 For local testing, the repository includes an isolated cluster wrapper:
 
     scripts/fdb-test-env run --clean -- \
-      perl -e 'alarm shift; exec @ARGV' 120 \
-      xcodebuild test -scheme database-framework-Package \
-        -destination 'platform=macOS,arch=arm64'
+      scripts/xcode-test-harness \
+        --traits FoundationDB,AllRuntimeFeatures \
+        --skip-testing BenchmarkFrameworkTests \
+        --skip-testing PerformanceBenchmarks \
+        --expected-count 3918 \
+        --require-zero-skips \
+        --require-zero-expected-failures \
+        --require-zero-runtime-warnings
 
 ### SQLite
 
 SQLite is the local and embedded backend. It does not load libfdb_c and does
 not require a FoundationDB process.
 
-    swift build --disable-default-traits --traits SQLite
-    xcodebuild test -scheme database-framework-Package -destination 'platform=macOS'
+    scripts/xcode-test-harness \
+      --traits SQLite,AllRuntimeFeatures \
+      --only-testing SQLiteTests \
+      --expected-count 101 \
+      --require-zero-skips \
+      --require-zero-expected-failures \
+      --require-zero-runtime-warnings
 
     import Database
     import SQLiteStorage
@@ -277,8 +294,18 @@ SERIALIZABLE so transaction behavior is aligned with the framework's strong
 consistency model. It can connect over TCP, a Unix domain socket, or the
 Cloud SQL socket mounted into Cloud Run.
 
-    swift build --disable-default-traits --traits PostgreSQL
-    xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64'
+    POSTGRES_TEST_HOST=database.test \
+    POSTGRES_TEST_PORT=5432 \
+    POSTGRES_TEST_USER=postgres \
+    POSTGRES_TEST_PASSWORD=test \
+    POSTGRES_TEST_DB=database_framework_test \
+    scripts/xcode-test-harness \
+      --traits PostgreSQL,AllRuntimeFeatures \
+      --only-testing PostgreSQLTests \
+      --expected-count 71 \
+      --require-zero-skips \
+      --require-zero-expected-failures \
+      --require-zero-runtime-warnings
 
     import Database
     import PostgreSQLStorage
@@ -571,10 +598,9 @@ products when compile time and dependency size matter.
     # PostgreSQL: requires a reachable PostgreSQL instance
     swift build --disable-default-traits --traits PostgreSQL
 
-    # Native test suite (120-second timeout)
-    perl -e 'alarm shift; exec @ARGV' 120 \
-      xcodebuild test -scheme database-framework-Package \
-        -destination 'platform=macOS,arch=arm64'
+    # Native backend suites use the strict commands shown above. The harness
+    # applies an external timeout, injects the snapshot testing runtime, and
+    # validates counts, skips, warnings, and internal tool failures.
 
     # Release build for the selected traits
     swift build -c release
@@ -591,9 +617,9 @@ Performance benchmarks are in the PerformanceBenchmarks test target. Results
 depend on the selected backend and must not be compared across backends as if
 they were the same deployment.
 
-    xcodebuild test -scheme database-framework-Package \
-      -destination 'platform=macOS,arch=arm64' \
-      -only-testing:PerformanceBenchmarks
+    scripts/xcode-test-harness \
+      --traits FoundationDB,AllRuntimeFeatures \
+      --only-testing PerformanceBenchmarks
 
 The latest checked-in snapshot is documented in the individual index READMEs.
 FoundationDB benchmark numbers describe a local Docker cluster and are not a

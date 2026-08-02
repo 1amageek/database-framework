@@ -123,9 +123,12 @@ build gates documented in [Production Readiness](../production-readiness.md).
 
 | Date | Scope | Result |
 | --- | --- | --- |
-| 2026-08-02 | `xcodebuild test` with per-command timeouts, Swift 6.4 snapshot `2026-07-23-a` | Passed: 3,951 tests across 24 test bundles, including 103 VectorIndex tests; 0 failures |
-| 2026-08-02 | `swift build --swift-sdk ..._wasm --product Database --disable-default-traits --traits AllRuntimeFeatures` | Passed: normal WASM build with swift-hnsw 1.1.4 |
-| 2026-08-02 | `swift build --swift-sdk ..._wasm-embedded --product Database --disable-default-traits --traits AllRuntimeFeatures` | Passed: Embedded WASM build with the same runtime feature set and swift-hnsw 1.1.4 |
+| 2026-08-03 | Strict FoundationDB Xcode harness with local `database-kit` and `storage-kit` changes, Swift 6.4 snapshot `2026-07-23-a` | Passed: 3,918 tests; 0 failures, skips, expected failures, runtime warnings, compiler internal errors, macro-plugin internal errors, or coverage-profiler errors |
+| 2026-08-02 | Strict SQLite Xcode harness with the same local dependency graph | Passed: 101 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors |
+| 2026-08-02 | Strict PostgreSQL Xcode harness against PostgreSQL 16.14 in an isolated Apple Container | Passed: 71 tests; 0 failures, skips, expected failures, runtime warnings, startup-order warnings, or internal tool errors |
+| 2026-08-03 | `swift build --swift-sdk ..._wasm --product Database --disable-default-traits --traits AllRuntimeFeatures -c release -debug-info-format none` | Passed: normal WASM release build with swift-hnsw 1.1.4 |
+| 2026-08-03 | `swift build --swift-sdk ..._wasm-embedded --product Database --disable-default-traits --traits AllRuntimeFeatures -c release -debug-info-format none` | Passed: Embedded WASM release build with the same runtime feature set and swift-hnsw 1.1.4 |
+| 2026-08-03 | `swift build --swift-sdk ..._static-linux-0.1.0 --triple aarch64-swift-linux-musl --product DatabaseCLICore --disable-default-traits --traits PostgreSQL -c release -debug-info-format none` | Passed: static Linux release compile and link, including DatabaseMath, DatabaseEngine, and PostgreSQL dependencies |
 | 2026-08-02 | `database-framework-cloudflare`: `swift build --swift-sdk ..._wasm --disable-default-traits --traits AllRuntimeFeatures --target CloudflareDatabaseRuntimeVerification` | Passed: normal WASM reactor compile and link with swift-hnsw 1.1.4 |
 | 2026-08-02 | Cloudflare AllRuntimeFeatures feasibility gate with `..._wasm-embedded` | Passed: Flat, IVF, and PQ execute through startup validation; effective HNSW fails deterministically before container opening; `VectorIndex.o`, `SwiftHNSW.o`, and `CTurboQuantKernels.o` remain linked |
 | 2026-08-02 | Embedded runtime budgets | Passed: 9,084,920 optimized bytes, 3,150,215 compressed bytes, 64 MiB address space, 60.512625 ms startup; workerd RPC and SQLite restart persistence passed |

@@ -54,22 +54,84 @@ database-framework service.
 ## Release Gate
 
 ~~~bash
-swift build
-xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64'
-swift build --disable-default-traits --traits SQLite
-swift build --disable-default-traits --traits PostgreSQL
-swift build --disable-default-traits --traits GraphIndexes --product Database
+export TOOLCHAINS=org.swift.64202607231a
+
+scripts/xcode-test-harness \
+  --traits SQLite,AllRuntimeFeatures \
+  --only-testing SQLiteTests \
+  --expected-count 101 \
+  --require-zero-skips \
+  --require-zero-expected-failures \
+  --require-zero-runtime-warnings
+
+POSTGRES_TEST_HOST=database.test \
+POSTGRES_TEST_PORT=5432 \
+POSTGRES_TEST_USER=postgres \
+POSTGRES_TEST_PASSWORD=test \
+POSTGRES_TEST_DB=database_framework_test \
+scripts/xcode-test-harness \
+  --traits PostgreSQL,AllRuntimeFeatures \
+  --only-testing PostgreSQLTests \
+  --expected-count 71 \
+  --require-zero-skips \
+  --require-zero-expected-failures \
+  --require-zero-runtime-warnings
+
+scripts/fdb-test-env run --clean -- \
+  scripts/xcode-test-harness \
+    --traits FoundationDB,AllRuntimeFeatures \
+    --skip-testing BenchmarkFrameworkTests \
+    --skip-testing PerformanceBenchmarks \
+    --expected-count 3918 \
+    --require-zero-skips \
+    --require-zero-expected-failures \
+    --require-zero-runtime-warnings
+
 swift build \
   --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm \
   --product Database \
   --disable-default-traits \
-  --traits AllRuntimeFeatures
+  --traits AllRuntimeFeatures \
+  -c release \
+  -debug-info-format none
 swift build \
   --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm-embedded \
   --product Database \
   --disable-default-traits \
-  --traits AllRuntimeFeatures
+  --traits AllRuntimeFeatures \
+  -c release \
+  -debug-info-format none
+
+swift build \
+  --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_static-linux-0.1.0 \
+  --triple aarch64-swift-linux-musl \
+  --product DatabaseCLICore \
+  --disable-default-traits \
+  --traits PostgreSQL \
+  -c release \
+  -debug-info-format none
 ~~~
+
+The Xcode harness keeps the source manifest unchanged, selects traits in an
+isolated copy, injects the pinned snapshot's testing runtime and backend
+environment into `.xctestrun`, preserves build/test logs, and rejects internal
+compiler, macro-plugin, or coverage-profiler failures even when Xcode exits
+successfully. Do not replace these invocations with a direct package-wide
+`xcodebuild test`.
+
+The release gates above were last executed against the same local dependency
+graph on 2026-08-03. FoundationDB passed 3,918 tests, SQLite passed 101 tests,
+and PostgreSQL passed 71 tests with zero failures, skips, expected failures, or
+runtime warnings. Standard WASM, Embedded WASM, and the static
+`aarch64-swift-linux-musl` `DatabaseCLICore` product compiled and linked in
+release mode with swift-hnsw 1.1.4.
+
+Release WASM builds disable debug information because reactor artifacts do not
+ship it and host-side `dsymutil` cannot reliably verify snapshot-built macro
+dependency objects. Compiler diagnostics remain enabled. The static Musl build
+compiles and links the Linux CLI/runtime boundary, including `DatabaseMath`,
+`DatabaseEngine`, and PostgreSQL storage dependencies; it is a portability
+gate, not a substitute for the real PostgreSQL integration suite.
 
 Run PostgreSQL integration tests only when `POSTGRES_TEST_UNIX_SOCKET` or
 `POSTGRES_TEST_HOST` identifies an isolated test database. The Unix-socket

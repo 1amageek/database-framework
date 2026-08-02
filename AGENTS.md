@@ -22,3 +22,20 @@
 - Keep large persisted values and Wire payloads in owned buffers with range views until a semantic or persistence boundary requires materialization.
 - Do not turn unsupported operations, decode failures, authorization failures, conflicts, or resource limits into empty successful results.
 - This is version 1. Remove replacement paths and obsolete DTOs rather than preserving compatibility.
+
+## Verification
+
+- Native backend verification uses `scripts/xcode-test-harness` with the pinned
+  Swift snapshot. Do not replace it with direct package-wide
+  `xcodebuild test`; the harness selects traits in an isolated manifest,
+  injects the snapshot testing runtime and backend environment, enforces
+  timeouts and exact counts, and rejects skips, expected failures, runtime
+  warnings, and internal compiler, macro-plugin, or profiler errors.
+- The strict backend contracts are 3,918 FoundationDB tests, 101 SQLite tests,
+  and 71 PostgreSQL tests. PostgreSQL tests require an isolated real server.
+- Standard WASM, Embedded WASM, and static Musl Linux verification use the exact
+  Swift 6.4 snapshot SDK identifiers and release commands in
+  `docs/production-readiness.md`.
+- Compile/link gates do not replace backend behavioral tests. The final source
+  revision must pass both the target build gate and its executable native test
+  path before release.

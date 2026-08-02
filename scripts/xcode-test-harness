@@ -1,0 +1,565 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCHEME="database-framework-Package"
+DESTINATION="platform=macOS,arch=arm64"
+TRAITS=""
+EXPECTED_TEST_COUNT=""
+REQUIRE_ZERO_SKIPS=false
+REQUIRE_ZERO_EXPECTED_FAILURES=false
+REQUIRE_ZERO_RUNTIME_WARNINGS=false
+BUILD_TIMEOUT_SECONDS="${XCODE_TEST_BUILD_TIMEOUT_SECONDS:-1200}"
+TEST_TIMEOUT_SECONDS="${XCODE_TEST_TIMEOUT_SECONDS:-1200}"
+RESOLVE_TIMEOUT_SECONDS="${XCODE_TEST_RESOLVE_TIMEOUT_SECONDS:-600}"
+RESULT_DIRECTORY="${XCODE_TEST_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-framework-xcode-results}"
+ONLY_TESTING=()
+SKIP_TESTING=()
+ADDITIONAL_XCODEBUILD_ARGUMENTS=()
+XCODE_HARNESS_WORK_ROOT=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/xcode-test-harness --traits <trait-list> [options]
+
+Required:
+  --traits <list>              Comma-separated SwiftPM traits.
+
+Options:
+  --scheme <name>              Xcode scheme. Default: database-framework-Package
+  --destination <destination>  Xcode destination. Default: platform=macOS,arch=arm64
+  --only-testing <identifier>  Include one test identifier. Repeatable.
+  --skip-testing <identifier>  Exclude one test identifier. Repeatable.
+  --expected-count <count>     Require an exact executed-test count.
+  --require-zero-skips         Fail when any selected test is skipped.
+  --require-zero-expected-failures
+                               Fail when any expected failure is recorded.
+  --require-zero-runtime-warnings
+                               Fail when the result contains runtime warnings.
+  --build-timeout <seconds>    build-for-testing timeout. Default: 1200
+  --test-timeout <seconds>     test-without-building timeout. Default: 1200
+  --resolve-timeout <seconds>  SwiftPM resolution timeout. Default: 600
+  --result-directory <path>    Persistent result directory outside the temporary copy.
+  --                           Pass remaining arguments to both xcodebuild invocations.
+
+Recognized test environment variables are copied into every generated test
+target: FDB_CLUSTER_FILE and POSTGRES_TEST_*.
+EOF
+}
+
+require_value() {
+  local option="$1"
+  local value="${2:-}"
+  if [[ -z "$value" ]]; then
+    echo "error: $option requires a value" >&2
+    exit 2
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --traits)
+      require_value "$1" "${2:-}"
+      TRAITS="$2"
+      shift 2
+      ;;
+    --scheme)
+      require_value "$1" "${2:-}"
+      SCHEME="$2"
+      shift 2
+      ;;
+    --destination)
+      require_value "$1" "${2:-}"
+      DESTINATION="$2"
+      shift 2
+      ;;
+    --only-testing)
+      require_value "$1" "${2:-}"
+      ONLY_TESTING+=("$2")
+      shift 2
+      ;;
+    --skip-testing)
+      require_value "$1" "${2:-}"
+      SKIP_TESTING+=("$2")
+      shift 2
+      ;;
+    --expected-count)
+      require_value "$1" "${2:-}"
+      EXPECTED_TEST_COUNT="$2"
+      shift 2
+      ;;
+    --require-zero-skips)
+      REQUIRE_ZERO_SKIPS=true
+      shift
+      ;;
+    --require-zero-expected-failures)
+      REQUIRE_ZERO_EXPECTED_FAILURES=true
+      shift
+      ;;
+    --require-zero-runtime-warnings)
+      REQUIRE_ZERO_RUNTIME_WARNINGS=true
+      shift
+      ;;
+    --build-timeout)
+      require_value "$1" "${2:-}"
+      BUILD_TIMEOUT_SECONDS="$2"
+      shift 2
+      ;;
+    --test-timeout)
+      require_value "$1" "${2:-}"
+      TEST_TIMEOUT_SECONDS="$2"
+      shift 2
+      ;;
+    --resolve-timeout)
+      require_value "$1" "${2:-}"
+      RESOLVE_TIMEOUT_SECONDS="$2"
+      shift 2
+      ;;
+    --result-directory)
+      require_value "$1" "${2:-}"
+      RESULT_DIRECTORY="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      ADDITIONAL_XCODEBUILD_ARGUMENTS=("$@")
+      break
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$TRAITS" ]]; then
+  echo "error: --traits is required" >&2
+  exit 2
+fi
+if ! [[ "$EXPECTED_TEST_COUNT" =~ ^[0-9]*$ ]]; then
+  echo "error: --expected-count must be a non-negative integer" >&2
+  exit 2
+fi
+if ! [[ "$BUILD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: --build-timeout must be a positive integer" >&2
+  exit 2
+fi
+if ! [[ "$TEST_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: --test-timeout must be a positive integer" >&2
+  exit 2
+fi
+if ! [[ "$RESOLVE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: --resolve-timeout must be a positive integer" >&2
+  exit 2
+fi
+
+timeout_command() {
+  local seconds="$1"
+  shift
+  perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+}
+
+cleanup() {
+  if [[ -z "$XCODE_HARNESS_WORK_ROOT" || ! -d "$XCODE_HARNESS_WORK_ROOT" ]]; then
+    return
+  fi
+  local expected_prefix="${TMPDIR:-/tmp}/database-framework-xcode-test."
+  if [[ "$XCODE_HARNESS_WORK_ROOT" != "$expected_prefix"* ]]; then
+    echo "error: refusing to remove unexpected harness path: $XCODE_HARNESS_WORK_ROOT" >&2
+    return
+  fi
+  rm -rf -- "$XCODE_HARNESS_WORK_ROOT"
+}
+
+trap cleanup EXIT
+
+trait_literal() {
+  local input="$1"
+  local output="["
+  local separator=""
+  local trait
+  local traits=()
+  IFS=',' read -r -a traits <<<"$input"
+  if (( ${#traits[@]} == 0 )); then
+    echo "error: no traits were provided" >&2
+    return 1
+  fi
+  for trait in "${traits[@]}"; do
+    if ! [[ "$trait" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]]; then
+      echo "error: invalid trait name: $trait" >&2
+      return 1
+    fi
+    output+="$separator\"$trait\""
+    separator=", "
+  done
+  output+="]"
+  printf '%s\n' "$output"
+}
+
+set_plist_string() {
+  local plist="$1"
+  local dictionary_path="$2"
+  local key="$3"
+  local value="$4"
+  local value_path="$dictionary_path.$key"
+
+  if ! plutil -extract "$dictionary_path" xml1 -o /dev/null \
+      "$plist" >/dev/null 2>&1; then
+    plutil -insert "$dictionary_path" -xml '<dict/>' "$plist"
+  fi
+  if plutil -extract "$value_path" raw "$plist" >/dev/null 2>&1; then
+    plutil -replace "$value_path" -string "$value" "$plist"
+  else
+    plutil -insert "$value_path" -string "$value" "$plist"
+  fi
+}
+
+prepend_testing_library_path() {
+  local plist="$1"
+  local dictionary_path="$2"
+  local library_path="$3"
+  local value_path="$dictionary_path.DYLD_LIBRARY_PATH"
+  local existing_value=""
+
+  if ! plutil -extract "$dictionary_path" xml1 -o /dev/null \
+      "$plist" >/dev/null 2>&1; then
+    plutil -insert "$dictionary_path" -xml '<dict/>' "$plist"
+  fi
+  if existing_value="$(plutil -extract "$value_path" raw "$plist" 2>/dev/null)"; then
+    plutil -replace "$value_path" \
+      -string "$library_path:$existing_value" "$plist"
+  else
+    plutil -insert "$value_path" -string "$library_path" "$plist"
+  fi
+}
+
+inject_environment() {
+  local plist="$1"
+  local target_count=0
+  local configuration_index=0
+  local environment_keys=(
+    FDB_CLUSTER_FILE
+    POSTGRES_TEST_UNIX_SOCKET
+    POSTGRES_TEST_HOST
+    POSTGRES_TEST_PORT
+    POSTGRES_TEST_USER
+    POSTGRES_TEST_PASSWORD
+    POSTGRES_TEST_DB
+  )
+  local swiftc
+  local toolchain_root
+  local testing_library_path=""
+  local fdb_library_path=""
+
+  if [[ -n "${TOOLCHAINS:-}" ]]; then
+    swiftc="$(xcrun --toolchain "$TOOLCHAINS" --find swiftc)"
+  else
+    swiftc="$(xcrun --find swiftc)"
+  fi
+  toolchain_root="$(cd "$(dirname "$swiftc")/../.." && pwd)"
+  if [[ -f "$toolchain_root/usr/lib/swift/macosx/testing/libTesting.dylib" ]]; then
+    testing_library_path="$toolchain_root/usr/lib/swift/macosx/testing"
+  fi
+  if [[ -n "${FDB_CLUSTER_FILE:-}" ]]; then
+    local candidate
+    for candidate in \
+        "${FDB_CLIENT_LIBRARY_DIRECTORY:-}" \
+        /usr/local/lib \
+        /opt/homebrew/lib; do
+      if [[ -n "$candidate" && -f "$candidate/libfdb_c.dylib" ]]; then
+        fdb_library_path="$candidate"
+        break
+      fi
+    done
+    if [[ -z "$fdb_library_path" ]]; then
+      echo "error: FDB_CLUSTER_FILE is set but libfdb_c.dylib was not found" >&2
+      return 1
+    fi
+  fi
+
+  while plutil -extract "TestConfigurations.$configuration_index.Name" raw \
+      "$plist" >/dev/null 2>&1; do
+    local target_index=0
+    while plutil -extract \
+        "TestConfigurations.$configuration_index.TestTargets.$target_index.BlueprintName" \
+        raw "$plist" >/dev/null 2>&1; do
+      local target_path="TestConfigurations.$configuration_index.TestTargets.$target_index"
+      local key
+      local value
+      for key in "${environment_keys[@]}"; do
+        if value="$(printenv "$key")"; then
+          set_plist_string "$plist" "$target_path.EnvironmentVariables" "$key" "$value"
+        fi
+      done
+      if [[ -n "$testing_library_path" ]]; then
+        prepend_testing_library_path \
+          "$plist" "$target_path.TestingEnvironmentVariables" "$testing_library_path"
+      fi
+      if [[ -n "$fdb_library_path" ]]; then
+        prepend_testing_library_path \
+          "$plist" "$target_path.TestingEnvironmentVariables" "$fdb_library_path"
+      fi
+      target_count=$((target_count + 1))
+      target_index=$((target_index + 1))
+    done
+    configuration_index=$((configuration_index + 1))
+  done
+
+  local top_level_key
+  while IFS= read -r top_level_key; do
+    if ! plutil -extract "$top_level_key.BlueprintName" raw \
+        "$plist" >/dev/null 2>&1; then
+      continue
+    fi
+    local key
+    local value
+    for key in "${environment_keys[@]}"; do
+      if value="$(printenv "$key")"; then
+        set_plist_string "$plist" "$top_level_key.EnvironmentVariables" "$key" "$value"
+      fi
+    done
+    if [[ -n "$testing_library_path" ]]; then
+      prepend_testing_library_path \
+        "$plist" "$top_level_key.TestingEnvironmentVariables" "$testing_library_path"
+    fi
+    if [[ -n "$fdb_library_path" ]]; then
+      prepend_testing_library_path \
+        "$plist" "$top_level_key.TestingEnvironmentVariables" "$fdb_library_path"
+    fi
+    target_count=$((target_count + 1))
+  done < <(
+    plutil -p "$plist" \
+      | sed -n 's/^  "\([^"]*\)" => {$/\1/p'
+  )
+
+  if (( target_count == 0 )); then
+    echo "error: no test targets found in $plist" >&2
+    return 1
+  fi
+}
+
+extract_summary_number() {
+  local summary="$1"
+  local key="$2"
+  printf '%s' "$summary" | plutil -extract "$key" raw -
+}
+
+for command in jq swift xcodebuild xcrun plutil perl rg rsync tee; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "error: required command not found: $command" >&2
+    exit 1
+  fi
+done
+
+traits_literal="$(trait_literal "$TRAITS")"
+XCODE_HARNESS_WORK_ROOT="$(
+  mktemp -d "${TMPDIR:-/tmp}/database-framework-xcode-test.XXXXXX"
+)"
+source_copy="$XCODE_HARNESS_WORK_ROOT/source"
+derived_data="$XCODE_HARNESS_WORK_ROOT/DerivedData"
+mkdir -p "$source_copy" "$derived_data" "$RESULT_DIRECTORY"
+
+rsync -a \
+  --exclude '.git' \
+  --exclude '.build' \
+  --exclude '.swiftpm' \
+  --exclude '.fdb-test' \
+  --exclude '.test-results' \
+  --exclude '*.xcresult' \
+  "$ROOT_DIR/" "$source_copy/"
+
+locked_pins="$XCODE_HARNESS_WORK_ROOT/locked-pins.json"
+resolved_pins="$XCODE_HARNESS_WORK_ROOT/resolved-pins.json"
+if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
+  jq -S '[.pins[] | {identity, kind, location, state}] | sort_by(.identity)' \
+    "$ROOT_DIR/Package.resolved" > "$locked_pins"
+fi
+
+TRAIT_LITERAL="$traits_literal" perl -0pi -e '
+  my $count = s/\.default\(enabledTraits:\s*\[[^\]]*\]\)/.default(enabledTraits: $ENV{TRAIT_LITERAL})/s;
+  die "expected exactly one default trait declaration\n" unless $count == 1;
+' "$source_copy/Package.swift"
+
+(
+  cd "$source_copy"
+  timeout_command "$RESOLVE_TIMEOUT_SECONDS" swift package resolve
+)
+jq -S '[.pins[] | {identity, kind, location, state}] | sort_by(.identity)' \
+  "$source_copy/Package.resolved" > "$resolved_pins"
+if [[ -f "$locked_pins" ]] && ! jq -e -n \
+    --slurpfile locked "$locked_pins" \
+    --slurpfile resolved "$resolved_pins" '
+      ($locked[0] | INDEX(.identity)) as $pinned
+      | all(
+          $resolved[0][];
+          ($pinned[.identity] == null) or ($pinned[.identity] == .)
+        )
+    ' >/dev/null; then
+  echo "error: trait resolution changed an existing dependency pin" >&2
+  diff -u "$locked_pins" "$resolved_pins" || true
+  exit 1
+fi
+echo "Resolved dependency pins:"
+jq -r '.[] | "  \(.identity) \(.state.version // .state.revision) \(.state.revision)"' \
+  "$resolved_pins"
+
+run_identifier="$(date +%Y%m%d-%H%M%S)-$$"
+build_result="$RESULT_DIRECTORY/Build-$run_identifier.xcresult"
+test_result="$RESULT_DIRECTORY/Test-$run_identifier.xcresult"
+build_log="$RESULT_DIRECTORY/Build-$run_identifier.log"
+test_log="$RESULT_DIRECTORY/Test-$run_identifier.log"
+
+reject_internal_tool_errors() {
+  local log_path="$1"
+  if rg -n 'Internal Error:|LLVM Profile Error:' "$log_path" >&2; then
+    echo "error: internal tool failure detected in $log_path" >&2
+    return 1
+  fi
+}
+
+build_arguments=(
+  build-for-testing
+  -scheme "$SCHEME"
+  -destination "$DESTINATION"
+  -derivedDataPath "$derived_data"
+  -resultBundlePath "$build_result"
+  -enableCodeCoverage NO
+  -onlyUsePackageVersionsFromResolvedFile
+  -skipPackageUpdates
+)
+if (( ${#ONLY_TESTING[@]} > 0 )); then
+  for identifier in "${ONLY_TESTING[@]}"; do
+    build_arguments+=("-only-testing:$identifier")
+  done
+fi
+if (( ${#SKIP_TESTING[@]} > 0 )); then
+  for identifier in "${SKIP_TESTING[@]}"; do
+    build_arguments+=("-skip-testing:$identifier")
+  done
+fi
+if (( ${#ADDITIONAL_XCODEBUILD_ARGUMENTS[@]} > 0 )); then
+  build_arguments+=("${ADDITIONAL_XCODEBUILD_ARGUMENTS[@]}")
+fi
+
+echo "Traits: $TRAITS"
+echo "Temporary source: $source_copy"
+echo "Build result: $build_result"
+echo "Build log: $build_log"
+set +e
+(
+  cd "$source_copy"
+  timeout_command "$BUILD_TIMEOUT_SECONDS" xcodebuild "${build_arguments[@]}" \
+    2>&1 | tee "$build_log"
+)
+build_status=$?
+set -e
+reject_internal_tool_errors "$build_log"
+if (( build_status != 0 )); then
+  echo "error: xcodebuild build-for-testing exited with status $build_status" >&2
+  exit "$build_status"
+fi
+
+xctestrun_paths="$(
+  find "$derived_data/Build/Products" -maxdepth 1 \
+    -type f -name '*.xctestrun' -print
+)"
+xctestrun_count="$(printf '%s\n' "$xctestrun_paths" | sed '/^$/d' | wc -l | tr -d ' ')"
+if [[ "$xctestrun_count" != "1" ]]; then
+  echo "error: expected one xctestrun file, found $xctestrun_count" >&2
+  printf '%s\n' "$xctestrun_paths" >&2
+  exit 1
+fi
+source_xctestrun="$xctestrun_paths"
+injected_xctestrun="$(dirname "$source_xctestrun")/.environment-$run_identifier.xctestrun"
+cp "$source_xctestrun" "$injected_xctestrun"
+inject_environment "$injected_xctestrun"
+
+test_arguments=(
+  test-without-building
+  -xctestrun "$injected_xctestrun"
+  -destination "$DESTINATION"
+  -resultBundlePath "$test_result"
+  -enableCodeCoverage NO
+)
+if (( ${#ONLY_TESTING[@]} > 0 )); then
+  for identifier in "${ONLY_TESTING[@]}"; do
+    test_arguments+=("-only-testing:$identifier")
+  done
+fi
+if (( ${#SKIP_TESTING[@]} > 0 )); then
+  for identifier in "${SKIP_TESTING[@]}"; do
+    test_arguments+=("-skip-testing:$identifier")
+  done
+fi
+if (( ${#ADDITIONAL_XCODEBUILD_ARGUMENTS[@]} > 0 )); then
+  test_arguments+=("${ADDITIONAL_XCODEBUILD_ARGUMENTS[@]}")
+fi
+
+echo "Test result: $test_result"
+echo "Test log: $test_log"
+set +e
+timeout_command "$TEST_TIMEOUT_SECONDS" xcodebuild "${test_arguments[@]}" \
+  2>&1 | tee "$test_log"
+test_status=$?
+set -e
+reject_internal_tool_errors "$test_log"
+
+if [[ ! -d "$test_result" ]]; then
+  echo "error: xcodebuild did not produce a test result bundle" >&2
+  exit "$test_status"
+fi
+
+summary="$(
+  xcrun xcresulttool get test-results summary \
+    --path "$test_result" --format json
+)"
+printf '%s\n' "$summary"
+
+total_count="$(extract_summary_number "$summary" totalTestCount)"
+passed_count="$(extract_summary_number "$summary" passedTests)"
+failed_count="$(extract_summary_number "$summary" failedTests)"
+skipped_count="$(extract_summary_number "$summary" skippedTests)"
+expected_failure_count="$(extract_summary_number "$summary" expectedFailures)"
+runtime_warning_count="$(printf '%s' "$summary" | jq '.runtimeWarnings | length')"
+
+if ! [[ "$total_count" =~ ^[0-9]+$ ]] || (( total_count == 0 )); then
+  echo "error: xcodebuild executed zero tests" >&2
+  exit 1
+fi
+if (( failed_count != 0 )); then
+  echo "error: $failed_count tests failed" >&2
+  exit 1
+fi
+if [[ -n "$EXPECTED_TEST_COUNT" && "$total_count" != "$EXPECTED_TEST_COUNT" ]]; then
+  echo "error: expected $EXPECTED_TEST_COUNT tests, executed $total_count" >&2
+  exit 1
+fi
+if [[ "$REQUIRE_ZERO_SKIPS" == true && "$skipped_count" != "0" ]]; then
+  echo "error: expected zero skipped tests, observed $skipped_count" >&2
+  exit 1
+fi
+if [[ "$REQUIRE_ZERO_EXPECTED_FAILURES" == true && "$expected_failure_count" != "0" ]]; then
+  echo "error: expected zero expected failures, observed $expected_failure_count" >&2
+  exit 1
+fi
+if [[ "$REQUIRE_ZERO_RUNTIME_WARNINGS" == true && "$runtime_warning_count" != "0" ]]; then
+  echo "error: expected zero runtime warnings, observed $runtime_warning_count" >&2
+  exit 1
+fi
+if (( test_status != 0 )); then
+  echo "error: xcodebuild exited with status $test_status" >&2
+  exit "$test_status"
+fi
+
+echo "Passed: $passed_count"
+echo "Failed: $failed_count"
+echo "Skipped: $skipped_count"
+echo "Expected failures: $expected_failure_count"
+echo "Runtime warnings: $runtime_warning_count"
+echo "Result bundle: $test_result"
