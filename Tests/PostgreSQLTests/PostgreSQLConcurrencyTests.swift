@@ -55,6 +55,27 @@ struct PostgreSQLConcurrencyTests {
         return try await PostgreSQLScenarioCoordinator.shared.makeContainer(schema: schema, entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGCounter.self)])
     }
 
+    @Test("A closed container does not poison the next scenario engine")
+    func closedContainerDoesNotPoisonNextEngine() async throws {
+        try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
+            let firstContainer = try await setupContainer()
+            await firstContainer.shutdown()
+
+            let secondContainer = try await setupContainer()
+            let context = secondContainer.newContext()
+            var counter = PGCounter()
+            counter.id = uniqueID("fresh-engine")
+            counter.value = 42
+            try context.insert(counter)
+            try await context.save()
+
+            let stored = try await context.fetch(PGCounter.self)
+                .where(PGCounter.fields.id == counter.id)
+                .first()
+            #expect(stored?.value == 42)
+        }
+    }
+
     // MARK: - Concurrent Write Isolation
 
     @Test("Concurrent writes to different keys succeed")

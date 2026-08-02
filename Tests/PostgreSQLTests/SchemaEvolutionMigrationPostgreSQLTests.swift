@@ -196,7 +196,10 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
     func schemaRegistryAcceptsAppendOnlyFields() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
-            let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
+            let registry = SchemaRegistry(
+                database: engine,
+                clock: TestProcessMonotonicClock()
+            )
 
             try await registry.persist(Schema(entities: [try PGSchemaEvolutionUserV1.schemaEntity]))
             try await registry.persist(Schema(entities: [try PGSchemaEvolutionUserV2.schemaEntity]))
@@ -212,7 +215,10 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
     func schemaRegistryRejectsReorderedFields() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
-            let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
+            let registry = SchemaRegistry(
+                database: engine,
+                clock: TestProcessMonotonicClock()
+            )
             let typeName = PGSchemaEvolutionUserV1.persistableType
 
             try await registry.persist(Schema(entities: [try PGSchemaEvolutionUserV1.schemaEntity]))
@@ -265,7 +271,10 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             )
             try await migratedContainer.migrateIfNeeded()
 
-            let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
+            let registry = SchemaRegistry(
+                database: migratedContainer.engine,
+                clock: TestProcessMonotonicClock()
+            )
             let entity = try await registry.load(typeName: PGMigratedUserV1.persistableType)
             let version = try await migratedContainer.getCurrentSchemaVersion()
 

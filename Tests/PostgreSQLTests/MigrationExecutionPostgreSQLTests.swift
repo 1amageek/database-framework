@@ -310,7 +310,10 @@ struct MigrationExecutionPostgreSQLTests {
 
             let events = await pgMigrationEventRecorder.snapshot()
             let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
-            let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
+            let registry = SchemaRegistry(
+                database: migratedContainer.engine,
+                clock: TestProcessMonotonicClock()
+            )
             let entity = try await registry.load(typeName: PGStageFailureUserV1.persistableType)
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
@@ -347,7 +350,10 @@ struct MigrationExecutionPostgreSQLTests {
 
             let events = await pgMigrationEventRecorder.snapshot()
             let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
-            let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
+            let registry = SchemaRegistry(
+                database: migratedContainer.engine,
+                clock: TestProcessMonotonicClock()
+            )
             let entity = try await registry.load(typeName: PGStageBoundaryUserV1.persistableType)
 
             #expect(events.isEmpty)

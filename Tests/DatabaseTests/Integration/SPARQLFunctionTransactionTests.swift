@@ -4,6 +4,7 @@ import DatabaseRuntime
 import DatabaseTypes
 import StorageKit
 import Synchronization
+import TestSupport
 import Testing
 @testable import Database
 @testable import DatabaseEngine

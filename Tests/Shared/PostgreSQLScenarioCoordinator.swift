@@ -6,6 +6,7 @@
 // - `POSTGRES_TEST_UNIX_SOCKET` (preferred for isolated local instances)
 // - `POSTGRES_TEST_HOST` (required when no Unix socket is configured)
 // - `POSTGRES_TEST_PORT` (optional, default: 5432)
+// - `POSTGRES_TEST_USER` (optional, default: "postgres")
 // - `POSTGRES_TEST_PASSWORD` (optional, default: "test")
 // - `POSTGRES_TEST_DB` (optional, default: "database_framework_test")
 //
@@ -20,9 +21,10 @@ import DatabaseKit
 /// Coordinates PostgreSQL initialization and isolated scenario access.
 ///
 /// This actor ensures:
-/// 1. PostgreSQL engine is initialized exactly once
+/// 1. PostgreSQL configuration and connectivity are validated exactly once
 /// 2. PostgreSQL scenarios run serially
 /// 3. Every scenario starts from an empty logical database
+/// 4. Every container receives an exclusively owned storage engine
 ///
 /// **Usage**:
 /// ```swift
@@ -45,12 +47,14 @@ public actor PostgreSQLScenarioCoordinator {
     private enum InitializationState {
         case uninitialized
         case initializing([CheckedContinuation<Void, Error>])
-        case initialized(PostgreSQLStorageEngine)
+        case initialized(PostgreSQLConfiguration)
         case unavailable(String)
         case failed(Error)
     }
 
     private var initializationState: InitializationState = .uninitialized
+    private var scenarioIsActive = false
+    private var scenarioEngines: [PostgreSQLStorageEngine] = []
     private let serializedAccess = SerializedScenarioAccessGate()
 
     private init() {}
@@ -61,23 +65,20 @@ public actor PostgreSQLScenarioCoordinator {
         return false
     }
 
-    /// Get the initialized engine (only valid after initialize())
+    /// Creates an engine owned by the active isolated scenario.
+    ///
+    /// Every caller receives a distinct engine because `DBContainer` assumes
+    /// exclusive ownership of its injected storage engine and shuts it down
+    /// when the container's lifecycle ends.
     public var engine: PostgreSQLStorageEngine {
-        get throws {
-            switch initializationState {
-            case .initialized(let engine):
-                return engine
-            case .unavailable(let reason):
-                throw PostgreSQLScenarioAvailabilityError.unavailable(reason)
-            case .failed(let error):
-                throw error
-            default:
-                throw PostgreSQLScenarioAvailabilityError.unavailable("Not initialized")
-            }
+        get async throws {
+            try await makeScenarioEngine()
         }
     }
 
-    /// Initialize PostgreSQL engine (called automatically by withIsolatedScenario)
+    /// Validates PostgreSQL configuration and connectivity.
+    ///
+    /// Called automatically by `withIsolatedScenario`.
     public func initialize() async throws {
         switch initializationState {
         case .initialized:
@@ -117,16 +118,27 @@ public actor PostgreSQLScenarioCoordinator {
                 throw error
             }
 
-            let port = Int(environment["POSTGRES_TEST_PORT"] ?? "5432") ?? 5432
-            let password = environment["POSTGRES_TEST_PASSWORD"] ?? "test"
-            let database = environment["POSTGRES_TEST_DB"] ?? "database_framework_test"
-
             do {
+                let port: Int
+                if let portValue = environment["POSTGRES_TEST_PORT"] {
+                    guard let parsedPort = Int(portValue), (1...65_535).contains(parsedPort) else {
+                        throw PostgreSQLScenarioAvailabilityError.unavailable(
+                            "POSTGRES_TEST_PORT must be an integer from 1 through 65535."
+                        )
+                    }
+                    port = parsedPort
+                } else {
+                    port = 5_432
+                }
+                let username = environment["POSTGRES_TEST_USER"] ?? "postgres"
+                let password = environment["POSTGRES_TEST_PASSWORD"] ?? "test"
+                let database = environment["POSTGRES_TEST_DB"] ?? "database_framework_test"
+
                 let config: PostgreSQLConfiguration
                 if let socketPath {
                     config = PostgreSQLConfiguration(
                         unixSocketPath: socketPath,
-                        username: "postgres",
+                        username: username,
                         password: password,
                         database: database
                     )
@@ -134,7 +146,7 @@ public actor PostgreSQLScenarioCoordinator {
                     config = PostgreSQLConfiguration(
                         host: host,
                         port: port,
-                        username: "postgres",
+                        username: username,
                         password: password,
                         database: database
                     )
@@ -143,23 +155,15 @@ public actor PostgreSQLScenarioCoordinator {
                         "PostgreSQL endpoint is not configured."
                     )
                 }
-                let engine = try await PostgreSQLStorageEngine(configuration: config)
-
-                // Clean all data on startup
-                try await engine.withTransaction { tx in
-                    try tx.clearRange(
-                        beginKey: ByteString(),
-                        endKey: ByteString([0xFF])
-                    )
-                }
+                try await verifyConnectionAndClear(configuration: config)
 
                 if case .initializing(let continuations) = initializationState {
-                    initializationState = .initialized(engine)
+                    initializationState = .initialized(config)
                     for continuation in continuations {
                         continuation.resume(returning: ())
                     }
                 } else {
-                    initializationState = .initialized(engine)
+                    initializationState = .initialized(config)
                 }
             } catch {
                 if case .initializing(let continuations) = initializationState {
@@ -187,8 +191,15 @@ public actor PostgreSQLScenarioCoordinator {
     ) async throws -> T {
         try await initialize()
         return try await serializedAccess.withAccess { [self] in
-            try await clearScenarioData()
-            return try await operation()
+            try await beginScenario()
+            do {
+                let result = try await operation()
+                await finishScenario()
+                return result
+            } catch {
+                await finishScenario()
+                throw error
+            }
         }
     }
 
@@ -197,7 +208,7 @@ public actor PostgreSQLScenarioCoordinator {
         schema: Schema,
         entityRuntimes: [EntityRuntimeRegistration]
     ) async throws -> DBContainer {
-        let pgEngine = try engine
+        let pgEngine = try await makeScenarioEngine()
         return try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: pgEngine),
@@ -208,14 +219,76 @@ public actor PostgreSQLScenarioCoordinator {
         )
     }
 
-    /// Clean all data in the PostgreSQL database
-    private func clearScenarioData() async throws {
-        let pgEngine = try engine
-        try await pgEngine.withTransaction { tx in
-            try tx.clearRange(
-                beginKey: ByteString(),
-                endKey: ByteString([0xFF])
+    private func beginScenario() async throws {
+        guard !scenarioIsActive, scenarioEngines.isEmpty else {
+            throw PostgreSQLScenarioAvailabilityError.unavailable(
+                "A PostgreSQL scenario is already active."
             )
+        }
+        try await verifyConnectionAndClear(configuration: try configuration())
+        scenarioIsActive = true
+    }
+
+    private func finishScenario() async {
+        scenarioIsActive = false
+        let engines = scenarioEngines
+        scenarioEngines.removeAll(keepingCapacity: false)
+        for engine in engines {
+            await engine.shutdown()
+        }
+    }
+
+    private func makeScenarioEngine() async throws -> PostgreSQLStorageEngine {
+        guard scenarioIsActive else {
+            throw PostgreSQLScenarioAvailabilityError.unavailable(
+                "Engine access is only valid within withIsolatedScenario."
+            )
+        }
+        let engine = try await PostgreSQLStorageEngine(
+            configuration: try configuration()
+        )
+        guard scenarioIsActive else {
+            await engine.shutdown()
+            throw PostgreSQLScenarioAvailabilityError.unavailable(
+                "The PostgreSQL scenario ended while creating an engine."
+            )
+        }
+        scenarioEngines.append(engine)
+        return engine
+    }
+
+    private func configuration() throws -> PostgreSQLConfiguration {
+        switch initializationState {
+        case .initialized(let configuration):
+            return configuration
+        case .unavailable(let reason):
+            throw PostgreSQLScenarioAvailabilityError.unavailable(reason)
+        case .failed(let error):
+            throw error
+        case .uninitialized, .initializing:
+            throw PostgreSQLScenarioAvailabilityError.unavailable(
+                "PostgreSQL has not finished initializing."
+            )
+        }
+    }
+
+    private func verifyConnectionAndClear(
+        configuration: PostgreSQLConfiguration
+    ) async throws {
+        let engine = try await PostgreSQLStorageEngine(
+            configuration: configuration
+        )
+        do {
+            try await engine.withTransaction { transaction in
+                try transaction.clearRange(
+                    beginKey: ByteString(),
+                    endKey: ByteString([0xFF])
+                )
+            }
+            await engine.shutdown()
+        } catch {
+            await engine.shutdown()
+            throw error
         }
     }
 
