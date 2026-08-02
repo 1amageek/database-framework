@@ -63,6 +63,15 @@ final class ControlledCompactionStorageEngine: StorageEngine, Sendable {
         var mutationByteLimit: Int? {
             underlying.mutationByteLimit
         }
+        var compaction: StorageCompactionAccess? {
+            StorageCompactionAccess(limits: compactionLimits) {
+                [self] maximumWorkUnits, continuation in
+                try await stageCompactionSlice(
+                    maximumWorkUnits: maximumWorkUnits,
+                    continuation: continuation
+                )
+            }
+        }
         var transactionDomain: StorageTransactionDomain {
             underlying.transactionDomain
         }

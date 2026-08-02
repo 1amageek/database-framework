@@ -161,6 +161,29 @@ struct VectorIndexConfigurationSelectionTests {
 @Suite("VectorIndexConfiguration Tests", .heartbeat)
 struct VectorIndexConfigurationTests {
 
+    @Test("Runtime policy resolves configured index algorithms")
+    func resolvesConfiguredIndexAlgorithms() throws {
+        let flat = VectorIndexConfiguration<HNSWDocument>(
+            field: HNSWDocument.fields.embedding,
+            algorithm: .flat
+        )
+        let hnsw = VectorIndexConfiguration<HNSWDocument>(
+            field: HNSWDocument.fields.embedding,
+            algorithm: .hnsw(.default),
+            subspaceKey: "unused-secondary-configuration"
+        )
+
+        let policies = try VectorRuntimePolicy.resolveConfiguredIndexes(
+            in: [flat, hnsw]
+        )
+        let policy = try #require(policies[flat.indexName])
+        guard case .flat = policy.algorithm else {
+            Issue.record("Expected the first effective vector policy to remain Flat")
+            return
+        }
+        #expect(policy.subspaceKey == nil)
+    }
+
     @Test("Default algorithm is an exact flat scan")
     func defaultAlgorithmIsFlat() {
         guard case .flat = VectorAlgorithm.default else {
@@ -416,10 +439,7 @@ struct HNSWBasicBehaviorTests {
             }
             Issue.record("Expected an invalid construction parameter error")
         } catch VectorIndexError.invalidArgument(let message) {
-            #expect(
-                message
-                    == "m must be at least 2 and small enough to calculate connection capacity"
-            )
+            #expect(message == "m must be between 2 and 10000")
         } catch {
             Issue.record("Unexpected error: \(error)")
         }

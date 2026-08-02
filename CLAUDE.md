@@ -261,8 +261,9 @@ callbacks.
 
 ## Build and Validation
 
-Use the Swift 6.4 development snapshot and matching Swift SDK fixed by the
-workspace instructions.
+Use `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a` and the matching normal or
+Embedded WASM SDK fixed by the workspace instructions. Do not mix snapshot
+dates or silently fall back to Swift 6.3.
 
 Build products with the selected trait:
 
@@ -279,7 +280,7 @@ focused scheme or test target that covers the change:
 ```bash
 perl -e 'alarm shift; exec @ARGV' 120 \
   xcodebuild test \
-  -scheme DatabaseCoreFocused \
+  -scheme database-framework-Package \
   -destination 'platform=macOS,arch=arm64'
 ```
 
@@ -306,10 +307,10 @@ the same commit as `origin/main`.
 
 | Package | Minimum release |
 |---|---:|
-| `database-types` | `26.0726.0` |
-| `database-kit` | `26.0727.1` |
-| `storage-kit` | `26.0727.0` |
-| `swift-hnsw` | `1.0.1` |
+| `database-types` | `26.0730.0` |
+| `database-kit` | `26.0731.0` |
+| `storage-kit` | `26.0731.0` |
+| `swift-hnsw` | `1.0.2` |
 
 Repository branches and local paths are development conveniences, not part of
 the package or release contract.

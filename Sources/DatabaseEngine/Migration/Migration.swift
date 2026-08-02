@@ -578,6 +578,7 @@ public struct MigrationContext: Sendable {
             configurations: configurations
         )
         let memberTypeNames = Set(group.memberTypeNames)
+        var finalization: (runtime: EntityRuntimeRegistration, index: Index)?
 
         for entity in schema.entities where memberTypeNames.contains(entity.name) {
             guard let entityRuntime = container.runtimeConfiguration
@@ -599,6 +600,22 @@ public struct MigrationContext: Sendable {
             )
             let descriptors = memberDescriptors.filter { $0.name == indexName }
             guard !descriptors.isEmpty else { continue }
+            if finalization == nil, let descriptor = descriptors.first {
+                finalization = (
+                    runtime: entityRuntime,
+                    index: Index(
+                        name: descriptor.name,
+                        kind: descriptor.kind,
+                        rootExpression: KeyExpressionFactory.from(
+                            keyPaths: descriptor.fieldNames
+                        ),
+                        subspaceKey: descriptor.name,
+                        itemTypes: Set([group.identifier]),
+                        isUnique: descriptor.isUnique,
+                        storedFieldNames: descriptor.storedFieldNames
+                    )
+                )
+            }
 
             let typeCode = PolymorphicTypeCode.value(for: entity.name)
             let typeRange = itemSubspace.subspace(typeCode).range()
@@ -659,6 +676,24 @@ public struct MigrationContext: Sendable {
                 }
                 begin = lastProcessedKey.appending(0)
             }
+        }
+
+        guard let finalization else {
+            throw DatabaseRuntimeError.internalError(
+                "Polymorphic index '\(indexName)' has no registered member runtime"
+            )
+        }
+        try await container.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock
+        ) { transaction in
+            try await finalization.runtime.finalizeIndex(
+                container: self.container,
+                storeSubspace: subspace,
+                index: finalization.index,
+                configurations: configurations,
+                transaction: transaction
+            )
         }
     }
 

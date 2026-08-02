@@ -298,7 +298,7 @@ internal struct BinaryHeap<Element> {
 
     /// Returns all elements sorted in reverse order (farthest from root first)
     func toReverseSortedArray() -> [Element] {
-        return elements.sorted { !comparator($0, $1) }
+        elements.sorted { comparator($1, $0) }
     }
 
     // MARK: - Private Heap Operations

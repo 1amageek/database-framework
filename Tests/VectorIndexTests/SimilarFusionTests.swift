@@ -87,6 +87,53 @@ struct SimilarFusionTests {
         await container.shutdown()
     }
 
+    @Test("Large candidate sets remain semantically restrictive")
+    func largeCandidateSetsDoNotDependOnGlobalNearestNeighbors() async throws {
+        let container = try await makeContainer(algorithm: .flat)
+        do {
+            let context = container.newContext()
+            var candidateIDs: Set<String> = []
+
+            for index in 0...1_000 {
+                let identifier = "candidate-\(index)"
+                candidateIDs.insert(identifier)
+                try context.insert(
+                    SimilarFusionDocument(
+                        id: identifier,
+                        title: "Candidate",
+                        embedding: try Vector(float32: [0, 1])
+                    )
+                )
+            }
+            for index in 0...1_000 {
+                try context.insert(
+                    SimilarFusionDocument(
+                        id: "closer-outsider-\(index)",
+                        title: "Outsider",
+                        embedding: try Vector(float32: [2, 0])
+                    )
+                )
+            }
+            try await context.save()
+
+            let results = try await Similar(
+                SimilarFusionDocument.fields.embedding,
+                dimensions: 2,
+                context: context.indexQueryContext
+            )
+            .nearest(to: [1, 0], k: 1)
+            .metric(.dotProduct)
+            .execute(candidates: candidateIDs)
+
+            #expect(results.count == 1)
+            #expect(results.first.map { candidateIDs.contains($0.item.id) } == true)
+        } catch {
+            await container.shutdown()
+            throw error
+        }
+        await container.shutdown()
+    }
+
     @Test("Similar reports missing query configuration")
     func missingQueryIsTypedFailure() async throws {
         let container = try await makeContainer(algorithm: .flat)

@@ -111,7 +111,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/swift-hnsw.git",
-            from: "1.0.2"
+            from: "1.1.4"
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",

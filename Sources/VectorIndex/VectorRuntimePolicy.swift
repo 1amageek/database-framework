@@ -2,11 +2,14 @@ import DatabaseEngine
 import DatabaseTypes
 
 /// The vector module's execution policy after decoding canonical runtime options.
-struct VectorRuntimePolicy: Sendable {
-    let algorithm: VectorAlgorithm
-    let subspaceKey: String?
+///
+/// Hosting adapters use the same resolver as index construction so capability
+/// admission cannot diverge from the algorithm the framework will execute.
+public struct VectorRuntimePolicy: Sendable {
+    public let algorithm: VectorAlgorithm
+    public let subspaceKey: String?
 
-    static func resolve(
+    public static func resolve(
         in configurations: [any IndexRuntimeConfiguration]
     ) throws -> VectorRuntimePolicy? {
         guard let configuration = configurations.first(where: {
@@ -43,7 +46,7 @@ struct VectorRuntimePolicy: Sendable {
                     "Vector IVF nprobe cannot exceed nlist"
                 )
             }
-            resolvedAlgorithm = .ivf(VectorIVFParameters(
+            resolvedAlgorithm = .ivf(try VectorIVFParameters(
                 nlist: nlist,
                 nprobe: nprobe,
                 kmeansIterations: try positiveInteger(
@@ -52,7 +55,7 @@ struct VectorRuntimePolicy: Sendable {
                 )
             ))
         case "pq":
-            resolvedAlgorithm = .pq(VectorPQParameters(
+            resolvedAlgorithm = .pq(try VectorPQParameters(
                 m: try positiveInteger("m", in: options),
                 niter: try positiveInteger("niter", in: options)
             ))
@@ -66,6 +69,33 @@ struct VectorRuntimePolicy: Sendable {
             algorithm: resolvedAlgorithm,
             subspaceKey: configuration.subspaceKey
         )
+    }
+
+    /// Resolves the effective policy for every configured vector index.
+    ///
+    /// Grouping and selection intentionally match the production maintainer
+    /// and reader path: configurations are grouped by canonical index name and
+    /// the first vector configuration in each group selects the algorithm.
+    public static func resolveConfiguredIndexes(
+        in configurations: [any IndexRuntimeConfiguration]
+    ) throws -> [String: VectorRuntimePolicy] {
+        var configurationsByIndex: [
+            String: [any IndexRuntimeConfiguration]
+        ] = [:]
+        for configuration in configurations where
+            configuration.kindIdentifier == VectorIndexSpecification.identifier {
+            configurationsByIndex[configuration.indexName, default: []]
+                .append(configuration)
+        }
+
+        var policies: [String: VectorRuntimePolicy] = [:]
+        policies.reserveCapacity(configurationsByIndex.count)
+        for (indexName, matchingConfigurations) in configurationsByIndex {
+            if let policy = try resolve(in: matchingConfigurations) {
+                policies[indexName] = policy
+            }
+        }
+        return policies
     }
 
     private static func positiveInteger(

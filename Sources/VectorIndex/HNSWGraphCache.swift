@@ -47,6 +47,7 @@ internal final class HNSWGraphCache: Sendable {
                 return results
             }
         }
+
     }
 
     private struct Entry: Sendable {
@@ -63,7 +64,7 @@ internal final class HNSWGraphCache: Sendable {
     private let state = Mutex<State>(State())
     private let maximumCost: Int
 
-    init(maximumCost: Int = 64 * 1024 * 1024) {
+    init(maximumCost: Int = 24 * 1_024 * 1_024) {
         self.maximumCost = maximumCost
     }
 

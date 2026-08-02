@@ -17,6 +17,24 @@ read always uses the same layout that the mutation path maintains. The default
 is exact Flat search; changing algorithms is an index migration, not a
 query-time heuristic.
 
+## Hosting Capability Contract
+
+`VectorIndexes` is one coherent framework feature and always owns the Flat,
+HNSW, IVF, and PQ algorithms. A hosting adapter may impose a stricter execution
+capability without changing that package hierarchy.
+
+| Host | Flat | IVF | PQ | HNSW |
+| --- | --- | --- | --- | --- |
+| Native and unconstrained WASM | Supported | Supported | Supported | Supported |
+| Cloudflare Workers / Durable Objects | Supported | Supported | Supported | Unsupported; rejected before `DBContainer.open` |
+
+Cloudflare's 128 MB isolate limit includes WebAssembly allocations. HNSW graph
+restore, live graph ownership, and snapshot replacement cannot be given a safe
+memory guarantee inside that shared budget. The Cloudflare adapter therefore
+rejects every effective HNSW configuration during bootstrap with a typed
+configuration error. It never substitutes Flat, IVF, or PQ. Applications
+targeting Cloudflare must select one of those supported algorithms explicitly.
+
 **Storage Layout (Flat)**:
 ```
 [indexSubspace][primaryKey] = Float32 binary payload, little-endian
@@ -151,6 +169,10 @@ let similar = try await context.findSimilar(Image.self)
 
 ### Algorithm Selection
 
+The size ranges below are starting points for native or otherwise
+unconstrained deployments. They are not Cloudflare recommendations; Cloudflare
+does not support HNSW regardless of dataset size.
+
 | Dataset Size | Recommended Algorithm | Recall | Latency |
 |-------------|----------------------|--------|---------|
 | < 10K | Flat Scan | 100% (exact) | O(n) |
@@ -251,7 +273,7 @@ against the model metadata.
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Flat scan (exact) | ✅ Complete | O(n) brute force |
-| HNSW API | ✅ Complete | Uses swift-hnsw 1.0.1 Swift production backend |
+| HNSW API | ✅ Complete | Uses swift-hnsw 1.1.4 on supported hosts; rejected by the Cloudflare host capability contract |
 | Cosine distance | ✅ Complete | 1 - cosine_similarity |
 | Euclidean distance | ✅ Complete | L2 distance |
 | Dot product | ✅ Complete | Inner product |
@@ -261,10 +283,12 @@ against the model metadata.
 | IVF (inverted file) | ✅ Complete | Trained cluster-based ANN |
 | Product quantization | ✅ Complete | Compressed codes with metric-correct lookup tables |
 | Typed PQ validation | ✅ Complete | Invalid layouts and codes are explicit failures |
+| Persisted search ownership | ✅ Complete | Flat, IVF, PQ, HNSW, and Fusion retain owners and borrow bounded views |
+| IVF/PQ retraining | ✅ Complete | Stale assignments, lists, and codes are replaced atomically |
 
 ## Performance Characteristics
 
-swift-hnsw 1.0.1 uses a Swift-only production backend. The C++ hnswlib implementation is kept inside swift-hnsw's reference benchmark package and is not part of database-framework's package graph.
+swift-hnsw 1.1.4 uses a Swift-only production backend. The C++ hnswlib implementation is kept inside swift-hnsw's reference benchmark package and is not part of database-framework's package graph.
 
 | Operation | Flat Scan | Swift HNSW Backend |
 |-----------|-----------|--------------------|
@@ -294,7 +318,7 @@ backend before choosing parameters:
 
 ```bash
 xcodebuild test \
-  -scheme VectorIndexFocused \
+  -scheme database-framework-Package \
   -destination 'platform=macOS,arch=arm64' \
   -only-testing:VectorIndexTests/VectorIndexPerformanceTests
 ```

@@ -353,38 +353,21 @@ contract.
 - **Transaction Size Limit**: 10MB per transaction (affects batch operations)
 - **Key Size Limit**: 10KB (primary key must be small enough)
 
-## Benchmark Results
+## Performance Validation
 
-Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:VersionIndexTests/VersionIndexPerformanceTests`
+Run the current indexing, query, and retention benchmark on the selected
+backend and target hardware:
 
-### Indexing
+```bash
+xcodebuild test \
+  -scheme database-framework-Package \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:VersionIndexTests/VersionIndexPerformanceTests
+```
 
-| Records | Strategy | Insert Time | Throughput |
-|---------|----------|-------------|------------|
-| 100 | keepAll | ~50ms | ~2,000/s |
-| 100 | keepLast(5) | ~80ms | ~1,250/s |
-| 1,000 | keepAll | ~500ms | ~2,000/s |
-| 1,000 | keepLast(5) | ~800ms | ~1,250/s |
-
-### Query
-
-| Versions per Item | Query Type | Latency (p50) |
-|-------------------|------------|---------------|
-| 10 | Latest version | ~1ms |
-| 10 | Full history | ~5ms |
-| 100 | Latest version | ~1ms |
-| 100 | Full history | ~20ms |
-| 100 | Limited (10) | ~5ms |
-
-### Retention Cleanup
-
-| Existing Versions | Cleanup Strategy | Cleanup Time |
-|-------------------|------------------|--------------|
-| 10 | keepLast(5) | ~2ms |
-| 100 | keepLast(5) | ~15ms |
-| 1,000 | keepLast(5) | ~100ms |
-
-*Benchmarks run on M1 Mac with local FoundationDB cluster.*
+Record the package commit, Swift toolchain, backend version and topology,
+version distribution, retention policy, warm-up policy, result bundle, and
+allocation measurements with any performance claim.
 
 ## References
 

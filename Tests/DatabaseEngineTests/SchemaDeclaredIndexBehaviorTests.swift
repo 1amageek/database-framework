@@ -204,11 +204,10 @@ private struct CatalogIndexScenario: Sendable {
         let indexSubspace = store.indexSubspace.subspace(indexName)
         let range: (begin: ByteString, end: ByteString)
         if let category {
-            range = Subspace(
-                prefix: indexSubspace.prefix.appending(
-                    contentsOf: Tuple(category).pack()
-                )
-            ).range()
+            let categoryElement = try FieldValueTupleCodec.tupleElement(
+                for: .string(category)
+            )
+            range = indexSubspace.subspace(categoryElement).range()
         } else {
             range = indexSubspace.range()
         }

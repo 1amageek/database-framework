@@ -31,7 +31,7 @@ The package separates application behavior from storage deployment:
             |
             v
     storage-kit
-      StorageEngine, Transaction, Tuple, Subspace, DirectoryService
+      StorageEngine, Transaction, Tuple, Subspace, NamespaceResolver/Catalog
             |
             +----------------+------------------+------------------+
             v                v                  v                  v
@@ -89,14 +89,15 @@ documented semantic mapping.
 
 ### Requirements
 
-- Swift 6.4 development snapshot baseline and matching Swift SDK
+- Swift 6.4 development snapshot
+  `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a` and its matching Swift SDK
 - macOS 26 or later, iOS 26 or later, or a supported Linux Swift toolchain
 - One StorageKit backend selected for the target
 
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0731.1"
+            from: "26.0731.3"
         )
     ]
 
@@ -110,7 +111,7 @@ The package that consumes database-framework selects that composition:
 
     .package(
         url: "https://github.com/1amageek/database-framework.git",
-        from: "26.0731.2",
+        from: "26.0731.3",
         traits: ["GraphIndexes"]
     )
 
@@ -209,7 +210,7 @@ FoundationDB DirectoryLayer. The FoundationDB adapter is not compiled for iOS
 or WASI.
 
     swift build
-    xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS'
+    xcodebuild test -scheme database-framework-Package -destination 'platform=macOS'
 
     import Database
 
@@ -235,7 +236,7 @@ For local testing, the repository includes an isolated cluster wrapper:
 
     scripts/fdb-test-env run --clean -- \
       perl -e 'alarm shift; exec @ARGV' 120 \
-      xcodebuild test -scheme DatabaseCoreFocused \
+      xcodebuild test -scheme database-framework-Package \
         -destination 'platform=macOS,arch=arm64'
 
 ### SQLite
@@ -244,7 +245,7 @@ SQLite is the local and embedded backend. It does not load libfdb_c and does
 not require a FoundationDB process.
 
     swift build --disable-default-traits --traits SQLite
-    xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS'
+    xcodebuild test -scheme database-framework-Package -destination 'platform=macOS'
 
     import Database
     import SQLiteStorage
@@ -277,7 +278,7 @@ consistency model. It can connect over TCP, a Unix domain socket, or the
 Cloud SQL socket mounted into Cloud Run.
 
     swift build --disable-default-traits --traits PostgreSQL
-    xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
+    xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64'
 
     import Database
     import PostgreSQLStorage
@@ -414,7 +415,7 @@ same StorageKit contracts regardless of the selected backend.
 | Module | Index | Typical capability |
 |---|---|---|
 | ScalarIndex | scalar / composite | equality, ranges, sorting, uniqueness |
-| VectorIndex | HNSW / flat | similarity search and binary vector payloads |
+| VectorIndex | Flat / HNSW / IVF / PQ | exact and approximate similarity search with binary vector payloads |
 | FullTextIndex | inverted text | token search and ranking |
 | SpatialIndex | S2 / Geohash / Morton | geospatial queries |
 | RankIndex | skip list | ordered rankings and top-K |
@@ -492,6 +493,13 @@ mode hidden inside this repository. It is maintained in the separate
 package. That package connects the DatabaseWire boundary to Durable Object
 SQLite and provides the Worker/WASM host integration.
 
+`VectorIndexes` remains a single feature containing Flat, HNSW, IVF, and PQ.
+The Cloudflare adapter supports Flat, IVF, and PQ but rejects HNSW before
+opening the container because the Workers 128 MB isolate budget includes WASM
+allocations. The rejection is explicit and never falls back to another vector
+algorithm. See [VectorIndex](Sources/VectorIndex/README.md) for the capability
+matrix.
+
     Swift application
           |
           v
@@ -525,7 +533,7 @@ use either one independently or compose both.
 
 ## Data Layout
 
-The logical layout is expressed through Subspace and DirectoryService, then
+The logical layout is expressed through `Subspace` and `NamespaceResolver`, then
 mapped by the backend:
 
     [directory]/R/[type]/[id]               -> encoded item envelope
@@ -565,7 +573,7 @@ products when compile time and dependency size matter.
 
     # Native test suite (120-second timeout)
     perl -e 'alarm shift; exec @ARGV' 120 \
-      xcodebuild test -scheme DatabaseCoreFocused \
+      xcodebuild test -scheme database-framework-Package \
         -destination 'platform=macOS,arch=arm64'
 
     # Release build for the selected traits
@@ -583,7 +591,7 @@ Performance benchmarks are in the PerformanceBenchmarks test target. Results
 depend on the selected backend and must not be compared across backends as if
 they were the same deployment.
 
-    xcodebuild test -scheme DatabaseCoreFocused \
+    xcodebuild test -scheme database-framework-Package \
       -destination 'platform=macOS,arch=arm64' \
       -only-testing:PerformanceBenchmarks
 
@@ -598,7 +606,7 @@ claim about SQLite, PostgreSQL, Cloud SQL, or Durable Object latency.
 | macOS | core runtime and FoundationDB, SQLite, PostgreSQL adapters |
 | iOS | core runtime and native adapters except FoundationDB |
 | Linux | core runtime and FoundationDB, SQLite, PostgreSQL adapters where dependencies are available |
-| Cloudflare Workers / WASM | no FoundationDB adapter; use database-framework-cloudflare and an injected host storage engine |
+| Cloudflare Workers / WASM | no FoundationDB adapter; use database-framework-cloudflare and an injected host storage engine; Flat/IVF/PQ vector indexes are supported and HNSW is rejected at bootstrap |
 
 FoundationDB-specific modules and imports require both the `FoundationDB`
 trait and a macOS or Linux target. SQLite and PostgreSQL builds do not link

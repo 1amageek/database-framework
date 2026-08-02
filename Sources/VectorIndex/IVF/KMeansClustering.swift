@@ -66,14 +66,26 @@ struct KMeansClustering: Sendable {
         }
 
         // K-means++ initialization
-        var centroids = kMeansPlusPlusInit(vectors: vectors)
+        var randomNumberGenerator = VectorTrainingRandomNumberGenerator(
+            seed: 0x4956_465F_4B4D_5050
+                ^ UInt64(truncatingIfNeeded: k)
+                ^ UInt64(truncatingIfNeeded: dimensions) << 32
+        )
+        var centroids = kMeansPlusPlusInit(
+            vectors: vectors,
+            randomNumberGenerator: &randomNumberGenerator
+        )
 
         for _ in 0..<maxIterations {
             // Assignment step: assign each vector to nearest centroid
             let assignments = assignToCentroids(vectors: vectors, centroids: centroids)
 
             // Update step: compute new centroids
-            let newCentroids = computeCentroids(vectors: vectors, assignments: assignments)
+            let newCentroids = computeCentroids(
+                vectors: vectors,
+                assignments: assignments,
+                randomNumberGenerator: &randomNumberGenerator
+            )
 
             // Check convergence
             if hasConverged(oldCentroids: centroids, newCentroids: newCentroids) {
@@ -117,11 +129,17 @@ struct KMeansClustering: Sendable {
     ///
     /// Selects initial centroids with probability proportional to
     /// squared distance from nearest existing centroid.
-    private func kMeansPlusPlusInit(vectors: [[Float]]) -> [[Float]] {
+    private func kMeansPlusPlusInit(
+        vectors: [[Float]],
+        randomNumberGenerator: inout VectorTrainingRandomNumberGenerator
+    ) -> [[Float]] {
         var centroids: [[Float]] = []
 
         // First centroid: random selection
-        let firstIndex = Int.random(in: 0..<vectors.count)
+        let firstIndex = Int.random(
+            in: 0..<vectors.count,
+            using: &randomNumberGenerator
+        )
         centroids.append(vectors[firstIndex])
 
         // Subsequent centroids: probability proportional to D^2
@@ -137,7 +155,10 @@ struct KMeansClustering: Sendable {
 
             // Sample with probability proportional to distance
             if totalDistance > 0 {
-                var target = Double.random(in: 0..<totalDistance)
+                var target = Double.random(
+                    in: 0..<totalDistance,
+                    using: &randomNumberGenerator
+                )
                 for (i, dist) in distances.enumerated() {
                     target -= dist
                     if target <= 0 {
@@ -147,7 +168,10 @@ struct KMeansClustering: Sendable {
                 }
             } else {
                 // All distances are 0, pick random
-                let idx = Int.random(in: 0..<vectors.count)
+                let idx = Int.random(
+                    in: 0..<vectors.count,
+                    using: &randomNumberGenerator
+                )
                 centroids.append(vectors[idx])
             }
         }
@@ -163,7 +187,11 @@ struct KMeansClustering: Sendable {
     }
 
     /// Compute new centroids as mean of assigned vectors
-    private func computeCentroids(vectors: [[Float]], assignments: [Int]) -> [[Float]] {
+    private func computeCentroids(
+        vectors: [[Float]],
+        assignments: [Int],
+        randomNumberGenerator: inout VectorTrainingRandomNumberGenerator
+    ) -> [[Float]] {
         var sums: [[Double]] = Array(repeating: Array(repeating: 0.0, count: dimensions), count: k)
         var counts: [Int] = Array(repeating: 0, count: k)
 
@@ -182,7 +210,10 @@ struct KMeansClustering: Sendable {
                 centroids.append(centroid)
             } else {
                 // Empty cluster: reinitialize with random vector
-                let randomIdx = Int.random(in: 0..<vectors.count)
+                let randomIdx = Int.random(
+                    in: 0..<vectors.count,
+                    using: &randomNumberGenerator
+                )
                 centroids.append(vectors[randomIdx])
             }
         }

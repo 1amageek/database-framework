@@ -240,6 +240,23 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         // Build both indexes with single scan
         try await buildIndexesInBatches()
 
+        try await container.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock
+        ) { transaction in
+            try await self.forwardMaintainer.finalizeBuild(
+                transaction: transaction
+            )
+        }
+        try await container.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock
+        ) { transaction in
+            try await self.reverseMaintainer.finalizeBuild(
+                transaction: transaction
+            )
+        }
+
         try await requireNoUniquenessViolations()
 
         // Verify consistency if requested

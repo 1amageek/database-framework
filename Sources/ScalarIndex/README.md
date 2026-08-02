@@ -211,58 +211,22 @@ struct Customer {
 - **Transaction limit**: 5 second default, 10MB writes
 - **Batch size**: ~100-1000 items per transaction recommended
 
-## Benchmark Results
+## Performance Validation
 
-Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:PerformanceBenchmarks/CoveringIndexBenchmark`
+Run the current covering-index benchmark on the selected backend and target
+hardware:
 
-### Latest Results (2026-04-11)
+```bash
+xcodebuild test \
+  -scheme database-framework-Package \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:PerformanceBenchmarks/CoveringIndexBenchmark
+```
 
-**Environment**: macOS 26.3, Apple M4 Max, local Docker FoundationDB cluster
-
-### Fetch All Users (300 records)
-
-**Test Configuration**:
-- Warmup: 3 iterations
-- Measurement: 30 iterations
-- Throughput test: 3.0 seconds
-
-| Metric | Baseline | Optimized | Notes |
-|--------|----------|-----------|-------|
-| **Latency (p50)** | 3.26ms | 3.43ms | Full record fetch |
-| **Latency (p95)** | 3.60ms | 3.75ms | Same implementation rerun |
-| **Latency (p99)** | 3.72ms | 3.79ms | Low variance |
-| **Throughput** | 293 ops/s | 288 ops/s | 300 record scan |
-
-**Note**: The current read contract validates projected entities through primary
-storage even when covering payloads are maintained. The two columns represent
-repeated runs of that contract; they do not claim index-only read elimination.
-
-**Expected Improvements with a true Covering Index**:
-- 50-80% latency reduction (eliminates primary key lookup)
-- Single index scan vs index scan + data fetch
-
-### Index Scan Scalability
-
-| Record Count | Latency (p50) | Latency (p95) | Throughput |
-|--------------|---------------|---------------|------------|
-| 10 records | 4.87ms | 5.59ms | 189 ops/s |
-| 50 records | 5.09ms | 5.57ms | 187 ops/s |
-| 100 records | 5.05ms | 5.47ms | 195 ops/s |
-| 200 records | 5.57ms | 6.45ms | 184 ops/s |
-
-**Scalability**: p95 stayed below 6.5ms through 200 returned records.
-
-### Batch Fetch Performance (6 × 50 records)
-
-| Metric | Baseline | Optimized | Notes |
-|--------|----------|-----------|-------|
-| **Latency (p50)** | 19.97ms | 19.86ms | Sequential batches |
-| **Latency (p95)** | 24.88ms | 20.47ms | Transaction overhead |
-| **Throughput** | 50 ops/s | 49 ops/s | 300 total records |
-
-**Future Optimization**: Batch point queries to reduce transaction overhead.
-
-*Benchmarks run with Swift Testing `PerformanceBenchmarks` on Apple Silicon Mac and local Docker FoundationDB cluster.*
+Record the package commit, Swift toolchain, backend version and topology,
+dataset shape, warm-up policy, result bundle, and allocation measurements with
+any latency or throughput claim. Historical numbers from earlier execution and
+ownership paths are intentionally not retained here.
 
 ## References
 

@@ -42,4 +42,54 @@ struct FusionBuilderPipelineTests {
 
         #expect(results.isEmpty)
     }
+
+    @Test("Invalid fusion numeric configuration is a typed failure")
+    func invalidNumericConfigurationIsTypedFailure() async throws {
+        let item = FusionPipelineItem(id: "only", value: 1)
+        let query = StaticFusionPipelineQuery(
+            results: [ScoredResult(item: item, score: 1)]
+        )
+
+        for builder in [
+            FusionBuilder<FusionPipelineItem>(
+                stages: [SingleStage(query: query)],
+                algorithm: .sum
+            ).limit(-1),
+            FusionBuilder<FusionPipelineItem>(
+                stages: [SingleStage(query: query)],
+                algorithm: .rrf(k: -1)
+            ),
+            FusionBuilder<FusionPipelineItem>(
+                stages: [SingleStage(query: query)],
+                algorithm: .weighted([.nan])
+            ),
+        ] {
+            do {
+                _ = try await builder.execute()
+                Issue.record("Expected invalid fusion configuration")
+            } catch FusionQueryError.invalidConfiguration {
+                // Expected typed failure.
+            } catch {
+                Issue.record("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    @Test("Maximum RRF rank constant cannot overflow")
+    func maximumRRFRankConstantDoesNotOverflow() async throws {
+        let item = FusionPipelineItem(id: "only", value: 1)
+        let query = StaticFusionPipelineQuery(
+            results: [ScoredResult(item: item, score: 1)]
+        )
+        let builder = FusionBuilder<FusionPipelineItem>(
+            stages: [SingleStage(query: query)],
+            algorithm: .rrf(k: .max)
+        )
+
+        let results = try await builder.execute()
+
+        #expect(results.count == 1)
+        #expect(results[0].score.isFinite)
+        #expect(results[0].score > 0)
+    }
 }

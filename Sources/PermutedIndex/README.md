@@ -302,36 +302,21 @@ let originalValues = try maintainer.toOriginalOrder(permutedValues)
 - **Value size**: Empty (0 bytes)
 - **Transaction limit**: 10MB writes, batch large imports
 
-## Benchmark Results
+## Performance Validation
 
-Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:PermutedIndexTests/PermutedIndexPerformanceTests`
+Run the current indexing, prefix, and exact-match benchmark on the selected
+backend and target hardware:
 
-### Indexing
+```bash
+xcodebuild test \
+  -scheme database-framework-Package \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:PermutedIndexTests/PermutedIndexPerformanceTests
+```
 
-| Records | Fields | Permutation | Insert Time | Throughput |
-|---------|--------|-------------|-------------|------------|
-| 100 | 3 | [1, 0, 2] | ~20ms | ~5,000/s |
-| 1,000 | 3 | [1, 0, 2] | ~200ms | ~5,000/s |
-| 10,000 | 3 | [1, 0, 2] | ~2s | ~5,000/s |
-
-### Prefix Query
-
-| Records | Prefix Fields | Matches | Latency (p50) |
-|---------|---------------|---------|---------------|
-| 1,000 | 1 | ~100 | ~5ms |
-| 1,000 | 2 | ~10 | ~3ms |
-| 10,000 | 1 | ~1000 | ~20ms |
-| 10,000 | 2 | ~100 | ~10ms |
-
-### Exact Match Query
-
-| Records | Matches | Latency (p50) |
-|---------|---------|---------------|
-| 1,000 | 1 | ~2ms |
-| 10,000 | 1 | ~3ms |
-| 10,000 | 10 | ~5ms |
-
-*Benchmarks run on M1 Mac with local FoundationDB cluster.*
+Record the package commit, Swift toolchain, backend version and topology,
+field distribution, permutation, match cardinality, result bundle, and
+allocation measurements with any performance claim.
 
 ## References
 

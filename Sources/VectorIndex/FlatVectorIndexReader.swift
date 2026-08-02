@@ -34,14 +34,13 @@ struct FlatVectorIndexReader: Sendable {
         }
 
         let (begin, end) = subspace.range()
-        let entries = try await TransactionRangeCollection.collect(
-            using: transaction,
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
             snapshot: true,
-            streamingMode: .wantAll
+            streamingMode: .iterator
         )
 
         var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
@@ -50,7 +49,7 @@ struct FlatVectorIndexReader: Sendable {
             comparator: { $0.distance > $1.distance }
         )
 
-        for (key, value) in entries {
+        try await cursor.consume { key, value in
             let primaryKey: Tuple
             do {
                 primaryKey = try subspace.unpack(key)

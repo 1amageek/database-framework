@@ -62,6 +62,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private let dimensions: Int
     private let metric: VectorMetric
     private let parameters: IVFParameters
+    private let trainingResourceLimits: VectorTrainingResourceLimits
 
     // MARK: - Initialization
 
@@ -80,7 +81,8 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         metric: VectorMetric,
         subspace: Subspace,
         idExpression: KeyExpression,
-        parameters: IVFParameters
+        parameters: IVFParameters,
+        trainingResourceLimits: VectorTrainingResourceLimits = .default
     ) {
         self.index = index
         self.dimensions = dimensions
@@ -88,6 +90,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         self.subspace = subspace
         self.idExpression = idExpression
         self.parameters = parameters
+        self.trainingResourceLimits = trainingResourceLimits
     }
 
     // MARK: - IndexMaintainer
@@ -136,10 +139,40 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         for item: Item,
         id: Tuple
     ) async throws -> [ByteString] {
-        // IVF stores data in inverted lists, not directly by primary key
-        // Return the assignment key for verification
+        throw IndexVerificationError.expectedKeysUnsupported
+    }
+
+    public func computeIndexKeys(
+        for item: Item,
+        id: Tuple,
+        transaction: any TransactionAccess
+    ) async throws -> [ByteString] {
+        do {
+            _ = try extractVector(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return []
+        }
+
         let assignmentSubspace = subspace.subspace(IVFIndexStorageKey.assignments.rawValue)
-        return [assignmentSubspace.pack(id)]
+        let assignmentKey = assignmentSubspace.pack(id)
+        guard let assignment = try await transaction.getValue(
+            for: assignmentKey,
+            snapshot: true
+        ) else {
+            return [assignmentKey]
+        }
+        let clusterID = try decodeClusterID(assignment)
+        let listKey = subspace
+            .subspace(IVFIndexStorageKey.lists.rawValue)
+            .subspace(Int64(clusterID))
+            .pack(id)
+        return [assignmentKey, listKey]
+    }
+
+    public func finalizeBuild(
+        transaction: any TransactionAccess
+    ) async throws {
+        try await trainStoredVectors(transaction: transaction)
     }
 
     // MARK: - Training
@@ -180,6 +213,23 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
             }
         }
 
+        let storedEntries = try await loadStoredListEntries(
+            transaction: transaction
+        )
+        try await performTraining(
+            vectors: vectors,
+            storedEntries: storedEntries,
+            transaction: transaction
+        )
+    }
+
+    private func performTraining(
+        vectors: [[Float]],
+        storedEntries: [StoredListEntry],
+        transaction: any TransactionAccess
+    ) async throws {
+        try admitTraining(vectors: vectors, storedEntries: storedEntries)
+
         let clustering = KMeansClustering(
             k: parameters.nlist,
             dimensions: dimensions,
@@ -187,9 +237,6 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         )
 
         let centroids = clustering.train(vectors: vectors)
-        let storedEntries = try await loadStoredListEntries(
-            transaction: transaction
-        )
         let centroidVectors = try centroids.map { centroid in
             try Vector(float32: centroid)
         }
@@ -225,9 +272,129 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
             nlist: parameters.nlist,
             dimensions: dimensions,
             trained: true,
-            vectorCount: vectors.count
+            vectorCount: storedEntries.count
         )
         try await storeMetadata(metadata, transaction: transaction)
+    }
+
+    /// Trains the index from the complete set of vectors already retained by
+    /// the index. This is the production maintenance boundary used after an
+    /// online build or a representative ingestion pass.
+    public func trainStoredVectors(
+        transaction: any TransactionAccess
+    ) async throws {
+        let storedEntries = try await loadStoredListEntries(
+            transaction: transaction
+        )
+        guard !storedEntries.isEmpty else {
+            try await storeMetadata(
+                IVFMetadata(
+                    nlist: parameters.nlist,
+                    dimensions: dimensions,
+                    trained: false,
+                    vectorCount: 0
+                ),
+                transaction: transaction
+            )
+            return
+        }
+        let vectors = try storedEntries.map { entry in
+            try VectorConversion.materializeFloatArrayForTraining(
+                entry.payload,
+                expectedCount: dimensions
+            )
+        }
+        try await performTraining(
+            vectors: vectors,
+            storedEntries: storedEntries,
+            transaction: transaction
+        )
+    }
+
+    private func admitTraining(
+        vectors: [[Float]],
+        storedEntries: [StoredListEntry]
+    ) throws {
+        try trainingResourceLimits.validate()
+        guard vectors.count <= trainingResourceLimits.maximumVectorCount,
+              storedEntries.count <= trainingResourceLimits.maximumVectorCount else {
+            throw VectorIndexError.invalidArgument(
+                "IVF training exceeds the configured vector count limit"
+            )
+        }
+        let trainingScalarCount = try checkedProduct(
+            vectors.count,
+            dimensions,
+            message: "IVF training payload size overflow"
+        )
+        let trainingBytes = try checkedProduct(
+            trainingScalarCount,
+            MemoryLayout<Float>.stride,
+            message: "IVF training payload size overflow"
+        )
+        let storedBytes = try storedEntries.reduce(0) { partial, entry in
+            try checkedSum(
+                partial,
+                entry.payload.count,
+                message: "IVF stored vector payload size overflow"
+            )
+        }
+        guard trainingBytes <= trainingResourceLimits.maximumVectorPayloadByteCount,
+              storedBytes <= trainingResourceLimits.maximumVectorPayloadByteCount else {
+            throw VectorIndexError.invalidArgument(
+                "IVF training exceeds the configured vector payload limit"
+            )
+        }
+        let centroidScalars = try checkedProduct(
+            parameters.nlist,
+            dimensions,
+            message: "IVF centroid size overflow"
+        )
+        let centroidBytes = try checkedProduct(
+            centroidScalars,
+            MemoryLayout<Float>.stride,
+            message: "IVF centroid size overflow"
+        )
+        let centroidWorkingBytes = try checkedProduct(
+            centroidBytes,
+            2,
+            message: "IVF working memory estimate overflow"
+        )
+        var workingBytes = try checkedSum(
+            trainingBytes,
+            storedBytes,
+            message: "IVF working memory estimate overflow"
+        )
+        workingBytes = try checkedSum(
+            workingBytes,
+            centroidWorkingBytes,
+            message: "IVF working memory estimate overflow"
+        )
+        guard workingBytes <= trainingResourceLimits.maximumWorkingByteCount else {
+            throw VectorIndexError.invalidArgument(
+                "IVF training exceeds the configured working memory limit"
+            )
+        }
+        let mappingMutationBytes = try checkedProduct(
+            storedEntries.count,
+            128,
+            message: "IVF mutation size estimate overflow"
+        )
+        var mutationBytes = try checkedSum(
+            storedBytes,
+            centroidBytes,
+            message: "IVF mutation size estimate overflow"
+        )
+        mutationBytes = try checkedSum(
+            mutationBytes,
+            mappingMutationBytes,
+            message: "IVF mutation size estimate overflow"
+        )
+        guard mutationBytes <= trainingResourceLimits.maximumTransactionMutationByteCount else {
+            throw VectorIndexError.invalidArgument(
+                "IVF training exceeds the configured transaction mutation limit"
+            )
+        }
     }
 
     /// Check if the index has been trained
@@ -297,26 +464,41 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
             return // Not in any cluster
         }
 
-        let assignmentElements: [any TupleElement]
-        do {
-            assignmentElements = try Tuple.unpack(from: assignmentData)
-        } catch {
-            throw VectorIndexError.invalidStructure("Invalid IVF assignment payload")
-        }
-
-        guard let clusterId = assignmentElements.first as? Int64,
-              clusterId >= 0
-        else {
-            throw VectorIndexError.invalidStructure("Invalid IVF assignment cluster id")
-        }
+        let clusterID = try decodeClusterID(assignmentData)
 
         // Remove from inverted list
         let listSubspace = subspace.subspace(IVFIndexStorageKey.lists.rawValue)
-        let listKey = listSubspace.subspace(Int(clusterId)).pack(id)
+        let listKey = listSubspace.subspace(clusterID).pack(id)
         try transaction.clear(key: listKey)
 
         // Remove assignment
         try transaction.clear(key: assignmentKey)
+        try await updateTrainedVectorCount(
+            by: -1,
+            transaction: transaction
+        )
+    }
+
+    private func decodeClusterID(_ assignmentData: ByteString) throws -> Int {
+        do {
+            let assignment = try Tuple(packed: assignmentData)
+            guard assignment.count == 1,
+                  case .signedInteger(let encodedClusterID) = try assignment.value(at: 0),
+                  let decodedClusterID = Int(exactly: encodedClusterID),
+                  decodedClusterID >= 0,
+                  decodedClusterID < parameters.nlist else {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid IVF assignment cluster id"
+                )
+            }
+            return decodedClusterID
+        } catch let error as VectorIndexError {
+            throw error
+        } catch {
+            throw VectorIndexError.invalidStructure(
+                "Invalid IVF assignment payload"
+            )
+        }
     }
 
     /// Add a vector to its inverted list
@@ -359,13 +541,75 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let listSubspace = subspace.subspace(IVFIndexStorageKey.lists.rawValue)
         let listKey = listSubspace.subspace(clusterId).pack(id)
         let vectorValue = try VectorConversion.float32VectorToBytes(vector)
+        let assignmentSubspace = subspace.subspace(IVFIndexStorageKey.assignments.rawValue)
+        let assignmentKey = assignmentSubspace.pack(id)
+        let existed = try await transaction.getValue(
+            for: assignmentKey,
+            snapshot: false
+        ) != nil
         try transaction.setValue(vectorValue, for: listKey)
 
         // Store assignment
-        let assignmentSubspace = subspace.subspace(IVFIndexStorageKey.assignments.rawValue)
-        let assignmentKey = assignmentSubspace.pack(id)
         let assignmentValue = Tuple([Int64(clusterId)]).pack()
         try transaction.setValue(assignmentValue, for: assignmentKey)
+
+        guard !existed, let metadata = try await loadMetadata(
+            transaction: transaction
+        ) else {
+            return
+        }
+        guard metadata.nlist == parameters.nlist,
+              metadata.dimensions == dimensions else {
+            throw VectorIndexError.invalidStructure(
+                "IVF metadata does not match the configured index"
+            )
+        }
+        if metadata.trained {
+            guard !centroids.isEmpty else {
+                throw VectorIndexError.invalidStructure(
+                    "IVF trained metadata has no centroids"
+                )
+            }
+        } else if !centroids.isEmpty {
+            throw VectorIndexError.invalidStructure(
+                "IVF untrained metadata has persisted centroids"
+            )
+        }
+        try await updateTrainedVectorCount(
+            by: 1,
+            transaction: transaction
+        )
+    }
+
+    private func updateTrainedVectorCount(
+        by delta: Int,
+        transaction: any TransactionAccess
+    ) async throws {
+        guard let metadata = try await loadMetadata(transaction: transaction) else {
+            return
+        }
+        guard metadata.nlist == parameters.nlist,
+              metadata.dimensions == dimensions else {
+            throw VectorIndexError.invalidStructure(
+                "IVF metadata does not match the configured index"
+            )
+        }
+        let (vectorCount, overflow) = metadata.vectorCount
+            .addingReportingOverflow(delta)
+        guard !overflow, vectorCount >= 0 else {
+            throw VectorIndexError.invalidStructure(
+                "IVF metadata vector count is inconsistent"
+            )
+        }
+        try await storeMetadata(
+            IVFMetadata(
+                nlist: metadata.nlist,
+                dimensions: metadata.dimensions,
+                trained: metadata.trained,
+                vectorCount: vectorCount
+            ),
+            transaction: transaction
+        )
     }
 
     /// Extract vector from item using VectorConversion
@@ -422,28 +666,24 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         )
         let listRange = listSubspace.range()
         let assignmentRange = assignmentSubspace.range()
-        let listEntries = try await TransactionRangeCollection.collect(
-            using: transaction,
-            from: .firstGreaterOrEqual(listRange.begin),
-            to: .firstGreaterOrEqual(listRange.end),
-            limit: 0,
-            reverse: false,
-            snapshot: false,
-            streamingMode: .wantAll
-        )
-        let assignmentEntries = try await TransactionRangeCollection.collect(
-            using: transaction,
+        try trainingResourceLimits.validate()
+        var assignmentCursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(assignmentRange.begin),
             to: .firstGreaterOrEqual(assignmentRange.end),
             limit: 0,
             reverse: false,
             snapshot: false,
-            streamingMode: .wantAll
+            streamingMode: .iterator
         )
 
         var assignmentsByPrimaryKey: [ByteString: Int] = [:]
-        assignmentsByPrimaryKey.reserveCapacity(assignmentEntries.count)
-        for (key, value) in assignmentEntries {
+        try await assignmentCursor.consume { key, value in
+            guard assignmentsByPrimaryKey.count
+                    < trainingResourceLimits.maximumVectorCount else {
+                throw VectorIndexError.invalidArgument(
+                    "IVF training exceeds the configured vector count limit"
+                )
+            }
             let primaryKey: Tuple
             let clusterID: Int
             do {
@@ -452,7 +692,8 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 guard assignment.count == 1,
                       case .signedInteger(let encodedClusterID) = try assignment.value(at: 0),
                       let decodedClusterID = Int(exactly: encodedClusterID),
-                      decodedClusterID >= 0 else {
+                      decodedClusterID >= 0,
+                      decodedClusterID < parameters.nlist else {
                     throw VectorIndexError.invalidStructure(
                         "Invalid IVF assignment payload"
                     )
@@ -477,10 +718,34 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
 
         var storedEntries: [StoredListEntry] = []
-        storedEntries.reserveCapacity(listEntries.count)
         var observedPrimaryKeys: Set<ByteString> = []
-        observedPrimaryKeys.reserveCapacity(listEntries.count)
-        for (key, value) in listEntries {
+        var payloadByteCount = 0
+        var listCursor = transaction.rangeCursor(
+            from: .firstGreaterOrEqual(listRange.begin),
+            to: .firstGreaterOrEqual(listRange.end),
+            limit: 0,
+            reverse: false,
+            snapshot: false,
+            streamingMode: .iterator
+        )
+        try await listCursor.consume { key, value in
+            guard storedEntries.count
+                    < trainingResourceLimits.maximumVectorCount else {
+                throw VectorIndexError.invalidArgument(
+                    "IVF training exceeds the configured vector count limit"
+                )
+            }
+            payloadByteCount = try checkedSum(
+                payloadByteCount,
+                value.count,
+                message: "IVF stored vector payload size overflow"
+            )
+            guard payloadByteCount
+                    <= trainingResourceLimits.maximumVectorPayloadByteCount else {
+                throw VectorIndexError.invalidArgument(
+                    "IVF training exceeds the configured vector payload limit"
+                )
+            }
             let listKey: Tuple
             let clusterID: Int
             let primaryKey: Tuple
@@ -489,7 +754,8 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 guard listKey.count >= 2,
                       case .signedInteger(let encodedClusterID) = try listKey.value(at: 0),
                       let decodedClusterID = Int(exactly: encodedClusterID),
-                      decodedClusterID >= 0 else {
+                      decodedClusterID >= 0,
+                      decodedClusterID < parameters.nlist else {
                     throw VectorIndexError.invalidStructure(
                         "Invalid IVF list key"
                     )
@@ -603,12 +869,36 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
     }
 
+    private func checkedSum(
+        _ lhs: Int,
+        _ rhs: Int,
+        message: String
+    ) throws -> Int {
+        let (result, overflow) = lhs.addingReportingOverflow(rhs)
+        guard !overflow else {
+            throw VectorIndexError.invalidArgument(message)
+        }
+        return result
+    }
+
+    private func checkedProduct(
+        _ lhs: Int,
+        _ rhs: Int,
+        message: String
+    ) throws -> Int {
+        let (result, overflow) = lhs.multipliedReportingOverflow(by: rhs)
+        guard !overflow else {
+            throw VectorIndexError.invalidArgument(message)
+        }
+        return result
+    }
+
 }
 
 // MARK: - IVF Metadata
 
 /// Metadata for IVF index
-private struct IVFMetadata: Sendable {
+struct IVFMetadata: Sendable {
     static let formatVersion: Int64 = 1
 
     let nlist: Int

@@ -24,7 +24,7 @@ database-framework
         v
 storage-kit
   StorageEngine, transaction and range contracts, Tuple, Subspace,
-  directory services, concrete storage adapters
+  namespace resolution/catalog capabilities, concrete storage adapters
 ~~~
 
 database-types owns only portable primitive database values. It does not own

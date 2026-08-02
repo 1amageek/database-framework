@@ -95,6 +95,14 @@ public struct VectorIndexConfiguration<Model: Persistable>:
                 fields.append(("efSearch", .int64(Int64(parameters.efSearch))))
                 fields.append(("m", .int64(Int64(parameters.m))))
             case .ivf(let parameters):
+                guard parameters.nlist > 0,
+                      parameters.nprobe > 0,
+                      parameters.nprobe <= parameters.nlist,
+                      parameters.kmeansIterations > 0 else {
+                    throw VectorIndexError.invalidArgument(
+                        "Vector IVF parameters must be positive and nprobe must not exceed nlist"
+                    )
+                }
                 fields.append(("algorithm", .string("ivf")))
                 fields.append(("kmeansIterations", .int64(Int64(parameters.kmeansIterations))))
                 fields.append(("nlist", .int64(Int64(parameters.nlist))))
@@ -325,30 +333,59 @@ public struct VectorIVFParameters: Sendable, Hashable {
         nlist: Int = 100,
         nprobe: Int = 10,
         kmeansIterations: Int = 20
-    ) {
-        precondition(nlist > 0, "nlist must be positive")
-        precondition(nprobe > 0, "nprobe must be positive")
-        precondition(nprobe <= nlist, "nprobe cannot exceed nlist")
+    ) throws(VectorIndexError) {
+        guard nlist > 0,
+              nprobe > 0,
+              nprobe <= nlist,
+              kmeansIterations > 0 else {
+            throw .invalidArgument(
+                "IVF parameters must be positive and nprobe must not exceed nlist"
+            )
+        }
+        self.nlist = nlist
+        self.nprobe = nprobe
+        self.kmeansIterations = kmeansIterations
+    }
 
+    private init(
+        validatedNlist nlist: Int,
+        nprobe: Int,
+        kmeansIterations: Int = 20
+    ) {
         self.nlist = nlist
         self.nprobe = nprobe
         self.kmeansIterations = kmeansIterations
     }
 
     /// Default balanced parameters
-    public static let `default` = VectorIVFParameters(nlist: 100, nprobe: 10)
+    public static let `default` = VectorIVFParameters(
+        validatedNlist: 100,
+        nprobe: 10
+    )
 
     /// High recall parameters
-    public static let highRecall = VectorIVFParameters(nlist: 100, nprobe: 25)
+    public static let highRecall = VectorIVFParameters(
+        validatedNlist: 100,
+        nprobe: 25
+    )
 
     /// Fast search parameters
-    public static let fast = VectorIVFParameters(nlist: 256, nprobe: 5)
+    public static let fast = VectorIVFParameters(
+        validatedNlist: 256,
+        nprobe: 5
+    )
 
     /// Small dataset parameters (< 10K vectors)
-    public static let small = VectorIVFParameters(nlist: 32, nprobe: 8)
+    public static let small = VectorIVFParameters(
+        validatedNlist: 32,
+        nprobe: 8
+    )
 
     /// Large dataset parameters (> 100K vectors)
-    public static let large = VectorIVFParameters(nlist: 512, nprobe: 16)
+    public static let large = VectorIVFParameters(
+        validatedNlist: 512,
+        nprobe: 16
+    )
 }
 
 // MARK: - PQ Parameters
@@ -394,32 +431,37 @@ public struct VectorPQParameters: Sendable, Hashable {
     public init(
         m: Int = 8,
         niter: Int = 25
-    ) {
-        precondition(m > 0, "m must be positive")
-        precondition(niter > 0, "niter must be positive")
+    ) throws(VectorIndexError) {
+        guard m > 0, niter > 0 else {
+            throw .invalidArgument("PQ parameters must be positive")
+        }
+        self.m = m
+        self.niter = niter
+    }
 
+    private init(validatedM m: Int, niter: Int = 25) {
         self.m = m
         self.niter = niter
     }
 
     /// Default balanced parameters (m=8)
-    public static let `default` = VectorPQParameters(m: 8)
+    public static let `default` = VectorPQParameters(validatedM: 8)
 
     /// High compression parameters (m=4)
     ///
     /// - 4 bytes per vector
     /// - Maximum compression, lower accuracy
-    public static let highCompression = VectorPQParameters(m: 4)
+    public static let highCompression = VectorPQParameters(validatedM: 4)
 
     /// High accuracy parameters (m=16)
     ///
     /// - 16 bytes per vector
     /// - Better accuracy, larger codes
-    public static let highAccuracy = VectorPQParameters(m: 16)
+    public static let highAccuracy = VectorPQParameters(validatedM: 16)
 
     /// Very high accuracy parameters (m=32)
     ///
     /// - 32 bytes per vector
     /// - Best PQ accuracy
-    public static let veryHighAccuracy = VectorPQParameters(m: 32)
+    public static let veryHighAccuracy = VectorPQParameters(validatedM: 32)
 }

@@ -13,6 +13,20 @@ import DatabaseTypes
 @Suite("Vector Algorithm Maintainer Tests", .serialized, .heartbeat)
 struct VectorAlgorithmMaintainerTests {
 
+    @Test("Heap reverse sorting preserves strict ordering for equivalent values")
+    func heapReverseSortPreservesEquivalentInsertionOrder() {
+        var heap = MinHeap<(ordinal: Int, distance: Double)>(
+            maxSize: 8,
+            heapType: .max,
+            comparator: { $0.distance > $1.distance }
+        )
+        for ordinal in 0..<8 {
+            heap.insert((ordinal: ordinal, distance: 1))
+        }
+
+        #expect(heap.sorted().map(\.ordinal) == Array(0..<8))
+    }
+
     @Test("PQ distance tables preserve each vector metric")
     func pqDistanceTablesPreserveVectorMetrics() throws {
         let quantizer = try ProductQuantizer(
@@ -83,6 +97,149 @@ struct VectorAlgorithmMaintainerTests {
         )) {
             _ = try untrained.train(vectors: [[1, .nan]])
         }
+    }
+
+    @Test("Vector training is deterministic across repeated executions")
+    func vectorTrainingIsDeterministic() throws {
+        let vectors: [[Float]] = [
+            [1, 0, 0, 0],
+            [0.9, 0.1, 0, 0],
+            [0, 1, 0, 0],
+            [0.1, 0.9, 0, 0],
+        ]
+        let clustering = KMeansClustering(
+            k: 2,
+            dimensions: 4,
+            maxIterations: 4
+        )
+        #expect(clustering.train(vectors: vectors) == clustering.train(vectors: vectors))
+
+        let quantizer = try ProductQuantizer(
+            dimensions: 4,
+            parameters: PQParameters(m: 2, niter: 4)
+        )
+        #expect(
+            try quantizer.train(vectors: vectors).trainedCodebooks
+                == quantizer.train(vectors: vectors).trainedCodebooks
+        )
+    }
+
+    @Test("IVF serves exact results while untrained and preserves state transitions")
+    func ivfUntrainedLifecycle() async throws {
+        let database = InMemoryEngine()
+        let context = makeContext(name: "ivf-untrained-lifecycle")
+        let maintainer = IVFIndexMaintainer<HNSWDocument>(
+            index: context.index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: context.indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: IVFParameters(nlist: 2, nprobe: 2, kmeansIterations: 3)
+        )
+        let documents = try algorithmDocuments()
+
+        try await database.withTransaction { transaction in
+            try await maintainer.finalizeBuild(transaction: transaction)
+            for document in documents {
+                try await maintainer.scanItem(
+                    document,
+                    id: Tuple(document.id),
+                    transaction: transaction
+                )
+            }
+        }
+        #expect(try await database.withTransaction { transaction in
+            try await maintainer.isTrained(transaction: transaction)
+        } == false)
+        let initial = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [1, 0, 0, 0],
+                k: documents.count,
+                transaction: transaction
+            )
+        }
+        #expect(initial.count == documents.count)
+        #expect(initial.first?.primaryKey.first as? String == "exact")
+
+        try await database.withTransaction { transaction in
+            for document in documents {
+                try await maintainer.updateIndex(
+                    oldItem: document,
+                    newItem: nil,
+                    transaction: transaction
+                )
+            }
+        }
+        let empty = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [1, 0, 0, 0],
+                k: 1,
+                transaction: transaction
+            )
+        }
+        #expect(empty.isEmpty)
+        #expect(try await database.withTransaction { transaction in
+            try await maintainer.isTrained(transaction: transaction)
+        } == false)
+    }
+
+    @Test("PQ serves exact results while untrained and preserves state transitions")
+    func pqUntrainedLifecycle() async throws {
+        let database = InMemoryEngine()
+        let context = makeContext(name: "pq-untrained-lifecycle")
+        let maintainer = try PQIndexMaintainer<HNSWDocument>(
+            index: context.index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: context.indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: PQParameters(m: 2, niter: 3)
+        )
+        let documents = try algorithmDocuments()
+
+        try await database.withTransaction { transaction in
+            try await maintainer.finalizeBuild(transaction: transaction)
+            for document in documents {
+                try await maintainer.scanItem(
+                    document,
+                    id: Tuple(document.id),
+                    transaction: transaction
+                )
+            }
+        }
+        #expect(try await database.withTransaction { transaction in
+            try await maintainer.isTrained(transaction: transaction)
+        } == false)
+        let initial = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [1, 0, 0, 0],
+                k: documents.count,
+                transaction: transaction
+            )
+        }
+        #expect(initial.count == documents.count)
+        #expect(initial.first?.primaryKey.first as? String == "exact")
+
+        try await database.withTransaction { transaction in
+            for document in documents {
+                try await maintainer.updateIndex(
+                    oldItem: document,
+                    newItem: nil,
+                    transaction: transaction
+                )
+            }
+        }
+        let empty = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [1, 0, 0, 0],
+                k: 1,
+                transaction: transaction
+            )
+        }
+        #expect(empty.isEmpty)
+        #expect(try await database.withTransaction { transaction in
+            try await maintainer.isTrained(transaction: transaction)
+        } == false)
     }
 
     @Test("IVF training rejects invalid input without marking the index trained")
@@ -217,6 +374,117 @@ struct VectorAlgorithmMaintainerTests {
         #expect(results.first?.primaryKey.first as? String == "exact")
     }
 
+    @Test("IVF deletion rejects malformed assignment identifiers")
+    func ivfDeletionRejectsMalformedAssignmentIdentifiers() async throws {
+        let database = InMemoryEngine()
+        let context = makeContext(name: "ivf-malformed-assignment")
+        let maintainer = IVFIndexMaintainer<HNSWDocument>(
+            index: context.index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: context.indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: IVFParameters(
+                nlist: 2,
+                nprobe: 2,
+                kmeansIterations: 1
+            )
+        )
+        let document = HNSWDocument(
+            id: "malformed",
+            title: "Malformed",
+            embedding: try Vector(float32: [1, 0, 0, 0])
+        )
+        let assignmentKey = context.indexSubspace
+            .subspace(IVFIndexStorageKey.assignments.rawValue)
+            .pack(Tuple(document.id))
+
+        for payload in [
+            Tuple().pack(),
+            Tuple(Int64.max).pack(),
+            Tuple(Int64(0), Int64(1)).pack(),
+        ] {
+            try await database.withTransaction { transaction in
+                try transaction.setValue(payload, for: assignmentKey)
+            }
+            await #expect(throws: VectorIndexError.self) {
+                try await database.withTransaction { transaction in
+                    try await maintainer.updateIndex(
+                        oldItem: document,
+                        newItem: nil,
+                        transaction: transaction
+                    )
+                }
+            }
+        }
+    }
+
+    @Test("IVF training rejects out-of-range persisted cluster identifiers")
+    func ivfTrainingRejectsOutOfRangeClusterIdentifiers() async throws {
+        for corruptListKey in [false, true] {
+            let database = InMemoryEngine()
+            let context = makeContext(
+                name: corruptListKey
+                    ? "ivf-list-cluster-out-of-range"
+                    : "ivf-assignment-cluster-out-of-range"
+            )
+            let parameters = IVFParameters(
+                nlist: 2,
+                nprobe: 2,
+                kmeansIterations: 1
+            )
+            let maintainer = IVFIndexMaintainer<HNSWDocument>(
+                index: context.index,
+                dimensions: 4,
+                metric: .euclidean,
+                subspace: context.indexSubspace,
+                idExpression: FieldKeyExpression(fieldName: "id"),
+                parameters: parameters
+            )
+            let document = try #require(algorithmDocuments().first)
+            let id = Tuple(document.id)
+            let assignments = context.indexSubspace.subspace(
+                IVFIndexStorageKey.assignments.rawValue
+            )
+            let lists = context.indexSubspace.subspace(
+                IVFIndexStorageKey.lists.rawValue
+            )
+
+            try await database.withTransaction { transaction in
+                try await maintainer.scanItem(
+                    document,
+                    id: id,
+                    transaction: transaction
+                )
+                if corruptListKey {
+                    let originalKey = lists.subspace(0).pack(id)
+                    let payload = try #require(
+                        try await transaction.getValue(for: originalKey)
+                    )
+                    try transaction.clear(key: originalKey)
+                    try transaction.setValue(
+                        payload,
+                        for: lists.subspace(parameters.nlist).pack(id)
+                    )
+                } else {
+                    try transaction.setValue(
+                        Tuple(Int64(parameters.nlist)).pack(),
+                        for: assignments.pack(id)
+                    )
+                }
+            }
+
+            await #expect(throws: VectorIndexError.self) {
+                try await database.withTransaction { transaction in
+                    try await maintainer.finalizeBuild(transaction: transaction)
+                }
+            }
+            #expect(try await database.withTransaction { transaction in
+                try await maintainer.isTrained(transaction: transaction)
+            } == false)
+        }
+    }
+
     @Test("IVF rejects non-contiguous persisted centroid keys")
     func ivfRejectsNonContiguousCentroidKeys() async throws {
         let database = InMemoryEngine()
@@ -229,8 +497,14 @@ struct VectorAlgorithmMaintainerTests {
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: IVFParameters(nlist: 2, nprobe: 1, kmeansIterations: 3)
         )
+        let document = try #require(algorithmDocuments().first)
 
         try await database.withTransaction { transaction in
+            try await maintainer.scanItem(
+                document,
+                id: Tuple(document.id),
+                transaction: transaction
+            )
             try await maintainer.train(
                 vectors: [[1, 0, 0, 0], [0, 1, 0, 0]],
                 transaction: transaction

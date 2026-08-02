@@ -202,6 +202,17 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         // Build indexes with single scan
         try await buildIndexesInBatches()
 
+        for target in targets {
+            try await container.transactionExecutor.withTransaction(
+                configuration: .batch,
+                clock: container.monotonicClock
+            ) { transaction in
+                try await target.maintainer.finalizeBuild(
+                    transaction: transaction
+                )
+            }
+        }
+
         try await requireNoUniquenessViolations()
 
         // Transition all to readable

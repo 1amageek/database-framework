@@ -43,7 +43,29 @@ struct IVFIndexReader: Sendable {
             throw VectorIndexError.invalidArgument("k must be positive")
         }
 
+        let metadata = try await loadMetadata(transaction: transaction)
+        if metadata.vectorCount == 0 {
+            guard try await !hasStoredVector(transaction: transaction) else {
+                throw VectorIndexError.invalidStructure(
+                    "IVF metadata reports an empty index with persisted vectors"
+                )
+            }
+            return []
+        }
+
         let centroids = try await loadCentroids(transaction: transaction)
+        if !metadata.trained {
+            guard centroids.isEmpty else {
+                throw VectorIndexError.invalidStructure(
+                    "IVF untrained metadata has persisted centroids"
+                )
+            }
+            return try await exactSearch(
+                queryVector: queryVector,
+                k: k,
+                transaction: transaction
+            )
+        }
         guard !centroids.isEmpty else {
             throw VectorIndexError.invalidStructure("IVF index not trained")
         }
@@ -78,17 +100,16 @@ struct IVFIndexReader: Sendable {
                 .subspace(IVFIndexStorageKey.lists.rawValue)
                 .subspace(clusterID)
             let (begin, end) = listSubspace.range()
-            let entries = try await TransactionRangeCollection.collect(
-                using: transaction,
+            var cursor = transaction.rangeCursor(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 limit: 0,
                 reverse: false,
                 snapshot: true,
-                streamingMode: .wantAll
+                streamingMode: .iterator
             )
 
-            for (key, value) in entries {
+            try await cursor.consume { key, value in
                 let primaryKey: Tuple
                 do {
                     primaryKey = try listSubspace.unpack(key)
@@ -117,6 +138,106 @@ struct IVFIndexReader: Sendable {
         return nearest.sorted()
     }
 
+    private func loadMetadata(
+        transaction: any TransactionAccess
+    ) async throws -> IVFMetadata {
+        let key = subspace.pack(Tuple([IVFIndexStorageKey.metadata.rawValue]))
+        guard let value = try await transaction.getValue(
+            for: key,
+            snapshot: true
+        ) else {
+            throw VectorIndexError.invalidStructure("IVF metadata is missing")
+        }
+        do {
+            let metadata = try IVFMetadata(packed: value)
+            guard metadata.nlist == parameters.nlist,
+                  metadata.dimensions == dimensions else {
+                throw VectorIndexError.invalidStructure(
+                    "IVF metadata does not match the configured index"
+                )
+            }
+            return metadata
+        } catch let error as VectorIndexError {
+            throw error
+        } catch {
+            throw VectorIndexError.invalidStructure("Invalid IVF metadata")
+        }
+    }
+
+    private func exactSearch(
+        queryVector: Vector,
+        k: Int,
+        transaction: any TransactionAccess
+    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        let listsSubspace = subspace.subspace(IVFIndexStorageKey.lists.rawValue)
+        let (begin, end) = listsSubspace.range()
+        var cursor = transaction.rangeCursor(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .iterator
+        )
+        var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
+            maxSize: k,
+            heapType: .max,
+            comparator: { $0.distance > $1.distance }
+        )
+        try await cursor.consume { key, value in
+            let tuple: Tuple
+            do {
+                tuple = try listsSubspace.unpack(key)
+            } catch {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid IVF list primary key"
+                )
+            }
+            guard tuple.count >= 2,
+                  case .signedInteger(let encodedCluster) = try tuple.value(at: 0),
+                  let cluster = Int(exactly: encodedCluster),
+                  cluster >= 0,
+                  cluster < parameters.nlist else {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid IVF list cluster key"
+                )
+            }
+            let elements = try tuple.elements()
+            let vector = try VectorConversion.persistedVector(
+                value,
+                expectedCount: dimensions
+            )
+            nearest.insert(
+                (
+                    primaryKey: Array(elements.dropFirst()),
+                    distance: try VectorConversion.distance(
+                        metric: metric,
+                        from: queryVector,
+                        to: vector
+                    )
+                )
+            )
+        }
+        return nearest.sorted()
+    }
+
+    private func hasStoredVector(
+        transaction: any TransactionAccess
+    ) async throws -> Bool {
+        let range = subspace.subspace(IVFIndexStorageKey.lists.rawValue).range()
+        var cursor = transaction.rangeCursor(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
+            limit: 1,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .iterator
+        )
+        let row = try await cursor.next()
+        try await cursor.finish()
+        return row != nil
+    }
+
     func loadCentroids(
         transaction: any TransactionAccess
     ) async throws -> [PersistedVectorView] {
@@ -124,20 +245,18 @@ struct IVFIndexReader: Sendable {
             IVFIndexStorageKey.centroids.rawValue
         )
         let (begin, end) = centroidSubspace.range()
-        let entries = try await TransactionRangeCollection.collect(
-            using: transaction,
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
             snapshot: true,
-            streamingMode: .wantAll
+            streamingMode: .iterator
         )
 
         var centroids: [PersistedVectorView] = []
-        centroids.reserveCapacity(entries.count)
-        for (expectedIndex, entry) in entries.enumerated() {
-            let (key, value) = entry
+        var expectedIndex = 0
+        try await cursor.consume { key, value in
             do {
                 let keyTuple = try centroidSubspace.unpack(key)
                 guard keyTuple.count == 1,
@@ -160,6 +279,7 @@ struct IVFIndexReader: Sendable {
                     expectedCount: dimensions
                 )
             )
+            expectedIndex += 1
         }
         guard centroids.count <= parameters.nlist else {
             throw VectorIndexError.invalidStructure(

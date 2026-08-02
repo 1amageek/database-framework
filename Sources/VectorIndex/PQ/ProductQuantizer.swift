@@ -523,11 +523,19 @@ private struct SubspaceKMeans {
 
     /// Train centroids
     func train(vectors: [ArraySlice<Float>]) -> [[Float]] {
+        var randomNumberGenerator = VectorTrainingRandomNumberGenerator(
+            seed: 0x5051_5F4B_4D50_5050
+                ^ UInt64(truncatingIfNeeded: k)
+                ^ UInt64(truncatingIfNeeded: dimensions) << 32
+        )
         guard vectors.count >= k else {
             // Not enough vectors, pad with random duplicates
             var centroids = vectors.map(Array.init)
             while centroids.count < k {
-                let idx = Int.random(in: 0..<vectors.count)
+                let idx = Int.random(
+                    in: 0..<vectors.count,
+                    using: &randomNumberGenerator
+                )
                 // Centroids are mutable training outputs and therefore own
                 // their storage independently from the input training set.
                 centroids.append(Array(vectors[idx]))
@@ -536,14 +544,21 @@ private struct SubspaceKMeans {
         }
 
         // K-means++ initialization
-        var centroids = kMeansPlusPlusInit(vectors: vectors)
+        var centroids = kMeansPlusPlusInit(
+            vectors: vectors,
+            randomNumberGenerator: &randomNumberGenerator
+        )
 
         for _ in 0..<maxIterations {
             // Assignment
             let assignments = assign(vectors: vectors, centroids: centroids)
 
             // Update centroids
-            let newCentroids = updateCentroids(vectors: vectors, assignments: assignments)
+            let newCentroids = updateCentroids(
+                vectors: vectors,
+                assignments: assignments,
+                randomNumberGenerator: &randomNumberGenerator
+            )
 
             // Check convergence
             if hasConverged(old: centroids, new: newCentroids) {
@@ -556,12 +571,16 @@ private struct SubspaceKMeans {
     }
 
     private func kMeansPlusPlusInit(
-        vectors: [ArraySlice<Float>]
+        vectors: [ArraySlice<Float>],
+        randomNumberGenerator: inout VectorTrainingRandomNumberGenerator
     ) -> [[Float]] {
         var centroids: [[Float]] = []
 
         // First centroid: random
-        let firstIdx = Int.random(in: 0..<vectors.count)
+        let firstIdx = Int.random(
+            in: 0..<vectors.count,
+            using: &randomNumberGenerator
+        )
         centroids.append(Array(vectors[firstIdx]))
 
         // Subsequent centroids
@@ -578,7 +597,10 @@ private struct SubspaceKMeans {
             }
 
             if total > 0 {
-                var target = Double.random(in: 0..<total)
+                var target = Double.random(
+                    in: 0..<total,
+                    using: &randomNumberGenerator
+                )
                 for (i, dist) in distances.enumerated() {
                     target -= dist
                     if target <= 0 {
@@ -587,7 +609,10 @@ private struct SubspaceKMeans {
                     }
                 }
             } else {
-                let idx = Int.random(in: 0..<vectors.count)
+                let idx = Int.random(
+                    in: 0..<vectors.count,
+                    using: &randomNumberGenerator
+                )
                 centroids.append(Array(vectors[idx]))
             }
         }
@@ -615,7 +640,8 @@ private struct SubspaceKMeans {
 
     private func updateCentroids(
         vectors: [ArraySlice<Float>],
-        assignments: [Int]
+        assignments: [Int],
+        randomNumberGenerator: inout VectorTrainingRandomNumberGenerator
     ) -> [[Float]] {
         var sums: [[Double]] = Array(
             repeating: Array(repeating: 0, count: dimensions),
@@ -641,7 +667,10 @@ private struct SubspaceKMeans {
                 }
                 centroids.append(centroid)
             } else {
-                let idx = Int.random(in: 0..<vectors.count)
+                let idx = Int.random(
+                    in: 0..<vectors.count,
+                    using: &randomNumberGenerator
+                )
                 centroids.append(Array(vectors[idx]))
             }
         }

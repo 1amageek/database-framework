@@ -13,17 +13,25 @@ enum VectorReadParameter {
 
 public enum VectorReadExecutors {
     public static func polymorphicIndexExecutor(
-        graphResourceLimits: HNSWGraphResourceLimits = .default
+        graphResourceLimits: HNSWGraphResourceLimits = .default,
+        maximumGraphCacheCost: Int = 24 * 1_024 * 1_024
     ) -> any PolymorphicIndexReadExecutor {
-        PolymorphicVectorReadExecutor(graphResourceLimits: graphResourceLimits)
+        PolymorphicVectorReadExecutor(
+            graphResourceLimits: graphResourceLimits,
+            maximumGraphCacheCost: maximumGraphCacheCost
+        )
     }
 
     public static func register<Model: Persistable>(
         with definition: inout EntityRuntimeDefinition<Model>,
-        graphResourceLimits: HNSWGraphResourceLimits = .default
+        graphResourceLimits: HNSWGraphResourceLimits = .default,
+        maximumGraphCacheCost: Int = 24 * 1_024 * 1_024
     ) throws(DatabaseRuntimeConfigurationError) {
         try definition.register(
-            VectorReadExecutor(graphResourceLimits: graphResourceLimits)
+            VectorReadExecutor(
+                graphResourceLimits: graphResourceLimits,
+                maximumGraphCacheCost: maximumGraphCacheCost
+            )
         )
     }
 }
@@ -38,11 +46,15 @@ private enum VectorReadError: Error, Sendable {
 
 private struct VectorReadExecutor: IndexReadExecutor {
     let kindIdentifier = "vector"
-    private let graphCache = HNSWGraphCache()
+    private let graphCache: HNSWGraphCache
     private let graphResourceLimits: HNSWGraphResourceLimits
 
-    init(graphResourceLimits: HNSWGraphResourceLimits) {
+    init(
+        graphResourceLimits: HNSWGraphResourceLimits,
+        maximumGraphCacheCost: Int
+    ) {
         self.graphResourceLimits = graphResourceLimits
+        self.graphCache = HNSWGraphCache(maximumCost: maximumGraphCacheCost)
     }
 
     func executeRows<T: Persistable>(
@@ -142,11 +154,15 @@ private struct VectorReadExecutor: IndexReadExecutor {
 
 private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "vector"
-    private let graphCache = HNSWGraphCache()
+    private let graphCache: HNSWGraphCache
     private let graphResourceLimits: HNSWGraphResourceLimits
 
-    init(graphResourceLimits: HNSWGraphResourceLimits) {
+    init(
+        graphResourceLimits: HNSWGraphResourceLimits,
+        maximumGraphCacheCost: Int
+    ) {
         self.graphResourceLimits = graphResourceLimits
+        self.graphCache = HNSWGraphCache(maximumCost: maximumGraphCacheCost)
     }
 
     func executeRows(

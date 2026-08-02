@@ -51,7 +51,12 @@ public struct HNSWParameters: Sendable {
 
     /// Convert to SwiftHNSW configuration
     internal var hnswConfiguration: HNSWConfiguration {
-        HNSWConfiguration(m: m, efConstruction: efConstruction, efSearch: efSearch)
+        HNSWConfiguration(
+            m: m,
+            efConstruction: efConstruction,
+            efSearch: efSearch,
+            allowReplaceDeleted: true
+        )
     }
 }
 
@@ -168,6 +173,33 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         newItem: Item?,
         transaction: any TransactionAccess
     ) async throws {
+        if let oldItem, let newItem {
+            let oldID = try DataAccess.extractId(
+                from: oldItem,
+                using: idExpression
+            )
+            let newID = try DataAccess.extractId(
+                from: newItem,
+                using: idExpression
+            )
+            if oldID.pack() == newID.pack() {
+                do {
+                    let vector = try extractVector(from: newItem)
+                    try await insertVector(
+                        primaryKey: newID,
+                        vector: vector,
+                        transaction: transaction
+                    )
+                } catch DataAccessError.nilValueCannotBeIndexed {
+                    try await deleteVector(
+                        primaryKey: oldID,
+                        transaction: transaction
+                    )
+                }
+                return
+            }
+        }
+
         // Handle deletion
         // Sparse index: if vector field was nil, there's no entry to delete
         if let oldItem = oldItem {
@@ -228,31 +260,27 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
 
         let hnswIndex = try await loadOrCreateIndex(
-            transaction: transaction,
-            additionalCapacity: stagedVectors.count
+            transaction: transaction
         )
         try add(stagedVectors, to: hnswIndex)
         try await saveIndex(hnswIndex, transaction: transaction)
     }
 
     /// HNSW cannot compute index keys without a transaction: the persistent key
-    /// uses a monotonically-allocated `UInt64` label, and the label-for-primary-key
-    /// mapping lives in FDB under `labelsSubspace`. Without transactional access
-    /// we cannot read the mapping (see `getLabelForPrimaryKey` — it returns `nil`
-    /// whenever `transaction == nil`), so this variant always returns `[]`, which
-    /// the `OnlineIndexScrubber` interprets as "verification opted out for this
-    /// item through this code path".
+    /// uses a monotonically allocated `UInt64` label, and the label mapping is
+    /// stored in the index subspace.
     ///
     /// The scrubber's real entry point is the transaction-aware overload below,
     /// which this maintainer overrides to produce the actual key. Keeping this
     /// variant explicit (rather than inheriting the `IndexMaintainer` default)
-    /// documents the opt-out at the point of decision so future refactors don't
-    /// mistake it for an oversight.
+    /// Returning an empty key set would incorrectly identify every non-sparse
+    /// item as intentionally unindexed, so this overload reports the missing
+    /// verification capability explicitly.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [ByteString] {
-        return []
+        throw IndexVerificationError.expectedKeysUnsupported
     }
 
     public func computeIndexKeys(
@@ -260,12 +288,31 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         transaction: any TransactionAccess
     ) async throws -> [ByteString] {
-        guard let label = try await getLabelForPrimaryKey(primaryKey: id, transaction: transaction) else {
-            // No label assigned yet — either the item was never indexed (sparse/unseen)
-            // or it was deleted. Either way there is no key to verify.
+        do {
+            _ = try extractVector(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
             return []
         }
-        return [vectorsSubspace.pack(Tuple(Int64(label)))]
+
+        let labelKey = labelsSubspace.pack(id)
+        guard let label = try await getLabelForPrimaryKey(
+            primaryKey: id,
+            transaction: transaction
+        ) else {
+            throw VectorIndexError.invalidStructure(
+                "HNSW label mapping is missing; a full index rebuild is required"
+            )
+        }
+        try await storage.validateStoredEntry(
+            label: label,
+            primaryKey: id,
+            transaction: transaction
+        )
+        return [
+            labelKey,
+            vectorsSubspace.pack(HNSWLabelCodec.tuple(label)),
+            primaryKeysSubspace.pack(HNSWLabelCodec.tuple(label)),
+        ]
     }
 
     // MARK: - Vector Operations
@@ -284,8 +331,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         // Load existing graph, add vector, and save back.
         let hnswIndex = try await loadOrCreateIndex(
-            transaction: transaction,
-            additionalCapacity: 1
+            transaction: transaction
         )
         try add([stagedVector], to: hnswIndex)
         try await saveIndex(hnswIndex, transaction: transaction)
@@ -301,7 +347,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let label = try await getOrCreateLabel(for: primaryKey, transaction: transaction)
 
         // Store vector data
-        let vectorKey = vectorsSubspace.pack(Tuple(Int64(label)))
+        let vectorKey = vectorsSubspace.pack(HNSWLabelCodec.tuple(label))
         try transaction.setValue(
             VectorConversion.float32VectorToBytes(vector),
             for: vectorKey
@@ -309,9 +355,9 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         // Store bidirectional mapping
         let labelKey = labelsSubspace.pack(primaryKey)
-        try transaction.setValue(Tuple(Int64(label)).pack(), for: labelKey)
+        try transaction.setValue(HNSWLabelCodec.tuple(label).pack(), for: labelKey)
 
-        let pkKey = primaryKeysSubspace.pack(Tuple(Int64(label)))
+        let pkKey = primaryKeysSubspace.pack(HNSWLabelCodec.tuple(label))
         try transaction.setValue(primaryKey.pack(), for: pkKey)
 
         return HNSWStagedVector(
@@ -325,14 +371,14 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         _ stagedVectors: [HNSWStagedVector],
         to hnswIndex: HNSWIndexF32
     ) throws {
-        try ensureCapacity(
-            hnswIndex,
-            additionalCount: stagedVectors.count
-        )
-
         for stagedVector in stagedVectors {
             guard let result = try stagedVector.vector.withFloat32Elements({ buffer in
-                try hnswIndex.add(buffer, label: stagedVector.label)
+                do {
+                    try hnswIndex.add(buffer, label: stagedVector.label)
+                } catch HNSWError.capacityExceeded {
+                    try ensureCapacity(hnswIndex, additionalCount: 1)
+                    try hnswIndex.add(buffer, label: stagedVector.label)
+                }
                 return ()
             }) else {
                 throw VectorIndexError.invalidStructure(
@@ -354,14 +400,14 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
 
         // Clear vector data
-        let vectorKey = vectorsSubspace.pack(Tuple(Int64(label)))
+        let vectorKey = vectorsSubspace.pack(HNSWLabelCodec.tuple(label))
         try transaction.clear(key: vectorKey)
 
         // Clear bidirectional mapping
         let labelKey = labelsSubspace.pack(primaryKey)
         try transaction.clear(key: labelKey)
 
-        let pkKey = primaryKeysSubspace.pack(Tuple(Int64(label)))
+        let pkKey = primaryKeysSubspace.pack(HNSWLabelCodec.tuple(label))
         try transaction.clear(key: pkKey)
 
         // Load graph, mark as deleted, and save back
@@ -595,10 +641,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Check if label already exists
         let labelKey = labelsSubspace.pack(primaryKey)
         if let existingValue = try await transaction.getValue(for: labelKey, snapshot: false) {
-            let labelTuple = try Tuple.unpack(from: existingValue)
-            if let label = labelTuple[0] as? Int64 {
-                return UInt64(label)
-            }
+            return try decodeLabel(existingValue)
         }
 
         // Allocate new label atomically
@@ -611,7 +654,13 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let currentValue = try await transaction.getValue(for: nextLabelKey, snapshot: false)
         let current: UInt64
         if let value = currentValue {
-            current = try bytesToUInt64(value)
+            do {
+                current = try bytesToUInt64(value)
+            } catch {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid HNSW next-label value"
+                )
+            }
         } else {
             current = 0
         }
@@ -636,11 +685,11 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             return nil
         }
 
-        let labelTuple = try Tuple.unpack(from: value)
-        if let label = labelTuple[0] as? Int64 {
-            return UInt64(label)
-        }
-        return nil
+        return try decodeLabel(value)
+    }
+
+    private func decodeLabel(_ value: ByteString) throws -> UInt64 {
+        try HNSWLabelCodec.decodePacked(value)
     }
 
     // MARK: - Index Persistence

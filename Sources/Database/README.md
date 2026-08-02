@@ -25,7 +25,7 @@ For example, a consuming package selects a graph composition with:
 ```swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0731.2",
+    from: "26.0731.3",
     traits: ["GraphIndexes"]
 )
 ```
@@ -382,7 +382,7 @@ The Database module includes comprehensive integration tests for the SPARQL() fu
 
 Run tests:
 ```bash
-xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:DatabaseTests/SPARQLFunctionIntegrationTests
+xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64' -only-testing:DatabaseTests/SPARQLFunctionIntegrationTests
 ```
 
 ## Best Practices

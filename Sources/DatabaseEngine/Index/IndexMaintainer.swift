@@ -127,6 +127,9 @@ public protocol IndexMaintainer<Item>: Sendable {
     /// ```
     var customBuildStrategy: (any IndexBuildStrategy<Item>)? { get }
 
+    /// Completes algorithm-specific build work before lifecycle publication.
+    func finalizeBuild(transaction: any TransactionAccess) async throws
+
     /// Compute expected index keys for an item
     ///
     /// This method computes the index keys that should exist for a given item
@@ -192,6 +195,11 @@ extension IndexMaintainer {
     public var customBuildStrategy: (any IndexBuildStrategy<Item>)? {
         return nil
     }
+
+    /// Default: scan-based index maintainers require no finalization step.
+    public func finalizeBuild(
+        transaction: any TransactionAccess
+    ) async throws {}
 
     /// Default: verification is unsupported until the maintainer implements the
     /// physical expectation for its index kind.

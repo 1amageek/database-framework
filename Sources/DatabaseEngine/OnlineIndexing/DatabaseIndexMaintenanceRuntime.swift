@@ -159,6 +159,13 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
                 indexedEntityCount: count
             )
         } else {
+            try await target.entityRuntime.finalizeIndex(
+                container: container,
+                storeSubspace: target.subspace,
+                index: index,
+                configurations: container.indexConfigurations[indexName] ?? [],
+                transaction: transaction
+            )
             if index.isUnique {
                 let tracker = UniquenessViolationTracker(
                     container: container,

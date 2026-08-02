@@ -113,7 +113,7 @@ public struct PQParameters: Sendable, Hashable {
     /// - Parameter dimensions: Vector dimensions
     /// - Returns: Compression ratio (e.g., 192 for 384-dim with m=8)
     public func compressionRatio(for dimensions: Int) -> Double {
-        let originalSize = Double(dimensions * 4)  // Float32
+        let originalSize = Double(dimensions) * 4.0
         let compressedSize = Double(m)
         return originalSize / compressedSize
     }

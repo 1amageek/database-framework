@@ -247,6 +247,15 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
             throw IndexFromIndexError.incompatibleSource(reason)
         }
 
+        try await container.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock
+        ) { transaction in
+            try await self.targetMaintainer.finalizeBuild(
+                transaction: transaction
+            )
+        }
+
         // Verify if requested
         if verifyConsistency {
             try await verifyIndex()

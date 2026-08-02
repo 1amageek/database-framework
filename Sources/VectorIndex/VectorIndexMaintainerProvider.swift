@@ -15,15 +15,18 @@ public struct VectorIndexMaintainerProvider: IndexMaintainerProvider {
 
     private let graphCache: HNSWGraphCache
     private let graphResourceLimits: HNSWGraphResourceLimits
+    private let trainingResourceLimits: VectorTrainingResourceLimits
 
     public init(
-        maximumGraphCacheCost: Int = 64 * 1024 * 1024,
-        graphResourceLimits: HNSWGraphResourceLimits = .default
+        maximumGraphCacheCost: Int = 24 * 1_024 * 1_024,
+        graphResourceLimits: HNSWGraphResourceLimits = .default,
+        trainingResourceLimits: VectorTrainingResourceLimits = .default
     ) {
         self.graphCache = HNSWGraphCache(
             maximumCost: maximumGraphCacheCost
         )
         self.graphResourceLimits = graphResourceLimits
+        self.trainingResourceLimits = trainingResourceLimits
     }
 
     public func makeIndexMaintainer<Item: Persistable>(
@@ -40,7 +43,8 @@ public struct VectorIndexMaintainerProvider: IndexMaintainerProvider {
             idExpression: idExpression,
             configurations: configurations,
             graphCache: graphCache,
-            graphResourceLimits: graphResourceLimits
+            graphResourceLimits: graphResourceLimits,
+            trainingResourceLimits: trainingResourceLimits
         )
     }
 }

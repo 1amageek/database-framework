@@ -61,7 +61,7 @@ public struct VectorConversion: Sendable {
         return try float32Vector(from: vector)
     }
 
-    private static func float32Vector(from vector: Vector) throws -> Vector {
+    static func float32Vector(from vector: Vector) throws -> Vector {
         if vector.elementType == .float32 {
             return vector
         }

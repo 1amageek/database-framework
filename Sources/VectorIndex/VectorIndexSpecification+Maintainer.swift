@@ -9,7 +9,8 @@ extension VectorIndexSpecification {
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         graphCache: HNSWGraphCache,
-        graphResourceLimits: HNSWGraphResourceLimits
+        graphResourceLimits: HNSWGraphResourceLimits,
+        trainingResourceLimits: VectorTrainingResourceLimits
     ) throws -> any IndexMaintainer<Item> {
         let matchingConfigurations = configurations.filter { configuration in
             configuration.kindIdentifier == Self.identifier
@@ -56,7 +57,8 @@ extension VectorIndexSpecification {
                         nlist: parameters.nlist,
                         nprobe: parameters.nprobe,
                         kmeansIterations: parameters.kmeansIterations
-                    )
+                    ),
+                    trainingResourceLimits: trainingResourceLimits
                 )
             case .pq(let parameters):
                 return try PQIndexMaintainer<Item>(
@@ -69,7 +71,8 @@ extension VectorIndexSpecification {
                         m: parameters.m,
                         ksub: 256,
                         niter: parameters.niter
-                    )
+                    ),
+                    trainingResourceLimits: trainingResourceLimits
                 )
             }
         }

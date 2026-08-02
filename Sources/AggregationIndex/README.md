@@ -820,65 +820,22 @@ aggregation query boundary.
 - **Hot keys**: High-cardinality grouping creates many keys
 - **Transaction limits**: 10MB write limit per transaction
 
-## Benchmark Results
+## Performance Validation
 
-Run with: `xcodebuild test -scheme AggregationIndexFocused -destination 'platform=macOS,arch=arm64' -only-testing:PerformanceBenchmarks/MinMaxBatchBenchmark`
+Run the current grouped MIN/MAX benchmark on the selected backend and target
+hardware:
 
-### Latest Results (2026-04-11)
+```bash
+xcodebuild test \
+  -scheme database-framework-Package \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:PerformanceBenchmarks/MinMaxBatchBenchmark
+```
 
-**Environment**: macOS 26.3, Apple M4 Max, local Docker FoundationDB cluster
-
-### MIN/MAX Query Cost (Current Implementation)
-
-**Test Configuration**:
-- Groups: 50 regions
-- Records per group: 50 sales
-- Total records: 2,500
-- Warmup: 3 iterations
-- Measurement: 30 iterations
-
-| Metric | Baseline | Optimized | Notes |
-|--------|----------|-----------|-------|
-| **Latency (p50)** | 2.42ms | 3.16ms | Same index-backed query path |
-| **Latency (p95)** | 2.64ms | 3.45ms | Repeated run for variance check |
-| **Latency (p99)** | 2.74ms | 3.47ms | Low jitter |
-| **Throughput** | 377 ops/s | 358 ops/s | 10 grouped results |
-
-**Note**: This benchmark currently runs the same index-backed query in both slots to capture current cost and run-to-run variance. It does not compare against a separate full-scan implementation.
-
-### Aggregation Scalability (Number of Groups)
-
-**Test Setup**: Query varying number of groups (MIN + MAX)
-
-| Groups | Latency (p50) | Latency (p95) | Throughput |
-|--------|---------------|---------------|------------|
-| 5 groups | 2.45ms | 2.65ms | 360 ops/s |
-| 10 groups | 2.40ms | 2.95ms | 422 ops/s |
-| 25 groups | 2.19ms | 2.50ms | 445 ops/s |
-
-**Observation**: At this scale, p95 stayed in a tight 2.50-2.95ms band.
-
-### Multiple Aggregations Performance 🌟
-
-**Test Setup**: 30 regions, 30 sales/region
-
-**Single Aggregations** (2 separate queries: MIN then MAX):
-- Latency (p50): 2.19ms
-- Latency (p95): **2.44ms**
-- Throughput: 364 ops/s
-
-**Combined Aggregations** (1 query: MIN + MAX together):
-- Latency (p50): 2.08ms
-- Latency (p95): **2.33ms**
-- Throughput: 470 ops/s
-
-**💡 Key Finding**:
-- **Latency reduction: 4.67%** (2.44ms → 2.33ms)
-- **Throughput improvement: 29.05%** (364 ops/s → 470 ops/s)
-
-**Recommendation**: Combine multiple aggregations in a single query to eliminate transaction overhead.
-
-*Benchmarks run with Swift Testing `PerformanceBenchmarks` on Apple Silicon Mac and local Docker FoundationDB cluster.*
+Record the package commit, Swift toolchain, backend version and topology,
+dataset shape, warm-up policy, result bundle, and allocation measurements with
+any latency or throughput claim. Historical numbers from earlier execution and
+ownership paths are intentionally not retained here.
 
 ## References
 

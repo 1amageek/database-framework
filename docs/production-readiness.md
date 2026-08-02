@@ -55,10 +55,15 @@ database-framework service.
 
 ~~~bash
 swift build
-xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS'
+xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64'
 swift build --disable-default-traits --traits SQLite
 swift build --disable-default-traits --traits PostgreSQL
 swift build --disable-default-traits --traits GraphIndexes --product Database
+swift build \
+  --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm \
+  --product Database \
+  --disable-default-traits \
+  --traits VectorIndexes
 swift build \
   --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm-embedded \
   --product Database \

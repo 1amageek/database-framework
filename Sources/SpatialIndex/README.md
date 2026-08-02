@@ -299,36 +299,21 @@ struct Event {
 - **Transaction limit**: 10MB writes, batch large imports
 - **Range scan**: Each covering cell requires one range scan
 
-## Benchmark Results
+## Performance Validation
 
-Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:SpatialIndexTests/SpatialIndexPerformanceTests`
+Run the current indexing, radius, and bounding-box benchmark on the selected
+backend and target hardware:
 
-### Indexing
+```bash
+xcodebuild test \
+  -scheme database-framework-Package \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:SpatialIndexTests/SpatialIndexPerformanceTests
+```
 
-| Locations | Insert Time | Throughput |
-|-----------|-------------|------------|
-| 100 | ~50ms | ~2,000/s |
-| 1,000 | ~500ms | ~2,000/s |
-| 10,000 | ~5s | ~2,000/s |
-
-### Radius Search
-
-| Locations | Radius | Level | Latency (p50) |
-|-----------|--------|-------|---------------|
-| 1,000 | 1km | 15 | ~10ms |
-| 1,000 | 5km | 15 | ~30ms |
-| 10,000 | 1km | 15 | ~15ms |
-| 10,000 | 5km | 15 | ~50ms |
-
-### Bounding Box Search
-
-| Locations | Box Size | Level | Latency (p50) |
-|-----------|----------|-------|---------------|
-| 1,000 | 1km² | 15 | ~5ms |
-| 1,000 | 10km² | 15 | ~20ms |
-| 10,000 | 1km² | 15 | ~10ms |
-
-*Benchmarks run on M1 Mac with local FoundationDB cluster.*
+Record the package commit, Swift toolchain, backend version and topology,
+geographic distribution, cell level, query radius, result bundle, and
+allocation measurements with any performance claim.
 
 ## References
 

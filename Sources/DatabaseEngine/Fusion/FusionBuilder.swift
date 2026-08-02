@@ -147,6 +147,7 @@ public struct FusionBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of scored results, sorted by score descending
     public func execute() async throws -> [ScoredResult<T>] {
+        try validateConfiguration()
         guard !stages.isEmpty else { return [] }
 
         var candidateIDs: Set<T.ID>? = nil
@@ -159,6 +160,13 @@ public struct FusionBuilder<T: Persistable>: Sendable {
             let stageCandidates = stageIndex > 0 ? candidateIDs : nil
 
             let stageResults = try await stage.execute(candidates: stageCandidates)
+            guard stageResults.allSatisfy({ results in
+                results.allSatisfy { $0.score.isFinite }
+            }) else {
+                throw FusionQueryError.invalidConfiguration(
+                    "Fusion sources must produce finite scores"
+                )
+            }
 
             // Update candidate set (intersection of all results in this stage)
             var stageIDs: Set<T.ID> = []
@@ -190,7 +198,7 @@ public struct FusionBuilder<T: Persistable>: Sendable {
         }
 
         // Apply fusion algorithm
-        var fused = applyAlgorithm(algorithm, to: filteredResults)
+        var fused = try applyAlgorithm(algorithm, to: filteredResults)
 
         // Apply limit
         if let limit = limitCount {
@@ -202,10 +210,34 @@ public struct FusionBuilder<T: Persistable>: Sendable {
 
     // MARK: - Private Helpers
 
+    private func validateConfiguration() throws {
+        if let limitCount, limitCount < 0 {
+            throw FusionQueryError.invalidConfiguration(
+                "Fusion result limit must not be negative"
+            )
+        }
+        switch algorithm {
+        case .rrf(let rankConstant):
+            guard rankConstant >= 0 else {
+                throw FusionQueryError.invalidConfiguration(
+                    "RRF rank constant must not be negative"
+                )
+            }
+        case .weighted(let weights):
+            guard weights.allSatisfy(\.isFinite) else {
+                throw FusionQueryError.invalidConfiguration(
+                    "Fusion weights must be finite"
+                )
+            }
+        case .sum, .max:
+            break
+        }
+    }
+
     private func applyAlgorithm(
         _ algorithm: Algorithm,
         to sources: [[ScoredResult<T>]]
-    ) -> [ScoredResult<T>] {
+    ) throws -> [ScoredResult<T>] {
         var scores: [T.ID: (item: T, score: Double)] = [:]
 
         switch algorithm {
@@ -213,7 +245,8 @@ public struct FusionBuilder<T: Persistable>: Sendable {
             for source in sources {
                 for (rank, result) in source.enumerated() {
                     let id = result.item.id
-                    let rrfScore = 1.0 / Double(k + rank + 1)
+                    let denominator = Double(k) + Double(rank) + 1.0
+                    let rrfScore = 1.0 / denominator
                     if let existing = scores[id] {
                         scores[id] = (existing.item, existing.score + rrfScore)
                     } else {
@@ -227,7 +260,10 @@ public struct FusionBuilder<T: Persistable>: Sendable {
                 for result in source {
                     let id = result.item.id
                     if let existing = scores[id] {
-                        scores[id] = (existing.item, existing.score + result.score)
+                        scores[id] = (
+                            existing.item,
+                            try finiteSum(existing.score, result.score)
+                        )
                     } else {
                         scores[id] = (result.item, result.score)
                     }
@@ -247,13 +283,26 @@ public struct FusionBuilder<T: Persistable>: Sendable {
             }
 
         case .weighted(let weights):
+            guard weights.count == sources.count else {
+                throw FusionQueryError.invalidConfiguration(
+                    "Weighted fusion requires exactly one weight per source"
+                )
+            }
             for (sourceIndex, source) in sources.enumerated() {
-                let weight = sourceIndex < weights.count ? weights[sourceIndex] : 1.0
+                let weight = weights[sourceIndex]
                 for result in source {
                     let id = result.item.id
                     let weightedScore = result.score * weight
+                    guard weightedScore.isFinite else {
+                        throw FusionQueryError.invalidConfiguration(
+                            "Weighted fusion produced a non-finite score"
+                        )
+                    }
                     if let existing = scores[id] {
-                        scores[id] = (existing.item, existing.score + weightedScore)
+                        scores[id] = (
+                            existing.item,
+                            try finiteSum(existing.score, weightedScore)
+                        )
                     } else {
                         scores[id] = (result.item, weightedScore)
                     }
@@ -264,6 +313,16 @@ public struct FusionBuilder<T: Persistable>: Sendable {
         return scores.values
             .sorted { $0.score > $1.score }
             .map { ScoredResult(item: $0.item, score: $0.score) }
+    }
+
+    private func finiteSum(_ lhs: Double, _ rhs: Double) throws -> Double {
+        let result = lhs + rhs
+        guard result.isFinite else {
+            throw FusionQueryError.invalidConfiguration(
+                "Fusion score accumulation exceeded the finite range"
+            )
+        }
+        return result
     }
 }
 

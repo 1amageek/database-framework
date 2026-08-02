@@ -55,6 +55,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private let dimensions: Int
     private let metric: VectorMetric
     private let parameters: PQParameters
+    private let trainingResourceLimits: VectorTrainingResourceLimits
 
     // MARK: - Initialization
 
@@ -73,7 +74,8 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         metric: VectorMetric,
         subspace: Subspace,
         idExpression: KeyExpression,
-        parameters: PQParameters
+        parameters: PQParameters,
+        trainingResourceLimits: VectorTrainingResourceLimits = .default
     ) throws(VectorIndexError) {
         guard dimensions > 0 else {
             throw .invalidArgument("PQ vector dimensions must be positive")
@@ -90,6 +92,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         self.subspace = subspace
         self.idExpression = idExpression
         self.parameters = parameters
+        self.trainingResourceLimits = trainingResourceLimits
     }
 
     // MARK: - IndexMaintainer
@@ -138,8 +141,33 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         for item: Item,
         id: Tuple
     ) async throws -> [ByteString] {
+        throw IndexVerificationError.expectedKeysUnsupported
+    }
+
+    public func computeIndexKeys(
+        for item: Item,
+        id: Tuple,
+        transaction: any TransactionAccess
+    ) async throws -> [ByteString] {
+        do {
+            _ = try extractVector(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return []
+        }
+
         let codesSubspace = subspace.subspace(PQIndexStorageKey.codes.rawValue)
-        return [codesSubspace.pack(id)]
+        let vectorsSubspace = subspace.subspace(PQIndexStorageKey.vectors.rawValue)
+        let vectorKey = vectorsSubspace.pack(id)
+        guard try await isTrained(transaction: transaction) else {
+            return [vectorKey]
+        }
+        return [vectorKey, codesSubspace.pack(id)]
+    }
+
+    public func finalizeBuild(
+        transaction: any TransactionAccess
+    ) async throws {
+        try await train(transaction: transaction)
     }
 
     // MARK: - Training
@@ -153,9 +181,19 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Load all vectors from storage
         let storedVectors = try await loadAllVectorEntries(transaction: transaction)
         guard !storedVectors.isEmpty else {
-            throw VectorIndexError.invalidArgument("No vectors to train on")
+            try await storeMetadata(
+                PQMetadata(
+                    m: parameters.m,
+                    dimensions: dimensions,
+                    trained: false,
+                    vectorCount: 0
+                ),
+                transaction: transaction
+            )
+            return
         }
-        let vectors = storedVectors.map(\.vector)
+        try admitTraining(storedVectorCount: storedVectors.count)
+        let vectors = storedVectors.map { $0.vector }
 
         // Create and train quantizer
         let quantizer = try ProductQuantizer(dimensions: dimensions, parameters: parameters)
@@ -258,7 +296,17 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Remove original vector
         let vectorsSubspace = subspace.subspace(PQIndexStorageKey.vectors.rawValue)
         let vectorKey = vectorsSubspace.pack(id)
+        let existed = try await transaction.getValue(
+            for: vectorKey,
+            snapshot: false
+        ) != nil
         try transaction.clear(key: vectorKey)
+        if existed {
+            try await updateTrainedVectorCount(
+                by: -1,
+                transaction: transaction
+            )
+        }
     }
 
     /// Add entry for a vector
@@ -270,6 +318,10 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Store original vector (for retraining)
         let vectorsSubspace = subspace.subspace(PQIndexStorageKey.vectors.rawValue)
         let vectorKey = vectorsSubspace.pack(id)
+        let existed = try await transaction.getValue(
+            for: vectorKey,
+            snapshot: false
+        ) != nil
         let vectorValue = try VectorConversion.float32VectorToBytes(vector)
         try transaction.setValue(vectorValue, for: vectorKey)
 
@@ -290,6 +342,64 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
             let codes = try quantizer.encode(vector)
             try await storeCodes(codes, for: id, transaction: transaction)
         }
+
+        guard !existed, let metadata = try await loadMetadata(
+            transaction: transaction
+        ) else {
+            return
+        }
+        guard metadata.m == parameters.m,
+              metadata.dimensions == dimensions else {
+            throw VectorIndexError.invalidStructure(
+                "PQ metadata does not match the configured index"
+            )
+        }
+        if metadata.trained {
+            guard !codebooks.isEmpty else {
+                throw VectorIndexError.invalidStructure(
+                    "PQ trained metadata has no codebooks"
+                )
+            }
+        } else if !codebooks.isEmpty {
+            throw VectorIndexError.invalidStructure(
+                "PQ untrained metadata has persisted codebooks"
+            )
+        }
+        try await updateTrainedVectorCount(
+            by: 1,
+            transaction: transaction
+        )
+    }
+
+    private func updateTrainedVectorCount(
+        by delta: Int,
+        transaction: any TransactionAccess
+    ) async throws {
+        guard let metadata = try await loadMetadata(transaction: transaction) else {
+            return
+        }
+        guard metadata.m == parameters.m,
+              metadata.dimensions == dimensions else {
+            throw VectorIndexError.invalidStructure(
+                "PQ metadata does not match the configured index"
+            )
+        }
+        let (vectorCount, overflow) = metadata.vectorCount
+            .addingReportingOverflow(delta)
+        guard !overflow, vectorCount >= 0 else {
+            throw VectorIndexError.invalidStructure(
+                "PQ metadata vector count is inconsistent"
+            )
+        }
+        try await storeMetadata(
+            PQMetadata(
+                m: metadata.m,
+                dimensions: metadata.dimensions,
+                trained: metadata.trained,
+                vectorCount: vectorCount
+            ),
+            transaction: transaction
+        )
     }
 
     /// Store codes for a primary key
@@ -328,18 +438,35 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [StoredVector] {
         let vectorsSubspace = subspace.subspace(PQIndexStorageKey.vectors.rawValue)
         let (begin, end) = vectorsSubspace.range()
-        let sequence = try await TransactionRangeCollection.collect(using: transaction,
+        try trainingResourceLimits.validate()
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
             snapshot: false,
-            streamingMode: .wantAll
+            streamingMode: .iterator
         )
 
         var vectors: [StoredVector] = []
-
-        for (key, value) in sequence {
+        var payloadByteCount = 0
+        try await cursor.consume { key, value in
+            guard vectors.count < trainingResourceLimits.maximumVectorCount else {
+                throw VectorIndexError.invalidArgument(
+                    "PQ training exceeds the configured vector count limit"
+                )
+            }
+            payloadByteCount = try checkedSum(
+                payloadByteCount,
+                value.count,
+                message: "PQ stored vector payload size overflow"
+            )
+            guard payloadByteCount
+                    <= trainingResourceLimits.maximumVectorPayloadByteCount else {
+                throw VectorIndexError.invalidArgument(
+                    "PQ training exceeds the configured vector payload limit"
+                )
+            }
             let primaryKey: Tuple
             do {
                 primaryKey = try vectorsSubspace.unpack(key)
@@ -357,6 +484,109 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
 
         return vectors
+    }
+
+    private func admitTraining(storedVectorCount: Int) throws {
+        try trainingResourceLimits.validate()
+        guard storedVectorCount <= trainingResourceLimits.maximumVectorCount else {
+            throw VectorIndexError.invalidArgument(
+                "PQ training exceeds the configured vector count limit"
+            )
+        }
+        let vectorScalars = try checkedProduct(
+            storedVectorCount,
+            dimensions,
+            message: "PQ training payload size overflow"
+        )
+        let payloadBytes = try checkedProduct(
+            vectorScalars,
+            MemoryLayout<Float>.stride,
+            message: "PQ training payload size overflow"
+        )
+        guard payloadBytes <= trainingResourceLimits.maximumVectorPayloadByteCount else {
+            throw VectorIndexError.invalidArgument(
+                "PQ training exceeds the configured vector payload limit"
+            )
+        }
+        let codebookScalars = try checkedProduct(
+            parameters.ksub,
+            dimensions,
+            message: "PQ codebook size overflow"
+        )
+        let codebookBytes = try checkedProduct(
+            codebookScalars,
+            MemoryLayout<Float>.stride,
+            message: "PQ codebook size overflow"
+        )
+        let payloadWorkingBytes = try checkedProduct(
+            payloadBytes,
+            3,
+            message: "PQ working memory estimate overflow"
+        )
+        let codebookWorkingBytes = try checkedProduct(
+            codebookBytes,
+            3,
+            message: "PQ working memory estimate overflow"
+        )
+        let workingBytes = try checkedSum(
+            payloadWorkingBytes,
+            codebookWorkingBytes,
+            message: "PQ working memory estimate overflow"
+        )
+        guard workingBytes <= trainingResourceLimits.maximumWorkingByteCount else {
+            throw VectorIndexError.invalidArgument(
+                "PQ training exceeds the configured working memory limit"
+            )
+        }
+        let codeBytes = try checkedProduct(
+            storedVectorCount,
+            parameters.m,
+            message: "PQ code mutation size overflow"
+        )
+        let keyOverheadBytes = try checkedProduct(
+            storedVectorCount,
+            128,
+            message: "PQ mutation size estimate overflow"
+        )
+        var mutationBytes = try checkedSum(
+            codebookBytes,
+            codeBytes,
+            message: "PQ mutation size estimate overflow"
+        )
+        mutationBytes = try checkedSum(
+            mutationBytes,
+            keyOverheadBytes,
+            message: "PQ mutation size estimate overflow"
+        )
+        guard mutationBytes <= trainingResourceLimits.maximumTransactionMutationByteCount else {
+            throw VectorIndexError.invalidArgument(
+                "PQ training exceeds the configured transaction mutation limit"
+            )
+        }
+    }
+
+    private func checkedSum(
+        _ lhs: Int,
+        _ rhs: Int,
+        message: String
+    ) throws -> Int {
+        let (result, overflow) = lhs.addingReportingOverflow(rhs)
+        guard !overflow else {
+            throw VectorIndexError.invalidArgument(message)
+        }
+        return result
+    }
+
+    private func checkedProduct(
+        _ lhs: Int,
+        _ rhs: Int,
+        message: String
+    ) throws -> Int {
+        let (result, overflow) = lhs.multipliedReportingOverflow(by: rhs)
+        guard !overflow else {
+            throw VectorIndexError.invalidArgument(message)
+        }
+        return result
     }
 
     /// Store metadata
@@ -416,7 +646,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 // MARK: - PQ Metadata
 
 /// Metadata for PQ index
-private struct PQMetadata: Sendable {
+struct PQMetadata: Sendable {
     static let formatVersion: Int64 = 1
 
     let m: Int

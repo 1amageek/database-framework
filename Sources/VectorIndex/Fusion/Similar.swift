@@ -226,11 +226,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
             guard !candidateIDs.isEmpty else {
                 return []
             }
-            // Candidate-aware search strategies:
-            // 1. Small candidate set: Brute-force (guarantees recall)
-            // 2. Large candidate set: Expanded-k with post-filtering
             searchResults = try await executeWithCandidates(
-                indexName: indexName,
                 queryVector: vector,
                 candidateIDs: candidateIDs
             )
@@ -309,81 +305,64 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
 
     /// Execute vector search with candidate awareness
     ///
-    /// Strategies:
-    /// 1. Small candidate set (≤ bruteForceThreshold): Fetch candidates and compute distances directly
-    /// 2. Large candidate set: Use expanded kNN search with post-filtering
-    ///
-    /// `VectorQueryBuilder.filter()` uses the same expanded-candidate post-filter
-    /// contract when no candidate set has already been materialized.
+    /// Candidate membership is a semantic restriction, so execution computes
+    /// exact distances over that set instead of applying an unrestricted ANN
+    /// search followed by a lossy post-filter. Fetches are bounded so candidate
+    /// models and vector owners are released between batches.
     private func executeWithCandidates(
-        indexName: String,
         queryVector: Vector,
         candidateIDs: Set<T.ID>
     ) async throws -> [(item: T, distance: Double)] {
-        // Threshold for switching between brute-force and expanded-k
-        let bruteForceThreshold = 1000
+        let fetchBatchSize = 128
+        var nearest = MinHeap<(item: T, distance: Double)>(
+            maxSize: k,
+            heapType: .max,
+            comparator: { $0.distance > $1.distance }
+        )
+        var identifiers: [T.ID] = []
+        identifiers.reserveCapacity(min(fetchBatchSize, candidateIDs.count))
 
-        if candidateIDs.count <= bruteForceThreshold {
-            // Small candidate set: brute-force guarantees recall
-            return try await computeDistancesForCandidates(
-                queryVector: queryVector,
-                candidateIDs: candidateIDs
-            )
-        } else {
-            // Large candidate set: expanded kNN with post-filtering
-            //
-            // k expansion formula considerations:
-            // - k * 10: Base expansion for sparse distributions
-            // - candidateIds.count / 2: Scale with candidate set size
-            // - k + 2000: Minimum expansion to ensure good recall
-            // - sqrt(candidateIDs.count) * k: Sublinear scaling for very large sets
-            //
-            // Reference: Empirical studies show recall degrades gracefully when
-            // expansion factor is at least sqrt(N) * k for N candidates.
-            let candidateCount = candidateIDs.count
-            let sqrtFactor = Int(Double(candidateCount).squareRoot())
-            let expandedK = max(
-                clampedProduct(k, 10, upperBound: candidateCount),
-                candidateCount / 2,
-                clampedSum(k, 2_000, upperBound: candidateCount),
-                clampedProduct(k, sqrtFactor, upperBound: candidateCount)
-            )
-
-            var results = try await executeVectorSearch(
-                indexName: indexName,
-                queryVector: queryVector,
-                k: expandedK
-            )
-
-            // Filter to candidates
-            results = results.filter { result in
-                candidateIDs.contains(result.item.id)
+        for identifier in candidateIDs {
+            identifiers.append(identifier)
+            if identifiers.count == fetchBatchSize {
+                let results = try await computeDistancesForCandidateBatch(
+                    queryVector: queryVector,
+                    identifiers: identifiers
+                )
+                for result in results {
+                    nearest.insert(result)
+                }
+                identifiers.removeAll(keepingCapacity: true)
             }
-
-            // Trim to k
-            if results.count > k {
-                results = Array(results.prefix(k))
-            }
-
-            return results
         }
+
+        if !identifiers.isEmpty {
+            let results = try await computeDistancesForCandidateBatch(
+                queryVector: queryVector,
+                identifiers: identifiers
+            )
+            for result in results {
+                nearest.insert(result)
+            }
+        }
+
+        return nearest.sorted()
     }
 
-    /// Compute vector distances for a set of candidate items (brute-force)
-    ///
-    /// Fetches the candidate items and computes distances directly.
-    /// Used when candidate set is small enough for brute-force approach.
-    private func computeDistancesForCandidates(
+    /// Computes one bounded candidate batch. The returned array cannot exceed
+    /// the fixed fetch batch size and is drained into the result heap before the
+    /// next batch is loaded.
+    private func computeDistancesForCandidateBatch(
         queryVector: Vector,
-        candidateIDs: Set<T.ID>
+        identifiers: [T.ID]
     ) async throws -> [(item: T, distance: Double)] {
-        // Fetch candidate items
         let items = try await queryContext.fetchItems(
-            identifiers: Array(candidateIDs),
+            identifiers: identifiers,
             type: T.self
         )
 
         var results: [(item: T, distance: Double)] = []
+        results.reserveCapacity(items.count)
 
         for item in items {
             guard let vector = try float32Vector(from: item) else {
@@ -403,13 +382,6 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
             )
             results.append((item: item, distance: distance))
         }
-
-        // Sort by distance and take top k
-        results.sort { $0.distance < $1.distance }
-        if results.count > k {
-            results = Array(results.prefix(k))
-        }
-
         return results
     }
 
@@ -425,13 +397,18 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         if case .null = value {
             return nil
         }
-        guard case .vector(let vector) = value,
-              vector.elementType == .float32 else {
+        guard case .vector(let vector) = value else {
             throw FusionQueryError.invalidConfiguration(
-                "Persisted field '\(fieldName)' is not a Float32 vector"
+                "Persisted field '\(fieldName)' is not a vector"
             )
         }
-        return vector
+        do {
+            return try VectorConversion.float32Vector(from: vector)
+        } catch {
+            throw FusionQueryError.invalidConfiguration(
+                "Persisted vector field '\(fieldName)' cannot be converted to Float32"
+            )
+        }
     }
 
     private var indexMetric: VectorMetric {
@@ -445,24 +422,4 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         }
     }
 
-    private func clampedProduct(
-        _ lhs: Int,
-        _ rhs: Int,
-        upperBound: Int
-    ) -> Int {
-        guard lhs > 0, rhs > 0 else { return 0 }
-        guard lhs <= upperBound / rhs else { return upperBound }
-        return min(lhs * rhs, upperBound)
-    }
-
-    private func clampedSum(
-        _ lhs: Int,
-        _ rhs: Int,
-        upperBound: Int
-    ) -> Int {
-        guard lhs <= upperBound - min(rhs, upperBound) else {
-            return upperBound
-        }
-        return min(lhs + rhs, upperBound)
-    }
 }

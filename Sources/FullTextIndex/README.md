@@ -315,36 +315,21 @@ struct Document {
 - **Transaction limit**: 10MB writes, batch large documents
 - **Atomic counters**: BM25 stats use atomic add operations
 
-## Benchmark Results
+## Performance Validation
 
-Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:FullTextIndexTests/FullTextIndexPerformanceTests`
+Run the current indexing, search, and BM25 benchmark on the selected backend
+and target hardware:
 
-### Indexing
+```bash
+xcodebuild test \
+  -scheme database-framework-Package \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:FullTextIndexTests/FullTextIndexPerformanceTests
+```
 
-| Documents | Avg Words | Insert Time | Throughput |
-|-----------|-----------|-------------|------------|
-| 100 | 50 | ~200ms | ~500/s |
-| 1,000 | 50 | ~2s | ~500/s |
-| 10,000 | 50 | ~20s | ~500/s |
-
-### Search
-
-| Documents | Terms | Match Mode | Latency (p50) |
-|-----------|-------|------------|---------------|
-| 1,000 | 1 | - | ~5ms |
-| 1,000 | 3 | AND | ~15ms |
-| 1,000 | 3 | OR | ~20ms |
-| 10,000 | 1 | - | ~10ms |
-| 10,000 | 3 | AND | ~30ms |
-
-### BM25 Scoring
-
-| Documents | Query Terms | Scoring Overhead |
-|-----------|-------------|-----------------|
-| 1,000 | 3 | ~50ms |
-| 10,000 | 3 | ~200ms |
-
-*Benchmarks run on M1 Mac with local FoundationDB cluster.*
+Record the package commit, Swift toolchain, backend version and topology,
+corpus and term distribution, warm-up policy, result bundle, and allocation
+measurements with any latency or throughput claim.
 
 ## References
 

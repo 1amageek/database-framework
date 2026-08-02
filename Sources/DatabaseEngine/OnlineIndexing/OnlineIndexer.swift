@@ -201,8 +201,9 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// 2. Check for custom build strategy
     ///    - If present: delegate to strategy
     ///    - If absent: use standard scan-based build
-    /// 3. For unique indexes: check for violations
-    /// 4. Transition to readable state (if no violations)
+    /// 3. Finalize algorithm-specific physical state
+    /// 4. For unique indexes: check for violations
+    /// 5. Transition to readable state (if no violations)
     ///
     /// **Uniqueness Enforcement**:
     /// For unique indexes (`index.isUnique == true`), violations detected during
@@ -241,6 +242,10 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             // Standard scan-based build
             try await buildIndexInBatches()
         }
+
+        // Publish only after every algorithm-specific physical structure is
+        // complete. A failed finalizer leaves the index write-only.
+        try await finalizeBuild()
 
         // For unique indexes, check for violations before making readable
         if index.isUnique {
@@ -530,6 +535,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         // If no split points or only one range, fall back to standard build
         guard splitPoints.count > 1 else {
             try await buildIndexInBatches()
+            try await finalizeBuild()
             // Check for violations before making readable (for unique indexes)
             if index.isUnique {
                 let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
@@ -583,6 +589,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
         // If all chunks are complete, just transition state
         guard !chunksToProcess.isEmpty else {
+            try await finalizeBuild()
             try await progress.clearProgress()
             // Check for violations before making readable (for unique indexes)
             if index.isUnique {
@@ -641,6 +648,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         }
 
         // Clear progress data on successful completion
+        try await finalizeBuild()
         try await progress.clearProgress()
 
         // For unique indexes, check for violations before making readable
@@ -658,6 +666,17 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
         // Transition to readable state
         try await indexLifecycleStore.makeReadable(index.name)
+    }
+
+    private func finalizeBuild() async throws {
+        try await container.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock
+        ) { transaction in
+            try await self.indexMaintainer.finalizeBuild(
+                transaction: transaction
+            )
+        }
     }
 
     /// Process a single chunk with progress tracking

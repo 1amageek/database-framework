@@ -270,6 +270,9 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             ),
             runIndexSlice: Self.makeIndexSliceOperation(
                 providers: indexProviders
+            ),
+            finalizeIndex: Self.makeIndexFinalizationOperation(
+                providers: indexProviders
             )
         )
     }
@@ -507,6 +510,29 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             storedFieldNames: descriptor.storedFieldNames
         )
     }
+
+    private static func makeIndexFinalizationOperation(
+        providers: [String: any EntityIndexProvider<Model>]
+    ) -> EntityRuntimeRegistration.FinalizeIndex {
+        { container, storeSubspace, index, configurations, transaction in
+            guard let provider = providers[index.kind.identifier] else {
+                throw IndexMaintainerProviderRegistryError.providerNotRegistered(
+                    kindIdentifier: index.kind.identifier,
+                    indexName: index.name
+                )
+            }
+            let maintainer = try provider.makeMaintainer(
+                index: index,
+                subspace: storeSubspace
+                    .subspace(SubspaceKey.indexes)
+                    .subspace(index.subspaceKey),
+                idExpression: FieldKeyExpression(fieldName: "id"),
+                configurations: configurations,
+                wallClock: container.wallClock
+            )
+            try await maintainer.finalizeBuild(transaction: transaction)
+        }
+    }
 }
 
 public struct EntityRuntimeRegistration: Sendable {
@@ -521,6 +547,7 @@ public struct EntityRuntimeRegistration: Sendable {
     private let updateIndexesOperation: UpdateIndexes
     private let buildIndexOperation: BuildIndex
     private let runIndexSliceOperation: RunIndexSlice
+    private let finalizeIndexOperation: FinalizeIndex
 
     fileprivate typealias IndexReader = @Sendable (
         _ context: DatabaseContext,
@@ -582,6 +609,14 @@ public struct EntityRuntimeRegistration: Sendable {
         any TransactionAccess
     ) async throws -> EntityIndexSliceResult
 
+    fileprivate typealias FinalizeIndex = @Sendable (
+        DBContainer,
+        Subspace,
+        Index,
+        [any IndexRuntimeConfiguration],
+        any TransactionAccess
+    ) async throws -> Void
+
     fileprivate init<Model: Persistable>(
         entity: Schema.Entity,
         indexReaders: [String: IndexReader],
@@ -592,7 +627,8 @@ public struct EntityRuntimeRegistration: Sendable {
         fetchTableRows: @escaping FetchTableRows,
         updateIndexes: @escaping UpdateIndexes,
         buildIndex: @escaping BuildIndex,
-        runIndexSlice: @escaping RunIndexSlice
+        runIndexSlice: @escaping RunIndexSlice,
+        finalizeIndex: @escaping FinalizeIndex
     ) {
         self.entity = entity
         self.indexReaders = indexReaders
@@ -606,6 +642,7 @@ public struct EntityRuntimeRegistration: Sendable {
         self.updateIndexesOperation = updateIndexes
         self.buildIndexOperation = buildIndex
         self.runIndexSliceOperation = runIndexSlice
+        self.finalizeIndexOperation = finalizeIndex
     }
 
     func executeIndexRows(
@@ -754,6 +791,22 @@ public struct EntityRuntimeRegistration: Sendable {
             index,
             lastProcessedKey,
             maximumWorkUnits,
+            transaction
+        )
+    }
+
+    func finalizeIndex(
+        container: DBContainer,
+        storeSubspace: Subspace,
+        index: Index,
+        configurations: [any IndexRuntimeConfiguration],
+        transaction: any TransactionAccess
+    ) async throws {
+        try await finalizeIndexOperation(
+            container,
+            storeSubspace,
+            index,
+            configurations,
             transaction
         )
     }

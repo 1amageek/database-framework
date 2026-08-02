@@ -241,7 +241,9 @@ public enum DatabaseFrameworkRuntime {
         var executors: [any PolymorphicIndexReadExecutor] = []
 
         #if DATABASE_RUNTIME_VECTOR_INDEXES
-        executors.append(VectorReadExecutors.polymorphicIndexExecutor())
+        executors.append(
+            VectorReadExecutors.polymorphicIndexExecutor()
+        )
         #endif
         #if DATABASE_RUNTIME_FULL_TEXT_INDEXES
         executors.append(FullTextReadExecutors.polymorphicIndexExecutor)

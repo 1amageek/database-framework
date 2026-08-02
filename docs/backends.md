@@ -28,7 +28,7 @@ which backend one container uses.
 
 ~~~bash
 swift build
-xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
+xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64'
 ~~~
 
 The default full-host profile enables both `FoundationDB` and
@@ -41,7 +41,7 @@ index implementations. `Relationships` remains independent.
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0731.1",
+    from: "26.0731.3",
     traits: ["SQLite", "GraphIndexes"]
 )
 ~~~
@@ -51,14 +51,14 @@ composition is the union requested by the complete consuming graph.
 
 ~~~bash
 swift build --disable-default-traits --traits SQLite
-xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
+xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64'
 ~~~
 
 SQLite builds do not link libfdb_c.
 
 ~~~bash
 swift build --disable-default-traits --traits PostgreSQL
-xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64'
+xcodebuild test -scheme database-framework-Package -destination 'platform=macOS,arch=arm64'
 ~~~
 
 PostgreSQL builds require the PostgreSQL dependency but not a running server

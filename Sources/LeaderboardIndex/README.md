@@ -333,9 +333,9 @@ Each entry's position is tracked for efficient updates:
 | Negative scores | ✅ Complete | Full Int64 range |
 | Sparse index (nil scores) | ✅ Complete | Nil values excluded |
 | Fusion integration | ✅ Complete | Leaderboard query |
-| Bottom-K queries | ✅ Implemented (internal) | Available in maintainer, not yet exposed via public query API |
-| Percentile queries | ✅ Implemented (internal) | Available in maintainer, not yet exposed via public query API |
-| Dense ranking | ✅ Implemented (internal) | Available in maintainer, not yet exposed via public query API |
+| Bottom-K queries | ✅ Complete | Public `.bottom(_:)` plus `executeBottom()` query path |
+| Percentile queries | ✅ Complete | Public `percentile(_:)` query path |
+| Dense ranking | ✅ Complete | Public `denseRank(for:)` query path |
 
 ## Performance Characteristics
 
@@ -366,47 +366,21 @@ Each entry's position is tracked for efficient updates:
 - **Key Size**: Primary key must fit within FDB's 10KB key limit
 - **Transaction Size**: Large batch insertions may approach 10MB limit
 
-## Benchmark Results
+## Performance Validation
 
-Run with: `xcodebuild test -scheme DatabaseCoreFocused -destination 'platform=macOS,arch=arm64' -only-testing:LeaderboardIndexTests`
+Run the current insert, top-K, rank, and update benchmark on the selected
+backend and target hardware:
 
-### Insert Performance
+```bash
+xcodebuild test \
+  -scheme database-framework-Package \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:LeaderboardIndexTests/LeaderboardIndexPerformanceTests
+```
 
-| Records | Window | Insert Time | Throughput |
-|---------|--------|-------------|------------|
-| 100 | daily | ~20ms | ~5,000/s |
-| 1,000 | daily | ~200ms | ~5,000/s |
-| 10,000 | daily | ~2s | ~5,000/s |
-
-### Query Performance
-
-| Entries in Window | Query Type | Latency (p50) |
-|-------------------|------------|---------------|
-| 1,000 | Top 10 | ~2ms |
-| 1,000 | Top 100 | ~5ms |
-| 10,000 | Top 10 | ~2ms |
-| 10,000 | Top 100 | ~5ms |
-| 10,000 | Top 1,000 | ~15ms |
-
-### Rank Lookup Performance
-
-| Entries in Window | Rank Position | Latency (p50) |
-|-------------------|---------------|---------------|
-| 1,000 | #1 | ~1ms |
-| 1,000 | #500 | ~5ms |
-| 1,000 | #1000 | ~10ms |
-| 10,000 | #1 | ~1ms |
-| 10,000 | #5000 | ~30ms |
-
-### Update Performance
-
-| Operation | Latency (p50) |
-|-----------|---------------|
-| Score update (same window) | ~3ms |
-| Score update (new window) | ~5ms |
-| Delete | ~2ms |
-
-*Benchmarks run on M1 Mac with local FoundationDB cluster.*
+Record the package commit, Swift toolchain, backend version and topology,
+window distribution, entry count, requested rank range, result bundle, and
+allocation measurements with any performance claim.
 
 ## References
 

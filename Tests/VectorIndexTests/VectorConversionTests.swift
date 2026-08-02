@@ -303,7 +303,18 @@ struct VectorConversionTests {
         let listSubspace = subspace
             .subspace(IVFIndexStorageKey.lists.rawValue)
             .subspace(0)
+        let metadataKey = subspace.pack(
+            Tuple([IVFIndexStorageKey.metadata.rawValue])
+        )
+        let metadata = Tuple(
+            IVFMetadata.formatVersion,
+            Int64(1),
+            Int64(2),
+            true,
+            Int64(1)
+        ).pack()
         try await database.withTransaction { transaction in
+            try transaction.setValue(metadata, for: metadataKey)
             try transaction.setValue(
                 ByteString(retaining: centroidOwner),
                 for: centroidSubspace.pack(Tuple(Int64(0)))
@@ -352,7 +363,18 @@ struct VectorConversionTests {
             PQIndexStorageKey.codebooks.rawValue
         )
         let codesSubspace = subspace.subspace(PQIndexStorageKey.codes.rawValue)
+        let metadataKey = subspace.pack(
+            Tuple([PQIndexStorageKey.metadata.rawValue])
+        )
+        let metadata = Tuple(
+            PQMetadata.formatVersion,
+            Int64(1),
+            Int64(2),
+            true,
+            Int64(1)
+        ).pack()
         try await database.withTransaction { transaction in
+            try transaction.setValue(metadata, for: metadataKey)
             try transaction.setValue(
                 ByteString(retaining: codebookOwner),
                 for: codebookSubspace.pack(Tuple(Int64(0)))

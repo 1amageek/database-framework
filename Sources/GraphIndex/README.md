@@ -1172,41 +1172,21 @@ let errors = reasoner.validateStructure()
 - **Empty values**: All strategies store empty values
 - **Transaction limits**: Multi-hop traversals use multiple transactions
 
-## Benchmark Results
+## Performance Validation
 
-Run with: `xcodebuild test -scheme GraphIndexFocused -destination 'platform=macOS,arch=arm64' -only-testing:GraphIndexTests/GraphIndexPerformanceTests`
+Run the current graph indexing, query, and traversal benchmark on the selected
+backend and target hardware:
 
-### Indexing
+```bash
+xcodebuild test \
+  -scheme database-framework-Package \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:GraphIndexTests/GraphIndexPerformanceTests
+```
 
-| Edges | Strategy | Insert Time | Throughput |
-|-------|----------|-------------|------------|
-| 100 | adjacency | ~20ms | ~5,000/s |
-| 100 | tripleStore | ~30ms | ~3,300/s |
-| 100 | hexastore | ~60ms | ~1,700/s |
-| 1,000 | adjacency | ~200ms | ~5,000/s |
-| 1,000 | tripleStore | ~300ms | ~3,300/s |
-| 1,000 | hexastore | ~600ms | ~1,700/s |
-
-### Query
-
-| Edges | Query Type | Strategy | Latency (p50) |
-|-------|------------|----------|---------------|
-| 1,000 | from=X | adjacency | ~3ms |
-| 1,000 | from=X | tripleStore | ~3ms |
-| 1,000 | edge=X | adjacency | ~10ms (scan) |
-| 1,000 | edge=X | tripleStore | ~3ms (POS index) |
-| 1,000 | to=X | adjacency | ~3ms |
-
-### Traversal
-
-| Nodes | Edges | Max Depth | Latency (p50) |
-|-------|-------|-----------|---------------|
-| 100 | 500 | 2 | ~50ms |
-| 100 | 500 | 3 | ~100ms |
-| 1,000 | 5,000 | 2 | ~200ms |
-| 1,000 | 5,000 | 3 | ~500ms |
-
-*Benchmarks run on M1 Mac with local FoundationDB cluster.*
+Record the package commit, Swift toolchain, backend version and topology,
+graph shape, storage strategy, traversal depth, result bundle, and allocation
+measurements with any performance claim.
 
 ## Security Limitations
 
@@ -1222,7 +1202,9 @@ GraphIndex operates at the triple/edge level, which is below the Persistable-lev
 - `IndexQueryContext.batchFetchItems()`: Evaluates both query and per-resource read authorization when fetching Persistable items by IDs obtained from graph queries.
 - `DatabaseDataStore.fetch()` / `fetchAll()`: Standard fetch operations authorize the query and every returned resource; denial remains a typed failure rather than a partial result.
 
-**Future direction**: Triple-level access control (e.g., Named Graph-based authorization) may be added in a future release to provide fine-grained security for SPARQL and graph traversal operations.
+Triple-level access control is not part of the current contract. Applications
+that expose raw SPARQL or traversal results must enforce their authorization
+boundary before invoking these APIs or restrict access to trusted callers.
 
 ## References
 

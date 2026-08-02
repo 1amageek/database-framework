@@ -39,10 +39,13 @@ not a copy of historical design proposals.
 
 ## Documentation Boundaries
 
-~~~text
-database-types -> database-kit -> database-framework -> storage-kit
-   primitives       contracts        behavior             storage
-~~~
+```mermaid
+flowchart LR
+    Framework["database-framework<br/>execution behavior"] --> Kit["database-kit<br/>model/query/wire contracts"]
+    Framework --> Storage["storage-kit<br/>storage contracts/backends"]
+    Kit --> Types["database-types<br/>primitive values"]
+    Storage --> Types
+```
 
 Backend adapters, web hosts, and application tools are documented as separate
 repositories in the project README.
