@@ -172,6 +172,10 @@ private extension SPARQLExpressionValidator {
                 }
                 tasks.append(.expression(value, depth: childDepth))
 
+            case .like(let value, let pattern):
+                try state.checkString(pattern)
+                tasks.append(.expression(value, depth: childDepth))
+
             case .inList(let value, let candidates),
                  .notInList(let value, let candidates):
                 try state.checkCollection(candidates.count)
@@ -216,7 +220,7 @@ private extension SPARQLExpressionValidator {
             case .aggregate:
                 throw SPARQLExpressionCompilationError.aggregateNotAllowed
 
-            case .modulo, .isNull, .isNotNull, .like, .between,
+            case .modulo, .isNull, .isNotNull, .between,
                  .inSubquery, .caseWhen, .nullIf, .cast, .subquery:
                 throw SPARQLExpressionCompilationError
                     .unsupportedExpression(semanticName)

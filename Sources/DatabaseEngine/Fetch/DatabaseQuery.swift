@@ -143,7 +143,7 @@ public struct Query<T: Persistable>: Sendable {
     ///
     /// // Allow 30-second stale data
     /// let products = try await context.fetch(Product.self)
-    ///     .cachePolicy(.stale(30))
+    ///     .cachePolicy(.stale(.seconds(30)))
     ///     .execute()
     /// ```
     public func cachePolicy(_ policy: CachePolicy) -> Query<T> {
@@ -790,7 +790,7 @@ public struct QueryExecutor<T: Persistable>: Sendable {
     ///
     /// // Allow 30-second stale data
     /// let products = try await context.fetch(Product.self)
-    ///     .cachePolicy(.stale(30))
+    ///     .cachePolicy(.stale(.seconds(30)))
     ///     .execute()
     /// ```
     public func cachePolicy(_ policy: CachePolicy) -> QueryExecutor<T> {

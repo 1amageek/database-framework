@@ -19,23 +19,145 @@ import StorageKit
 ///
 /// **Usage**:
 /// ```swift
-/// let rewriter = SPARQLFunctionRewriter(context: context)
+/// let rewriter = SPARQLFunctionRewriter(
+///     context: context,
+///     workMeter: workMeter,
+///     transaction: transaction
+/// )
 /// let rewritten = try await rewriter.rewrite(selectQuery)
 /// // Execute rewritten query through normal path
 /// ```
 internal struct SPARQLFunctionRewriter: Sendable {
     private let context: DatabaseContext
     private let workMeter: DatabaseWorkMeter
+    private let transaction: any TransactionAccess
 
     /// Initialize with DatabaseContext
     ///
-    /// - Parameter context: The context for transaction and schema access
+    /// - Parameters:
+    ///   - context: Context for schema and index access.
+    ///   - workMeter: Shared resource budget for graph and SQL execution.
+    ///   - transaction: Parent SQL read transaction.
     internal init(
         context: DatabaseContext,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        transaction: any TransactionAccess
     ) {
         self.context = context
         self.workMeter = workMeter
+        self.transaction = transaction
+    }
+
+    /// Returns whether the filter tree contains a SPARQL SQL function that
+    /// requires transaction-bound rewriting before canonical query execution.
+    internal static func containsSPARQLFunction(
+        in query: SelectQuery
+    ) -> Bool {
+        guard let filter = query.filter else { return false }
+
+        var pending: [DatabaseKit.Expression] = [filter]
+        while let expression = pending.popLast() {
+            switch expression {
+            case .function(let call):
+                if call.name.uppercased() == "SPARQL" {
+                    return true
+                }
+                pending.append(contentsOf: call.arguments)
+
+            case .add(let left, let right),
+                 .subtract(let left, let right),
+                 .multiply(let left, let right),
+                 .divide(let left, let right),
+                 .modulo(let left, let right),
+                 .equal(let left, let right),
+                 .notEqual(let left, let right),
+                 .lessThan(let left, let right),
+                 .lessThanOrEqual(let left, let right),
+                 .greaterThan(let left, let right),
+                 .greaterThanOrEqual(let left, let right),
+                 .and(let left, let right),
+                 .or(let left, let right),
+                 .nullIf(let left, let right):
+                pending.append(left)
+                pending.append(right)
+
+            case .negate(let inner),
+                 .not(let inner),
+                 .isNull(let inner),
+                 .isNotNull(let inner),
+                 .like(let inner, _),
+                 .regex(let inner, _, _),
+                 .cast(let inner, _),
+                 .isTriple(let inner),
+                 .subject(let inner),
+                 .predicate(let inner),
+                 .object(let inner):
+                pending.append(inner)
+
+            case .between(let value, let low, let high):
+                pending.append(value)
+                pending.append(low)
+                pending.append(high)
+
+            case .inList(let value, let values),
+                 .notInList(let value, let values):
+                pending.append(value)
+                pending.append(contentsOf: values)
+
+            case .inSubquery(let value, let subquery):
+                pending.append(value)
+                if let filter = subquery.filter {
+                    pending.append(filter)
+                }
+
+            case .caseWhen(let cases, let elseResult):
+                for pair in cases {
+                    pending.append(pair.condition)
+                    pending.append(pair.result)
+                }
+                if let elseResult {
+                    pending.append(elseResult)
+                }
+
+            case .coalesce(let expressions):
+                pending.append(contentsOf: expressions)
+
+            case .triple(let subject, let predicate, let object):
+                pending.append(subject)
+                pending.append(predicate)
+                pending.append(object)
+
+            case .subquery(let subquery), .exists(let subquery):
+                if let filter = subquery.filter {
+                    pending.append(filter)
+                }
+
+            case .aggregate(let aggregate):
+                switch aggregate {
+                case .count(let value, _):
+                    if let value { pending.append(value) }
+                case .sum(let value, _),
+                     .avg(let value, _),
+                     .min(let value),
+                     .max(let value),
+                     .sample(let value):
+                    pending.append(value)
+                case .groupConcat(let value, _, _):
+                    pending.append(value)
+                case .arrayAgg(let value, let orderBy, _):
+                    pending.append(value)
+                    if let orderBy {
+                        for ordering in orderBy {
+                            pending.append(ordering.expression)
+                        }
+                    }
+                }
+
+            case .literal, .column, .variable, .parameter, .bound:
+                break
+            }
+        }
+        return false
     }
 
     // MARK: - Rewrite Entry Point
@@ -260,8 +382,9 @@ internal struct SPARQLFunctionRewriter: Sendable {
         }
         let graphIndex = dataset.indexDescriptor
 
-        // 4. Admit and execute the schema-declared index in one transaction.
-        let result = try await executeSPARQLWithinTransaction(
+        // 4. Admit and execute the schema-declared index in the parent read
+        // transaction. The rewritten SQL query consumes the same snapshot.
+        let result = try await executeSPARQL(
             sparqlQuery: sparqlQuery,
             entityName: entity.name,
             indexDescriptor: graphIndex,
@@ -354,47 +477,45 @@ internal struct SPARQLFunctionRewriter: Sendable {
     ///   - storedFieldNames: Stored field names for the index
     /// - Returns: SPARQL result
     /// - Throws: SPARQL execution errors
-    private func executeSPARQLWithinTransaction(
+    private func executeSPARQL(
         sparqlQuery: String,
         entityName: String,
         indexDescriptor: IndexDescriptor,
         metadata: RDFDatasetIndexMetadata,
         storedFieldNames: [String]
     ) async throws -> SPARQLResult {
-        try await context.indexQueryContext.withTransaction { transaction in
-            let readableIndex = try await context.indexQueryContext
-                .readableIndex(
-                    named: indexDescriptor.name,
-                    kindIdentifier: indexDescriptor.kindIdentifier,
-                    forEntityName: entityName,
-                    partitions: FieldObject(),
-                    transaction: transaction
-                )
-            let sources: [RDFDatasetSource]
-            if let readableIndex {
-                sources = [
-                    RDFDatasetSource(
-                        entityName: entityName,
-                        indexName: indexDescriptor.name,
-                        indexSubspace: readableIndex.subspace,
-                        coverage: try metadata.graphScope.sourceCoverage,
-                        storedFieldNames: storedFieldNames
-                    )
-                ]
-            } else {
-                sources = []
-            }
-            return try await _executeSPARQLString(
-                sparqlQuery,
-                database: context.container.engine,
-                sources: sources,
-                monotonicClock: context.container.monotonicClock,
-                wallClock: context.container.wallClock,
-                transaction: transaction,
-                compilationLimits: .default,
-                workMeter: workMeter
+        let readableIndex = try await context.indexQueryContext
+            .readableIndex(
+                named: indexDescriptor.name,
+                kindIdentifier: indexDescriptor.kindIdentifier,
+                forEntityName: entityName,
+                partitions: FieldObject(),
+                transaction: transaction
             )
+        let sources: [RDFDatasetSource]
+        if let readableIndex {
+            sources = [
+                RDFDatasetSource(
+                    entityName: entityName,
+                    indexName: indexDescriptor.name,
+                    indexSubspace: readableIndex.subspace,
+                    coverage: try metadata.graphScope.sourceCoverage,
+                    storedFieldNames: storedFieldNames
+                )
+            ]
+        } else {
+            sources = []
         }
+        return try await _executeSPARQLString(
+            sparqlQuery,
+            database: context.container.engine,
+            sources: sources,
+            monotonicClock: context.container.monotonicClock,
+            wallClock: context.container.wallClock,
+            transaction: transaction,
+            compilationLimits: .default,
+            workMeter: workMeter
+        )
     }
 
     // MARK: - FieldValue Conversion

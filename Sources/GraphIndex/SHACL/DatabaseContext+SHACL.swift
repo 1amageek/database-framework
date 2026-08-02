@@ -362,6 +362,7 @@ public struct SHACLContextAPI: Sendable {
 
         return SPARQLQueryExecutor(
             database: context.container.engine,
+            monotonicClock: context.container.monotonicClock,
             wallClock: context.container.wallClock,
             sources: sources
         )

@@ -8,6 +8,7 @@ extension SPARQLQueryExecutor {
     public func withOntology(_ context: OntologyContext?) -> Self {
         Self(
             database: database,
+            monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
@@ -38,6 +39,7 @@ extension SPARQLQueryExecutor {
     func scoped(to datasetScope: SPARQLDatasetExecutionScope) -> Self {
         Self(
             database: database,
+            monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
@@ -51,6 +53,7 @@ extension SPARQLQueryExecutor {
     func requestScoped(by workMeter: DatabaseWorkMeter) throws -> Self {
         Self(
             database: database,
+            monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
@@ -82,6 +85,7 @@ extension SPARQLQueryExecutor {
         }
         return Self(
             database: database,
+            monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
@@ -100,6 +104,7 @@ extension SPARQLQueryExecutor {
 
     init(
         database: any StorageEngine,
+        monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         datasetScanner: any RDFDatasetScanner,
         readMode: RDFDatasetReadMode,
@@ -113,6 +118,7 @@ extension SPARQLQueryExecutor {
         nestedExpressionStatistics: SPARQLNestedExpressionStatistics?
     ) {
         self.database = database
+        self.monotonicClock = monotonicClock
         self.wallClock = wallClock
         self.datasetScanner = datasetScanner
         self.readMode = readMode

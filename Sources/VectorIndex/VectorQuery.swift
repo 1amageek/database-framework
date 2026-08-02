@@ -229,8 +229,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal func executeDirect(
-        configuration: TransactionConfiguration = .default,
-        cachePolicy: CachePolicy = .server
+        configuration: TransactionConfiguration = .default
     ) async throws -> [(item: T, distance: Double)] {
         guard let vector = queryVector else {
             throw VectorQueryError.noQueryVector
@@ -248,8 +247,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 indexName: indexName,
                 queryVector: vector,
                 predicate: predicate,
-                configuration: configuration,
-                cachePolicy: cachePolicy
+                configuration: configuration
             )
         }
 
@@ -258,8 +256,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             indexName: indexName,
             queryVector: vector,
             k: k,
-            configuration: configuration,
-            cachePolicy: cachePolicy
+            configuration: configuration
         )
     }
 
@@ -272,8 +269,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         indexName: String,
         queryVector: Vector,
         k: Int,
-        configuration: TransactionConfiguration,
-        cachePolicy: CachePolicy
+        configuration: TransactionConfiguration
     ) async throws -> [(item: T, distance: Double)] {
         let (indexDescriptor, specification) = try resolveVectorIndex(
             named: indexName
@@ -283,14 +279,12 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         let configs = queryContext.context.container.indexConfigurations[indexName] ?? []
         let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs)
 
-        // Execute search using appropriate maintainer
-        let primaryKeysWithDistances: [(primaryKey: [any TupleElement], distance: Double)] =
-            try await queryContext.withReadableIndex(
-                named: indexName,
-                kindIdentifier: VectorIndexSpecification.identifier,
-                for: T.self,
-                configuration: configuration
-            ) { readableIndex, transaction in
+        return try await queryContext.withReadableIndex(
+            named: indexName,
+            kindIdentifier: VectorIndexSpecification.identifier,
+            for: T.self,
+            configuration: configuration
+        ) { readableIndex, transaction in
             guard let readableIndex else {
                 return []
             }
@@ -311,6 +305,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
             let algorithm = runtimePolicy?.algorithm ?? .flat
 
+            let primaryKeysWithDistances: [
+                (primaryKey: [any TupleElement], distance: Double)
+            ]
             switch algorithm {
             case .hnsw(let hnswParams):
                 // Use HNSW search
@@ -331,7 +328,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 )
                 // Use efSearch >= k for good recall
                 let searchParams = HNSWSearchParameters(ef: max(k, hnswParams.efSearch))
-                return try await maintainer.search(
+                primaryKeysWithDistances = try await maintainer.search(
                     queryVector: queryVector,
                     k: k,
                     searchParams: searchParams,
@@ -347,7 +344,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                     subspace: indexSubspace,
                     idExpression: FieldKeyExpression(fieldName: "id")
                 )
-                return try await maintainer.search(
+                primaryKeysWithDistances = try await maintainer.search(
                     queryVector: queryVector,
                     k: k,
                     transaction: transaction
@@ -368,7 +365,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                     idExpression: FieldKeyExpression(fieldName: "id"),
                     parameters: params
                 )
-                return try await maintainer.search(
+                primaryKeysWithDistances = try await maintainer.search(
                     queryVector: queryVector,
                     k: k,
                     transaction: transaction
@@ -389,39 +386,37 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                     idExpression: FieldKeyExpression(fieldName: "id"),
                     parameters: params
                 )
-                return try await maintainer.search(
+                primaryKeysWithDistances = try await maintainer.search(
                     queryVector: queryVector,
                     k: k,
                     transaction: transaction
                 )
             }
-        }
 
-        // Convert primary keys to Tuple without changing result order.
-        let tuples = primaryKeysWithDistances.map { Tuple($0.primaryKey) }
+            let tuples = primaryKeysWithDistances.map {
+                Tuple($0.primaryKey)
+            }
+            let items = try await queryContext.fetchItemsPreservingOrder(
+                ids: tuples,
+                type: T.self,
+                transaction: transaction
+            )
 
-        // A vector index entry and its entity mutation share one transaction.
-        // A missing entity therefore indicates storage corruption and must not
-        // be reduced to a shorter successful result set.
-        let items = try await queryContext.fetchItemsPreservingOrder(
-            ids: tuples,
-            type: T.self,
-            cachePolicy: cachePolicy
-        )
-
-        var results: [(item: T, distance: Double)] = []
-        results.reserveCapacity(primaryKeysWithDistances.count)
-        for (position, result) in primaryKeysWithDistances.enumerated() {
-            guard let item = items[position] else {
-                throw VectorQueryError.indexedItemMissing(
-                    index: indexName,
-                    primaryKey: tuples[position].pack()
+            var results: [(item: T, distance: Double)] = []
+            results.reserveCapacity(primaryKeysWithDistances.count)
+            for (position, result) in primaryKeysWithDistances.enumerated() {
+                guard let item = items[position] else {
+                    throw VectorQueryError.indexedItemMissing(
+                        index: indexName,
+                        primaryKey: tuples[position].pack()
+                    )
+                }
+                results.append(
+                    (item: item, distance: result.distance)
                 )
             }
-            results.append((item: item, distance: result.distance))
+            return results.sorted { $0.distance < $1.distance }
         }
-
-        return results.sorted { $0.distance < $1.distance }
     }
 
     internal func toSelectQuery() throws -> SelectQuery {
@@ -462,8 +457,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         indexName: String,
         queryVector: Vector,
         predicate: @escaping @Sendable (T) async throws -> Bool,
-        configuration: TransactionConfiguration,
-        cachePolicy: CachePolicy
+        configuration: TransactionConfiguration
     ) async throws -> [(item: T, distance: Double)] {
         let (indexDescriptor, specification) = try resolveVectorIndex(
             named: indexName
@@ -532,13 +526,19 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
             // Fetch each HNSW candidate before evaluating the application predicate.
             let fetchItem: @Sendable (Tuple, any TransactionAccess) async throws -> T? = { primaryKey, tx in
-                // Fetch item using IndexQueryContext
-                let items = try await self.queryContext.fetchItems(
-                    ids: [primaryKey],
-                    type: T.self,
-                    cachePolicy: cachePolicy
-                )
-                return items.first
+                let items = try await self.queryContext
+                    .fetchItemsPreservingOrder(
+                        ids: [primaryKey],
+                        type: T.self,
+                        transaction: tx
+                    )
+                guard items.count == 1, let item = items[0] else {
+                    throw VectorQueryError.indexedItemMissing(
+                        index: indexName,
+                        primaryKey: primaryKey.pack()
+                    )
+                }
+                return item
             }
 
             // Execute filtered search
@@ -553,21 +553,25 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
             // Fetch items for results
             let ids = results.map { Tuple($0.primaryKey) }
-            let items = try await self.queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
-
-            var itemByIdentifier: [ByteString: T] = [:]
-            itemByIdentifier.reserveCapacity(items.count)
-            for item in items {
-                let identifier = try item.persistableIdentifierTuple()
-                itemByIdentifier[identifier.pack()] = item
-            }
+            let items = try await self.queryContext
+                .fetchItemsPreservingOrder(
+                    ids: ids,
+                    type: T.self,
+                    transaction: transaction
+                )
 
             var finalResults: [(item: T, distance: Double)] = []
             finalResults.reserveCapacity(results.count)
-            for result in results {
-                if let item = itemByIdentifier[Tuple(result.primaryKey).pack()] {
-                    finalResults.append((item: item, distance: result.distance))
+            for (position, result) in results.enumerated() {
+                guard let item = items[position] else {
+                    throw VectorQueryError.indexedItemMissing(
+                        index: indexName,
+                        primaryKey: ids[position].pack()
+                    )
                 }
+                finalResults.append(
+                    (item: item, distance: result.distance)
+                )
             }
 
             return finalResults

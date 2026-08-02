@@ -63,12 +63,12 @@ swift build \
   --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm \
   --product Database \
   --disable-default-traits \
-  --traits VectorIndexes
+  --traits AllRuntimeFeatures
 swift build \
   --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm-embedded \
   --product Database \
   --disable-default-traits \
-  --traits GraphIndexes
+  --traits AllRuntimeFeatures
 ~~~
 
 Run PostgreSQL integration tests only when `POSTGRES_TEST_UNIX_SOCKET` or

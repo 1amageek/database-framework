@@ -40,7 +40,7 @@ private enum VectorReadError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
     case indexNotFound(String)
-    case duplicateFetchedEntity(ByteString)
+    case fetchedItemCountMismatch(expected: Int, actual: Int)
     case missingFetchedEntity(ByteString)
 }
 
@@ -105,8 +105,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
         let configuredBuilder = try builder.query(queryVector, k: k)
 
         let results: [(item: T, distance: Double)] = try await configuredBuilder.executeDirect(
-            configuration: execution.transactionConfiguration,
-            cachePolicy: execution.cachePolicy
+            configuration: execution.transactionConfiguration
         )
         let rows = try results.map { result in
             try IndexReadRow.materializing(
@@ -218,26 +217,27 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             orderBy: orderByFields
         )
 
-        let primaryKeysWithDistances = try await context.executeCanonicalRead(
+        return try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) {
-            transaction -> [
-                (primaryKey: [any TupleElement], distance: Double)
-            ] in
+            transaction -> IndexReadResult in
             guard let readableIndex = try await context.container
                 .readablePolymorphicIndex(
                     index,
                     in: group,
                     transaction: transaction
                 ) else {
-                return []
+                return IndexReadResult(
+                    rows: [],
+                    ordering: .orderedByIndex
+                )
             }
             let indexSubspace = try resolvedIndexSubspace(
                 baseIndexSubspace: readableIndex.subspace,
                 context: context,
                 indexName: index.name
             )
-            return try await executeSearch(
+            let primaryKeysWithDistances = try await executeSearch(
                 specification: specification,
                 indexName: index.name,
                 fieldName: fieldName,
@@ -247,21 +247,19 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                 context: context,
                 transaction: transaction
             )
+            let tuples = primaryKeysWithDistances.map {
+                Tuple($0.primaryKey)
+            }
+            let entities = try await context.fetchPolymorphicItemsPreservingOrder(
+                group: group,
+                ids: tuples,
+                transaction: transaction
+            )
+            return try makeResponse(
+                results: primaryKeysWithDistances,
+                entities: entities
+            )
         }
-
-        let tuples = primaryKeysWithDistances.map { Tuple($0.primaryKey) }
-        let entities = try await context.fetchPolymorphicItems(
-            group: group,
-            ids: tuples,
-            configuration: execution.transactionConfiguration,
-            cachePolicy: execution.cachePolicy
-        )
-        return try makeResponse(
-            results: primaryKeysWithDistances,
-            entities: entities,
-            selectQuery: selectQuery,
-            options: options
-        )
     }
 
     private func executeSearch(
@@ -349,40 +347,32 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
     private func makeResponse(
         results: [(primaryKey: [any TupleElement], distance: Double)],
-        entities: [PolymorphicEntity],
-        selectQuery: SelectQuery,
-        options: ReadExecutionContext
+        entities: [PolymorphicEntity?]
     ) throws -> IndexReadResult {
-        var entityByID: [ByteString: PolymorphicEntity] = [:]
-        entityByID.reserveCapacity(entities.count)
-        for entity in entities {
-            let key = entity.polymorphicIdentifier.pack()
-            guard entityByID[key] == nil else {
-                throw VectorReadError.duplicateFetchedEntity(key)
-            }
-            entityByID[key] = entity
-        }
-
-        var orderedResults: [(entity: PolymorphicEntity, distance: Double)] = []
-        orderedResults.reserveCapacity(results.count)
-        for result in results {
-            let key = Tuple(result.primaryKey).pack()
-            guard let entity = entityByID[key] else {
-                throw VectorReadError.missingFetchedEntity(key)
-            }
-            orderedResults.append(
-                (entity: entity, distance: result.distance)
+        guard results.count == entities.count else {
+            throw VectorReadError.fetchedItemCountMismatch(
+                expected: results.count,
+                actual: entities.count
             )
         }
 
-        let rows = try orderedResults.map { result in
-            try IndexReadRow.materializing(
-                result.entity.item,
-                annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(result.entity.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(result.entity.typeCode),
-                    "distance": .float64(result.distance)
-                ]
+        var rows: [IndexReadRow] = []
+        rows.reserveCapacity(results.count)
+        for (result, entity) in zip(results, entities) {
+            guard let entity else {
+                throw VectorReadError.missingFetchedEntity(
+                    Tuple(result.primaryKey).pack()
+                )
+            }
+            rows.append(
+                try IndexReadRow.materializing(
+                    entity.item,
+                    annotations: [
+                        PolymorphicRowAnnotation.typeName: .string(entity.typeName),
+                        PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode),
+                        "distance": .float64(result.distance)
+                    ]
+                )
             )
         }
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)

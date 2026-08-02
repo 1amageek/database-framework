@@ -224,6 +224,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     ) throws -> SPARQLQueryExecutor {
         SPARQLQueryExecutor(
             database: context.container.engine,
+            monotonicClock: context.container.monotonicClock,
             wallClock: context.container.wallClock,
             datasetScanner: scanner,
             datasetScope: try SPARQLDatasetExecutionScope(dataset),

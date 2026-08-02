@@ -456,6 +456,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             }
             let executor = SPARQLQueryExecutor(
                 database: queryContext.context.container.engine,
+                monotonicClock: queryContext.context.container.monotonicClock,
                 wallClock: queryContext.context.container.wallClock,
                 sources: sources
             )

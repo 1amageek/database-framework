@@ -388,7 +388,7 @@ struct RelationshipIndexPerformanceTests {
         let (_, result) = try await benchmark("Reference Update", count: orderCount) {
             for i in 0..<orderCount {
                 orders[i].customer = customer2Reference
-                try context.insert(orders[i])
+                try context.upsert(orders[i])
             }
             try await context.save()
         }
@@ -434,7 +434,7 @@ struct RelationshipIndexPerformanceTests {
                 newOrder.id = newOrderId
                 try context.insert(newOrder)
                 customer.orders.append(try context.reference(to: newOrder))
-                try context.insert(customer)
+                try context.upsert(customer)
                 try await context.save()
             }
         }

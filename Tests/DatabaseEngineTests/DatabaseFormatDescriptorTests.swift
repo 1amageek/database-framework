@@ -22,7 +22,7 @@ struct DatabaseFormatDescriptorTests {
         #expect(try DatabaseFormatDescriptor.deserialize(goldenV1) == descriptor)
     }
 
-    @Test("A retained non-zero-index slice decodes without rebasing")
+    @Test("A rebased retained view decodes without copying")
     func retainedSlice() throws {
         let descriptor = DatabaseFormatDescriptor.v1(itemStorage: .v1)
         let framed = ByteString([0xFF])
@@ -30,7 +30,14 @@ struct DatabaseFormatDescriptorTests {
             .appending(0xEE)
         let slice = framed[1..<(1 + DatabaseFormatDescriptor.serializedSize)]
 
-        #expect(slice.startIndex == 1)
+        #expect(slice.startIndex == 0)
+        let framedAddress = framed.withUnsafeBytes {
+            $0.baseAddress.map(UInt.init(bitPattern:))
+        }
+        let sliceAddress = slice.withUnsafeBytes {
+            $0.baseAddress.map(UInt.init(bitPattern:))
+        }
+        #expect(sliceAddress == framedAddress.map { $0 + 1 })
         #expect(try DatabaseFormatDescriptor.deserialize(slice) == descriptor)
     }
 

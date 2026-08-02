@@ -1,6 +1,7 @@
 import DatabaseKit
 import DatabaseTypes
 import DatabaseWire
+import StorageKit
 
 struct CanonicalSourceRow: Sendable {
     let fields: [String: FieldValue]
@@ -132,6 +133,33 @@ extension DatabaseContext {
             options: execution,
             partitionValues: graphPartitions,
             partitionMode: .strict
+        )
+    }
+
+    /// Execute the single-table canonical read through a caller-owned storage
+    /// transaction. This overload is intentionally narrow: composed logical
+    /// sources and explicit index executors must expose their own transaction-
+    /// injected contracts before they can participate in this path.
+    package func query(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        transaction: any TransactionAccess
+    ) async throws -> QueryResponse {
+        guard selectQuery.accessPath == nil,
+              selectQuery.subqueries == nil,
+              selectQuery.groupBy == nil,
+              selectQuery.having == nil,
+              selectQuery.dataset == .implicit,
+              selectQuery.reduced == false,
+              case .table = selectQuery.source else {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "A transaction-bound canonical read currently requires one table source without an explicit access path, grouping, or dataset clause"
+            )
+        }
+        return try await executeSingleTableRows(
+            selectQuery,
+            options: execution,
+            transaction: transaction
         )
     }
 
@@ -417,7 +445,8 @@ extension DatabaseContext {
 
     private func executeSingleTableRows(
         _ selectQuery: SelectQuery,
-        options: ReadExecutionContext
+        options: ReadExecutionContext,
+        transaction: (any TransactionAccess)? = nil
     ) async throws -> QueryResponse {
         guard case .table(let tableRef) = selectQuery.source else {
             throw CanonicalReadError.unsupportedSource("Expected table source")
@@ -436,7 +465,8 @@ extension DatabaseContext {
             runtime: runtime,
             sourceName: sourceName,
             selectQuery: selectQuery,
-            options: options
+            options: options,
+            transaction: transaction
         )
 
         let filteredRows = try applyFilter(
@@ -534,13 +564,15 @@ extension DatabaseContext {
         runtime: EntityRuntimeRegistration,
         sourceName: String,
         selectQuery: SelectQuery,
-        options: ReadExecutionContext
+        options: ReadExecutionContext,
+        transaction: (any TransactionAccess)? = nil
     ) async throws -> EntityTableRows {
         try await runtime.fetchTableRows(
             context: self,
             sourceName: sourceName,
             selectQuery: selectQuery,
-            options: options
+            options: options,
+            transaction: transaction
         )
     }
 

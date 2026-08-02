@@ -70,8 +70,8 @@ struct CachePolicyTests {
     func policyDescriptions() {
         #expect(CachePolicy.server.description == "CachePolicy.server")
         #expect(CachePolicy.cached.description == "CachePolicy.cached")
-        #expect(CachePolicy.stale(.seconds(30)).description == "CachePolicy.stale(30s)")
-        #expect(CachePolicy.stale(.seconds(60)).description == "CachePolicy.stale(60s)")
+        #expect(CachePolicy.stale(.seconds(30)).description == "CachePolicy.stale")
+        #expect(CachePolicy.stale(.seconds(60)).description == "CachePolicy.stale")
     }
 
     // MARK: - CachePolicy Equatable Tests

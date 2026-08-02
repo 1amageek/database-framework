@@ -167,10 +167,10 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal func executeDirect(
-        configuration: TransactionConfiguration = .default,
-        cachePolicy: CachePolicy = .server
+        configuration: TransactionConfiguration = .default
     ) async throws -> [T] {
-        let primaryKeys: [Tuple] = try await withResolvedBitmap(
+        let indexName = try resolveIndexName()
+        return try await withResolvedBitmap(
             configuration: configuration,
             missing: { [] }
         ) { bitmap, maintainer, transaction in
@@ -184,9 +184,28 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
                     }
                 }
             }
-            return try await maintainer.primaryKeys(for: resultBitmap, transaction: transaction)
+            let primaryKeys = try await maintainer.primaryKeys(
+                for: resultBitmap,
+                transaction: transaction
+            )
+            let items = try await self.queryContext.fetchItemsPreservingOrder(
+                ids: primaryKeys,
+                type: T.self,
+                transaction: transaction
+            )
+            var results: [T] = []
+            results.reserveCapacity(items.count)
+            for (primaryKey, item) in zip(primaryKeys, items) {
+                guard let item else {
+                    throw BitmapQueryError.indexedItemMissing(
+                        index: indexName,
+                        primaryKey: primaryKey.pack()
+                    )
+                }
+                results.append(item)
+            }
+            return results
         }
-        return try await queryContext.fetchItems(ids: primaryKeys, type: T.self, cachePolicy: cachePolicy)
     }
 
     /// Get the count of matching items
@@ -404,6 +423,9 @@ public enum BitmapQueryError: Error, CustomStringConvertible {
     /// More than one bitmap index targets the requested field.
     case ambiguousIndexes(entity: String, field: String)
 
+    /// An index entry references an entity that is not present in storage.
+    case indexedItemMissing(index: String, primaryKey: ByteString)
+
     public var description: String {
         switch self {
         case .noOperation:
@@ -414,6 +436,8 @@ public enum BitmapQueryError: Error, CustomStringConvertible {
             return "Bitmap index metadata is invalid: \(name)"
         case .ambiguousIndexes(let entity, let field):
             return "Multiple bitmap indexes target \(entity).\(field)"
+        case .indexedItemMissing(let index, let primaryKey):
+            return "Bitmap index '\(index)' references missing item \(primaryKey)"
         }
     }
 }

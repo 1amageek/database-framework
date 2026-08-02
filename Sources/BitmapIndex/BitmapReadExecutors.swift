@@ -30,6 +30,7 @@ public enum BitmapReadExecutors {
 private enum BitmapReadError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
+    case missingFetchedEntity(ByteString)
 }
 
 private struct BitmapReadExecutor: IndexReadExecutor {
@@ -78,8 +79,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
         }
 
         let results = try await builder.executeDirect(
-            configuration: execution.transactionConfiguration,
-            cachePolicy: execution.cachePolicy
+            configuration: execution.transactionConfiguration
         )
         let rows = try results.map { try IndexReadRow.materializing($0) }
         // Bitmap iteration order is by internal RoaringBitmap integer ID, which
@@ -162,9 +162,9 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
         )
 
         let operation = try requireString(BitmapReadParameter.operation, from: indexScan.parameters)
-        let primaryKeys = try await context.executeCanonicalRead(
+        let entities = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction -> [Tuple] in
+        ) { transaction -> [PolymorphicEntity] in
             guard let readableIndex = try await context.container
                 .readablePolymorphicIndex(
                     index,
@@ -215,15 +215,27 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             } else {
                 limitedBitmap = bitmap
             }
-            return try await reader.primaryKeys(for: limitedBitmap, transaction: transaction)
+            let primaryKeys = try await reader.primaryKeys(
+                for: limitedBitmap,
+                transaction: transaction
+            )
+            let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
+                group: group,
+                ids: primaryKeys,
+                transaction: transaction
+            )
+            var entities: [PolymorphicEntity] = []
+            entities.reserveCapacity(fetched.count)
+            for (primaryKey, entity) in zip(primaryKeys, fetched) {
+                guard let entity else {
+                    throw BitmapReadError.missingFetchedEntity(
+                        primaryKey.pack()
+                    )
+                }
+                entities.append(entity)
+            }
+            return entities
         }
-
-        let entities = try await context.fetchPolymorphicItems(
-            group: group,
-            ids: primaryKeys,
-            configuration: execution.transactionConfiguration,
-            cachePolicy: execution.cachePolicy
-        )
         let rows = try entities.map { entity in
             try IndexReadRow.materializing(
                 entity.item,

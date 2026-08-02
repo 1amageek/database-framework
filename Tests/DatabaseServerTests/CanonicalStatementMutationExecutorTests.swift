@@ -306,11 +306,14 @@ struct CanonicalStatementMutationExecutorTests {
     ) async throws -> DatabaseEndpointEntity? {
         let database = container.newContext()
         return try await database.withTransaction { transaction in
-            try await transaction.loadPersistedModel(
+            guard let model = try await transaction.loadPersistedModel(
                 entity: DatabaseEndpointEntity.persistableType,
                 id: Tuple(id),
                 partition: nil
-            ) as? DatabaseEndpointEntity
+            ) else {
+                return nil
+            }
+            return try model.decode(as: DatabaseEndpointEntity.self)
         }
     }
 }

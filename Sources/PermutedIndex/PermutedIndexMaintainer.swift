@@ -154,7 +154,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// - Returns: Array of (permutedFields, primaryKey) tuples
     public func scanAll(
         transaction: any TransactionAccess
-    ) async throws -> [(permutedFields: [any TupleElement], primaryKey: [any TupleElement])] {
+    ) async throws -> [(permutedFields: [FieldValue], primaryKey: [any TupleElement])] {
         try await PermutedIndexReader(
             permutation: permutation,
             subspace: subspace

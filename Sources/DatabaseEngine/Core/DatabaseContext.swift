@@ -74,7 +74,7 @@ public final class DatabaseContext: Sendable {
     ///
     /// | Operation | Uses Cache | CachePolicy |
     /// |-----------|------------|-------------|
-    /// | `fetch()` | Configurable | `.server` (default), `.cached`, `.stale(N)` |
+    /// | `fetch()` | Configurable | `.server` (default), `.cached`, `.stale(duration)` |
     /// | `fetchCount()` | Configurable | Same as fetch() |
     /// | `withTransaction()` | ✅ Yes | Via TransactionConfiguration.cachePolicy |
     /// | `save()` | ❌ No | Write operations need latest data for consistency |
@@ -91,7 +91,7 @@ public final class DatabaseContext: Sendable {
     ///
     /// // Use cache only if younger than 30 seconds
     /// let users = try await context.fetch(User.self)
-    ///     .cachePolicy(.stale(30))
+    ///     .cachePolicy(.stale(.seconds(30)))
     ///     .execute()
     /// ```
     private let readVersionCache: ReadVersionCache
@@ -597,6 +597,45 @@ public final class DatabaseContext: Sendable {
         }
     }
 
+    /// Fetch persisted models through a caller-owned storage transaction.
+    ///
+    /// This path is used when an upper-layer operation composes multiple reads
+    /// into one authoritative snapshot. Directory resolution, index admission,
+    /// and entity reads all remain inside the supplied transaction.
+    package func fetch<T: Persistable>(
+        _ query: Query<T>,
+        transaction: any TransactionAccess
+    ) async throws -> [T] {
+        try ensureUsable()
+
+        let path: AnyDirectoryPath?
+        if T.hasDynamicDirectory {
+            guard let binding = query.partitionBinding else {
+                throw DirectoryPathError.dynamicFieldsRequired(
+                    typeName: T.persistableType,
+                    fields: T.directoryFieldNames
+                )
+            }
+            try binding.validate()
+            path = try AnyDirectoryPath(binding)
+        } else {
+            path = nil
+        }
+
+        guard let entity = container.schema.entity(named: T.persistableType) else {
+            throw ContainerSchemaError.entityNotFound(T.persistableType)
+        }
+        let store = try await container.store(
+            for: entity,
+            path: path,
+            transaction: transaction
+        )
+        return try await store.fetchInTransaction(
+            query,
+            transaction: transaction
+        )
+    }
+
     /// Resolve the storage access path that the current runtime would use.
     internal func executionPlan<T: Persistable>(
         for query: Query<T>
@@ -836,6 +875,55 @@ public final class DatabaseContext: Sendable {
                 transaction: transaction
             )
         }
+    }
+
+    /// Resolves an index-emitted identifier in the caller-owned transaction.
+    /// Directory admission, staged-mutation visibility, and the entity read all
+    /// remain on that transaction's snapshot.
+    package func model<T: Persistable>(
+        forIdentifierTuple identifierTuple: Tuple,
+        as type: T.Type,
+        partitions: FieldObject,
+        transaction: any TransactionAccess
+    ) async throws -> T? {
+        try ensureUsable()
+
+        let identifier = try PersistableIdentifierKeyCodec.value(
+            from: identifierTuple,
+            expectedType: T.persistableIdentifierType
+        )
+        let pendingResult = try pendingModelLookup(
+            for: identifier,
+            as: type,
+            partitions: partitions
+        )
+        if let inserted = pendingResult.inserted {
+            try container.securityDelegate?.evaluateGet(
+                try PersistedModel(inserted)
+            )
+            return inserted
+        }
+        if pendingResult.isDeleted {
+            return nil
+        }
+
+        guard let entity = container.schema.entity(named: T.persistableType) else {
+            throw ContainerSchemaError.entityNotFound(T.persistableType)
+        }
+        let path = try AnyDirectoryPath(
+            entity: entity,
+            partitions: partitions
+        )
+        let store = try await container.store(
+            for: entity,
+            path: path,
+            transaction: transaction
+        )
+        return try await store.fetchByIdentifierTupleInTransaction(
+            type,
+            identifier: identifierTuple,
+            transaction: transaction
+        )
     }
 
     /// Get a single model by its identifier from a partitioned directory

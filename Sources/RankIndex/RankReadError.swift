@@ -9,7 +9,7 @@ public enum RankReadError: Error, Sendable, Equatable {
     case invalidCount(Int)
     case unsupportedSortExpression
     case invalidPersistableIdentifier(typeName: String)
-    case duplicateFetchedEntity(primaryKey: ByteString)
+    case fetchedEntityCountMismatch(expected: Int, actual: Int)
     case missingFetchedEntity(primaryKey: ByteString)
     case missingRankEntry(rank: Int)
 }

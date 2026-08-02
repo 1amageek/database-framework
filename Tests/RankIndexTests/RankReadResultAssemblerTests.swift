@@ -39,12 +39,12 @@ struct RankReadResultAssemblerTests {
         ) {
             try RankReadResultAssembler.assemble(
                 rankedKeys: [(primaryKey: primaryKey, rank: 0)],
-                entities: []
+                entities: [nil]
             )
         }
     }
 
-    @Test("Fetched entities retain native rank order")
+    @Test("Transaction-ordered entities retain native rank order")
     func preservesRankOrder() throws {
         let first = RankReadEntity(id: "first", score: 20)
         let second = RankReadEntity(id: "second", score: 10)
@@ -53,16 +53,16 @@ struct RankReadResultAssemblerTests {
         )
         let entities = [
             PolymorphicEntity(
-                item: try PersistedModel(second),
-                typeName: RankReadEntity.persistableType,
-                typeCode: typeCode,
-                polymorphicIdentifier: Tuple(typeCode, second.id)
-            ),
-            PolymorphicEntity(
                 item: try PersistedModel(first),
                 typeName: RankReadEntity.persistableType,
                 typeCode: typeCode,
                 polymorphicIdentifier: Tuple(typeCode, first.id)
+            ),
+            PolymorphicEntity(
+                item: try PersistedModel(second),
+                typeName: RankReadEntity.persistableType,
+                typeCode: typeCode,
+                polymorphicIdentifier: Tuple(typeCode, second.id)
             )
         ]
 
@@ -79,6 +79,21 @@ struct RankReadResultAssemblerTests {
         }
         #expect(identifiers == ["first", "second"])
         #expect(results.map { $0.rank } == [0, 1])
+    }
+
+    @Test("Fetch result count mismatch fails explicitly")
+    func rejectsMismatchedFetchCount() {
+        #expect(
+            throws: RankReadError.fetchedEntityCountMismatch(
+                expected: 1,
+                actual: 0
+            )
+        ) {
+            try RankReadResultAssembler.assemble(
+                rankedKeys: [(primaryKey: Tuple("missing"), rank: 0)],
+                entities: []
+            )
+        }
     }
 }
 

@@ -83,7 +83,7 @@ struct User {
     var department: String = ""
 
     // Bitmap index on status
-    #Index<User>(type: BitmapIndexKind(field: \.status))
+    #Index(.bitmap, field: \User.status)
 }
 
 // Find all active users
@@ -122,10 +122,10 @@ struct Product {
     var color: String = ""
 
     // Bitmap indexes for filterable attributes
-    #Index<Product>(type: BitmapIndexKind(field: \.category))
-    #Index<Product>(type: BitmapIndexKind(field: \.brand))
-    #Index<Product>(type: BitmapIndexKind(field: \.inStock))
-    #Index<Product>(type: BitmapIndexKind(field: \.color))
+    #Index(.bitmap, field: \Product.category)
+    #Index(.bitmap, field: \Product.brand)
+    #Index(.bitmap, field: \Product.inStock)
+    #Index(.bitmap, field: \Product.color)
 }
 
 // Find electronics products
@@ -169,7 +169,7 @@ struct UserRole {
     var userId: String = ""
     var role: String = ""  // admin, editor, viewer
 
-    #Index<UserRole>(type: BitmapIndexKind(field: \.role))
+    #Index(.bitmap, field: \UserRole.role)
 }
 
 // Find all admins
@@ -195,12 +195,14 @@ struct Document {
     var id: String = ULID().ulidString
     var title: String = ""
     var status: String = "published"
-    var embedding: [Float] = []
+    var embedding: Vector = []
 
-    #Index<Document>(type: BitmapIndexKind(field: \.status))
-    #Index<Document>(type: HNSWIndexKind(
-        field: \.embedding, dimensions: 384
-    ))
+    #Index(.bitmap, field: \Document.status, name: "Document_status")
+    #Index(
+        .vector(dimensions: 384, metric: .cosine),
+        embedding: \Document.embedding,
+        name: "Document_embedding"
+    )
 }
 
 // Vector search filtered to published documents only
@@ -228,8 +230,8 @@ struct Task {
     var completed: Bool = false
     var archived: Bool = false
 
-    #Index<Task>(type: BitmapIndexKind(field: \.completed))
-    #Index<Task>(type: BitmapIndexKind(field: \.archived))
+    #Index(.bitmap, field: \Task.completed)
+    #Index(.bitmap, field: \Task.archived)
 }
 
 // Find incomplete, non-archived tasks
@@ -329,7 +331,7 @@ struct Article {
     var title: String = ""
     var category: String? = nil  // Optional field
 
-    #Index<Article>(type: BitmapIndexKind(field: \.category))
+    #Index(.bitmap, field: \Article.category)
 }
 
 // Articles without category are NOT in any bitmap

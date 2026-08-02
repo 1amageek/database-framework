@@ -154,7 +154,7 @@ let customConfig = TransactionConfiguration(
     timeout: 10_000,
     retryLimit: 10,
     priority: .default,
-    cachePolicy: .stale(30)
+    cachePolicy: .stale(.seconds(30))
 )
 try await context.withTransaction(configuration: customConfig) { tx in
     // ...
@@ -178,7 +178,7 @@ Control whether transactions reuse cached read versions for reduced latency.
 |--------|----------|----------|
 | `.server` | Always fetch from server | Read-after-write consistency |
 | `.cached` | Use cache if available | Dashboard queries |
-| `.stale(N)` | Use cache if < N seconds old | Custom staleness tolerance |
+| `.stale(duration)` | Use cache if younger than `duration` | Custom staleness tolerance |
 
 ```swift
 // Strict consistency (default)
@@ -193,7 +193,7 @@ let users = try await context.fetch(User.self)
 
 // Use cache only if younger than 30 seconds
 let users = try await context.fetch(User.self)
-    .cachePolicy(.stale(30))
+    .cachePolicy(.stale(.seconds(30)))
     .execute()
 ```
 

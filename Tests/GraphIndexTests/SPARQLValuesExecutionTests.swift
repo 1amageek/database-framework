@@ -23,6 +23,7 @@ struct SPARQLValuesExecutionTests {
         )
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
@@ -55,6 +56,7 @@ struct SPARQLValuesExecutionTests {
         )
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
@@ -86,6 +88,7 @@ struct SPARQLValuesExecutionTests {
         )
         let executor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
         )
@@ -128,6 +131,7 @@ struct SPARQLValuesExecutionTests {
 
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
@@ -155,6 +159,7 @@ struct SPARQLValuesExecutionTests {
 
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
@@ -184,6 +189,7 @@ struct SPARQLValuesExecutionTests {
 
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
         ).execute(
@@ -220,6 +226,7 @@ struct SPARQLValuesExecutionTests {
 
         let (bindings, _) = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
         ).execute(

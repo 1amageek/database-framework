@@ -69,11 +69,10 @@ struct GameScore {
     var level: Int = 1
 
     // Daily leaderboard, keep 7 days of history
-    #Index<GameScore>(type: TimeWindowLeaderboardIndexKind(
-        scoreField: \.score,
-        window: .daily,
-        windowCount: 7
-    ))
+    #Index(
+        .timeWindowLeaderboard(window: .daily, windowCount: 7),
+        field: \GameScore.score
+    )
 }
 
 // Get top 10 players today
@@ -111,12 +110,11 @@ struct RegionalScore {
     var score: Int64 = 0
 
     // Leaderboard grouped by region
-    #Index<RegionalScore>(type: TimeWindowLeaderboardIndexKind(
-        scoreField: \.score,
-        groupBy: [\.region],
-        window: .daily,
-        windowCount: 7
-    ))
+    #Index(
+        .timeWindowLeaderboard(window: .daily, windowCount: 7),
+        groupBy: [\RegionalScore.region],
+        field: \RegionalScore.score
+    )
 }
 
 // Get top 10 in Asia region
@@ -146,11 +144,10 @@ struct ContestEntry {
     var contestType: String = "standard"
 
     // Weekly leaderboard, keep 4 weeks
-    #Index<ContestEntry>(type: TimeWindowLeaderboardIndexKind(
-        scoreField: \.points,
-        window: .weekly,
-        windowCount: 4
-    ))
+    #Index(
+        .timeWindowLeaderboard(window: .weekly, windowCount: 4),
+        field: \ContestEntry.points
+    )
 }
 
 // Get current week's top 100
@@ -184,16 +181,18 @@ struct Streamer {
     var id: String = ULID().ulidString
     var name: String = ""
     var viewerCount: Int64 = 0
-    var contentEmbedding: [Float] = []
+    var contentEmbedding: Vector = []
 
-    #Index<Streamer>(type: TimeWindowLeaderboardIndexKind(
-        scoreField: \.viewerCount,
-        window: .hourly,
-        windowCount: 24
-    ))
-    #Index<Streamer>(type: HNSWIndexKind(
-        field: \.contentEmbedding, dimensions: 256
-    ))
+    #Index(
+        .timeWindowLeaderboard(window: .hourly, windowCount: 24),
+        field: \Streamer.viewerCount,
+        name: "Streamer_viewerCount"
+    )
+    #Index(
+        .vector(dimensions: 256, metric: .cosine),
+        embedding: \Streamer.contentEmbedding,
+        name: "Streamer_contentEmbedding"
+    )
 }
 
 // Find streamers that are both popular AND match user interests
@@ -221,11 +220,10 @@ struct UserActivity {
     var activityType: String = "general"
 
     // Hourly leaderboard, keep 24 hours
-    #Index<UserActivity>(type: TimeWindowLeaderboardIndexKind(
-        scoreField: \.activityScore,
-        window: .hourly,
-        windowCount: 24
-    ))
+    #Index(
+        .timeWindowLeaderboard(window: .hourly, windowCount: 24),
+        field: \UserActivity.activityScore
+    )
 }
 
 // Get most active users this hour
@@ -274,11 +272,13 @@ Old windows are automatically cleaned up based on `windowCount`:
 
 ```swift
 // Keep only last 7 daily windows
-#Index<GameScore>(type: TimeWindowLeaderboardIndexKind(
-    scoreField: \.score,
-    window: .daily,
-    windowCount: 7  // Windows older than 7 days are deleted
-))
+#Index(
+    .timeWindowLeaderboard(
+        window: .daily,
+        windowCount: 7  // Windows older than 7 days are deleted
+    ),
+    field: \GameScore.score
+)
 ```
 
 ### Tie Breaking

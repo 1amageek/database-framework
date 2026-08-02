@@ -149,7 +149,7 @@ struct GraphPatternConverterFailureTests {
             try ExpressionEvaluator.evaluate(
                 plan,
                 binding: VariableBinding()
-            ) == .int64(1)
+            ) == Literal.int(1).toSPARQLFieldValue()
         )
     }
 
@@ -177,7 +177,7 @@ struct GraphPatternConverterFailureTests {
             try ExpressionEvaluator.evaluate(
                 keys[0].expression,
                 binding: VariableBinding()
-            ) == .int64(1)
+            ) == Literal.int(1).toSPARQLFieldValue()
         )
         #expect(aggregates.isEmpty)
         #expect(having == nil)
@@ -205,10 +205,10 @@ struct GraphPatternConverterFailureTests {
             try ExpressionEvaluator.evaluate(
                 inputExpression,
                 binding: VariableBinding([
-                    "?left": .int64(2),
-                    "?right": .int64(3),
+                    "?left": try Literal.int(2).toSPARQLFieldValue(),
+                    "?right": try Literal.int(3).toSPARQLFieldValue(),
                 ])
-            ) == .int64(5)
+            ) == Literal.int(5).toSPARQLFieldValue()
         )
         #expect(!aggregate.isDistinct)
     }

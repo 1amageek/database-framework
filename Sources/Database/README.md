@@ -69,10 +69,13 @@ let users = try await context.executeSQL(sql, as: User.self)
 - `SELECT` statements with projection
 - `WHERE` clauses with predicates
 - `LIMIT` and `OFFSET`
+- `ORDER BY`
 - `IN` predicates
 - String literals and numeric literals
 
-**Note**: The current implementation uses a query bridge to convert SQL to type-safe `Query<T>`. Some SQL features (like `ORDER BY`) may have limited support depending on the bridge implementation.
+The parser produces the canonical `SelectQuery` contract and DatabaseEngine
+executes that contract directly. Unsupported statements and expressions fail
+explicitly; there is no secondary query-builder bridge or silent downgrade.
 
 ## SPARQL() SQL Function
 
@@ -89,7 +92,9 @@ SPARQL(TypeName, 'SPARQL_QUERY' [, 'VARIABLE'])
 - `SPARQL_QUERY`: A valid SPARQL SELECT query (string literal)
 - `VARIABLE` (optional): Variable name to extract from multi-variable results
 
-**Returns**: Array of scalar values (typically IDs) matching the SPARQL pattern
+**Returns**: An array of canonical `FieldValue` scalars from the selected
+SPARQL binding. RDF IRIs and literals remain `RDFTerm` values; the function
+does not coerce an IRI to a SQL `String`.
 
 ### Basic Example
 
@@ -101,33 +106,41 @@ import Database
 struct User {
     #Directory<User>("app", "users")
     var id: String = ""
+    var resource: RDFTerm = .iri(.xsdString)
     var name: String = ""
 }
 
 @Persistable
-struct Follow {
-    #Directory<Follow>("app", "follows")
+struct Triple {
+    #Directory<Triple>("app", "triples")
     var id: String = ""
-    var follower: String = ""
-    var predicate: String = "follows"
-    var following: String = ""
+    var subject: RDFTerm
+    var predicate: RDFTerm
+    var object: RDFTerm
 
     #Index(
-        .propertyGraph(strategy: .tripleStore),
-        from: \Follow.follower,
-        edge: \Follow.predicate,
-        to: \Follow.following
+        .rdfDataset,
+        from: \Triple.subject,
+        edge: \Triple.predicate,
+        to: \Triple.object
     )
 }
 
 // Execute hybrid query
 let sql = """
 SELECT * FROM User
-WHERE id IN (SPARQL(Follow, 'SELECT ?follower WHERE { ?follower "follows" "alice" }'))
+WHERE resource IN (
+    SPARQL(Triple, 'SELECT ?user WHERE { ?user <urn:predicate:follows> <urn:user:alice> }')
+)
 """
 let users = try await context.executeSQL(sql, as: User.self)
 // Returns all users who follow alice
 ```
+
+`User.resource` and the selected SPARQL variable are both canonical RDF terms.
+If an application also stores a textual identifier, it must maintain that
+field explicitly; hybrid query execution does not erase RDF identity by
+converting the term to text.
 
 ### Advanced Usage
 
@@ -138,8 +151,8 @@ Combine multiple graph patterns with SQL logic:
 ```swift
 let sql = """
 SELECT * FROM User
-WHERE id IN (SPARQL(Follow, 'SELECT ?follower WHERE { ?follower "follows" ?user }'))
-  AND id IN (SPARQL(Interest, 'SELECT ?user WHERE { ?user "likes" "technology" }'))
+WHERE resource IN (SPARQL(Follow, 'SELECT ?follower WHERE { ?follower <urn:predicate:follows> ?user }'))
+  AND resource IN (SPARQL(Interest, 'SELECT ?user WHERE { ?user <urn:predicate:likes> "technology" }'))
   AND age > 18
 """
 // Returns adult users who follow someone AND like technology
@@ -152,8 +165,8 @@ When SPARQL returns multiple variables, specify which one to use:
 ```swift
 let sql = """
 SELECT * FROM User
-WHERE id IN (
-    SPARQL(Follow, 'SELECT ?follower ?following WHERE { ?follower "follows" ?following }', '?follower')
+WHERE resource IN (
+    SPARQL(Follow, 'SELECT ?follower ?following WHERE { ?follower <urn:predicate:follows> ?following }', '?follower')
 )
 """
 // Extract only the ?follower variable from the SPARQL result
@@ -166,12 +179,12 @@ Use SPARQL's expressive pattern matching:
 ```swift
 let sql = """
 SELECT * FROM Product
-WHERE id IN (
+WHERE resource IN (
     SPARQL(Recommendation, 'SELECT ?product WHERE {
-        ?user "purchased" ?prev_product .
-        ?prev_product "category" ?cat .
-        ?product "category" ?cat .
-        ?product "rating" ?rating .
+        ?user <urn:predicate:purchased> ?prev_product .
+        ?prev_product <urn:predicate:category> ?cat .
+        ?product <urn:predicate:category> ?cat .
+        ?product <urn:predicate:rating> ?rating .
         FILTER(?rating > 4.0)
     }')
 )
@@ -217,14 +230,14 @@ do {
    - Resolve the schema-declared graph index descriptor
    - Execute SPARQL query against graph index
 4. **Result Inlining**: Replace `SPARQL()` calls with literal arrays
-5. **Query Execution**: Convert rewritten `SelectQuery` to `Query<T>` and execute
+5. **Query Execution**: Execute the rewritten canonical `SelectQuery`
 
 #### Transaction Isolation
 
 - SPARQL subqueries execute within the **same transaction** as the parent SQL query
 - Ensures **consistent snapshot** across SQL and SPARQL operations
 - All operations are **ACID compliant**
-- No transaction overhead for SPARQL execution
+- Rewriting does not open a nested storage transaction
 
 #### Performance Characteristics
 
@@ -245,11 +258,6 @@ do {
    - Example: `#Directory<Order>("orders", \.tenantId)` is not supported
    - Rationale: SPARQL function needs static directory path resolution
 
-3. **Query bridge limitations**
-   - Some SQL features may not be supported in the current bridge
-   - `ORDER BY` support depends on bridge implementation
-   - Use standard `fetch()` API for complex sorting requirements
-
 ### Use Cases
 
 #### Social Network Queries
@@ -258,10 +266,10 @@ do {
 // Find mutual followers
 let sql = """
 SELECT * FROM User
-WHERE id IN (
+WHERE resource IN (
     SPARQL(Follow, 'SELECT ?user WHERE {
-        "alice" "follows" ?user .
-        ?user "follows" "alice"
+        <urn:user:alice> <urn:predicate:follows> ?user .
+        ?user <urn:predicate:follows> <urn:user:alice>
     }')
 )
 """
@@ -269,9 +277,9 @@ WHERE id IN (
 // Find influencers (users with many followers)
 let sql = """
 SELECT * FROM User
-WHERE id IN (
+WHERE resource IN (
     SPARQL(Follow, 'SELECT ?user WHERE {
-        ?follower "follows" ?user
+        ?follower <urn:predicate:follows> ?user
     } GROUP BY ?user HAVING (COUNT(?follower) > 1000)')
 )
 ```
@@ -282,10 +290,10 @@ WHERE id IN (
 // Find related articles
 let sql = """
 SELECT * FROM Article
-WHERE id IN (
+WHERE resource IN (
     SPARQL(ArticleGraph, 'SELECT ?article WHERE {
-        "article:123" "cites" ?cited .
-        ?article "cites" ?cited
+        <urn:article:123> <urn:predicate:cites> ?cited .
+        ?article <urn:predicate:cites> ?cited
     }')
 )
 AND publishDate > '2024-01-01'
@@ -297,10 +305,10 @@ AND publishDate > '2024-01-01'
 // Find accessible resources
 let sql = """
 SELECT * FROM Resource
-WHERE id IN (
+WHERE resource IN (
     SPARQL(Permission, 'SELECT ?resource WHERE {
-        ?user "member_of" ?group .
-        ?group "can_access" ?resource
+        ?user <urn:predicate:memberOf> ?group .
+        ?group <urn:predicate:canAccess> ?resource
     }')
 )
 AND type = 'document'
@@ -379,6 +387,9 @@ The Database module includes comprehensive integration tests for the SPARQL() fu
 - Explicit variable selection
 - Empty result sets
 - Performance with large result sets
+- Shared transaction behavior for SPARQL rewriting and the parent SQL read
+- Canonical RDF-term identity without implicit string coercion
+- `ORDER BY` and `LIMIT` after SPARQL result inlining
 
 Run tests:
 ```bash
@@ -393,10 +404,10 @@ Use SPARQL() when your query involves graph relationships:
 
 ```swift
 // ✅ Good: Graph traversal
-WHERE id IN (SPARQL(Follow, 'SELECT ?follower WHERE { ?follower "follows" ?user }'))
+WHERE resource IN (SPARQL(Follow, 'SELECT ?follower WHERE { ?follower <urn:predicate:follows> ?user }'))
 
 // ❌ Not ideal: Simple equality (use SQL instead)
-WHERE id IN (SPARQL(User, 'SELECT ?user WHERE { ?user "status" "active" }'))
+WHERE resource IN (SPARQL(User, 'SELECT ?user WHERE { ?user <urn:predicate:status> "active" }'))
 ```
 
 ### 2. Combine with SQL for Filtering
@@ -408,7 +419,7 @@ Use SQL for type-specific filtering, SPARQL for relationships:
 SELECT * FROM User
 WHERE age > 18  -- SQL filter
   AND status = 'active'  -- SQL filter
-  AND id IN (SPARQL(Follow, '...'))  -- Graph pattern
+  AND resource IN (SPARQL(Follow, '...'))  -- Graph pattern
 ```
 
 ### 3. Index Graph Edges Properly
@@ -418,13 +429,13 @@ Ensure graph indexes match your query patterns:
 ```swift
 @Persistable
 struct Follow {
-    var follower: String
-    var predicate: String = "follows"
-    var following: String
+    var follower: RDFTerm
+    var predicate: RDFTerm
+    var following: RDFTerm
 
     // ✅ Good: Index matches query direction
     #Index(
-        .propertyGraph(strategy: .adjacency),
+        .rdfDataset,
         from: \Follow.follower,
         edge: \Follow.predicate,
         to: \Follow.following

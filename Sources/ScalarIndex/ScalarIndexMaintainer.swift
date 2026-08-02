@@ -178,10 +178,11 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexUniquenessMaintaine
         func findConflict(
             for values: [any TupleElement]
         ) async throws -> IndexUniquenessConflict? {
-            let valueKey = subspace.pack(Tuple(values))
-            let rangeEnd = try strinc(valueKey)
+            let valueKey = Tuple(values).pack()
+            let scanPrefix = subspace.prefix.appending(contentsOf: valueKey)
+            let rangeEnd = try strinc(scanPrefix)
             let entries = try await TransactionRangeCollection.collect(using: transaction,
-                from: .firstGreaterOrEqual(valueKey),
+                from: .firstGreaterOrEqual(scanPrefix),
                 to: .firstGreaterOrEqual(rangeEnd),
                 limit: 2,
                 reverse: false,

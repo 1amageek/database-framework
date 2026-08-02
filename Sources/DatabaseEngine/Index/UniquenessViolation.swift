@@ -32,10 +32,14 @@ public struct UniquenessViolation: Sendable, Equatable {
     /// Type name of the affected Persistable
     public let persistableType: String
 
-    /// The duplicate value (packed tuple bytes)
+    /// The duplicate value (tuple-packed bytes relative to the index subspace)
     ///
-    /// Use `unpackedValue()` to get the tuple elements.
+    /// This is the physical index prefix used to identify and clear the
+    /// violation. Use `conflictingValues` for semantic inspection.
     public let valueKey: ByteString
+
+    /// Canonical semantic values that produced the duplicate physical key.
+    public let conflictingValues: [FieldValue]
 
     /// All primary keys that have this duplicate value
     ///
@@ -51,34 +55,24 @@ public struct UniquenessViolation: Sendable, Equatable {
         indexName: String,
         persistableType: String,
         valueKey: ByteString,
+        conflictingValues: [FieldValue],
         primaryKeys: [ByteString],
         detectedAt: Timestamp
     ) {
         self.indexName = indexName
         self.persistableType = persistableType
         self.valueKey = valueKey
+        self.conflictingValues = conflictingValues
         self.primaryKeys = primaryKeys
         self.detectedAt = detectedAt
     }
 
     // MARK: - Convenience
 
-    /// Unpack the value key into tuple elements
-    ///
-    /// - Returns: Array of tuple element descriptions
-    public func unpackedValue() throws -> [String] {
-        try Tuple.unpack(from: valueKey).map {
-            TupleElementSemanticName.describe($0)
-        }
-    }
-
     /// Human-readable description of the duplicate value
     public var valueDescription: String {
-        do {
-            return try unpackedValue().joined(separator: ", ")
-        } catch {
-            return "<invalid tuple>"
-        }
+        conflictingValues.map(DatabaseDiagnosticValueFormatter.describe)
+            .joined(separator: ", ")
     }
 
     /// Unpack primary keys into tuples
@@ -167,12 +161,7 @@ public struct UniquenessViolationError: Error, Sendable, CustomStringConvertible
 
     /// Human-readable description of the duplicate value
     public var valueDescription: String {
-        conflictingValues.map { value in
-            if case .string(let text) = value {
-                return text
-            }
-            return TupleElementSemanticName.describe(value)
-        }
+        conflictingValues.map(DatabaseDiagnosticValueFormatter.describe)
             .joined(separator: ", ")
     }
 

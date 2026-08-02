@@ -102,7 +102,7 @@ private struct PermutedIndexContext {
         }
     }
 
-    func scanAll() async throws -> [(permutedFields: [any TupleElement], primaryKey: [any TupleElement])] {
+    func scanAll() async throws -> [(permutedFields: [FieldValue], primaryKey: [any TupleElement])] {
         try await database.withTransaction { transaction in
             try await maintainer.scanAll(transaction: transaction)
         }
@@ -399,10 +399,7 @@ struct PermutedIndexBehaviorTests {
 
         // Check permuted field order: (city, country, name)
         let firstEntry = results.first { entry in
-            if let firstField = entry.permutedFields.first as? String {
-                return firstField == "Tokyo"
-            }
-            return false
+            entry.permutedFields.first == .string("Tokyo")
         }
         #expect(firstEntry != nil, "Should find entry with city=Tokyo")
 
@@ -410,9 +407,9 @@ struct PermutedIndexBehaviorTests {
             // Permuted order: [city, country, name]
             #expect(entry.permutedFields.count == 3, "Should have 3 permuted fields")
             if entry.permutedFields.count >= 3 {
-                #expect((entry.permutedFields[0] as? String) == "Tokyo", "First field should be city (Tokyo)")
-                #expect((entry.permutedFields[1] as? String) == "Japan", "Second field should be country (Japan)")
-                #expect((entry.permutedFields[2] as? String) == "A", "Third field should be name (A)")
+                #expect(entry.permutedFields[0] == .string("Tokyo"), "First field should be city (Tokyo)")
+                #expect(entry.permutedFields[1] == .string("Japan"), "Second field should be country (Japan)")
+                #expect(entry.permutedFields[2] == .string("A"), "Third field should be name (A)")
             }
         }
 

@@ -374,6 +374,7 @@ public struct FederatedSPARQLBuilder: Sendable {
 
         let executor = SPARQLQueryExecutor(
             database: engine,
+            monotonicClock: queryContext.context.container.monotonicClock,
             wallClock: queryContext.context.container.wallClock,
             sources: sources
         )

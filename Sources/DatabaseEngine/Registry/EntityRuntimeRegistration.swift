@@ -234,14 +234,23 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                 context,
                 sourceName,
                 selectQuery,
-                options in
+                options,
+                transaction in
                 let plan = try SelectQueryPlanner.plan(
                     selectQuery,
                     as: Model.self,
                     indexDescriptors: compiledIndexDescriptors,
                     options: options
                 )
-                let items = try await context.fetch(plan.typedQuery)
+                let items: [Model]
+                if let transaction {
+                    items = try await context.fetch(
+                        plan.typedQuery,
+                        transaction: transaction
+                    )
+                } else {
+                    items = try await context.fetch(plan.typedQuery)
+                }
                 let rows = try items.map { item -> CanonicalSourceRow in
                     try options.workMeter.consume(at: .resultMaterialization)
                     let row = try QueryRowCodec.encode(item)
@@ -562,7 +571,8 @@ public struct EntityRuntimeRegistration: Sendable {
         _ context: DatabaseContext,
         _ sourceName: String,
         _ selectQuery: SelectQuery,
-        _ options: ReadExecutionContext
+        _ options: ReadExecutionContext,
+        _ transaction: (any TransactionAccess)?
     ) async throws -> EntityTableRows
 
     fileprivate typealias CanonicalizeModel = @Sendable (
@@ -721,13 +731,15 @@ public struct EntityRuntimeRegistration: Sendable {
         context: DatabaseContext,
         sourceName: String,
         selectQuery: SelectQuery,
-        options: ReadExecutionContext
+        options: ReadExecutionContext,
+        transaction: (any TransactionAccess)? = nil
     ) async throws -> EntityTableRows {
         try await fetchTableRowsOperation(
             context,
             sourceName,
             selectQuery,
-            options
+            options,
+            transaction
         )
     }
 

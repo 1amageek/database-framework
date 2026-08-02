@@ -248,7 +248,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// - Extended timeout (60 seconds)
     /// - Many retries (50)
     /// - Batch priority
-    /// - Cache policy: .stale(60) (up to 60 second staleness)
+    /// - Cache policy: .stale(.seconds(60)) (up to 60 second staleness)
     public static let longRunning = TransactionConfiguration(
         timeout: 60_000,
         maximumAttempts: 50,

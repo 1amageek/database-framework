@@ -86,6 +86,7 @@ struct UniquenessEnforcementTests {
             indexName: "UniqueTestUser_email",
             persistableType: "UniquenessConstrainedUser",
             valueKey: valueKey,
+            conflictingValues: [.string("test@example.com")],
             primaryKeys: [pk1, pk2],
             detectedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
@@ -96,8 +97,8 @@ struct UniquenessEnforcementTests {
         #expect(violation.primaryKeys.count == 2)
     }
 
-    @Test("UniquenessViolation unpacking")
-    func violationUnpacking() throws {
+    @Test("UniquenessViolation exposes semantic conflicting values")
+    func violationConflictingValues() throws {
         let valueKey: ByteString = Tuple("test@example.com").pack()
         let pk1: ByteString = Tuple("user1").pack()
         let pk2: ByteString = Tuple("user2").pack()
@@ -106,13 +107,12 @@ struct UniquenessEnforcementTests {
             indexName: "test_idx",
             persistableType: "TestType",
             valueKey: valueKey,
+            conflictingValues: [.string("test@example.com")],
             primaryKeys: [pk1, pk2],
             detectedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
 
-        let unpackedValue = try violation.unpackedValue()
-        #expect(unpackedValue.count == 1)
-        #expect(unpackedValue[0] == "test@example.com")
+        #expect(violation.conflictingValues == [.string("test@example.com")])
 
         let unpackedPKs = try violation.unpackedPrimaryKeys()
         #expect(unpackedPKs.count == 2)
@@ -126,6 +126,7 @@ struct UniquenessEnforcementTests {
             indexName: "test_idx",
             persistableType: "TestType",
             valueKey: valueKey,
+            conflictingValues: [.string("hello"), .int64(123)],
             primaryKeys: [],
             detectedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
@@ -144,6 +145,7 @@ struct UniquenessEnforcementTests {
             indexName: "idx",
             persistableType: "Type",
             valueKey: valueKey,
+            conflictingValues: [.string("test")],
             primaryKeys: [pk],
             detectedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
@@ -154,6 +156,7 @@ struct UniquenessEnforcementTests {
         #expect(decoded.indexName == violation.indexName)
         #expect(decoded.persistableType == violation.persistableType)
         #expect(decoded.valueKey == violation.valueKey)
+        #expect(decoded.conflictingValues == violation.conflictingValues)
         #expect(decoded.primaryKeys == violation.primaryKeys)
     }
 
@@ -166,6 +169,7 @@ struct UniquenessEnforcementTests {
             indexName: "email_idx",
             persistableType: "User",
             valueKey: valueKey,
+            conflictingValues: [.string("email@test.com")],
             primaryKeys: [pk],
             detectedAt: Timestamp(secondsSinceUnixEpoch: 1_000)
         )
@@ -303,6 +307,7 @@ struct UniquenessEnforcementTests {
                     indexName: indexName,
                     persistableType: "TestType",
                     valueKey: Tuple("duplicate@email.com").pack(),
+                    conflictingValues: [.string("duplicate@email.com")],
                     existingPrimaryKey: Tuple("pk1"),
                     newPrimaryKey: Tuple("pk2"),
                     transaction: transaction
@@ -340,6 +345,7 @@ struct UniquenessEnforcementTests {
                     indexName: indexName,
                     persistableType: "TestType",
                     valueKey: Tuple("value").pack(),
+                    conflictingValues: [.string("value")],
                     existingPrimaryKey: Tuple("pk1"),
                     newPrimaryKey: Tuple("pk2"),
                     transaction: transaction
@@ -373,6 +379,7 @@ struct UniquenessEnforcementTests {
                         indexName: indexName,
                         persistableType: "TestType",
                         valueKey: Tuple("value\(i)").pack(),
+                        conflictingValues: [.string("value\(i)")],
                         existingPrimaryKey: Tuple("pk\(i)a"),
                         newPrimaryKey: Tuple("pk\(i)b"),
                         transaction: transaction
@@ -406,6 +413,7 @@ struct UniquenessEnforcementTests {
                     indexName: indexName,
                     persistableType: "TestType",
                     valueKey: valueKey,
+                    conflictingValues: [.string("clearme")],
                     existingPrimaryKey: Tuple("pk1"),
                     newPrimaryKey: Tuple("pk2"),
                     transaction: transaction
@@ -422,6 +430,79 @@ struct UniquenessEnforcementTests {
             // Verify it's gone
             let countAfter = try await tracker.countViolations(indexName: indexName)
             #expect(countAfter == 0)
+        }
+    }
+
+    @Test("UniquenessViolationTracker composes a relative value key exactly once")
+    func trackerResolutionUsesRelativeValueKey() async throws {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+
+            let databaseStore = try await container.store(
+                for: UniquenessConstrainedUser.self
+            )
+            let tracker = databaseStore.violationTracker
+            let indexName = "test_resolution_\(UUID().uuidString)"
+            let duplicateValue = "duplicate@example.com"
+            let valueKey = Tuple(duplicateValue).pack()
+            let indexSubspace = Subspace(
+                Tuple("test", "uniqueness", indexName).pack()
+            )
+            let firstIndexKey = indexSubspace.pack(
+                Tuple(duplicateValue, "pk1")
+            )
+            let secondIndexKey = indexSubspace.pack(
+                Tuple(duplicateValue, "pk2")
+            )
+
+            try await container.engine.withTransaction { transaction in
+                try transaction.setValue(ByteString(), for: firstIndexKey)
+                try transaction.setValue(ByteString(), for: secondIndexKey)
+                try await tracker.recordViolation(
+                    indexName: indexName,
+                    persistableType: "TestType",
+                    valueKey: valueKey,
+                    conflictingValues: [.string(duplicateValue)],
+                    existingPrimaryKey: Tuple("pk1"),
+                    newPrimaryKey: Tuple("pk2"),
+                    transaction: transaction
+                )
+            }
+
+            let unresolved = try await tracker.verifyResolution(
+                indexName: indexName,
+                valueKey: valueKey,
+                indexSubspace: indexSubspace
+            )
+            switch unresolved {
+            case .unresolved(let violation):
+                #expect(violation.primaryKeys.count == 2)
+                #expect(violation.conflictingValues == [.string(duplicateValue)])
+            case .resolved, .notFound:
+                Issue.record("Expected the duplicate index entries to remain unresolved")
+            }
+
+            try await container.engine.withTransaction { transaction in
+                try transaction.clear(key: secondIndexKey)
+            }
+
+            let resolved = try await tracker.verifyResolution(
+                indexName: indexName,
+                valueKey: valueKey,
+                indexSubspace: indexSubspace
+            )
+            switch resolved {
+            case .resolved:
+                break
+            case .unresolved, .notFound:
+                Issue.record("Expected one remaining index entry to resolve the violation")
+            }
+
+            try await container.engine.withTransaction { transaction in
+                try transaction.clear(key: firstIndexKey)
+            }
+            try await tracker.clearAllViolations(indexName: indexName)
         }
     }
 
@@ -443,6 +524,7 @@ struct UniquenessEnforcementTests {
                     indexName: indexName,
                     persistableType: "TestType",
                     valueKey: Tuple("val1").pack(),
+                    conflictingValues: [.string("val1")],
                     existingPrimaryKey: Tuple("pk1a"),
                     newPrimaryKey: Tuple("pk1b"),
                     transaction: transaction
@@ -453,6 +535,7 @@ struct UniquenessEnforcementTests {
                     indexName: indexName,
                     persistableType: "TestType",
                     valueKey: Tuple("val2").pack(),
+                    conflictingValues: [.string("val2")],
                     existingPrimaryKey: Tuple("pk2a"),
                     newPrimaryKey: Tuple("pk2b"),
                     transaction: transaction
@@ -489,6 +572,7 @@ struct UniquenessEnforcementTests {
                     indexName: indexName,
                     persistableType: "UniquenessConstrainedUser",
                     valueKey: Tuple("context@test.com").pack(),
+                    conflictingValues: [.string("context@test.com")],
                     existingPrimaryKey: Tuple("pk1"),
                     newPrimaryKey: Tuple("pk2"),
                     transaction: transaction
@@ -534,6 +618,7 @@ struct UniquenessEnforcementTests {
                     indexName: indexName,
                     persistableType: "UniquenessConstrainedUser",
                     valueKey: Tuple("test").pack(),
+                    conflictingValues: [.string("test")],
                     existingPrimaryKey: Tuple("pk1"),
                     newPrimaryKey: Tuple("pk2"),
                     transaction: transaction
@@ -572,6 +657,7 @@ struct UniquenessEnforcementTests {
                     indexName: indexName,
                     persistableType: "UniquenessConstrainedUser",
                     valueKey: Tuple("val1").pack(),
+                    conflictingValues: [.string("val1")],
                     existingPrimaryKey: Tuple("pk1"),
                     newPrimaryKey: Tuple("pk2"),
                     transaction: transaction

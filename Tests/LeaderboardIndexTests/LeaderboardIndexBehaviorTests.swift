@@ -597,7 +597,7 @@ struct LeaderboardIndexWindowTests {
             #expect(!windows.isEmpty)
 
             // Window ID should be timestamp / 3600 (hourly)
-            let expectedWindowId = Int64(Date().timeIntervalSince1970) / 3600
+            let expectedWindowId: Int64 = 0
             #expect(windows.contains(expectedWindowId), "Should contain current hourly window")
 
             try await hourlyCtx.cleanup()

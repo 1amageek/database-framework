@@ -93,8 +93,8 @@ struct SPARQLFunctionRegistryTests {
         }
     }
 
-    @Test("Implementation failures preserve the function identity")
-    func extensionFunctionFailurePreservesIdentifier() throws {
+    @Test("Implementation failures preserve the typed evaluation error")
+    func extensionFunctionFailurePreservesEvaluationError() throws {
         let identifier = try RDFIRI("https://example.com/function/failing")
         let registry = try SPARQLFunctionRegistry([
             ConfiguredSPARQLFunction(identifier: identifier, behavior: .fail)
@@ -107,11 +107,11 @@ struct SPARQLFunctionRegistryTests {
             )
             Issue.record("Expected the extension function to fail")
         } catch let error {
-            guard case .functionFailed(let failedIdentifier, _) = error else {
-                Issue.record("Expected a functionFailed error, received \(error)")
-                return
-            }
-            #expect(failedIdentifier == identifier.rawValue)
+            #expect(
+                error == .evaluation(
+                    .runtimeInvariant("configured function failure")
+                )
+            )
         }
     }
 }

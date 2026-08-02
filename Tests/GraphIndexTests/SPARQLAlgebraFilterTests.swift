@@ -96,6 +96,7 @@ struct SPARQLAlgebraFilterTests {
     private func makeExecutor() throws -> SPARQLQueryExecutor {
         SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(
                 now: Timestamp(secondsSinceUnixEpoch: 0)
             ),

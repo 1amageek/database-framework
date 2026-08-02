@@ -112,8 +112,7 @@ private struct RankReadExecutor: IndexReadExecutor {
         }
 
         let results = try await builder.executeDirect(
-            configuration: execution.transactionConfiguration,
-            cachePolicy: execution.cachePolicy
+            configuration: execution.transactionConfiguration
         )
 
         let rows = try results.map { result in
@@ -166,7 +165,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             orderBy: orderByFields
         )
 
-        let rankedKeys: [(primaryKey: Tuple, rank: Int)] = try await context
+        let orderedResults: [(entity: PolymorphicEntity, rank: Int)] = try await context
             .executeCanonicalRead(
                 configuration: execution.transactionConfiguration
             ) { transaction in
@@ -178,24 +177,21 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
                 ) else {
                 return []
             }
-            return try await scanRanked(
+            let rankedKeys = try await scanRanked(
                 indexSubspace: readableIndex.subspace,
                 transaction: transaction,
                 parameters: parameters
             )
+            let entities = try await context.fetchPolymorphicItemsPreservingOrder(
+                group: group,
+                ids: rankedKeys.map { $0.primaryKey },
+                transaction: transaction
+            )
+            return try RankReadResultAssembler.assemble(
+                rankedKeys: rankedKeys,
+                entities: entities
+            )
         }
-
-        let entities = try await context.fetchPolymorphicItems(
-            group: group,
-            ids: rankedKeys.map { $0.primaryKey },
-            configuration: execution.transactionConfiguration,
-            cachePolicy: execution.cachePolicy
-        )
-
-        let orderedResults = try RankReadResultAssembler.assemble(
-            rankedKeys: rankedKeys,
-            entities: entities
-        )
 
         let rows = try orderedResults.map { result in
             try IndexReadRow.materializing(

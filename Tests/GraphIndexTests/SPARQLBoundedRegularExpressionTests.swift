@@ -185,10 +185,8 @@ struct SPARQLBoundedRegularExpressionTests {
                 flags: "q"
             )
             Issue.record("An unknown flag was accepted")
-        } catch let error as SPARQLExpressionEvaluationError {
+        } catch let error {
             #expect(error == .invalidFunctionArguments("REGEX flags"))
-        } catch {
-            Issue.record("An unknown flag produced an untyped error")
         }
     }
 
@@ -224,7 +222,7 @@ struct SPARQLBoundedRegularExpressionTests {
         do {
             _ = try expression.matches("雪a")
             Issue.record("An oversized regex input was accepted")
-        } catch let error as SPARQLRegularExpression.Error {
+        } catch let error {
             #expect(
                 error == .resourceLimit(
                     name: "inputUTF8Bytes",
@@ -232,8 +230,6 @@ struct SPARQLBoundedRegularExpressionTests {
                     actual: 4
                 )
             )
-        } catch {
-            Issue.record("An oversized regex input produced an untyped error")
         }
     }
 
@@ -259,7 +255,7 @@ struct SPARQLBoundedRegularExpressionTests {
         do {
             _ = try expression.matches(String(repeating: "a", count: 100))
             Issue.record("A work-budget overflow was accepted")
-        } catch let error as SPARQLRegularExpression.Error {
+        } catch let error {
             guard case .resourceLimit(let name, let limit, let actual) = error
             else {
                 Issue.record("A work-budget overflow produced the wrong error")
@@ -268,8 +264,6 @@ struct SPARQLBoundedRegularExpressionTests {
             #expect(name == "activeTransitionWork")
             #expect(limit == 32)
             #expect(actual > limit)
-        } catch {
-            Issue.record("A work-budget overflow produced an untyped error")
         }
     }
 
@@ -459,7 +453,7 @@ struct SPARQLBoundedRegularExpressionTests {
                 binding: VariableBinding()
             )
             Issue.record("An oversized LIKE pattern was accepted")
-        } catch let error as SPARQLExpressionEvaluationError {
+        } catch let error {
             guard case .resourceLimitExceeded(
                 let stage,
                 let required,
@@ -476,8 +470,6 @@ struct SPARQLBoundedRegularExpressionTests {
                         .maximumRegularExpressionPatternUTF8Count
                 )
             )
-        } catch {
-            Issue.record("An oversized LIKE pattern produced an untyped error")
         }
     }
 }

@@ -35,7 +35,7 @@ private enum FullTextReadError: Error, Sendable {
     case invalidParameter(String)
     case invalidResultCount(field: String, count: Int64)
     case invalidExecutionPath(String)
-    case duplicateFetchedEntity(ByteString)
+    case fetchedItemCountMismatch(expected: Int, actual: Int)
     case missingFetchedEntity(ByteString)
 }
 
@@ -98,8 +98,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 limit: facetLimit
             )
             let result = try await builder.executeFacetedDirect(
-                configuration: execution.transactionConfiguration,
-                cachePolicy: execution.cachePolicy
+                configuration: execution.transactionConfiguration
             )
             let rows = try result.items.map { try IndexReadRow.materializing($0) }
             return IndexReadResult(
@@ -118,8 +117,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             ]?.float64Value ?? Double(BM25Parameters.default.b)
             builder = builder.bm25(k1: Float(k1), b: Float(b))
             let results = try await builder.executeScoredDirect(
-                configuration: execution.transactionConfiguration,
-                cachePolicy: execution.cachePolicy
+                configuration: execution.transactionConfiguration
             )
             let rows = try results.map { result in
                 try IndexReadRow.materializing(
@@ -131,8 +129,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         }
 
         let results = try await builder.executeDirect(
-            configuration: execution.transactionConfiguration,
-            cachePolicy: execution.cachePolicy
+            configuration: execution.transactionConfiguration
         )
         let rows = try results.map { try IndexReadRow.materializing($0) }
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
@@ -401,9 +398,9 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         index: PolymorphicIndexMetadata,
         execution: CanonicalReadExecution
     ) async throws -> [PolymorphicEntity] {
-        let matchingIDs = try await context.executeCanonicalRead(
+        return try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction -> [Tuple] in
+        ) { transaction -> [PolymorphicEntity] in
             guard let readableIndex = try await context.container
                 .readablePolymorphicIndex(
                     index,
@@ -412,33 +409,37 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 ) else {
                 return []
             }
+            let matchingIDs: [Tuple]
             if matchMode == .phrase {
-                return try await searchPhrase(
+                matchingIDs = try await searchPhrase(
                     configuration: configuration,
                     terms: terms,
                     indexSubspace: readableIndex.subspace,
                     transaction: transaction
                 )
+            } else {
+                matchingIDs = try await searchFullText(
+                    terms: terms,
+                    matchMode: matchMode,
+                    configuration: configuration,
+                    indexSubspace: readableIndex.subspace,
+                    transaction: transaction
+                )
             }
-            return try await searchFullText(
-                terms: terms,
-                matchMode: matchMode,
-                configuration: configuration,
-                indexSubspace: readableIndex.subspace,
+            let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
+                group: group,
+                ids: matchingIDs,
                 transaction: transaction
             )
+            let entities = try requireEntities(
+                identifiers: matchingIDs,
+                fetched: fetched
+            )
+            if let limit, entities.count > limit {
+                return Array(entities.prefix(limit))
+            }
+            return entities
         }
-
-        var entities = try await context.fetchPolymorphicItems(
-            group: group,
-            ids: matchingIDs,
-            configuration: execution.transactionConfiguration,
-            cachePolicy: execution.cachePolicy
-        )
-        if let limit, entities.count > limit {
-            entities = Array(entities.prefix(limit))
-        }
-        return entities
     }
 
     private func executeScoredSearch(
@@ -452,9 +453,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         index: PolymorphicIndexMetadata,
         execution: CanonicalReadExecution
     ) async throws -> [(entity: PolymorphicEntity, score: Double)] {
-        let scoredResults = try await context.executeCanonicalRead(
+        return try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction -> [(id: Tuple, score: Double)] in
+        ) {
+            transaction -> [(entity: PolymorphicEntity, score: Double)] in
             guard let readableIndex = try await context.container
                 .readablePolymorphicIndex(
                     index,
@@ -463,7 +465,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 ) else {
                 return []
             }
-            return try await searchWithScores(
+            let scoredResults = try await searchWithScores(
                 terms: terms,
                 matchMode: matchMode,
                 configuration: configuration,
@@ -472,34 +474,24 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 transaction: transaction,
                 limit: limit
             )
-        }
+            let identifiers = scoredResults.map { $0.id }
+            let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
+                group: group,
+                ids: identifiers,
+                transaction: transaction
+            )
+            let entities = try requireEntities(
+                identifiers: identifiers,
+                fetched: fetched
+            )
 
-        let entities = try await context.fetchPolymorphicItems(
-            group: group,
-            ids: scoredResults.map { $0.id },
-            configuration: execution.transactionConfiguration,
-            cachePolicy: execution.cachePolicy
-        )
-        var entityByID: [ByteString: PolymorphicEntity] = [:]
-        entityByID.reserveCapacity(entities.count)
-        for entity in entities {
-            let key = stableKey(entity.polymorphicIdentifier)
-            guard entityByID[key] == nil else {
-                throw FullTextReadError.duplicateFetchedEntity(key)
+            var combined: [(entity: PolymorphicEntity, score: Double)] = []
+            combined.reserveCapacity(scoredResults.count)
+            for (result, entity) in zip(scoredResults, entities) {
+                combined.append((entity: entity, score: result.score))
             }
-            entityByID[key] = entity
+            return combined
         }
-
-        var combined: [(entity: PolymorphicEntity, score: Double)] = []
-        combined.reserveCapacity(scoredResults.count)
-        for result in scoredResults {
-            let key = stableKey(result.id)
-            guard let entity = entityByID[key] else {
-                throw FullTextReadError.missingFetchedEntity(key)
-            }
-            combined.append((entity: entity, score: result.score))
-        }
-        return combined
     }
 
     private func executeFacetedSearch(
@@ -514,74 +506,106 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         index: PolymorphicIndexMetadata,
         execution: CanonicalReadExecution
     ) async throws -> (items: [PolymorphicEntity], facets: [String: [(value: String, count: Int64)]], totalCount: Int) {
-        let matchingIDs = try await context.executeCanonicalRead(
+        return try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction -> [Tuple] in
+        ) {
+            transaction -> (
+                items: [PolymorphicEntity],
+                facets: [String: [(value: String, count: Int64)]],
+                totalCount: Int
+            ) in
             guard let readableIndex = try await context.container
                 .readablePolymorphicIndex(
                     index,
                     in: group,
                     transaction: transaction
                 ) else {
-                return []
+                return (items: [], facets: [:], totalCount: 0)
             }
+            let matchingIDs: [Tuple]
             if matchMode == .phrase {
-                return try await searchPhrase(
+                matchingIDs = try await searchPhrase(
                     configuration: configuration,
                     terms: terms,
                     indexSubspace: readableIndex.subspace,
                     transaction: transaction
                 )
+            } else {
+                matchingIDs = try await searchFullText(
+                    terms: terms,
+                    matchMode: matchMode,
+                    configuration: configuration,
+                    indexSubspace: readableIndex.subspace,
+                    transaction: transaction
+                )
             }
-            return try await searchFullText(
-                terms: terms,
-                matchMode: matchMode,
-                configuration: configuration,
-                indexSubspace: readableIndex.subspace,
+            let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
+                group: group,
+                ids: matchingIDs,
                 transaction: transaction
             )
-        }
+            let allEntities = try requireEntities(
+                identifiers: matchingIDs,
+                fetched: fetched
+            )
+            let totalCount = allEntities.count
 
-        let allEntities = try await context.fetchPolymorphicItems(
-            group: group,
-            ids: matchingIDs,
-            configuration: execution.transactionConfiguration,
-            cachePolicy: execution.cachePolicy
-        )
-        let totalCount = allEntities.count
-
-        var facets: [String: [(value: String, count: Int64)]] = [:]
-        for field in facetFields {
-            var counts: [String: Int64] = [:]
-            for entity in allEntities {
-                let values = try facetValues(
-                    fieldName: field,
-                    from: entity,
-                    context: context
-                )
-                for value in values where !value.isEmpty {
-                    counts[value, default: 0] += 1
-                }
-            }
-            facets[field] = counts
-                .map { (value: $0.key, count: $0.value) }
-                .sorted {
-                    if $0.count == $1.count {
-                        return $0.value < $1.value
+            var facets: [String: [(value: String, count: Int64)]] = [:]
+            for field in facetFields {
+                var counts: [String: Int64] = [:]
+                for entity in allEntities {
+                    let values = try facetValues(
+                        fieldName: field,
+                        from: entity,
+                        context: context
+                    )
+                    for value in values where !value.isEmpty {
+                        counts[value, default: 0] += 1
                     }
-                    return $0.count > $1.count
                 }
-                .prefix(facetLimit)
-                .map { $0 }
-        }
+                facets[field] = counts
+                    .map { (value: $0.key, count: $0.value) }
+                    .sorted {
+                        if $0.count == $1.count {
+                            return $0.value < $1.value
+                        }
+                        return $0.count > $1.count
+                    }
+                    .prefix(facetLimit)
+                    .map { $0 }
+            }
 
-        let items: [PolymorphicEntity]
-        if let limit, allEntities.count > limit {
-            items = Array(allEntities.prefix(limit))
-        } else {
-            items = allEntities
+            let items: [PolymorphicEntity]
+            if let limit, allEntities.count > limit {
+                items = Array(allEntities.prefix(limit))
+            } else {
+                items = allEntities
+            }
+            return (items: items, facets: facets, totalCount: totalCount)
         }
-        return (items: items, facets: facets, totalCount: totalCount)
+    }
+
+    private func requireEntities(
+        identifiers: [Tuple],
+        fetched: [PolymorphicEntity?]
+    ) throws -> [PolymorphicEntity] {
+        guard identifiers.count == fetched.count else {
+            throw FullTextReadError.fetchedItemCountMismatch(
+                expected: identifiers.count,
+                actual: fetched.count
+            )
+        }
+        var entities: [PolymorphicEntity] = []
+        entities.reserveCapacity(fetched.count)
+        for (identifier, entity) in zip(identifiers, fetched) {
+            guard let entity else {
+                throw FullTextReadError.missingFetchedEntity(
+                    identifier.pack()
+                )
+            }
+            entities.append(entity)
+        }
+        return entities
     }
 
     private func searchPhrase(

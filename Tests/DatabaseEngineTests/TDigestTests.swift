@@ -271,7 +271,7 @@ struct TDigestTests {
         #expect(abs(decodedMedian - originalMedian) < 0.001)
     }
 
-    @Test("Decode accepts a retained non-zero-index slice")
+    @Test("Decode accepts a rebased retained view")
     func decodeRetainedSlice() throws {
         var original = TDigest()
         try original.add(1)
@@ -284,7 +284,14 @@ struct TDigestTests {
             .appending(0xEE)
         let slice = framed[1..<(1 + encoded.count)]
 
-        #expect(slice.startIndex == 1)
+        #expect(slice.startIndex == 0)
+        let framedAddress = framed.withUnsafeBytes {
+            $0.baseAddress.map(UInt.init(bitPattern:))
+        }
+        let sliceAddress = slice.withUnsafeBytes {
+            $0.baseAddress.map(UInt.init(bitPattern:))
+        }
+        #expect(sliceAddress == framedAddress.map { $0 + 1 })
         var decoded = try TDigest.decode(from: slice)
         _ = try decoded.quantile(0.5)
         #expect(decoded == original)

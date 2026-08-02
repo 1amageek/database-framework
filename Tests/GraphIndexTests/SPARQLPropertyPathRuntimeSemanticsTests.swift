@@ -723,6 +723,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         )
         return SPARQLQueryExecutor(
             database: container.engine,
+            monotonicClock: container.monotonicClock,
             wallClock: FixedTestWallClock(),
             sources: [source],
             ontologyContext: ontologyContext,

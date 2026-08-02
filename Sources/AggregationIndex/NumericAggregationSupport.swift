@@ -266,34 +266,34 @@ public enum NumericValueExtractor {
         from element: any TupleElement,
         as valueType: Value.Type
     ) throws -> AggregationNumericValue {
-        switch valueType {
-        case is Int64.Type, is Int32.Type, is Int16.Type, is Int8.Type:
+        switch valueType.indexScalarType {
+        case .int8, .int16, .int32, .int64:
             let value = try TypeConversion.int64(from: element)
             return .signedInteger(value)
 
-        case is UInt8.Type:
+        case .uint8:
             let value = try TupleDecoder.decode(element, as: UInt8.self)
             return .unsignedInteger(UInt64(value))
-        case is UInt16.Type:
+        case .uint16:
             let value = try TupleDecoder.decode(element, as: UInt16.self)
             return .unsignedInteger(UInt64(value))
-        case is UInt32.Type:
+        case .uint32:
             let value = try TupleDecoder.decode(element, as: UInt32.self)
             return .unsignedInteger(UInt64(value))
-        case is UInt64.Type:
+        case .uint64:
             let value = try TupleDecoder.decode(element, as: UInt64.self)
             return .unsignedInteger(value)
 
-        case is Double.Type, is Float.Type:
+        case .float32, .float64:
             let value = try TypeConversion.double(from: element)
             guard value.isFinite else {
                 throw AggregationStorageError.nonFiniteFloatingPoint
             }
             return .floatingPoint(value)
 
-        default:
+        case .string, .date, .timestamp:
             throw AggregationIndexError.invalidConfiguration(
-                "Unsupported numeric type for aggregation: \(valueType)"
+                "Numeric index value declared a non-numeric scalar type"
             )
         }
     }

@@ -36,6 +36,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         )
         let executor = SPARQLQueryExecutor(
             database: container.engine,
+            monotonicClock: container.monotonicClock,
             wallClock: container.wallClock,
             sources: resolved.source.map { [$0] } ?? []
         )

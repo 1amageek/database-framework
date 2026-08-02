@@ -75,9 +75,7 @@ struct RankValueOrderingTests {
         #expect(
             throws: RankValueError.nonNumericField(
                 fieldName: "score",
-                actualType: String(
-                    reflecting: FieldValue.string("not-a-number")
-                )
+                actualType: "String"
             )
         ) {
             try RankValueOrdering.numericValue(

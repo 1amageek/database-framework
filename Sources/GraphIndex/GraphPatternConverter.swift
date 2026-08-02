@@ -688,6 +688,10 @@ public struct GraphPatternConverter: Sendable {
         _ binding: AggregateBinding,
         limits: SPARQLExpressionCompilationLimits
     ) throws -> AggregateExpression {
+        if case .arrayAgg = binding.aggregate {
+            throw GraphPatternConversionError
+                .unsupportedAggregateExpression("ARRAY_AGG")
+        }
         try SPARQLExpressionValidator.validateAggregate(
             binding.aggregate,
             limits: limits

@@ -151,14 +151,13 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal func executeDirect(
-        configuration: TransactionConfiguration = .default,
-        cachePolicy: CachePolicy = .server
+        configuration: TransactionConfiguration = .default
     ) async throws -> [T] {
         let resolved = try resolveIndex()
         let descriptor = resolved.descriptor
         let perm = resolved.permutation
 
-        let primaryKeys: [[any TupleElement]] = try await queryContext
+        return try await queryContext
             .withReadableIndex(
                 named: indexName,
                 kindIdentifier: "permuted",
@@ -203,27 +202,35 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
             }
 
             // Apply limit
+            let limitedResults: [[any TupleElement]]
             if let limit = self.limitCount, results.count > limit {
-                return Array(results.prefix(limit))
+                limitedResults = Array(results.prefix(limit))
+            } else {
+                limitedResults = results
             }
-            return results
+            let tuples = limitedResults.map(Tuple.init)
+            let fetchedItems = try await queryContext.fetchItemsPreservingOrder(
+                ids: tuples,
+                type: T.self,
+                transaction: transaction
+            )
+            return try PermutedQueryResultAssembler.requireItems(
+                identifiers: tuples,
+                fetchedItems: fetchedItems,
+                indexName: self.indexName
+            )
         }
-
-        // Convert to Tuples and fetch items
-        let tuples = primaryKeys.map { Tuple($0) }
-        return try await queryContext.fetchItems(ids: tuples, type: T.self, cachePolicy: cachePolicy)
     }
 
     /// Execute the query and return raw results with permuted fields
     ///
     /// - Returns: Array of (permutedFields, item) tuples
-    public func executeWithFields() async throws -> [(permutedFields: [any TupleElement], item: T)] {
+    public func executeWithFields() async throws -> [(permutedFields: [FieldValue], item: T)] {
         let resolved = try resolveIndex()
         let descriptor = resolved.descriptor
         let perm = resolved.permutation
 
-        let rawResults: [(permutedFields: [any TupleElement], primaryKey: [any TupleElement])]
-        rawResults = try await queryContext.withReadableIndex(
+        return try await queryContext.withReadableIndex(
             named: indexName,
             kindIdentifier: "permuted",
             for: T.self
@@ -244,34 +251,27 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
                 idExpression: FieldKeyExpression(fieldName: "id")
             )
 
-            return try await maintainer.scanAll(transaction: transaction)
-        }
-
-        // Build mapping: packed primary key → permutedFields
-        var fieldsByPackedKey: [ByteString: [any TupleElement]] = [:]
-        for result in rawResults {
-            let packedPrimaryKey = Tuple(result.primaryKey).pack()
-            fieldsByPackedKey[packedPrimaryKey] = result.permutedFields
-        }
-
-        // Fetch items (order may differ from rawResults; missing IDs are skipped)
-        let tuples = rawResults.map { Tuple($0.primaryKey) }
-        let items = try await queryContext.fetchItems(ids: tuples, type: T.self)
-
-        // Match items with permuted fields by ID
-        // Use DataAccess.extractId() to ensure consistency with the storage path
-        // (PermutedIndexMaintainer.buildPermutedKey uses the same method).
-        let idExpression = FieldKeyExpression(fieldName: "id")
-        var finalResults: [(permutedFields: [any TupleElement], item: T)] = []
-        for item in items {
-            let pkTuple = try DataAccess.extractId(from: item, using: idExpression)
-            let packedPrimaryKey = pkTuple.pack()
-            if let fields = fieldsByPackedKey[packedPrimaryKey] {
-                finalResults.append((permutedFields: fields, item: item))
+            let rawResults = try await maintainer.scanAll(
+                transaction: transaction
+            )
+            let tuples = rawResults.map { Tuple($0.primaryKey) }
+            let items = try await queryContext.fetchItemsPreservingOrder(
+                ids: tuples,
+                type: T.self,
+                transaction: transaction
+            )
+            let resolvedItems = try PermutedQueryResultAssembler.requireItems(
+                identifiers: tuples,
+                fetchedItems: items,
+                indexName: self.indexName
+            )
+            var results: [(permutedFields: [FieldValue], item: T)] = []
+            results.reserveCapacity(rawResults.count)
+            for (rawResult, item) in zip(rawResults, resolvedItems) {
+                results.append((rawResult.permutedFields, item))
             }
+            return results
         }
-
-        return finalResults
     }
 
     private func resolveIndex() throws -> (descriptor: IndexDescriptor, permutation: Permutation) {
@@ -398,7 +398,7 @@ extension DatabaseContext {
 // MARK: - Permuted Query Error
 
 /// Errors for permuted query operations
-public enum PermutedQueryError: Error, CustomStringConvertible {
+public enum PermutedQueryError: Error, CustomStringConvertible, Equatable {
     /// Index not found
     case indexNotFound(String)
 
@@ -417,6 +417,12 @@ public enum PermutedQueryError: Error, CustomStringConvertible {
     /// Query limits cannot be negative.
     case invalidLimit(Int)
 
+    /// The fetch layer violated the one-result-slot-per-identifier contract.
+    case fetchedItemCountMismatch(index: String, expected: Int, actual: Int)
+
+    /// An index entry references an entity that is not present in storage.
+    case indexedItemMissing(index: String, primaryKey: ByteString)
+
     public var description: String {
         switch self {
         case .indexNotFound(let name):
@@ -431,6 +437,10 @@ public enum PermutedQueryError: Error, CustomStringConvertible {
             return "Query permutation does not match index '\(name)'"
         case .invalidLimit(let limit):
             return "Permuted query limit must be nonnegative, got \(limit)"
+        case .fetchedItemCountMismatch(let index, let expected, let actual):
+            return "Permuted index '\(index)' fetched \(actual) item slots for \(expected) identifiers"
+        case .indexedItemMissing(let index, let primaryKey):
+            return "Permuted index '\(index)' references missing item \(primaryKey)"
         }
     }
 }

@@ -5,7 +5,7 @@ import Testing
 
 @Suite("Item envelope byte ownership")
 struct ItemEnvelopeSliceTests {
-    @Test("deserialization accepts a retained non-zero-index slice")
+    @Test("deserialization accepts a rebased retained view")
     func retainedSlice() throws {
         let payload: ByteString = [0x10, 0x20, 0x30]
         let serialized = try ItemEnvelope.inline(
@@ -19,7 +19,7 @@ struct ItemEnvelopeSliceTests {
             .appending(0xEE)
         let frame = framed[1..<(1 + serialized.count)]
 
-        #expect(frame.startIndex == 1)
+        #expect(frame.startIndex == 0)
         #expect(ItemEnvelope.isEnvelope(frame))
         let envelope = try ItemEnvelope.deserialize(frame)
         guard case .inline(let decodedPayload) = envelope.content else {
@@ -27,10 +27,7 @@ struct ItemEnvelopeSliceTests {
             return
         }
         #expect(decodedPayload == payload)
-        #expect(
-            decodedPayload.startIndex
-                == frame.startIndex + ItemEnvelope.headerSize
-        )
+        #expect(decodedPayload.startIndex == 0)
         let frameAddress = frame.withUnsafeBytes {
             $0.baseAddress.map(UInt.init(bitPattern:))
         }

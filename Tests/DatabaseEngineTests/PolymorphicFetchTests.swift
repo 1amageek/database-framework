@@ -148,6 +148,84 @@ struct PolymorphicFetchTests {
 
     // MARK: - Projection Round-Trip
 
+    @Test("Empty polymorphic reads do not create a projection namespace")
+    func emptyReadsDoNotCreateProjectionNamespace() async throws {
+        let container = try await setupContainer()
+        let path = ["polymorphic_fetch_tests_shared"]
+        if try await container.engine.namespaceExists(path: path) {
+            try await container.engine.removeNamespace(path: path)
+        }
+        #expect(try await container.engine.namespaceExists(path: path) == false)
+
+        let context = container.newContext()
+        let scanned = try await context.fetchPolymorphic(
+            PolymorphicFetchArticle.self
+        )
+        let fetched = try await context.fetchPolymorphic(
+            PolymorphicFetchArticle.self,
+            id: "missing"
+        )
+
+        #expect(scanned.isEmpty)
+        #expect(fetched == nil)
+        #expect(try await container.engine.namespaceExists(path: path) == false)
+    }
+
+    @Test("Caller-owned polymorphic fetch observes projection writes in the same transaction")
+    func callerOwnedFetchObservesProjectionWrite() async throws {
+        let container = try await setupContainer()
+        try await cleanup(container: container)
+        let context = container.newContext()
+        let article = PolymorphicFetchArticle(
+            title: "Read your writes",
+            body: "Same transaction"
+        )
+        let canonicalModel = try PersistedModel(article)
+        let identifier = try article.persistableIdentifierTuple()
+        let entity = try #require(
+            container.schema.entity(
+                named: PolymorphicFetchArticle.persistableType
+            )
+        )
+        let compositeIdentifier = try PolymorphicIdentifierKey.tuple(
+            for: entity,
+            identifier: identifier
+        )
+        let group = try container.polymorphicGroup(
+            identifier: PolymorphicFetchArticle.polymorphableType
+        )
+
+        try await container.engine.withTransaction { transaction in
+            try await PolymorphicProjectionMaintainer(container: container)
+                .update(
+                    PersistableWriteResult(
+                        canonicalModel: canonicalModel,
+                        previousCanonicalModel: nil,
+                        encodedValue: try DataAccess.serialize(canonicalModel),
+                        identifier: identifier
+                    ),
+                    transaction: transaction
+                )
+
+            let missingIdentifier = try PolymorphicIdentifierKey.tuple(
+                for: entity,
+                identifier: Tuple("missing")
+            )
+            let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
+                group: group,
+                ids: [compositeIdentifier, missingIdentifier],
+                transaction: transaction
+            )
+            #expect(fetched.count == 2)
+            #expect(
+                try fetched[0]?.item
+                    .decode(as: PolymorphicFetchArticle.self).title
+                    == "Read your writes"
+            )
+            #expect(fetched[1] == nil)
+        }
+    }
+
     @Test("fetchPolymorphic returns transaction-maintained projections")
     func fetchPolymorphicScansMaintainedProjections() async throws {
         let container = try await setupContainer()
@@ -166,8 +244,12 @@ struct PolymorphicFetchTests {
 
         #expect(items.count == 2)
 
-        let articles = items.compactMap { $0 as? PolymorphicFetchArticle }
-        let reports = items.compactMap { $0 as? PolymorphicFetchReport }
+        let articles = try items
+            .filter { $0.entity == PolymorphicFetchArticle.persistableType }
+            .map { try $0.decode(as: PolymorphicFetchArticle.self) }
+        let reports = try items
+            .filter { $0.entity == PolymorphicFetchReport.persistableType }
+            .map { try $0.decode(as: PolymorphicFetchReport.self) }
         #expect(articles.count == 1)
         #expect(reports.count == 1)
         #expect(articles.first?.title == "Hello")
@@ -192,8 +274,14 @@ struct PolymorphicFetchTests {
         let fetchedReport = try await context.fetchPolymorphic(PolymorphicFetchArticle.self, id: report.id)
         let missing = try await context.fetchPolymorphic(PolymorphicFetchArticle.self, id: "does-not-exist")
 
-        #expect((fetchedArticle as? PolymorphicFetchArticle)?.title == "Headline")
-        #expect((fetchedReport as? PolymorphicFetchReport)?.pageCount == 7)
+        #expect(
+            try fetchedArticle?.decode(as: PolymorphicFetchArticle.self).title
+                == "Headline"
+        )
+        #expect(
+            try fetchedReport?.decode(as: PolymorphicFetchReport.self).pageCount
+                == 7
+        )
         #expect(missing == nil)
     }
 
@@ -222,8 +310,16 @@ struct PolymorphicFetchTests {
         let items = try await context.fetchPolymorphic(PolymorphicFetchArticle.self)
 
         #expect(items.count == 5)
-        #expect(items.compactMap { $0 as? PolymorphicFetchArticle }.count == 3)
-        #expect(items.compactMap { $0 as? PolymorphicFetchReport }.count == 2)
+        #expect(
+            items.filter {
+                $0.entity == PolymorphicFetchArticle.persistableType
+            }.count == 3
+        )
+        #expect(
+            items.filter {
+                $0.entity == PolymorphicFetchReport.persistableType
+            }.count == 2
+        )
     }
 
     @Test("findPolymorphic decodes mixed rows with ordering and continuation")
@@ -430,8 +526,14 @@ struct PolymorphicFetchTests {
         let fetchedByID = try await context.fetchPolymorphic(PolymorphicFetchArticle.self, id: article.id)
 
         #expect(scanned.count == 1)
-        #expect((scanned.first as? PolymorphicFetchArticle)?.title == "Direct")
-        #expect((fetchedByID as? PolymorphicFetchArticle)?.id == article.id)
+        #expect(
+            try scanned.first?.decode(as: PolymorphicFetchArticle.self).title
+                == "Direct"
+        )
+        #expect(
+            try fetchedByID?.decode(as: PolymorphicFetchArticle.self).id
+                == article.id
+        )
     }
 
     // MARK: - Staged Delete
@@ -482,9 +584,12 @@ struct PolymorphicFetchTests {
         let survivingReport = try await context.fetchPolymorphic(PolymorphicFetchArticle.self, id: report.id)
 
         #expect(remaining.count == 1)
-        #expect(remaining.first is PolymorphicFetchReport)
+        #expect(remaining.first?.entity == PolymorphicFetchReport.persistableType)
         #expect(clearedArticle == nil)
-        #expect((survivingReport as? PolymorphicFetchReport)?.pageCount == 9)
+        #expect(
+            try survivingReport?.decode(as: PolymorphicFetchReport.self).pageCount
+                == 9
+        )
     }
 }
 #endif

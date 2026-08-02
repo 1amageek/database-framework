@@ -174,8 +174,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal func executeDirect(
-        configuration: TransactionConfiguration = .default,
-        cachePolicy: CachePolicy = .server
+        configuration: TransactionConfiguration = .default
     ) async throws -> [T] {
         guard !searchTerms.isEmpty else {
             return []
@@ -186,8 +185,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             named: indexName
         )
 
-        // Execute search within transaction
-        let matchingIds: [Tuple] = try await queryContext.withReadableIndex(
+        return try await queryContext.withReadableIndex(
             named: indexName,
             kindIdentifier: "fulltext",
             for: T.self,
@@ -196,32 +194,33 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             guard let readableIndex else {
                 return []
             }
+            let matchingIds: [Tuple]
             if self.matchMode == .phrase {
                 // Phrase search requires position-verified matching via maintainer
-                return try await self.searchPhrase(
+                matchingIds = try await self.searchPhrase(
                     indexName: indexName,
                     indexSubspace: readableIndex.subspace,
                     transaction: transaction
                 )
+            } else {
+                matchingIds = try await self.searchFullText(
+                    terms: self.searchTerms,
+                    matchMode: self.matchMode,
+                    configuration: indexConfiguration,
+                    indexSubspace: readableIndex.subspace,
+                    transaction: transaction
+                )
             }
-            return try await self.searchFullText(
-                terms: self.searchTerms,
-                matchMode: self.matchMode,
-                configuration: indexConfiguration,
-                indexSubspace: readableIndex.subspace,
+            var items = try await self.fetchIndexedItems(
+                ids: matchingIds,
+                indexName: indexName,
                 transaction: transaction
             )
+            if let limit = self.fetchLimit, items.count > limit {
+                items = Array(items.prefix(limit))
+            }
+            return items
         }
-
-        // Fetch items by primary keys
-        var items = try await queryContext.fetchItems(ids: matchingIds, type: T.self, cachePolicy: cachePolicy)
-
-        // Apply limit if specified
-        if let limit = fetchLimit, items.count > limit {
-            items = Array(items.prefix(limit))
-        }
-
-        return items
     }
 
     /// Execute the full-text search with faceted results
@@ -280,8 +279,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal func executeFacetedDirect(
-        configuration: TransactionConfiguration = .default,
-        cachePolicy: CachePolicy = .server
+        configuration: TransactionConfiguration = .default
     ) async throws -> FacetedSearchResult<T> {
         guard !searchTerms.isEmpty else {
             return FacetedSearchResult(items: [], facets: [:], totalCount: 0)
@@ -292,58 +290,63 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             named: indexName
         )
 
-        // Execute search within transaction
-        let matchingIds: [Tuple] = try await queryContext.withReadableIndex(
+        return try await queryContext.withReadableIndex(
             named: indexName,
             kindIdentifier: "fulltext",
             for: T.self,
             configuration: configuration
         ) { readableIndex, transaction in
             guard let readableIndex else {
-                return []
+                return FacetedSearchResult(
+                    items: [],
+                    facets: [:],
+                    totalCount: 0
+                )
             }
+            let matchingIds: [Tuple]
             if self.matchMode == .phrase {
-                return try await self.searchPhrase(
+                matchingIds = try await self.searchPhrase(
                     indexName: indexName,
                     indexSubspace: readableIndex.subspace,
                     transaction: transaction
                 )
+            } else {
+                matchingIds = try await self.searchFullText(
+                    terms: self.searchTerms,
+                    matchMode: self.matchMode,
+                    configuration: indexConfiguration,
+                    indexSubspace: readableIndex.subspace,
+                    transaction: transaction
+                )
             }
-            return try await self.searchFullText(
-                terms: self.searchTerms,
-                matchMode: self.matchMode,
-                configuration: indexConfiguration,
-                indexSubspace: readableIndex.subspace,
+            let allItems = try await self.fetchIndexedItems(
+                ids: matchingIds,
+                indexName: indexName,
                 transaction: transaction
             )
-        }
-
-        // Fetch all matching items
-        let allItems = try await queryContext.fetchItems(ids: matchingIds, type: T.self, cachePolicy: cachePolicy)
-        let totalCount = allItems.count
-
-        // Compute facet counts from items
-        var facetCounts: [String: [(value: String, count: Int64)]] = [:]
-
-        if !facetFields.isEmpty {
-            facetCounts = try computeFacetsFromItems(
-                allItems,
-                fields: facetFields,
-                limit: facetLimit
+            let totalCount = allItems.count
+            let facetCounts: [String: [(value: String, count: Int64)]]
+            if self.facetFields.isEmpty {
+                facetCounts = [:]
+            } else {
+                facetCounts = try self.computeFacetsFromItems(
+                    allItems,
+                    fields: self.facetFields,
+                    limit: self.facetLimit
+                )
+            }
+            let items: [T]
+            if let limit = self.fetchLimit, allItems.count > limit {
+                items = Array(allItems.prefix(limit))
+            } else {
+                items = allItems
+            }
+            return FacetedSearchResult(
+                items: items,
+                facets: facetCounts,
+                totalCount: totalCount
             )
         }
-
-        // Apply limit if specified
-        var items = allItems
-        if let limit = fetchLimit, items.count > limit {
-            items = Array(items.prefix(limit))
-        }
-
-        return FacetedSearchResult(
-            items: items,
-            facets: facetCounts,
-            totalCount: totalCount
-        )
     }
 
     /// Compute facet counts directly from items
@@ -646,8 +649,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal func executeScoredDirect(
-        configuration: TransactionConfiguration = .default,
-        cachePolicy: CachePolicy = .server
+        configuration: TransactionConfiguration = .default
     ) async throws -> [(item: T, score: Double)] {
         guard !searchTerms.isEmpty else {
             return []
@@ -696,31 +698,43 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 limit: self.fetchLimit
             )
 
-            // Fetch items
             let ids = scoredResults.map { $0.id }
-            let items = try await self.queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
-
-            // Create a map of id -> score for efficient lookup
-            var idToScore: [ByteString: Double] = [:]
-            for result in scoredResults {
-                let key = FullTextDocumentLookupKey.key(for: result.id)
-                idToScore[key] = result.score
-            }
-
-            // Combine items with scores
+            let items = try await self.fetchIndexedItems(
+                ids: ids,
+                indexName: indexName,
+                transaction: transaction
+            )
             var results: [(item: T, score: Double)] = []
-            for item in items {
-                let key = try FullTextDocumentLookupKey.key(for: item)
-                if let score = idToScore[key] {
-                    results.append((item: item, score: score))
-                }
+            results.reserveCapacity(scoredResults.count)
+            for (item, scoredResult) in zip(items, scoredResults) {
+                results.append((item: item, score: scoredResult.score))
             }
-
-            // Sort by score descending (in case fetchItems changed order)
-            results.sort { $0.score > $1.score }
-
             return results
         }
+    }
+
+    private func fetchIndexedItems(
+        ids: [Tuple],
+        indexName: String,
+        transaction: any TransactionAccess
+    ) async throws -> [T] {
+        let fetched = try await queryContext.fetchItemsPreservingOrder(
+            ids: ids,
+            type: T.self,
+            transaction: transaction
+        )
+        var items: [T] = []
+        items.reserveCapacity(fetched.count)
+        for (id, item) in zip(ids, fetched) {
+            guard let item else {
+                throw FullTextQueryError.indexedItemMissing(
+                    index: indexName,
+                    primaryKey: id.pack()
+                )
+            }
+            items.append(item)
+        }
+        return items
     }
 
     internal func toSelectQuery(
@@ -1132,6 +1146,9 @@ public enum FullTextQueryError: Error, CustomStringConvertible {
     /// Internal dispatch selected a search path with incompatible semantics.
     case invalidExecutionPath(String)
 
+    /// An index entry references an entity that is not present in storage.
+    case indexedItemMissing(index: String, primaryKey: ByteString)
+
     public var description: String {
         switch self {
         case .noSearchTerms:
@@ -1148,6 +1165,8 @@ public enum FullTextQueryError: Error, CustomStringConvertible {
             return "Invalid full-text query response: \(reason)"
         case .invalidExecutionPath(let reason):
             return "Invalid full-text execution path: \(reason)"
+        case .indexedItemMissing(let index, let primaryKey):
+            return "Full-text index '\(index)' references missing item \(primaryKey)"
         }
     }
 }

@@ -6,6 +6,7 @@ import QueryAST
 import DatabaseEngine
 import DatabaseRuntime
 import DatabaseWire
+import StorageKit
 
 // MARK: - DatabaseContext + SQL String Execution
 
@@ -28,8 +29,8 @@ extension DatabaseContext {
     /// 1. Parse SQL string → SelectQuery
     /// 2. Detect SPARQL() functions
     /// 3. Execute SPARQL subqueries and inline results
-    /// 4. Convert rewritten SelectQuery to Query<T>
-    /// 5. Execute via standard fetch() path
+    /// 4. Execute the canonical SelectQuery through DatabaseEngine
+    /// 5. Decode canonical rows into the requested model type
     ///
     /// - Parameters:
     ///   - sql: SQL query string
@@ -55,25 +56,44 @@ extension DatabaseContext {
             throw SQLExecutionError.unsupportedStatement("Only SELECT queries are supported")
         }
 
-        // 3. Rewrite SPARQL() functions if present
-        #if DATABASE_GRAPH_INDEXES
-        let executableQuery = try await rewriteSPARQLFunctions(
-            selectQuery,
+        let execution = ReadExecutionContext(
+            options: ReadExecutionOptions(budget: budget),
+            monotonicClock: container.monotonicClock,
             workMeter: workMeter
         )
+
+        // 3. Rewrite SPARQL() functions and execute the parent SQL read on one
+        // storage transaction so every graph and entity read shares a snapshot.
+        #if DATABASE_GRAPH_INDEXES
+        let response: QueryResponse
+        if SPARQLFunctionRewriter.containsSPARQLFunction(in: selectQuery) {
+            response = try await indexQueryContext.withTransaction {
+                transaction in
+                let executableQuery = try await self.rewriteSPARQLFunctions(
+                    selectQuery,
+                    workMeter: workMeter,
+                    transaction: transaction
+                )
+                return try await self.query(
+                    executableQuery,
+                    execution: execution,
+                    transaction: transaction
+                )
+            }
+        } else {
+            response = try await query(
+                selectQuery,
+                execution: execution
+            )
+        }
         #else
-        let executableQuery = selectQuery
+        let response = try await query(
+            selectQuery,
+            execution: execution
+        )
         #endif
 
-        // 4. Execute via DatabaseEngine layer
-        let response = try await query(
-            executableQuery,
-            execution: ReadExecutionContext(
-                options: ReadExecutionOptions(budget: budget),
-                monotonicClock: container.monotonicClock,
-                workMeter: workMeter
-            )
-        )
+        // 4. Materialize typed models from canonical rows.
         guard let rowCount = UInt32(exactly: response.rows.count) else {
             throw DatabaseWorkLimitError.maximumRows(
                 stage: .resultMaterialization,
@@ -98,11 +118,13 @@ extension DatabaseContext {
     /// - Throws: `SPARQLFunctionError` for SPARQL execution errors
     private func rewriteSPARQLFunctions(
         _ selectQuery: SelectQuery,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        transaction: any TransactionAccess
     ) async throws -> SelectQuery {
         let rewriter = SPARQLFunctionRewriter(
             context: self,
-            workMeter: workMeter
+            workMeter: workMeter,
+            transaction: transaction
         )
         return try await rewriter.rewrite(selectQuery)
     }

@@ -89,10 +89,22 @@ struct SchemaEntityTests {
         name: String,
         directoryComponents: [DirectoryPathComponent]
     ) throws -> Schema.Entity {
-        try Schema.Entity(
+        let dynamicFields: [String] = directoryComponents.compactMap { component in
+            guard case .dynamicField(let fieldName) = component else {
+                return nil
+            }
+            return fieldName
+        }
+        return try Schema.Entity(
             name: name,
             identifierType: .string,
-            fields: [],
+            fields: dynamicFields.enumerated().map { offset, fieldName in
+                FieldSchema(
+                    name: fieldName,
+                    fieldNumber: offset + 1,
+                    type: .string
+                )
+            },
             directoryComponents: directoryComponents
         )
     }

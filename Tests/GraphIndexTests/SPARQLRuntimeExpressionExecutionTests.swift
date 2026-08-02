@@ -313,6 +313,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
         )
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: ExistsLimitScanner()
         ).execute(
@@ -569,6 +570,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
     ) async throws -> [VariableBinding] {
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: [],
             functionRegistry: functionRegistry

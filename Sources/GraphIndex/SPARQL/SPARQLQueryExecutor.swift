@@ -24,6 +24,7 @@ public struct SPARQLQueryExecutor: Sendable {
     // MARK: - Properties
 
     let database: any StorageEngine
+    let monotonicClock: any StorageMonotonicClock
     let wallClock: any WallClock
     let datasetScanner: any RDFDatasetScanner
     let readMode: RDFDatasetReadMode
@@ -93,6 +94,7 @@ public struct SPARQLQueryExecutor: Sendable {
     /// Initialize with an abstract scanner for one logical RDF dataset.
     public init(
         database: any StorageEngine,
+        monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         datasetScanner: any RDFDatasetScanner,
         readMode: RDFDatasetReadMode = .snapshot,
@@ -102,6 +104,7 @@ public struct SPARQLQueryExecutor: Sendable {
         propertyPathConfiguration: ExecutionPropertyPathConfiguration = .default
     ) {
         self.database = database
+        self.monotonicClock = monotonicClock
         self.wallClock = wallClock
         self.datasetScanner = datasetScanner
         self.readMode = readMode
@@ -118,6 +121,7 @@ public struct SPARQLQueryExecutor: Sendable {
     /// Initialize with canonical physical RDF dataset sources.
     public init(
         database: any StorageEngine,
+        monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         sources: [RDFDatasetSource],
         readMode: RDFDatasetReadMode = .snapshot,
@@ -128,6 +132,7 @@ public struct SPARQLQueryExecutor: Sendable {
     ) {
         self.init(
             database: database,
+            monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: IndexedRDFDatasetScanner(sources: sources),
             readMode: readMode,

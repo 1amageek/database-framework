@@ -101,6 +101,7 @@ struct CanonicalRDFGraphStoreTests {
 
         let executor = SPARQLQueryExecutor(
             database: engine,
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: store
         )

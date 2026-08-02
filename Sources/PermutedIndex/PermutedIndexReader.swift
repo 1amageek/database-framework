@@ -1,3 +1,4 @@
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -17,11 +18,12 @@ struct PermutedIndexReader: Sendable {
                 got: values.count
             )
         }
+        let canonicalValues = try values.map(canonicalStorageElement)
         let prefixSubspace = values.isEmpty
             ? subspace
             : Subspace(
                 prefix: subspace.prefix.appending(
-                    contentsOf: Tuple(values).pack()
+                    contentsOf: Tuple(canonicalValues).pack()
                 )
             )
         let (begin, end) = prefixSubspace.range()
@@ -71,11 +73,11 @@ struct PermutedIndexReader: Sendable {
     func entries(
         transaction: any TransactionAccess
     ) async throws -> [
-        (permutedFields: [any TupleElement], primaryKey: [any TupleElement])
+        (permutedFields: [FieldValue], primaryKey: [any TupleElement])
     ] {
         let (begin, end) = subspace.range()
         var results: [
-            (permutedFields: [any TupleElement], primaryKey: [any TupleElement])
+            (permutedFields: [FieldValue], primaryKey: [any TupleElement])
         ] = []
 
         let sequence = try await TransactionRangeCollection.collect(using: transaction,
@@ -95,9 +97,14 @@ struct PermutedIndexReader: Sendable {
                     actual: elements.count
                 )
             }
+            var fields: [FieldValue] = []
+            fields.reserveCapacity(permutation.size)
+            for element in elements.prefix(permutation.size) {
+                fields.append(try FieldValueTupleCodec.decode(element))
+            }
             results.append(
                 (
-                    Array(elements.prefix(permutation.size)),
+                    fields,
                     Array(elements.suffix(from: permutation.size))
                 )
             )
@@ -109,5 +116,18 @@ struct PermutedIndexReader: Sendable {
         for values: [any TupleElement]
     ) throws -> [any TupleElement] {
         try permutation.inverse.apply(values)
+    }
+
+    private func canonicalStorageElement(
+        _ element: any TupleElement
+    ) throws -> any TupleElement {
+        if case .bytes(let bytes)? = element.tupleValue,
+           FieldValueTupleCodec.isCanonicalEncoding(bytes) {
+            _ = try FieldValueTupleCodec.decode(element)
+            return element
+        }
+
+        let value = try CanonicalTupleElementCodec.encode(element)
+        return try FieldValueTupleCodec.tupleElement(for: value)
     }
 }

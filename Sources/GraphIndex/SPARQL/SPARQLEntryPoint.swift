@@ -261,6 +261,7 @@ extension DatabaseContext {
                 }
                 let executor = SPARQLQueryExecutor(
                     database: self.container.engine,
+                    monotonicClock: self.container.monotonicClock,
                     wallClock: self.container.wallClock,
                     sources: sources,
                     datasetScope: datasetScope
@@ -378,6 +379,7 @@ extension DatabaseContext {
                 }
                 let executor = SPARQLQueryExecutor(
                     database: self.container.engine,
+                    monotonicClock: self.container.monotonicClock,
                     wallClock: self.container.wallClock,
                     sources: sources,
                     datasetScope: datasetScope

@@ -1,3 +1,4 @@
+import DatabaseTypes
 import StorageKit
 import Testing
 @testable import DatabaseEngine
@@ -13,7 +14,7 @@ struct TupleUnsignedIntegerCodecTests {
 
         for value in values {
             let element = try TupleEncoder.encode(value)
-            #expect(element is UInt64)
+            #expect(try FieldValue(tupleElement: element) == .uint64(value))
 
             let packed = Tuple(element).pack()
             let unpacked = try Tuple.unpack(from: packed)
@@ -27,13 +28,14 @@ struct TupleUnsignedIntegerCodecTests {
         }
     }
 
-    @Test("Existing positive Int64 tuple representation remains canonical")
-    func preservesExistingPositiveIntegerEncoding() throws {
+    @Test("Signed and unsigned canonical values retain distinct identities")
+    func preservesIntegerDomainIdentity() throws {
         let unsignedElement = try TupleEncoder.encode(UInt64(42))
         let signedElement = try TupleEncoder.encode(Int64(42))
 
-        #expect(unsignedElement is Int64)
-        #expect(Tuple(unsignedElement).pack() == Tuple(signedElement).pack())
+        #expect(try FieldValue(tupleElement: unsignedElement) == .uint64(42))
+        #expect(try FieldValue(tupleElement: signedElement) == .int64(42))
+        #expect(Tuple(unsignedElement).pack() != Tuple(signedElement).pack())
         #expect(try TupleDecoder.decode(unsignedElement, as: UInt64.self) == 42)
     }
 

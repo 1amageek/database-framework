@@ -210,27 +210,10 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
 
     // MARK: - Helpers
 
-    /// Extract a safe error type string for metrics
+    /// Returns one bounded label so untrusted error types cannot create an
+    /// unbounded metrics-cardinality surface. Detailed errors belong in logs.
     static func metricsErrorType(for error: Error) -> String {
         _ = error
-        let typeName = "operation_failure"
-
-        // The label contract is ASCII-only and bounded. Iterating Unicode scalars
-        // directly avoids loading a regular-expression engine for error reporting.
-        var sanitized = ""
-        sanitized.reserveCapacity(min(typeName.utf8.count, 50))
-        let underscore: Unicode.Scalar = "_"
-        var outputCount = 0
-        for scalar in typeName.unicodeScalars {
-            guard outputCount < 50 else { break }
-            switch scalar.value {
-            case 48...57, 65...90, 95, 97...122:
-                sanitized.unicodeScalars.append(scalar)
-            default:
-                sanitized.unicodeScalars.append(underscore)
-            }
-            outputCount += 1
-        }
-        return sanitized
+        return "operation_failure"
     }
 }

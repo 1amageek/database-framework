@@ -20,7 +20,7 @@
 ///
 /// // Use cache only if younger than 30 seconds
 /// let users = try await context.fetch(User.self)
-///     .cachePolicy(.stale(30))
+///     .cachePolicy(.stale(.seconds(30)))
 ///     .execute()
 /// ```
 public enum CachePolicy: Sendable, Hashable {

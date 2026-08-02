@@ -273,6 +273,7 @@ struct DatabaseSHACLValidationProcessorTests {
         )
         let executor = SPARQLQueryExecutor(
             database: container.engine,
+            monotonicClock: container.monotonicClock,
             wallClock: FixedTestWallClock(),
             sources: [source],
             ontologyContext: ontologyContext

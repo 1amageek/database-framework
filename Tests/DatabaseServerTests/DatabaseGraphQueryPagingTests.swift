@@ -495,8 +495,7 @@ struct DatabaseGraphQueryPagingTests {
     @Test("cold SPARQL resolution uses one read-only caller transaction")
     func coldSPARQLResolutionUsesCallerTransaction() async throws {
         let engine = TransactionCountingInMemoryEngine()
-        _ = try await makeContainer(engine: engine)
-        let readContainer = try await makeEmptyContainer(engine: engine)
+        let readContainer = try await makeContainer(engine: engine)
         let transactionCountBeforeRead = engine.transactionCount
         let keyCountBeforeRead = engine.keyCount
 

@@ -25,21 +25,6 @@ import OntologyIndex
 /// - Transitive properties enable optimized BFS expansion
 ///
 /// All methods are non-mutating — closures are eagerly computed at init.
-///
-/// **Example**:
-/// ```swift
-/// let ontology = try await context.ontology.get(iri: "http://example.org/family")!
-/// let ontoCtx = OntologyContext(ontology: ontology)
-/// let executor = SPARQLQueryExecutor(
-///     database: db,
-///     indexSubspace: subspace,
-///     strategy: .hexastore,
-///     fromFieldName: "subject",
-///     edgeFieldName: "predicate",
-///     toFieldName: "object",
-///     ontologyContext: ontoCtx
-/// )
-/// ```
 public struct OntologyContext: Sendable {
 
     /// Pre-computed role hierarchy for property expansion

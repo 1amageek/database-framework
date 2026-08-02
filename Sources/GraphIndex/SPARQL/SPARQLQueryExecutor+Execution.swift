@@ -25,7 +25,10 @@ extension SPARQLQueryExecutor {
         )
         let executor = try requestScoped(by: workMeter)
         return try await StorageTransactionExecutor(engine: database)
-            .withTransaction { transaction in
+            .withTransaction(
+                configuration: .default,
+                clock: monotonicClock
+            ) { transaction in
             let attemptExecutor = try executor.transactionAttemptScoped()
             let evaluated = try await attemptExecutor.evaluate(
                 pattern: pattern,
@@ -131,7 +134,10 @@ extension SPARQLQueryExecutor {
         let executor = try scoped(to: selectPlan.ordered.datasetScope)
             .requestScoped(by: workMeter)
         return try await StorageTransactionExecutor(engine: database)
-            .withTransaction { transaction in
+            .withTransaction(
+                configuration: .default,
+                clock: monotonicClock
+            ) { transaction in
             let attemptExecutor = try executor.transactionAttemptScoped()
             let evaluated = try await attemptExecutor.evaluateSelectPlan(
                 selectPlan,

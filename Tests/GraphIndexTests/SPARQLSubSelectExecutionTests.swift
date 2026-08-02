@@ -382,6 +382,7 @@ struct SPARQLSubSelectExecutionTests {
 
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: scanner
         ).execute(
@@ -430,6 +431,7 @@ struct SPARQLSubSelectExecutionTests {
         do {
             _ = try await SPARQLQueryExecutor(
                 database: InMemoryEngine(),
+                monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock(),
                 sources: []
             ).execute(
@@ -469,6 +471,7 @@ struct SPARQLSubSelectExecutionTests {
         do {
             _ = try await SPARQLQueryExecutor(
                 database: InMemoryEngine(),
+                monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock(),
                 sources: []
             ).execute(
@@ -514,6 +517,7 @@ struct SPARQLSubSelectExecutionTests {
         let pattern = try GraphPatternConverter.convert(.subquery(inner))
         let executor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: RecordingScanner(observations: observations)
         )
@@ -567,6 +571,7 @@ struct SPARQLSubSelectExecutionTests {
 
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: RetryAwareScanner(observations: observations)
         ).execute(
@@ -607,6 +612,7 @@ struct SPARQLSubSelectExecutionTests {
 
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: FollowingBindingScanner()
         ).execute(
@@ -846,6 +852,7 @@ struct SPARQLSubSelectExecutionTests {
     ) async throws -> [VariableBinding] {
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
         ).execute(

@@ -42,6 +42,7 @@ struct StorageInvariantTests {
                     indexName: indexName,
                     persistableType: "TestType",
                     valueKey: Tuple("dup").pack(),
+                    conflictingValues: [.string("dup")],
                     existingPrimaryKey: Tuple("pk1"),
                     newPrimaryKey: Tuple("pk2"),
                     transaction: tx

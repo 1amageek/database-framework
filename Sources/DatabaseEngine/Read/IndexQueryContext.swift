@@ -413,6 +413,36 @@ public struct IndexQueryContext: Sendable {
         return results
     }
 
+    /// Fetches index-emitted identifiers without opening nested transactions.
+    /// The caller owns the transaction and therefore the read snapshot.
+    package func fetchItemsPreservingOrder<T: Persistable>(
+        ids: [Tuple],
+        type: T.Type,
+        transaction: any TransactionAccess
+    ) async throws -> [T?] {
+        try context.container.securityDelegate?.evaluateList(
+            entity: T.persistableType,
+            limit: ids.count,
+            offset: nil,
+            orderBy: nil
+        )
+
+        let partitionValues = partitions ?? FieldObject()
+        var results: [T?] = []
+        results.reserveCapacity(ids.count)
+        for identifierTuple in ids {
+            results.append(
+                try await context.model(
+                    forIdentifierTuple: identifierTuple,
+                    as: type,
+                    partitions: partitionValues,
+                    transaction: transaction
+                )
+            )
+        }
+        return results
+    }
+
     /// Fetch a single item by ID
     ///
     /// For types with dynamic directories, uses the partition binding if set via `withPartition()`.

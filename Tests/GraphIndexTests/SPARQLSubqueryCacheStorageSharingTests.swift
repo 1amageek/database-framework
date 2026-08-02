@@ -329,6 +329,7 @@ private final class CountingSubqueryByteOwner: ByteStringOwner, Sendable {
     }
 
     var count: Int { bytes.count }
+    var retainedByteCount: Int? { bytes.count }
 
     var borrowCount: Int {
         borrowState.withLock { $0 }

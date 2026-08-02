@@ -147,7 +147,7 @@ struct FieldValueTupleCodecTests {
         }
         #expect(
             throws: FieldValueTupleCodecError.unsupportedElementType(
-                "Tuple"
+                "tuple"
             )
         ) {
             _ = try FieldValue(tupleElement: Tuple([Int64(1), Int64(2)]))

@@ -112,6 +112,7 @@ struct RDFDatasetScanReservationTests {
         let meter = makeMeter()
         let executor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(
                 now: Timestamp(secondsSinceUnixEpoch: 0)
             ),

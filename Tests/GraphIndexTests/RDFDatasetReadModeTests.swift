@@ -20,6 +20,7 @@ struct RDFDatasetReadModeTests {
         let defaultObservations = ScannerCallObservations()
         let defaultExecutor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(
                 now: Timestamp(secondsSinceUnixEpoch: 0)
             ),
@@ -41,6 +42,7 @@ struct RDFDatasetReadModeTests {
         let mutationObservations = ScannerCallObservations()
         let mutationExecutor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
+            monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(
                 now: Timestamp(secondsSinceUnixEpoch: 0)
             ),

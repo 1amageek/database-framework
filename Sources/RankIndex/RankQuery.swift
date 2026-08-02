@@ -153,8 +153,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal func executeDirect(
-        configuration: TransactionConfiguration = .default,
-        cachePolicy: CachePolicy = .server
+        configuration: TransactionConfiguration = .default
     ) async throws -> [(item: T, rank: Int)] {
         try validateMode()
 
@@ -172,8 +171,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             }
             return try await self.executeWithIndex(
                 indexSubspace: readableIndex.subspace,
-                transaction: transaction,
-                cachePolicy: cachePolicy
+                transaction: transaction
             )
         }
     }
@@ -181,8 +179,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// Execute query using the rank index
     private func executeWithIndex(
         indexSubspace: Subspace,
-        transaction: any TransactionAccess,
-        cachePolicy: CachePolicy
+        transaction: any TransactionAccess
     ) async throws -> [(item: T, rank: Int)] {
         let scoresSubspace = indexSubspace.subspace("scores")
         let scanner = RankScanner(scoresSubspace: scoresSubspace, transaction: transaction)
@@ -192,7 +189,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             return try await scanTop(
                 scanner: scanner,
                 k: k,
-                cachePolicy: cachePolicy
+                transaction: transaction
             )
 
         case .bottom(let k):
@@ -200,8 +197,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
                 scanner: scanner,
                 indexSubspace: indexSubspace,
                 k: k,
-                transaction: transaction,
-                cachePolicy: cachePolicy
+                transaction: transaction
             )
 
         case .range(let from, let to):
@@ -209,7 +205,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
                 scanner: scanner,
                 from: from,
                 to: to,
-                cachePolicy: cachePolicy
+                transaction: transaction
             )
 
         case .percentile(let p):
@@ -217,8 +213,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
                 scanner: scanner,
                 indexSubspace: indexSubspace,
                 p: p,
-                transaction: transaction,
-                cachePolicy: cachePolicy
+                transaction: transaction
             )
         }
     }
@@ -230,10 +225,14 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     private func scanTop(
         scanner: RankScanner,
         k: Int,
-        cachePolicy: CachePolicy
+        transaction: any TransactionAccess
     ) async throws -> [(item: T, rank: Int)] {
         let entries = try await scanner.top(k: k)
-        return try await fetchItemsWithRank(entries: entries, startRank: 0, cachePolicy: cachePolicy)
+        return try await fetchItemsWithRank(
+            entries: entries,
+            startRank: 0,
+            transaction: transaction
+        )
     }
 
     /// Scan bottom K items using a bounded forward storage range read.
@@ -241,8 +240,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         scanner: RankScanner,
         indexSubspace: Subspace,
         k: Int,
-        transaction: any TransactionAccess,
-        cachePolicy: CachePolicy
+        transaction: any TransactionAccess
     ) async throws -> [(item: T, rank: Int)] {
         let entries = try await scanner.bottom(k: k)
         let countKey = indexSubspace.pack(Tuple("_count"))
@@ -256,7 +254,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             entries: entries,
             startRank: startRank,
             rankStep: -1,
-            cachePolicy: cachePolicy
+            transaction: transaction
         )
     }
 
@@ -265,10 +263,14 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         scanner: RankScanner,
         from: Int,
         to: Int,
-        cachePolicy: CachePolicy
+        transaction: any TransactionAccess
     ) async throws -> [(item: T, rank: Int)] {
         let entries = try await scanner.rangeDescending(from: from, to: to)
-        return try await fetchItemsWithRank(entries: entries, startRank: from, cachePolicy: cachePolicy)
+        return try await fetchItemsWithRank(
+            entries: entries,
+            startRank: from,
+            transaction: transaction
+        )
     }
 
     /// Scan item at a specific percentile.
@@ -279,8 +281,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         scanner: RankScanner,
         indexSubspace: Subspace,
         p: Double,
-        transaction: any TransactionAccess,
-        cachePolicy: CachePolicy
+        transaction: any TransactionAccess
     ) async throws -> [(item: T, rank: Int)] {
         let countKey = indexSubspace.pack(Tuple("_count"))
         let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
@@ -302,7 +303,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         return try await fetchItemsWithRank(
             entries: [entry],
             startRank: safeTargetRank,
-            cachePolicy: cachePolicy
+            transaction: transaction
         )
     }
 
@@ -315,13 +316,13 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         entries: [RankScanEntry],
         startRank: Int,
         rankStep: Int = 1,
-        cachePolicy: CachePolicy
+        transaction: any TransactionAccess
     ) async throws -> [(item: T, rank: Int)] {
         let ids = entries.map { $0.primaryKey }
         let items = try await queryContext.fetchItemsPreservingOrder(
             ids: ids,
             type: T.self,
-            cachePolicy: cachePolicy
+            transaction: transaction
         )
         var results: [(item: T, rank: Int)] = []
         results.reserveCapacity(items.count)

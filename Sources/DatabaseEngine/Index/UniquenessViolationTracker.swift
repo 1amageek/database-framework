@@ -105,13 +105,15 @@ public final class UniquenessViolationTracker: Sendable {
     /// - Parameters:
     ///   - indexName: Name of the violated index
     ///   - persistableType: Type name of the affected model
-    ///   - valueKey: The duplicate index value (packed tuple)
+    ///   - valueKey: Tuple-packed duplicate values relative to the index subspace
+    ///   - conflictingValues: Canonical semantic values represented by `valueKey`
     ///   - primaryKey: Primary key of the conflicting entity
     ///   - transaction: Current transaction
     public func recordViolation(
         indexName: String,
         persistableType: String,
         valueKey: ByteString,
+        conflictingValues: [FieldValue],
         primaryKey: Tuple,
         transaction: any TransactionAccess
     ) async throws {
@@ -131,6 +133,7 @@ public final class UniquenessViolationTracker: Sendable {
                     indexName: violation.indexName,
                     persistableType: violation.persistableType,
                     valueKey: violation.valueKey,
+                    conflictingValues: violation.conflictingValues,
                     primaryKeys: violation.primaryKeys + [pkBytes],
                     detectedAt: violation.detectedAt
                 )
@@ -157,6 +160,7 @@ public final class UniquenessViolationTracker: Sendable {
                 indexName: indexName,
                 persistableType: persistableType,
                 valueKey: valueKey,
+                conflictingValues: conflictingValues,
                 primaryKeys: [pkBytes],  // Will be updated when second conflict is found
                 detectedAt: container.wallClock.now
             )
@@ -181,7 +185,8 @@ public final class UniquenessViolationTracker: Sendable {
     /// - Parameters:
     ///   - indexName: Name of the violated index
     ///   - persistableType: Type name of the affected model
-    ///   - valueKey: The duplicate index value (packed tuple)
+    ///   - valueKey: Tuple-packed duplicate values relative to the index subspace
+    ///   - conflictingValues: Canonical semantic values represented by `valueKey`
     ///   - existingPrimaryKey: Primary key of the existing entity
     ///   - newPrimaryKey: Primary key of the new conflicting entity
     ///   - transaction: Current transaction
@@ -189,6 +194,7 @@ public final class UniquenessViolationTracker: Sendable {
         indexName: String,
         persistableType: String,
         valueKey: ByteString,
+        conflictingValues: [FieldValue],
         existingPrimaryKey: Tuple,
         newPrimaryKey: Tuple,
         transaction: any TransactionAccess
@@ -216,6 +222,7 @@ public final class UniquenessViolationTracker: Sendable {
                 indexName: violation.indexName,
                 persistableType: violation.persistableType,
                 valueKey: violation.valueKey,
+                conflictingValues: violation.conflictingValues,
                 primaryKeys: allPKs,
                 detectedAt: violation.detectedAt
             )
@@ -230,6 +237,7 @@ public final class UniquenessViolationTracker: Sendable {
                 indexName: indexName,
                 persistableType: persistableType,
                 valueKey: valueKey,
+                conflictingValues: conflictingValues,
                 primaryKeys: [existingBytes, newBytes],
                 detectedAt: container.wallClock.now
             )
@@ -468,6 +476,7 @@ public final class UniquenessViolationTracker: Sendable {
                 indexName: violation.indexName,
                 persistableType: violation.persistableType,
                 valueKey: violation.valueKey,
+                conflictingValues: violation.conflictingValues,
                 primaryKeys: foundPrimaryKeys,
                 detectedAt: violation.detectedAt
             )

@@ -32,6 +32,7 @@ enum IndexUniquenessConstraint {
                     indexName: index.name,
                     persistableType: Item.persistableType,
                     valueKey: conflict.valueKey,
+                    conflictingValues: conflict.conflictingValues,
                     existingPrimaryKey: conflict.existingPrimaryKey,
                     newPrimaryKey: id,
                     transaction: transaction

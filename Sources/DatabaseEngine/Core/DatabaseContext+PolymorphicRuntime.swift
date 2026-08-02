@@ -43,9 +43,6 @@ extension DatabaseContext {
         offset: Int? = nil,
         orderBy: [String]? = nil
     ) async throws -> [PolymorphicEntity] {
-        let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let itemSubspace = subspace.subspace(SubspaceKey.items)
-        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let typeMap = try polymorphicTypeMap(for: group)
 
         try authorizePolymorphicListAccess(
@@ -56,6 +53,15 @@ extension DatabaseContext {
         )
 
         return try await withStorageAccess(configuration: configuration) { transaction in
+            guard let subspace = try await self.container
+                .openPolymorphicDirectory(
+                    for: group.identifier,
+                    transaction: transaction
+                ) else {
+                return []
+            }
+            let itemSubspace = subspace.subspace(SubspaceKey.items)
+            let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
             let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
             let (begin, end) = itemSubspace.range()
             var entities: [PolymorphicEntity] = []
@@ -99,50 +105,85 @@ extension DatabaseContext {
     public func fetchPolymorphicItems(
         group: PolymorphicGroup,
         ids: [Tuple],
-        configuration: TransactionConfiguration = .default,
-        cachePolicy: CachePolicy = .server
+        configuration: TransactionConfiguration = .default
     ) async throws -> [PolymorphicEntity] {
-        let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        try await withStorageAccess(configuration: configuration) { transaction in
+            try await self.fetchPolymorphicItems(
+                group: group,
+                ids: ids,
+                transaction: transaction
+            )
+        }
+    }
+
+    /// Fetches polymorphic rows on the caller-owned transaction snapshot.
+    package func fetchPolymorphicItems(
+        group: PolymorphicGroup,
+        ids: [Tuple],
+        transaction: any TransactionAccess
+    ) async throws -> [PolymorphicEntity] {
+        try await fetchPolymorphicItemsPreservingOrder(
+            group: group,
+            ids: ids,
+            transaction: transaction
+        ).compactMap { $0 }
+    }
+
+    /// Fetches polymorphic rows without discarding unresolved identifiers.
+    /// The returned array has exactly one slot for every requested identifier.
+    package func fetchPolymorphicItemsPreservingOrder(
+        group: PolymorphicGroup,
+        ids: [Tuple],
+        transaction: any TransactionAccess
+    ) async throws -> [PolymorphicEntity?] {
+        guard let subspace = try await container.openPolymorphicDirectory(
+            for: group.identifier,
+            transaction: transaction
+        ) else {
+            return ids.map { _ in nil }
+        }
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let typeMap = try polymorphicTypeMap(for: group)
+        let storage = container.itemStorageFactory.make(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
+        var items: [PolymorphicEntity?] = []
+        items.reserveCapacity(ids.count)
 
-        return try await withStorageAccess(configuration: configuration) { transaction in
-            let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
-            var items: [PolymorphicEntity] = []
-
-            for id in ids {
-                guard id.count > 0 else {
-                    throw PolymorphicRuntimeError.invalidRequestedIdentifier
-                }
-                let typeCodeValue = try id.value(at: 0)
-                guard case .signedInteger(let typeCode) = typeCodeValue else {
-                    throw PolymorphicRuntimeError.invalidRequestedIdentifier
-                }
-                let key = itemSubspace.pack(id)
-                guard let data = try await storage.read(for: key) else {
-                    continue
-                }
-                guard let runtime = typeMap[typeCode] else {
-                    throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
-                }
-                let persistedModel = try DataAccess.deserializePersistedModel(
-                    data,
-                    expectedEntity: runtime.entity.name
-                )
-                let item = try runtime.canonicalized(persistedModel)
-                try self.container.securityDelegate?.evaluateGet(persistedModel)
-                items.append(
-                    PolymorphicEntity(
-                        item: item,
-                        typeName: runtime.entity.name,
-                        typeCode: typeCode,
-                        polymorphicIdentifier: id
-                    )
-                )
+        for id in ids {
+            guard id.count > 0 else {
+                throw PolymorphicRuntimeError.invalidRequestedIdentifier
             }
-            return items
+            let typeCodeValue = try id.value(at: 0)
+            guard case .signedInteger(let typeCode) = typeCodeValue else {
+                throw PolymorphicRuntimeError.invalidRequestedIdentifier
+            }
+            let key = itemSubspace.pack(id)
+            guard let data = try await storage.read(for: key) else {
+                items.append(nil)
+                continue
+            }
+            guard let runtime = typeMap[typeCode] else {
+                throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
+            }
+            let persistedModel = try DataAccess.deserializePersistedModel(
+                data,
+                expectedEntity: runtime.entity.name
+            )
+            let item = try runtime.canonicalized(persistedModel)
+            try container.securityDelegate?.evaluateGet(persistedModel)
+            items.append(
+                PolymorphicEntity(
+                    item: item,
+                    typeName: runtime.entity.name,
+                    typeCode: typeCode,
+                    polymorphicIdentifier: id
+                )
+            )
         }
+        return items
     }
 
     package func polymorphicTypeMap(

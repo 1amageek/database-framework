@@ -4,12 +4,15 @@ import StorageKit
 /// Canonical bounded persistence codec for uniqueness violation entries.
 enum UniquenessViolationCodec {
     private static let magic: [UInt8] = [0x55, 0x56, 0x49, 0x4F]
-    private static let version: UInt16 = 1
+    private static let version: UInt16 = 2
 
     static func encode(
         _ violation: UniquenessViolation,
         limits: StorageFrameLimits = .default
-    ) throws(StorageFrameError) -> ByteString {
+    ) throws -> ByteString {
+        let conflictingValueBytes = Tuple(
+            try FieldValue.toTupleElements(violation.conflictingValues)
+        ).pack()
         let encoded = try StorageFrameEncoder.encode(limits: limits) {
             (writer: inout StorageFrameEncoder) throws(StorageFrameError) in
             for byte in magic {
@@ -19,6 +22,7 @@ enum UniquenessViolationCodec {
             try writer.writeString(violation.indexName)
             try writer.writeString(violation.persistableType)
             try writer.writeBytes(violation.valueKey)
+            try writer.writeBytes(conflictingValueBytes)
             try writer.writeCount(violation.primaryKeys.count)
             for primaryKey in violation.primaryKeys {
                 try writer.writeBytes(primaryKey)
@@ -49,6 +53,10 @@ enum UniquenessViolationCodec {
         let indexName = try reader.readString()
         let persistableType = try reader.readString()
         let valueKey = try reader.readBytes()
+        let conflictingValueBytes = try reader.readBytes()
+        let conflictingValues = try Tuple.unpack(
+            from: conflictingValueBytes
+        ).map { try FieldValue(tupleElement: $0) }
         let count = try reader.readCount()
         var primaryKeys: [ByteString] = []
         primaryKeys.reserveCapacity(count)
@@ -71,6 +79,7 @@ enum UniquenessViolationCodec {
             indexName: indexName,
             persistableType: persistableType,
             valueKey: valueKey,
+            conflictingValues: conflictingValues,
             primaryKeys: primaryKeys,
             detectedAt: detectedAt
         )

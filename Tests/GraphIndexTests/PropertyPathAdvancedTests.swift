@@ -138,6 +138,7 @@ struct PropertyPathAdvancedTests {
         )
         return SPARQLQueryExecutor(
             database: container.engine,
+            monotonicClock: container.monotonicClock,
             wallClock: FixedTestWallClock(),
             sources: [source],
             propertyPathConfiguration: configuration

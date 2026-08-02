@@ -29,8 +29,14 @@ struct SPARQLFunctionIntegrationTests {
         #Directory<SPARQLFunctionUser>("sparql_function_test_users")
 
         var id: String = UUID().uuidString
+        var resource: RDFTerm = .iri(.xsdString)
         var name: String = ""
         var age: Int64 = 0
+
+        mutating func assignIdentity(_ value: String) throws {
+            id = value
+            resource = try .iri(validating: value)
+        }
     }
 
     @Persistable
@@ -133,9 +139,9 @@ struct SPARQLFunctionIntegrationTests {
         var bob = SPARQLFunctionUser(name: "Bob", age: 30)
         var carol = SPARQLFunctionUser(name: "Carol", age: 35)
 
-        alice.id = uniqueID("user")
-        bob.id = uniqueID("user")
-        carol.id = uniqueID("user")
+        try alice.assignIdentity(uniqueID("user"))
+        try bob.assignIdentity(uniqueID("user"))
+        try carol.assignIdentity(uniqueID("user"))
 
         try context.insert(alice)
         try context.insert(bob)
@@ -150,15 +156,16 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: SQL with SPARQL() function
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:knows> <\(bob.id)> }'))
+        WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:knows> <\(bob.id)> }'))
         """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: Only Alice should be returned
+        let user = try #require(users.first)
         #expect(users.count == 1)
-        #expect(users[0].id == alice.id)
-        #expect(users[0].name == "Alice")
+        #expect(user.id == alice.id)
+        #expect(user.name == "Alice")
     }
 
     // MARK: - Test 2: SPARQL() with Complex WHERE Clause
@@ -173,9 +180,9 @@ struct SPARQLFunctionIntegrationTests {
         var user2 = SPARQLFunctionUser(name: "User2", age: 30)
         var user3 = SPARQLFunctionUser(name: "User3", age: 40)
 
-        user1.id = uniqueID("user")
-        user2.id = uniqueID("user")
-        user3.id = uniqueID("user")
+        try user1.assignIdentity(uniqueID("user"))
+        try user2.assignIdentity(uniqueID("user"))
+        try user3.assignIdentity(uniqueID("user"))
 
         try context.insert(user1)
         try context.insert(user2)
@@ -192,15 +199,16 @@ struct SPARQLFunctionIntegrationTests {
         let sql = """
         SELECT * FROM SPARQLFunctionUser
         WHERE age > 25
-          AND id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:role> "admin" }'))
+          AND resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:role> "admin" }'))
         """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: Only User2 (age=30, role=admin)
+        let user = try #require(users.first)
         #expect(users.count == 1)
-        #expect(users[0].id == user2.id)
-        #expect(users[0].age == 30)
+        #expect(user.id == user2.id)
+        #expect(user.age == 30)
     }
 
     // MARK: - Test 3: Multiple SPARQL() Calls
@@ -216,10 +224,10 @@ struct SPARQLFunctionIntegrationTests {
         var both = SPARQLFunctionUser(name: "Both", age: 35)
         var none = SPARQLFunctionUser(name: "None", age: 20)
 
-        admin.id = uniqueID("user")
-        developer.id = uniqueID("user")
-        both.id = uniqueID("user")
-        none.id = uniqueID("user")
+        try admin.assignIdentity(uniqueID("user"))
+        try developer.assignIdentity(uniqueID("user"))
+        try both.assignIdentity(uniqueID("user"))
+        try none.assignIdentity(uniqueID("user"))
 
         try context.insert(admin)
         try context.insert(developer)
@@ -238,16 +246,17 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: Find users who are admins AND have swift skill
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:role> "admin" }'))
-          AND id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:skill> "swift" }'))
+        WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:role> "admin" }'))
+          AND resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:skill> "swift" }'))
         """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: Only 'Both' user
+        let user = try #require(users.first)
         #expect(users.count == 1)
-        #expect(users[0].id == both.id)
-        #expect(users[0].name == "Both")
+        #expect(user.id == both.id)
+        #expect(user.name == "Both")
     }
 
     // MARK: - Test 4: Error - Type Not Found
@@ -294,7 +303,7 @@ struct SPARQLFunctionIntegrationTests {
 
         // Setup: Create triple
         var user = SPARQLFunctionUser(name: "Test", age: 25)
-        user.id = uniqueID("user")
+        try user.assignIdentity(uniqueID("user"))
 
         try context.insert(user)
         try context.insert(SPARQLFunctionTriple(subject: user.id, predicate: "knows", object: "someone"))
@@ -322,8 +331,8 @@ struct SPARQLFunctionIntegrationTests {
         var person1 = SPARQLFunctionUser(name: "Person1", age: 25)
         var person2 = SPARQLFunctionUser(name: "Person2", age: 30)
 
-        person1.id = uniqueID("person")
-        person2.id = uniqueID("person")
+        try person1.assignIdentity(uniqueID("person"))
+        try person2.assignIdentity(uniqueID("person"))
 
         try context.insert(person1)
         try context.insert(person2)
@@ -335,14 +344,15 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: Query returns ?s and ?o, but we explicitly select ?s
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s <urn:predicate:knows> ?o }', '?s'))
+        WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s <urn:predicate:knows> ?o }', '?s'))
         """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: person1 is returned
+        let user = try #require(users.first)
         #expect(users.count == 1)
-        #expect(users[0].id == person1.id)
+        #expect(user.id == person1.id)
     }
 
     // MARK: - Test 8: Empty Result Set
@@ -354,7 +364,7 @@ struct SPARQLFunctionIntegrationTests {
 
         // Setup: Create users but no matching triples
         var user = SPARQLFunctionUser(name: "Test", age: 25)
-        user.id = uniqueID("user")
+        try user.assignIdentity(uniqueID("user"))
 
         try context.insert(user)
         try await context.save()
@@ -385,7 +395,7 @@ struct SPARQLFunctionIntegrationTests {
                 name: "User\(i)",
                 age: Int64(20 + (i % 50))
             )
-            user.id = uniqueID("user-\(i)")
+            try user.assignIdentity(uniqueID("user-\(i)"))
             users.append(user)
             try context.insert(user)
         }
@@ -400,7 +410,7 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: Should return all users
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:status> "active" }'))
+        WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:status> "active" }'))
         LIMIT 100
         """
 
@@ -434,14 +444,18 @@ struct SPARQLFunctionIntegrationTests {
         )
 
         // Pass through SPARQLFunctionRewriter (filter exists, so query is reconstructed)
-        let rewriter = SPARQLFunctionRewriter(
-            context: context,
-            workMeter: DatabaseWorkMeter(
-                budget: ExecutionBudget(),
-                monotonicClock: container.monotonicClock
+        let rewritten = try await context.indexQueryContext.withTransaction {
+            transaction in
+            let rewriter = SPARQLFunctionRewriter(
+                context: context,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: container.monotonicClock
+                ),
+                transaction: transaction
             )
-        )
-        let rewritten = try await rewriter.rewrite(query)
+            return try await rewriter.rewrite(query)
+        }
 
         #expect(rewritten.dataset == query.dataset)
 
@@ -453,8 +467,7 @@ struct SPARQLFunctionIntegrationTests {
 
     // MARK: - Test 11: Integration with ORDER BY and LIMIT
 
-    // TODO: Enable this test when QueryBridge supports ORDER BY
-    // @Test("Integration with ORDER BY and LIMIT")
+    @Test("Integration with ORDER BY and LIMIT")
     func testOrderByAndLimit() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
@@ -464,9 +477,9 @@ struct SPARQLFunctionIntegrationTests {
         var user2 = SPARQLFunctionUser(name: "Bob", age: 25)
         var user3 = SPARQLFunctionUser(name: "Carol", age: 35)
 
-        user1.id = uniqueID("user")
-        user2.id = uniqueID("user")
-        user3.id = uniqueID("user")
+        try user1.assignIdentity(uniqueID("user"))
+        try user2.assignIdentity(uniqueID("user"))
+        try user3.assignIdentity(uniqueID("user"))
 
         try context.insert(user1)
         try context.insert(user2)
@@ -481,7 +494,7 @@ struct SPARQLFunctionIntegrationTests {
         // Execute: SPARQL + ORDER BY + LIMIT
         let sql = """
         SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:verified> "true" }'))
+        WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:verified> "true" }'))
         ORDER BY age ASC
         LIMIT 2
         """
@@ -489,11 +502,13 @@ struct SPARQLFunctionIntegrationTests {
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: Bob (25) and Alice (30)
+        let first = try #require(users.first)
+        let second = try #require(users.dropFirst().first)
         #expect(users.count == 2)
-        #expect(users[0].age == 25)
-        #expect(users[0].name == "Bob")
-        #expect(users[1].age == 30)
-        #expect(users[1].name == "Alice")
+        #expect(first.age == 25)
+        #expect(first.name == "Bob")
+        #expect(second.age == 30)
+        #expect(second.name == "Alice")
     }
 }
 #endif

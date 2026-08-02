@@ -123,8 +123,10 @@ build gates documented in [Production Readiness](../production-readiness.md).
 
 | Date | Scope | Result |
 | --- | --- | --- |
-| 2026-08-02 | `xcodebuild test-without-building` with per-command timeouts, Swift 6.4 snapshot `2026-07-23-a` | Passed: 102 VectorIndex tests plus 73 affected online indexing, maintenance, Fusion, and schema tests; 0 failures and 0 skips; includes actual FoundationDB polymorphic vector migration |
-| 2026-08-02 | `swift build --swift-sdk ..._wasm --disable-default-traits --traits AllRuntimeFeatures --target CloudflareDatabaseRuntimeVerification` | Passed: normal WASM compile and link with swift-hnsw 1.1.4 |
+| 2026-08-02 | `xcodebuild test` with per-command timeouts, Swift 6.4 snapshot `2026-07-23-a` | Passed: 3,951 tests across 24 test bundles, including 103 VectorIndex tests; 0 failures |
+| 2026-08-02 | `swift build --swift-sdk ..._wasm --product Database --disable-default-traits --traits AllRuntimeFeatures` | Passed: normal WASM build with swift-hnsw 1.1.4 |
+| 2026-08-02 | `swift build --swift-sdk ..._wasm-embedded --product Database --disable-default-traits --traits AllRuntimeFeatures` | Passed: Embedded WASM build with the same runtime feature set and swift-hnsw 1.1.4 |
+| 2026-08-02 | `database-framework-cloudflare`: `swift build --swift-sdk ..._wasm --disable-default-traits --traits AllRuntimeFeatures --target CloudflareDatabaseRuntimeVerification` | Passed: normal WASM reactor compile and link with swift-hnsw 1.1.4 |
 | 2026-08-02 | Cloudflare AllRuntimeFeatures feasibility gate with `..._wasm-embedded` | Passed: Flat, IVF, and PQ execute through startup validation; effective HNSW fails deterministically before container opening; `VectorIndex.o`, `SwiftHNSW.o`, and `CTurboQuantKernels.o` remain linked |
 | 2026-08-02 | Embedded runtime budgets | Passed: 9,084,920 optimized bytes, 3,150,215 compressed bytes, 64 MiB address space, 60.512625 ms startup; workerd RPC and SQLite restart persistence passed |
 

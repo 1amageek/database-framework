@@ -90,6 +90,7 @@ func _executeSPARQLString(
     )
     let executor = SPARQLQueryExecutor(
         database: database,
+        monotonicClock: monotonicClock,
         wallClock: wallClock,
         sources: sources,
         datasetScope: try SPARQLDatasetExecutionScope(query.dataset)

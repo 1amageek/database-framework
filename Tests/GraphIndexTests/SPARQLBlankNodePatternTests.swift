@@ -267,6 +267,7 @@ struct SPARQLBlankNodePatternTests {
         return SPARQLExecutionContext(
             executor: SPARQLQueryExecutor(
                 database: engine,
+                monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock(
                     now: Timestamp(secondsSinceUnixEpoch: 0)
                 ),

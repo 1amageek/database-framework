@@ -200,7 +200,7 @@ final class SPARQLQueryExpressionContext: Sendable {
                     )
                 case .evaluation(let evaluationError):
                     return .expressionError(evaluationError)
-                case .duplicateFunction, .nonCanonicalResult, .functionFailed:
+                case .duplicateFunction, .nonCanonicalResult:
                     return .expressionError(
                         .runtimeInvariant(
                             "A registered SPARQL function violated its runtime contract"

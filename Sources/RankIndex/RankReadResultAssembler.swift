@@ -20,31 +20,25 @@ enum RankReadResultAssembler {
 
     static func assemble(
         rankedKeys: [(primaryKey: Tuple, rank: Int)],
-        entities: [PolymorphicEntity]
+        entities: [PolymorphicEntity?]
     ) throws -> [(entity: PolymorphicEntity, rank: Int)] {
-        var entityByID: [ByteString: PolymorphicEntity] = [:]
-        entityByID.reserveCapacity(entities.count)
-        for entity in entities {
-            let key = try entityKey(for: entity)
-            if let _ = entityByID[key] {
-                throw RankReadError.duplicateFetchedEntity(primaryKey: key)
-            }
-            entityByID[key] = entity
+        guard rankedKeys.count == entities.count else {
+            throw RankReadError.fetchedEntityCountMismatch(
+                expected: rankedKeys.count,
+                actual: entities.count
+            )
         }
 
         var ordered: [(entity: PolymorphicEntity, rank: Int)] = []
         ordered.reserveCapacity(rankedKeys.count)
-        for rankedKey in rankedKeys {
-            let key = rankedKey.primaryKey.pack()
-            guard let entity = entityByID[key] else {
-                throw RankReadError.missingFetchedEntity(primaryKey: key)
+        for (rankedKey, entity) in zip(rankedKeys, entities) {
+            guard let entity else {
+                throw RankReadError.missingFetchedEntity(
+                    primaryKey: rankedKey.primaryKey.pack()
+                )
             }
             ordered.append((entity: entity, rank: rankedKey.rank))
         }
         return ordered
-    }
-
-    private static func entityKey(for entity: PolymorphicEntity) throws -> ByteString {
-        entity.polymorphicIdentifier.pack()
     }
 }
