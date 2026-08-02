@@ -117,7 +117,9 @@ isolated copy, injects the pinned snapshot's testing runtime and backend
 environment into `.xctestrun`, preserves build/test logs, and rejects internal
 compiler, macro-plugin, or coverage-profiler failures even when Xcode exits
 successfully. Do not replace these invocations with a direct package-wide
-`xcodebuild test`.
+`xcodebuild test`. Xcode's interactive macro approval is disabled only after
+the harness proves that the resolved macro dependency revisions match the
+tracked release pins.
 
 The release gates above were last executed against the published dependency
 graph on 2026-08-03: database-kit 26.0803.0, storage-kit 26.0803.0, and

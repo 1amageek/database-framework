@@ -432,6 +432,9 @@ build_arguments=(
   -enableCodeCoverage NO
   -onlyUsePackageVersionsFromResolvedFile
   -skipPackageUpdates
+  # Macro revisions are pinned and checked above; CI cannot present Xcode's
+  # interactive macro approval UI.
+  -skipMacroValidation
 )
 if [[ -n "${FDB_CLUSTER_FILE:-}" ]]; then
   fdb_include_directory="${FDB_CLIENT_INCLUDE_DIRECTORY:-/usr/local/include}"
