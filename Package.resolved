@@ -1,0 +1,195 @@
+{
+  "originHash" : "93f61ac1ba18a4db55dab2d2bf02689d87f96ff0fe4e77290895d9cbddc067d1",
+  "pins" : [
+    {
+      "identity" : "database-kit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/database-kit.git",
+      "state" : {
+        "revision" : "529860918623a3fb4cb077eb2e61c8f90d50f35e",
+        "version" : "26.803.0"
+      }
+    },
+    {
+      "identity" : "database-types",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/database-types.git",
+      "state" : {
+        "revision" : "4b0c81a9c322cbfa5628e411ee1fa931c2890e5d",
+        "version" : "26.730.0"
+      }
+    },
+    {
+      "identity" : "fdb-swift-bindings",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/fdb-swift-bindings.git",
+      "state" : {
+        "revision" : "47e6b4215d331661e5cf030eac4ff206c932d6bf",
+        "version" : "0.3.3"
+      }
+    },
+    {
+      "identity" : "postgres-nio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/vapor/postgres-nio.git",
+      "state" : {
+        "revision" : "39ce38a93408937bcd27f521f3cdf88266136b80",
+        "version" : "1.33.1"
+      }
+    },
+    {
+      "identity" : "storage-kit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/storage-kit.git",
+      "state" : {
+        "revision" : "05a1155558327b3b65191c62fd65ccde88f46cce",
+        "version" : "26.803.0"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "state" : {
+        "revision" : "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b",
+        "version" : "1.7.1"
+      }
+    },
+    {
+      "identity" : "swift-asn1",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-asn1.git",
+      "state" : {
+        "revision" : "a9a5efd40eaf558a2bcd48d64b1d1646be686008",
+        "version" : "1.7.1"
+      }
+    },
+    {
+      "identity" : "swift-async-algorithms",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-async-algorithms.git",
+      "state" : {
+        "revision" : "3da39bbc4e687d4192af7c9cf4eab805745a0b9c",
+        "version" : "1.1.5"
+      }
+    },
+    {
+      "identity" : "swift-atomics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-atomics.git",
+      "state" : {
+        "revision" : "0442cb5a3f98ab802acb777929fdb446bda11a34",
+        "version" : "1.3.1"
+      }
+    },
+    {
+      "identity" : "swift-collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-collections.git",
+      "state" : {
+        "revision" : "a0cb0954ecb21e4e31b0070e6ed5674e8556685a",
+        "version" : "1.6.0"
+      }
+    },
+    {
+      "identity" : "swift-crypto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-crypto.git",
+      "state" : {
+        "revision" : "47d3869a7291f085c1fb9fb1e6d3b97a793f45c6",
+        "version" : "4.5.1"
+      }
+    },
+    {
+      "identity" : "swift-hnsw",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/swift-hnsw.git",
+      "state" : {
+        "revision" : "e427a41eeb6a8190b188ebb695694ba719f3e0e8",
+        "version" : "1.1.4"
+      }
+    },
+    {
+      "identity" : "swift-log",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-log.git",
+      "state" : {
+        "revision" : "bbd81b6725ae874c69e9b8c8804d462356b55523",
+        "version" : "1.10.1"
+      }
+    },
+    {
+      "identity" : "swift-metrics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-metrics.git",
+      "state" : {
+        "revision" : "f17c111cec972c2a4922cef38cf64f76f7e87886",
+        "version" : "2.8.0"
+      }
+    },
+    {
+      "identity" : "swift-nio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-nio.git",
+      "state" : {
+        "revision" : "0b18836bd8b0162e7e17a995a3fbee20ed8f3b2b",
+        "version" : "2.101.3"
+      }
+    },
+    {
+      "identity" : "swift-nio-ssl",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-nio-ssl.git",
+      "state" : {
+        "revision" : "d930168b86f46ca51a4bc09c5ca45c1833db8067",
+        "version" : "2.37.2"
+      }
+    },
+    {
+      "identity" : "swift-nio-transport-services",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-nio-transport-services.git",
+      "state" : {
+        "revision" : "67787bb645a5e67d2edcdfbe48a216cc549222d5",
+        "version" : "1.28.0"
+      }
+    },
+    {
+      "identity" : "swift-service-lifecycle",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swift-server/swift-service-lifecycle.git",
+      "state" : {
+        "revision" : "9829955b385e5bb88128b73f1b8389e9b9c3191a",
+        "version" : "2.11.0"
+      }
+    },
+    {
+      "identity" : "swift-syntax",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-syntax.git",
+      "state" : {
+        "revision" : "b90056de69eed23b3fb39ab69cf1780071dfb664",
+        "version" : "604.0.0-prerelease-2026-06-05"
+      }
+    },
+    {
+      "identity" : "swift-system",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-system.git",
+      "state" : {
+        "revision" : "50688cacbd41d547e9eb9f7a213542340b7c442b",
+        "version" : "1.7.5"
+      }
+    },
+    {
+      "identity" : "swift-testing-heartbeat",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/swift-testing-heartbeat.git",
+      "state" : {
+        "revision" : "6612cdd5c4327057258291a2c35b201b45da848f",
+        "version" : "0.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}
