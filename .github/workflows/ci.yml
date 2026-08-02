@@ -31,7 +31,9 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install verification tools
-        run: brew install ripgrep
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install ripgrep
 
       - name: Install pinned Swift toolchain
         run: |
@@ -40,6 +42,10 @@ jobs:
           curl -fL --retry 3 -o "$toolchain_package" "$SWIFT_SNAPSHOT_URL"
           installer -pkg "$toolchain_package" -target CurrentUserHomeDirectory
           test -x "$toolchain_root/usr/bin/swift"
+          # The snapshot supplies clang but delegates Darwin linking to Xcode.
+          platform_linker="$(env -u TOOLCHAINS xcrun --find ld)"
+          ln -sf "$platform_linker" "$toolchain_root/usr/bin/ld"
+          test -x "$toolchain_root/usr/bin/ld"
           echo "$toolchain_root/usr/bin" >> "$GITHUB_PATH"
 
       - name: Report Swift version
@@ -86,7 +92,9 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install verification tools
-        run: brew install ripgrep
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install ripgrep
 
       - name: Install pinned Swift toolchain
         run: |
@@ -95,6 +103,10 @@ jobs:
           curl -fL --retry 3 -o "$toolchain_package" "$SWIFT_SNAPSHOT_URL"
           installer -pkg "$toolchain_package" -target CurrentUserHomeDirectory
           test -x "$toolchain_root/usr/bin/swift"
+          # The snapshot supplies clang but delegates Darwin linking to Xcode.
+          platform_linker="$(env -u TOOLCHAINS xcrun --find ld)"
+          ln -sf "$platform_linker" "$toolchain_root/usr/bin/ld"
+          test -x "$toolchain_root/usr/bin/ld"
           echo "$toolchain_root/usr/bin" >> "$GITHUB_PATH"
 
       - name: Report Swift version
@@ -183,7 +195,9 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install verification tools
-        run: brew install ripgrep
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install ripgrep
 
       - name: Install pinned Swift toolchain
         run: |
@@ -192,6 +206,10 @@ jobs:
           curl -fL --retry 3 -o "$toolchain_package" "$SWIFT_SNAPSHOT_URL"
           installer -pkg "$toolchain_package" -target CurrentUserHomeDirectory
           test -x "$toolchain_root/usr/bin/swift"
+          # The snapshot supplies clang but delegates Darwin linking to Xcode.
+          platform_linker="$(env -u TOOLCHAINS xcrun --find ld)"
+          ln -sf "$platform_linker" "$toolchain_root/usr/bin/ld"
+          test -x "$toolchain_root/usr/bin/ld"
           echo "$toolchain_root/usr/bin" >> "$GITHUB_PATH"
 
       - name: Report Swift version
