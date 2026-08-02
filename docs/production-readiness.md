@@ -119,12 +119,13 @@ compiler, macro-plugin, or coverage-profiler failures even when Xcode exits
 successfully. Do not replace these invocations with a direct package-wide
 `xcodebuild test`.
 
-The release gates above were last executed against the same local dependency
-graph on 2026-08-03. FoundationDB passed 3,918 tests, SQLite passed 101 tests,
-and PostgreSQL passed 71 tests with zero failures, skips, expected failures, or
+The release gates above were last executed against the published dependency
+graph on 2026-08-03: database-kit 26.0803.0, storage-kit 26.0803.0, and
+swift-hnsw 1.1.4. FoundationDB passed 3,918 tests, SQLite passed 101 tests, and
+PostgreSQL passed 71 tests with zero failures, skips, expected failures, or
 runtime warnings. Standard WASM, Embedded WASM, and the static
 `aarch64-swift-linux-musl` `DatabaseCLICore` product compiled and linked in
-release mode with swift-hnsw 1.1.4.
+release mode.
 
 Release WASM builds disable debug information because reactor artifacts do not
 ship it and host-side `dsymutil` cannot reliably verify snapshot-built macro

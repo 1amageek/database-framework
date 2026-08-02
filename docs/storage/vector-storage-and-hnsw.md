@@ -123,8 +123,8 @@ build gates documented in [Production Readiness](../production-readiness.md).
 
 | Date | Scope | Result |
 | --- | --- | --- |
-| 2026-08-03 | Strict FoundationDB Xcode harness with local `database-kit` and `storage-kit` changes, Swift 6.4 snapshot `2026-07-23-a` | Passed: 3,918 tests; 0 failures, skips, expected failures, runtime warnings, compiler internal errors, macro-plugin internal errors, or coverage-profiler errors |
-| 2026-08-02 | Strict SQLite Xcode harness with the same local dependency graph | Passed: 101 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors |
+| 2026-08-03 | Strict FoundationDB Xcode harness with database-kit 26.0803.0 and storage-kit 26.0803.0, Swift 6.4 snapshot `2026-07-23-a` | Passed: 3,918 tests; 0 failures, skips, expected failures, runtime warnings, compiler internal errors, macro-plugin internal errors, or coverage-profiler errors |
+| 2026-08-03 | Strict SQLite Xcode harness with the same published dependency graph | Passed: 101 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors |
 | 2026-08-02 | Strict PostgreSQL Xcode harness against PostgreSQL 16.14 in an isolated Apple Container | Passed: 71 tests; 0 failures, skips, expected failures, runtime warnings, startup-order warnings, or internal tool errors |
 | 2026-08-03 | `swift build --swift-sdk ..._wasm --product Database --disable-default-traits --traits AllRuntimeFeatures -c release -debug-info-format none` | Passed: normal WASM release build with swift-hnsw 1.1.4 |
 | 2026-08-03 | `swift build --swift-sdk ..._wasm-embedded --product Database --disable-default-traits --traits AllRuntimeFeatures -c release -debug-info-format none` | Passed: Embedded WASM release build with the same runtime feature set and swift-hnsw 1.1.4 |
