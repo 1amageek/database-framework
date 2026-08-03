@@ -32,27 +32,24 @@ struct Location {
     var name: String = ""
 
     // Base compound index: (country, city, name)
-    #Index<Location>(
-        type: ScalarIndexKind(fields: [\.country, \.city, \.name])
-    )
+    #Index(.scalar, fields: [\Location.country, \Location.city, \Location.name])
 
     // Permuted index: (city, country, name) - enables city-first queries
-    #Index<Location>(
-        type: PermutedIndexKind(
-            fields: [\.country, \.city, \.name],
-            permutation: try! Permutation(indices: [1, 0, 2])
-        )
+    #Index(
+        .permuted(.swapping(0, 1, size: 3)),
+        fields: [\Location.country, \Location.city, \Location.name],
+        name: "Location_permuted_city_first"
     )
 }
 
 // Query by country (uses base index)
 let japanLocations = try await context.fetch(Location.self)
-    .where(\.country == "Japan")
+    .where(Location.fields.country == "Japan")
     .execute()
 
 // Query by city (uses permuted index)
 let tokyoLocations = try await context.permuted(Location.self)
-    .index("Location_permuted_country_city_name_102")
+    .index("Location_permuted_city_first")
     .prefix(["Tokyo"])
     .execute()
 ```
@@ -72,35 +69,31 @@ struct Product {
     var price: Int64 = 0
 
     // Base: (category, brand, price) - for category browsing
-    #Index<Product>(
-        type: ScalarIndexKind(fields: [\.category, \.brand, \.price])
-    )
+    #Index(.scalar, fields: [\Product.category, \Product.brand, \Product.price])
 
     // Permuted: (brand, category, price) - for brand pages
-    #Index<Product>(
-        type: PermutedIndexKind(
-            fields: [\.category, \.brand, \.price],
-            permutation: try! Permutation(indices: [1, 0, 2])
-        )
+    #Index(
+        .permuted(.swapping(0, 1, size: 3)),
+        fields: [\Product.category, \Product.brand, \Product.price],
+        name: "Product_permuted_brand_first"
     )
 
     // Permuted: (price, category, brand) - for price sorting
-    #Index<Product>(
-        type: PermutedIndexKind(
-            fields: [\.category, \.brand, \.price],
-            permutation: try! Permutation(indices: [2, 0, 1])
-        )
+    #Index(
+        .permuted(.ordering([2, 0, 1])),
+        fields: [\Product.category, \Product.brand, \Product.price],
+        name: "Product_permuted_price_first"
     )
 }
 
 // Browse by category
 let electronics = try await context.fetch(Product.self)
-    .where(\.category == "Electronics")
+    .where(Product.fields.category == "Electronics")
     .execute()
 
 // Browse by brand
 let appleProducts = try await context.permuted(Product.self)
-    .index("Product_permuted_category_brand_price_102")
+    .index("Product_permuted_brand_first")
     .prefix(["Apple"])
     .execute()
 ```
@@ -119,24 +112,20 @@ struct LogEntry {
     var message: String = ""
 
     // Base: (timestamp, level, service) - for time-based queries
-    #Index<LogEntry>(
-        type: ScalarIndexKind(fields: [\.timestamp, \.level, \.service])
-    )
+    #Index(.scalar, fields: [\LogEntry.timestamp, \LogEntry.level, \LogEntry.service])
 
     // Permuted: (level, timestamp, service) - for severity analysis
-    #Index<LogEntry>(
-        type: PermutedIndexKind(
-            fields: [\.timestamp, \.level, \.service],
-            permutation: try! Permutation(indices: [1, 0, 2])
-        )
+    #Index(
+        .permuted(.swapping(0, 1, size: 3)),
+        fields: [\LogEntry.timestamp, \LogEntry.level, \LogEntry.service],
+        name: "LogEntry_permuted_level_first"
     )
 
     // Permuted: (service, level, timestamp) - for service debugging
-    #Index<LogEntry>(
-        type: PermutedIndexKind(
-            fields: [\.timestamp, \.level, \.service],
-            permutation: try! Permutation(indices: [2, 1, 0])
-        )
+    #Index(
+        .permuted(.ordering([2, 1, 0])),
+        fields: [\LogEntry.timestamp, \LogEntry.level, \LogEntry.service],
+        name: "LogEntry_permuted_service_first"
     )
 }
 
@@ -152,7 +141,7 @@ struct LogEntry {
 ```swift
 // Find exact match: city="Tokyo", country="Japan", name="Station A"
 let exact = try await context.permuted(Location.self)
-    .index("Location_permuted_country_city_name_102")
+    .index("Location_permuted_city_first")
     .exact(["Tokyo", "Japan", "Station A"])  // Values in permuted order
     .execute()
 ```
@@ -169,11 +158,9 @@ struct OptionalLocation {
     var city: String = ""
     var name: String = ""
 
-    #Index<OptionalLocation>(
-        type: PermutedIndexKind(
-            fields: [\.country, \.city, \.name],
-            permutation: try! Permutation(indices: [1, 0, 2])
-        )
+    #Index(
+        .permuted(.swapping(0, 1, size: 3)),
+        fields: [\OptionalLocation.country, \OptionalLocation.city, \OptionalLocation.name]
     )
 }
 
@@ -272,7 +259,7 @@ let originalValues = try maintainer.toOriginalOrder(permutedValues)
 | Inverse permutation | ✅ Complete | Convert back to original order |
 | Sparse index (nil) | ✅ Complete | nil values not indexed |
 | Identity permutation | ✅ Complete | No-op (same as base index) |
-| Multiple permutations | ✅ Complete | Multiple PermutedIndexKind per type |
+| Multiple permutations | ✅ Complete | Multiple permuted indexes per type |
 
 ## Performance Characteristics
 

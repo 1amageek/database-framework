@@ -42,7 +42,7 @@ struct Document {
     var content: String = ""
     var updatedAt: Date = Date()
 
-    #Index<Document>(type: VersionIndexKind(field: \.id, strategy: .keepAll))
+    #Index(.version(strategy: .keepAll), field: \Document.id)
 }
 
 // Get complete version history
@@ -81,10 +81,10 @@ struct AuditedRecord {
     var modifiedBy: String = ""
 
     // Keep only last 10 versions
-    #Index<AuditedRecord>(type: VersionIndexKind(
-        field: \.id,
-        strategy: .keepLast(10)
-    ))
+    #Index(
+        .version(strategy: .keepLast(10)),
+        field: \AuditedRecord.id
+    )
 }
 
 // Older versions are automatically cleaned up on each update
@@ -110,10 +110,10 @@ struct ComplianceRecord {
     var amount: Double = 0.0
 
     // Keep versions for 30 days
-    #Index<ComplianceRecord>(type: VersionIndexKind(
-        field: \.id,
-        strategy: .keepForDuration(30 * 24 * 60 * 60)  // 30 days in seconds
-    ))
+    #Index(
+        .version(strategy: .keepForDuration(try! TimeSpan(seconds: 30 * 24 * 60 * 60))),
+        field: \ComplianceRecord.id
+    )
 }
 
 // Query history - old versions are automatically purged

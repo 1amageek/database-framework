@@ -84,6 +84,7 @@ let user = try await context.model(for: userId, as: User.self)
 ### DatabaseDataStore
 
 Low-level data operations within transactions. Receives transaction as parameter.
+Package-scoped (`package final class`) — not part of the public API surface.
 
 ## Transaction Management
 
@@ -224,7 +225,7 @@ if let data = try await tx.getValue(for: key) {
 
 ### Large Value Splitting
 
-Values exceeding FDB's 100KB limit are automatically split into blob chunks:
+Large values (>90KB) are automatically split into blob chunks:
 
 ```
 [fdb]/R/[type]/[id]     → ItemEnvelope (reference to blobs)
@@ -232,30 +233,6 @@ Values exceeding FDB's 100KB limit are automatically split into blob chunks:
 [fdb]/B/[blob-key]/1    → Chunk 1
 ...
 ```
-
-## Serialization
-
-### Compression
-
-`TransformingSerializer` supports multiple compression algorithms:
-
-| Algorithm | Use Case |
-|-----------|----------|
-| LZ4 | Fast compression, moderate ratio |
-| zlib | Balanced speed and ratio |
-| LZMA | High compression ratio |
-| LZFSE | Apple-optimized |
-
-### Encryption
-
-AES-256-GCM encryption with multiple key providers:
-
-| Provider | Use Case |
-|----------|----------|
-| `StaticKeyProvider` | Development, testing |
-| `RotatingKeyProvider` | Production with key rotation |
-| `DerivedKeyProvider` | Per-record keys from master |
-| `EnvironmentKeyProvider` | Key from environment variable |
 
 ## Field-Level Security
 
@@ -319,16 +296,19 @@ let orders = try await context.fetch(TenantOrder.self)
 
 ## Query Planning
 
-`QueryPlanner<T>` owns the cost-based planning path used by fetch and admin
-operations:
+Query planning is rule-based scalar index selection — there is no cost model.
+`QueryAccessPlan` deliberately contains no estimated cost; cost and row
+estimates belong only in statistics-backed administrative output.
 
 | Component | Description |
 |-----------|-------------|
-| `QueryAnalyzer` | Normalizes predicates and derives query constraints |
-| `PlanEnumerator` | Enumerates table, index, union, and intersection candidates |
-| `CostEstimator` | Evaluates candidate cost from statistics and access paths |
-| `PlanOptimizer` | Applies semantic plan rewrites |
-| `StatisticsProvider` | Provides cardinality, histograms, and HyperLogLog estimates |
+| `ScalarIndexAccessPlanner` | Rule-based index selection: composite equality prefix first, then single-field equality, then single-field range |
+| `QueryAccessPlan` | Describes the storage access path and residual filter/sort work execution will perform |
+
+A forced index that is missing or not a scalar index raises
+`CanonicalReadError`. Without a forced index, queries that no scalar index can
+serve produce an explicit `.fullScan` plan. `executionPlan()` returns the
+access path that execution would currently use.
 
 ## Performance Characteristics
 

@@ -23,12 +23,12 @@ struct User {
     var id: String = ULID().ulidString
     var email: String = ""
 
-    #Index<User>(ScalarIndexKind(fields: [\.email]))
+    #Index(.scalar, fields: [\User.email])
 }
 
 // Query: O(log N) lookup
 let user = try await context.fetch(User.self)
-    .where(\.email == "alice@example.com")
+    .where(User.fields.email == "alice@example.com")
     .first()
 ```
 
@@ -44,13 +44,13 @@ struct Product {
     var id: String = ULID().ulidString
     var price: Int64 = 0
 
-    #Index<Product>(ScalarIndexKind(fields: [\.price]))
+    #Index(.scalar, fields: [\Product.price])
 }
 
 // Query: O(log N + K) where K = result count
 let products = try await context.fetch(Product.self)
-    .where(\.price >= 1000)
-    .where(\.price <= 5000)
+    .where(Product.fields.price >= 1000)
+    .where(Product.fields.price <= 5000)
     .execute()
 ```
 
@@ -69,14 +69,14 @@ struct Order {
     var createdAt: Date = Date()
 
     // Composite index: customer + status + date
-    #Index<Order>(ScalarIndexKind(fields: [\.customerId, \.status, \.createdAt]))
+    #Index(.scalar, fields: [\Order.customerId, \Order.status, \Order.createdAt])
 }
 
 // Query: Efficient prefix scan
 let orders = try await context.fetch(Order.self)
-    .where(\.customerId == "C001")
-    .where(\.status == "pending")
-    .orderBy(\.createdAt, .descending)
+    .where(Order.fields.customerId == "C001")
+    .where(Order.fields.status == "pending")
+    .orderBy(Order.fields.createdAt, .descending)
     .execute()
 ```
 
@@ -92,12 +92,12 @@ struct Article {
     var id: String = ULID().ulidString
     var createdAt: Date = Date()
 
-    #Index<Article>(ScalarIndexKind(fields: [\.createdAt]))
+    #Index(.scalar, fields: [\Article.createdAt])
 }
 
 // Cursor-based pagination
 let articles = try await context.fetch(Article.self)
-    .orderBy(\.createdAt, .descending)
+    .orderBy(Article.fields.createdAt, .descending)
     .after(cursor)
     .limit(20)
     .execute()
@@ -137,12 +137,12 @@ Order fields by:
 
 ```swift
 // Good: equality → range → sort
-#Index<Order>(ScalarIndexKind(fields: [\.customerId, \.status, \.createdAt]))
+#Index(.scalar, fields: [\Order.customerId, \Order.status, \Order.createdAt])
 
 // Query matches index order
-.where(\.customerId == "C001")  // Equality
-.where(\.status == "pending")   // Equality
-.orderBy(\.createdAt)           // Sort
+.where(Order.fields.customerId == "C001")  // Equality
+.where(Order.fields.status == "pending")   // Equality
+.orderBy(Order.fields.createdAt)           // Sort
 ```
 
 ### Sparse Index (Optional Fields)
@@ -155,7 +155,7 @@ struct User {
     var id: String = ULID().ulidString
     var phoneNumber: String? = nil  // Optional
 
-    #Index<User>(ScalarIndexKind(fields: [\.phoneNumber]))
+    #Index(.scalar, fields: [\User.phoneNumber])
 }
 
 // nil values are NOT indexed (sparse index)

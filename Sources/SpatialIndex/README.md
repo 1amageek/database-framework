@@ -29,24 +29,20 @@ Where `spatialCode` is a UInt64 cell ID computed from coordinates.
 struct Store {
     var id: String = ULID().ulidString
     var name: String = ""
-    var latitude: Double = 0
-    var longitude: Double = 0
+    var location: GeographicPoint
     var category: String = ""
 
-    #Index<Store>(
-        type: SpatialIndexKind(
-            latitude: \.latitude,
-            longitude: \.longitude,
-            encoding: .s2,
-            level: 15  // ~1km resolution
-        )
+    #Index(
+        .spatial(encoding: .s2, level: 15),  // ~1km resolution
+        location: \Store.location
     )
 }
 
 // Find stores within 5km of user location
-let nearbyStores = try await context.nearby(Store.self)
-    .coordinates(latitude: userLat, longitude: userLon)
-    .radius(5000)  // meters
+let userLocation = try GeographicPoint(latitude: userLat, longitude: userLon)
+let nearbyStores = try await context.findNearby(Store.self)
+    .location(Store.fields.location)
+    .within(radiusKm: 5.0, of: userLocation)
     .execute()
 ```
 
@@ -61,26 +57,23 @@ let nearbyStores = try await context.nearby(Store.self)
 struct DeliveryOrder {
     var id: String = ULID().uuidString
     var address: String = ""
-    var latitude: Double = 0
-    var longitude: Double = 0
+    var location: GeographicPoint
     var status: String = ""
 
-    #Index<DeliveryOrder>(
-        type: SpatialIndexKind(
-            latitude: \.latitude,
-            longitude: \.longitude,
-            encoding: .s2,
-            level: 13  // ~5km resolution
-        )
+    #Index(
+        .spatial(encoding: .s2, level: 13),  // ~5km resolution
+        location: \DeliveryOrder.location
     )
 }
 
 // Find orders in delivery zone
-let orders = try await context.nearby(DeliveryOrder.self)
-    .boundingBox(
-        minLat: 35.65, minLon: 139.70,
-        maxLat: 35.70, maxLon: 139.80
-    )
+let zone = try BoundingBox(
+    minLatitude: 35.65, minLongitude: 139.70,
+    maxLatitude: 35.70, maxLongitude: 139.80
+)
+let orders = try await context.findNearby(DeliveryOrder.self)
+    .location(DeliveryOrder.fields.location)
+    .within(bounds: zone)
     .execute()
 ```
 
@@ -93,29 +86,25 @@ let orders = try await context.nearby(DeliveryOrder.self)
 struct Geofence {
     var id: String = ULID().uuidString
     var name: String = ""
-    var centerLat: Double = 0
-    var centerLon: Double = 0
+    var center: GeographicPoint
     var radiusMeters: Double = 0
 
-    #Index<Geofence>(
-        type: SpatialIndexKind(
-            latitude: \.centerLat,
-            longitude: \.centerLon,
-            encoding: .s2,
-            level: 12  // ~10km resolution
-        )
+    #Index(
+        .spatial(encoding: .s2, level: 12),  // ~10km resolution
+        location: \Geofence.center
     )
 }
 
 // Check if device location triggers any geofence
-let nearbyFences = try await context.nearby(Geofence.self)
-    .coordinates(latitude: deviceLat, longitude: deviceLon)
-    .radius(10000)  // Check fences within 10km
+let deviceLocation = try GeographicPoint(latitude: deviceLat, longitude: deviceLon)
+let nearbyFences = try await context.findNearby(Geofence.self)
+    .location(Geofence.fields.center)
+    .within(radiusKm: 10.0, of: deviceLocation)  // Check fences within 10km
     .execute()
 
 // Post-filter by actual fence radius
-let triggered = nearbyFences.filter { fence in
-    haversineDistance(deviceLat, deviceLon, fence.centerLat, fence.centerLon) <= fence.radiusMeters
+let triggered = nearbyFences.items.filter { (fence, distance) in
+    (distance ?? .infinity) <= fence.radiusMeters
 }
 ```
 
@@ -128,16 +117,11 @@ let triggered = nearbyFences.filter { fence in
 struct AircraftPosition {
     var id: String = ULID().uuidString
     var callsign: String = ""
-    var latitude: Double = 0
-    var longitude: Double = 0
-    var altitude: Double = 0  // meters
+    var position: GeographicPosition  // point + ellipsoidal height
 
-    #Index<AircraftPosition>(
-        type: SpatialIndexKind(
-            coordinates: [\.latitude, \.longitude, \.altitude],
-            encoding: .morton,  // Morton supports 3D
-            level: 16
-        )
+    #Index(
+        .spatial(encoding: .morton, level: 16),
+        location: \AircraftPosition.position
     )
 }
 ```
@@ -151,26 +135,19 @@ struct AircraftPosition {
 struct MapFeature {
     var id: String = ULID().ulidString
     var featureType: String = ""
-    var latitude: Double = 0
-    var longitude: Double = 0
+    var location: GeographicPoint
 
     // Multiple levels for hierarchical queries
-    #Index<MapFeature>(
-        type: SpatialIndexKind(
-            latitude: \.latitude,
-            longitude: \.longitude,
-            encoding: .s2,
-            level: 10  // Coarse for zoomed out
-        )
+    #Index(
+        .spatial(encoding: .s2, level: 10),  // Coarse for zoomed out
+        location: \MapFeature.location,
+        name: "MapFeature_spatial_coarse"
     )
 
-    #Index<MapFeature>(
-        type: SpatialIndexKind(
-            latitude: \.latitude,
-            longitude: \.longitude,
-            encoding: .s2,
-            level: 18  // Fine for zoomed in
-        )
+    #Index(
+        .spatial(encoding: .s2, level: 18),  // Fine for zoomed in
+        location: \MapFeature.location,
+        name: "MapFeature_spatial_fine"
     )
 }
 ```
@@ -191,10 +168,10 @@ struct MapFeature {
 **Choosing Level**:
 ```swift
 // Coarse level: fewer cells, faster index but less precise
-SpatialIndexKind(latitude: \.lat, longitude: \.lon, level: 10)
+#Index(.spatial(encoding: .s2, level: 10), location: \Store.location)
 
 // Fine level: more cells, slower index but more precise
-SpatialIndexKind(latitude: \.lat, longitude: \.lon, level: 18)
+#Index(.spatial(encoding: .s2, level: 18), location: \Store.location)
 ```
 
 **Trade-off**: Lower level = fewer cells = faster scan, but more false positives.
@@ -230,19 +207,16 @@ SpatialIndex supports sparse index behavior for optional location fields:
 struct Event {
     var id: String = ULID().uuidString
     var name: String = ""
-    var latitude: Double? = nil  // Optional - not all events have location
-    var longitude: Double? = nil
+    var location: GeographicPoint? = nil  // Optional - not all events have location
 
-    #Index<Event>(
-        type: SpatialIndexKind(
-            latitude: \.latitude,
-            longitude: \.longitude
-        )
+    #Index(
+        .spatial(),
+        location: \Event.location
     )
 }
 
-// Events with nil coordinates are NOT indexed
-// Only events with coordinates appear in spatial queries
+// Events with nil location are NOT indexed
+// Only events with a location appear in spatial queries
 ```
 
 ### S2 vs Morton Comparison

@@ -127,16 +127,16 @@ struct Sale {
     var quantity: Int64 = 0
 
     // Count by region
-    #Index<Sale>(type: CountIndexKind(groupBy: [\.region]))
+    #Index(.count, groupBy: [\Sale.region])
 
     // Sum by region
-    #Index<Sale>(type: SumIndexKind(groupBy: [\.region], value: \.amount))
+    #Index(.sum, groupBy: [\Sale.region], value: \Sale.amount)
 
     // Sum by region and category (composite grouping)
-    #Index<Sale>(type: SumIndexKind(groupBy: [\.region, \.category], value: \.amount))
+    #Index(.sum, groupBy: [\Sale.region, \Sale.category], value: \Sale.amount)
 
     // Average order value by category
-    #Index<Sale>(type: AverageIndexKind(groupBy: [\.category], value: \.amount))
+    #Index(.average, groupBy: [\Sale.category], value: \Sale.amount)
 }
 
 // Get real-time sales count per region (O(1) lookup)
@@ -174,10 +174,10 @@ struct Product {
     var name: String = ""
 
     // Min price by category
-    #Index<Product>(type: MinIndexKind(groupBy: [\.category], value: \.price))
+    #Index(.minimum, groupBy: [\Product.category], value: \Product.price)
 
     // Max price by category
-    #Index<Product>(type: MaxIndexKind(groupBy: [\.category], value: \.price))
+    #Index(.maximum, groupBy: [\Product.category], value: \Product.price)
 }
 
 // Get cheapest product price in Electronics
@@ -214,16 +214,17 @@ struct UserProfile {
     var status: String = "active"
 
     // Count by department
-    #Index<UserProfile>(type: CountIndexKind(groupBy: [\.department]))
+    #Index(.count, groupBy: [\UserProfile.department])
 
     // Count users with non-null email by department
-    #Index<UserProfile>(type: CountNotNullIndexKind(
-        groupBy: [\.department],
-        value: \.email
-    ))
+    #Index(
+        .countNotNull,
+        groupBy: [\UserProfile.department],
+        value: \UserProfile.email
+    )
 
     // Track update frequency per user
-    #Index<UserProfile>(type: CountUpdatesIndexKind())
+    #Index(.countUpdates, field: \UserProfile.id)
 }
 
 // Get user count by department
@@ -258,7 +259,7 @@ struct PageView {
     var timestamp: Date = Date()
 
     // Unique visitors per page (HyperLogLog++)
-    #Index<PageView>(type: DistinctIndexKind(groupBy: [\.pageId], value: \.userId))
+    #Index(.distinct(), groupBy: [\PageView.pageId], value: \PageView.userId)
 }
 
 // Get unique visitor count for a page (O(1) lookup, ~0.81% error)
@@ -297,7 +298,7 @@ struct APIRequest {
     var statusCode: Int64 = 200
 
     // Latency percentiles per endpoint (t-digest)
-    #Index<APIRequest>(type: PercentileIndexKind(groupBy: [\.endpoint], value: \.latencyMs))
+    #Index(.percentile(), groupBy: [\APIRequest.endpoint], value: \APIRequest.latencyMs)
 }
 
 // Get p99 latency for an endpoint (O(1) lookup)
@@ -337,11 +338,11 @@ deleted historical value.
 ```swift
 // GROUP BY region with multiple aggregates
 let stats = try await context.aggregate(Sale.self)
-    .groupBy(\.region)
+    .groupBy(Sale.fields.region)
     .count(as: "orderCount")
-    .sum(\.amount, as: "totalSales")
-    .avg(\.amount, as: "avgOrderValue")
-    .having { $0.aggregateInt64("orderCount") ?? 0 > 10 }
+    .sum(Sale.fields.amount, as: "totalSales")
+    .avg(Sale.fields.amount, as: "avgOrderValue")
+    .having { ($0.aggregateInt64("orderCount") ?? 0) > 10 }
     .execute()
 
 for result in stats {
@@ -388,7 +389,7 @@ struct Survey {
     var rating: Double? = nil  // Optional - not all surveys have ratings
 
     // Average rating by category (nil ratings excluded)
-    #Index<Survey>(type: AverageIndexKind(groupBy: [\.category], value: \.rating))
+    #Index(.average, groupBy: [\Survey.category], value: \Survey.rating)
 }
 
 // Average only includes surveys with ratings
@@ -559,17 +560,17 @@ Max Query: Get last key in grouping subspace (reverse scan)
 
 ### Index Selection Guide
 
-| Metric | Index Type | Storage | Query O(n) |
-|--------|------------|---------|------------|
-| Record count per group | `CountIndexKind` | 8 bytes/group | O(1) |
-| Non-null field count | `CountNotNullIndexKind` | 8 bytes/group | O(1) |
-| Update frequency | `CountUpdatesIndexKind` | 8 bytes/record | O(1) |
-| Sum of values | `SumIndexKind` | 16 bytes integer / 24 bytes floating per group | O(1) |
-| Min value | `MinIndexKind` | ~20 bytes/record | O(1) |
-| Max value | `MaxIndexKind` | ~20 bytes/record | O(1) |
-| Average (sum/count) | `AverageIndexKind` | 24 bytes/group | O(1) |
-| Unique count (approx) | `DistinctIndexKind` | membership + bounded HLL/group | O(1) read |
-| Percentiles (approx) | `PercentileIndexKind` | membership + bounded digest/group | O(1) read |
+| Metric | Index Definition | Storage | Query O(n) |
+|--------|------------------|---------|------------|
+| Record count per group | `.count` | 8 bytes/group | O(1) |
+| Non-null field count | `.countNotNull` | 8 bytes/group | O(1) |
+| Update frequency | `.countUpdates` | 8 bytes/record | O(1) |
+| Sum of values | `.sum` | 16 bytes integer / 24 bytes floating per group | O(1) |
+| Min value | `.minimum` | ~20 bytes/record | O(1) |
+| Max value | `.maximum` | ~20 bytes/record | O(1) |
+| Average (sum/count) | `.average` | 24 bytes/group | O(1) |
+| Unique count (approx) | `.distinct()` | membership + bounded HLL/group | O(1) read |
+| Percentiles (approx) | `.percentile()` | membership + bounded digest/group | O(1) read |
 
 ### Grouping Field Selection
 
@@ -615,15 +616,15 @@ DISTINCT and PERCENTILE aggregations support both **in-memory computation** and 
 ```swift
 // Works immediately - computed in-memory
 let stats = try await context.aggregate(PageView.self)
-    .groupBy(\.pageId)
+    .groupBy(PageView.fields.pageId)
     .count(as: "totalViews")
-    .distinct(\.userId, as: "uniqueVisitors")
+    .distinct(PageView.fields.userId, as: "uniqueVisitors")
     .execute()
 
 let latencyStats = try await context.aggregate(Request.self)
-    .groupBy(\.endpoint)
-    .avg(\.latencyMs, as: "avgLatency")
-    .percentile(\.latencyMs, p: 0.99, as: "p99Latency")
+    .groupBy(Request.fields.endpoint)
+    .avg(Request.fields.latencyMs, as: "avgLatency")
+    .percentile(Request.fields.latencyMs, p: 0.99, as: "p99Latency")
     .execute()
 ```
 
@@ -636,13 +637,13 @@ struct PageView {
     var userId: String = ""
 
     // Define index for O(1) distinct count
-    #Index<PageView>(type: DistinctIndexKind(groupBy: [\.pageId], value: \.userId))
+    #Index(.distinct(), groupBy: [\PageView.pageId], value: \PageView.userId)
 }
 
 // Same query - automatically uses index when available
 let stats = try await context.aggregate(PageView.self)
-    .groupBy(\.pageId)
-    .distinct(\.userId, as: "uniqueVisitors")  // O(1) from index
+    .groupBy(PageView.fields.pageId)
+    .distinct(PageView.fields.userId, as: "uniqueVisitors")  // O(1) from index
     .execute()
 ```
 
@@ -739,15 +740,15 @@ Every batch result exposes grouping keys as `[FieldValue]`. FoundationDB tuple
 elements remain an internal storage representation and never cross the public
 aggregation query boundary.
 
-| Aggregation | Index Kind | Batch API |
-|-------------|------------|-----------|
-| COUNT | `CountIndexKind` | `getAllCounts()` |
-| SUM | `SumIndexKind` | `getAllSums()` |
-| AVG | `AverageIndexKind` | `getAllAverages()` |
-| DISTINCT | `DistinctIndexKind` | `getAllDistinctCounts()` |
-| PERCENTILE | `PercentileIndexKind` | `getAllPercentiles()` |
-| MIN | `MinIndexKind` | `getAllMins()` |
-| MAX | `MaxIndexKind` | `getAllMaxs()` |
+| Aggregation | Index Definition | Batch API |
+|-------------|------------------|-----------|
+| COUNT | `.count` | `getAllCounts()` |
+| SUM | `.sum` | `getAllSums()` |
+| AVG | `.average` | `getAllAverages()` |
+| DISTINCT | `.distinct()` | `getAllDistinctCounts()` |
+| PERCENTILE | `.percentile()` | `getAllPercentiles()` |
+| MIN | `.minimum` | `getAllMins()` |
+| MAX | `.maximum` | `getAllMaxs()` |
 
 ## Implementation Status
 

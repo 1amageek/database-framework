@@ -34,28 +34,23 @@ struct Article {
     var content: String = ""
     var publishedAt: Date = Date()
 
-    #Index<Article>(
-        type: FullTextIndexKind(
-            fields: [\.content],
-            tokenizer: .simple,
-            storePositions: true  // Enable phrase search
-        )
+    #Index(
+        .fullText(tokenizer: .simple, storePositions: true),  // positions enable phrase search
+        fields: [\Article.content]
     )
 }
 
 // Search for articles containing "machine learning"
 let results = try await context.search(Article.self)
-    .text(\.content)
-    .query("machine learning")
-    .matchMode(.all)  // AND query
+    .fullText(Article.fields.content)
+    .terms(["machine", "learning"], mode: .all)  // AND query
     .limit(20)
     .execute()
 
 // Phrase search (exact sequence)
 let phraseResults = try await context.search(Article.self)
-    .text(\.content)
-    .query("machine learning")
-    .matchMode(.phrase)
+    .fullText(Article.fields.content)
+    .terms(["machine", "learning"], mode: .phrase)
     .execute()
 ```
 
@@ -74,19 +69,16 @@ struct Product {
     var category: String = ""
 
     // Index both name and description
-    #Index<Product>(
-        type: FullTextIndexKind(
-            fields: [\.name, \.description],
-            tokenizer: .simple
-        )
+    #Index(
+        .fullText(tokenizer: .simple),
+        fields: [\Product.name, \Product.description]
     )
 }
 
-// Search across name and description
+// Search the description field
 let results = try await context.search(Product.self)
-    .text(\.name, \.description)
-    .query("wireless bluetooth headphones")
-    .matchMode(.any)  // OR query
+    .fullText(Product.fields.description)
+    .terms(["wireless", "bluetooth", "headphones"], mode: .any)  // OR query
     .execute()
 ```
 
@@ -102,19 +94,16 @@ struct LogEntry {
     var message: String = ""
     var level: String = ""
 
-    #Index<LogEntry>(
-        type: FullTextIndexKind(
-            fields: [\.message],
-            tokenizer: .ngram,
-            ngramSize: 3  // Trigrams for partial matching
-        )
+    #Index(
+        .fullText(tokenizer: .ngram, ngramSize: 3),  // Trigrams for partial matching
+        fields: [\LogEntry.message]
     )
 }
 
 // Search logs with partial term matching
 let results = try await context.search(LogEntry.self)
-    .text(\.message)
-    .query("err")  // Matches "error", "errors", etc.
+    .fullText(LogEntry.fields.message)
+    .terms(["err"])  // Matches "error", "errors", etc.
     .execute()
 ```
 
@@ -129,18 +118,16 @@ struct Document {
     var content: String = ""
     var language: String = "en"
 
-    #Index<Document>(
-        type: FullTextIndexKind(
-            fields: [\.content],
-            tokenizer: .stem  // Snowball stemmer
-        )
+    #Index(
+        .fullText(tokenizer: .stem),  // Stemming tokenizer
+        fields: [\Document.content]
     )
 }
 
 // Stemmed search: "running" matches "run", "runs", "runner"
 let results = try await context.search(Document.self)
-    .text(\.content)
-    .query("running")
+    .fullText(Document.fields.content)
+    .terms(["running"])
     .execute()
 ```
 
@@ -149,22 +136,27 @@ let results = try await context.search(Document.self)
 **Scenario**: Display search results with highlighted matches.
 
 ```swift
-// Search with highlighting
-let results = try await context.search(Article.self)
-    .text(\.content)
-    .query("database performance")
-    .highlight(config: HighlightConfig(
-        preTag: "<mark>",
-        postTag: "</mark>",
-        maxFragments: 3,
-        fragmentSize: 150
-    ))
-    .executeWithHighlights()
+// Search, then highlight matches with Highlighter
+let articles = try await context.search(Article.self)
+    .fullText(Article.fields.content)
+    .terms(["database", "performance"])
+    .execute()
 
-for (article, highlights) in results {
+let highlighter = Highlighter(config: HighlightConfig(
+    preTag: "<mark>",
+    postTag: "</mark>",
+    fragmentSize: 150,
+    numberOfFragments: 3
+))
+
+for article in articles {
     print("Title: \(article.title)")
-    for highlight in highlights {
-        print("  ... \(highlight) ...")
+    let fragments = highlighter.highlight(
+        text: article.content,
+        terms: ["database", "performance"]
+    )
+    for fragment in fragments {
+        print("  ... \(fragment.text) ...")
     }
 }
 ```
@@ -176,9 +168,9 @@ for (article, highlights) in results {
 ```swift
 // Search with BM25 scoring
 let scored = try await context.search(Article.self)
-    .text(\.content)
-    .query("machine learning neural networks")
-    .bm25(params: BM25Parameters(k1: 1.2, b: 0.75))
+    .fullText(Article.fields.content)
+    .terms(["machine", "learning", "neural", "networks"])
+    .bm25(k1: 1.2, b: 0.75)
     .executeWithScores()
 
 for (article, score) in scored {
@@ -205,16 +197,16 @@ BM25(D,Q) = Σ IDF(qi) × (tf(qi,D) × (k1+1)) / (tf(qi,D) + k1 × (1-b + b × |
 **Configuration**:
 ```swift
 // Simple tokenization (default)
-FullTextIndexKind(fields: [\.content], tokenizer: .simple)
+#Index(.fullText(tokenizer: .simple), fields: [\Document.content])
 
 // Stemming
-FullTextIndexKind(fields: [\.content], tokenizer: .stem)
+#Index(.fullText(tokenizer: .stem), fields: [\Document.content])
 
 // N-gram (trigrams)
-FullTextIndexKind(fields: [\.content], tokenizer: .ngram, ngramSize: 3)
+#Index(.fullText(tokenizer: .ngram, ngramSize: 3), fields: [\Document.content])
 
 // Keyword (no tokenization)
-FullTextIndexKind(fields: [\.category], tokenizer: .keyword)
+#Index(.fullText(tokenizer: .keyword), fields: [\Document.category])
 ```
 
 ### BM25 Parameter Tuning
@@ -241,18 +233,15 @@ Enable position storage for phrase queries:
 
 ```swift
 // With positions (required for phrase search)
-#Index<Article>(
-    type: FullTextIndexKind(
-        fields: [\.content],
-        storePositions: true  // Store term positions
-    )
+#Index(
+    .fullText(storePositions: true),  // Store term positions
+    fields: [\Article.content]
 )
 
 // Phrase search requires positions
 let results = try await context.search(Article.self)
-    .text(\.content)
-    .query("machine learning")
-    .matchMode(.phrase)
+    .fullText(Article.fields.content)
+    .terms(["machine", "learning"], mode: .phrase)
     .execute()
 ```
 
@@ -268,10 +257,9 @@ struct Document {
     var id: String = ULID().ulidString
     var content: String? = nil  // Optional - not all docs have content
 
-    #Index<Document>(
-        type: FullTextIndexKind(
-            fields: [\.content]
-        )
+    #Index(
+        .fullText(),
+        fields: [\Document.content]
     )
 }
 

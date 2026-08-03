@@ -97,7 +97,7 @@ documented semantic mapping.
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0731.3"
+            from: "26.0803.0"
         )
     ]
 
@@ -111,7 +111,7 @@ The package that consumes database-framework selects that composition:
 
     .package(
         url: "https://github.com/1amageek/database-framework.git",
-        from: "26.0731.3",
+        from: "26.0803.0",
         traits: ["GraphIndexes"]
     )
 
@@ -444,10 +444,11 @@ same StorageKit contracts regardless of the selected backend.
 | ScalarIndex | scalar / composite | equality, ranges, sorting, uniqueness |
 | VectorIndex | Flat / HNSW / IVF / PQ | exact and approximate similarity search with binary vector payloads |
 | FullTextIndex | inverted text | token search and ranking |
-| SpatialIndex | S2 / Geohash / Morton | geospatial queries |
-| RankIndex | skip list | ordered rankings and top-K |
+| SpatialIndex | S2 / Morton | geospatial queries |
+| RankIndex | ordered score keys | ordered rankings and top-K via bounded ordered range reads |
 | GraphIndex | graph / SPARQL | traversal, graph patterns, OWL reasoning |
-| AggregationIndex | count / sum / min / max / average | incremental aggregation |
+| OntologyIndex | ontology | ontology storage and reasoning |
+| AggregationIndex | count / countNotNull / countUpdates / sum / average / min / max / distinct (HyperLogLog++) / percentile (t-digest) | incremental aggregation |
 | VersionIndex | temporal versions | history and version-aware reads |
 | BitmapIndex | compressed bitmaps | categorical membership |
 | LeaderboardIndex | time-windowed ranking | rolling leaderboards |
