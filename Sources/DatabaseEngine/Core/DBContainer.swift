@@ -972,6 +972,59 @@ extension DBContainer {
             for: fingerprintKey
         )
     }
+
+    /// Key holding the in-progress migration stage marker.
+    ///
+    /// The marker is written before a stage's data and index work begins and
+    /// cleared in the same transaction as the version bump, so a crash between
+    /// the two leaves observable evidence instead of a silent partial stage.
+    private static func migrationStageMarkerKey(
+        metadataSubspace: Subspace
+    ) -> ByteString {
+        metadataSubspace
+            .subspace("schema")
+            .pack(Tuple("migrationStage"))
+    }
+
+    private static func packMigrationStageMarker(
+        from: Schema.Version,
+        to: Schema.Version
+    ) -> ByteString {
+        Tuple(
+            Int(from.major),
+            Int(from.minor),
+            Int(from.patch),
+            Int(to.major),
+            Int(to.minor),
+            Int(to.patch)
+        ).pack()
+    }
+
+    private static func unpackMigrationStageMarker(
+        _ bytes: ByteString
+    ) throws -> (from: Schema.Version, to: Schema.Version) {
+        let tuple = try Tuple(packed: bytes)
+        guard tuple.count == 6 else {
+            throw DatabaseRuntimeError.internalError(
+                "Invalid migration stage marker format"
+            )
+        }
+        var components: [UInt32] = []
+        components.reserveCapacity(6)
+        for index in 0..<6 {
+            guard case .signedInteger(let value) = try tuple.value(at: index),
+                  let component = UInt32(exactly: value) else {
+                throw DatabaseRuntimeError.internalError(
+                    "Invalid migration stage marker format"
+                )
+            }
+            components.append(component)
+        }
+        return (
+            from: Schema.Version(components[0], components[1], components[2]),
+            to: Schema.Version(components[3], components[4], components[5])
+        )
+    }
 }
 
 // MARK: - VersionedSchema Support
@@ -1364,6 +1417,51 @@ extension DBContainer {
             }
         }
 
+        // Record the stage before any data or index work. Stage work spans
+        // multiple transactions (index builds and data rewrites cannot fit in
+        // one), so the version bump cannot be atomic with it. The marker makes
+        // an interrupted stage observable on the next run — a matching marker
+        // means the same stage re-runs from the start (stage work must be
+        // idempotent for exactly this reason), a mismatched marker fails
+        // instead of running a different stage over partial state. The marker
+        // is cleared in the version-bump transaction below.
+        let metadataSubspace = try await getMetadataSubspace()
+        let stageMarkerKey = Self.migrationStageMarkerKey(
+            metadataSubspace: metadataSubspace
+        )
+        let expectedFrom = stage.fromVersionIdentifier
+        let expectedTo = stage.toVersionIdentifier
+        try await transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: monotonicClock
+        ) { transaction in
+            if let markerBytes = try await transaction.getValue(
+                for: stageMarkerKey,
+                snapshot: false
+            ) {
+                let marker = try Self.unpackMigrationStageMarker(markerBytes)
+                guard marker.from == expectedFrom, marker.to == expectedTo else {
+                    throw MigrationPlanError.interruptedMigrationStage(
+                        markedFrom: marker.from,
+                        markedTo: marker.to,
+                        expectedFrom: expectedFrom,
+                        expectedTo: expectedTo
+                    )
+                }
+                self.logger.warning(
+                    "Re-running interrupted migration stage \(marker.from) -> \(marker.to); stage work re-applies from the start"
+                )
+            } else {
+                try transaction.setValue(
+                    Self.packMigrationStageMarker(
+                        from: expectedFrom,
+                        to: expectedTo
+                    ),
+                    for: stageMarkerKey
+                )
+            }
+        }
+
         let indexChanges = try stage.indexChanges
         let requiresStoreAccess = stage.willMigrate != nil
             || stage.didMigrate != nil
@@ -1378,7 +1476,6 @@ extension DBContainer {
         let targetStoreRegistry = requiresStoreAccess
             ? try await buildStoreRegistry(for: targetSchema)
             : [:]
-        let metadataSubspace = try await getMetadataSubspace()
         let stageIndexConfigurations = Self.aggregateIndexConfigurations(
             configuration.indexConfigurations
         )
@@ -1444,6 +1541,7 @@ extension DBContainer {
                 metadataSubspace: metadataSubspace,
                 transaction: transaction
             )
+            try transaction.clear(key: stageMarkerKey)
         }
         logger.info("Updated schema version to \(stage.toVersionIdentifier)")
     }

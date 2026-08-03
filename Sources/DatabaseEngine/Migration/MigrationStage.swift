@@ -16,6 +16,13 @@ import DatabaseKit
 /// - `willMigrate`: Pre-processing (e.g., data cleanup, duplicate removal)
 /// - `didMigrate`: Post-processing (e.g., setting default values, data transformation)
 ///
+/// **Idempotency contract**:
+/// Stage work spans multiple storage transactions, so the recorded schema
+/// version advances only after the whole stage completes. A crash mid-stage
+/// re-runs the same stage from the start on the next migration attempt.
+/// `willMigrate` and `didMigrate` must therefore tolerate re-execution over
+/// partially applied work (the built-in index add/remove work already does).
+///
 /// **Example usage**:
 /// ```swift
 /// enum AppMigrationPlan: SchemaMigrationPlan {

@@ -275,6 +275,17 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
     /// The persisted schema snapshot differs from the compiled definition.
     case schemaFingerprintMismatch(Schema.Version)
 
+    /// A persisted in-progress stage marker names a different stage than the
+    /// one the current plan would execute next. The store was interrupted
+    /// mid-stage and the plan has changed since; re-running a different stage
+    /// over the partial state is not safe.
+    case interruptedMigrationStage(
+        markedFrom: Schema.Version,
+        markedTo: Schema.Version,
+        expectedFrom: Schema.Version,
+        expectedTo: Schema.Version
+    )
+
     public var description: String {
         switch self {
         case .emptySchemaList:
@@ -330,6 +341,15 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
 
         case .schemaFingerprintMismatch(let version):
             return "Persisted schema version \(version) does not match its compiled schema definition"
+
+        case .interruptedMigrationStage(
+            let markedFrom,
+            let markedTo,
+            let expectedFrom,
+            let expectedTo
+        ):
+            return "Interrupted migration stage \(markedFrom) -> \(markedTo) does not match the next planned stage \(expectedFrom) -> \(expectedTo); "
+                + "restore the original plan or repair the store before migrating"
         }
     }
 }
