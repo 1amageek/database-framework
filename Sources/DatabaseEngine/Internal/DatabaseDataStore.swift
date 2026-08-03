@@ -423,6 +423,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Execute scan in transaction - all captured values are now Sendable
         // Select optimal StreamingMode based on limit
         let streamingMode: StreamingMode = StreamingMode.forQuery(limit: limit)
+        let scannedIndexName = matchingIndex.name
 
         let ids: [Tuple] = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             var ids: [Tuple] = []
@@ -442,12 +443,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
                     streamingMode: streamingMode
                 )
                 for (key, _) in sequence {
-                    if let idTuple = try self.extractIDFromIndexKey(
+                    ids.append(try self.extractIDFromIndexKey(
                         key,
-                        subspace: valueSubspace
-                    ) {
-                        ids.append(idTuple)
-                    }
+                        subspace: valueSubspace,
+                        indexName: scannedIndexName
+                    ))
                 }
 
             case .range(let begin, let end, let baseSubspace, let keyPathsCount):
@@ -461,13 +461,12 @@ package final class DatabaseDataStore: DataStore, Sendable {
                     streamingMode: streamingMode
                 )
                 for (key, _) in sequence {
-                    if let idTuple = try self.extractIDFromIndexKey(
+                    ids.append(try self.extractIDFromIndexKey(
                         key,
                         baseSubspace: baseSubspace,
-                        keyPathsCount: keyPathsCount
-                    ) {
-                        ids.append(idTuple)
-                    }
+                        keyPathsCount: keyPathsCount,
+                        indexName: scannedIndexName
+                    ))
                 }
             }
 
@@ -555,16 +554,38 @@ package final class DatabaseDataStore: DataStore, Sendable {
         )
     }
 
+    /// Hexadecimal rendering for error payloads. `String(describing:)` is
+    /// unavailable in Embedded Swift, so key bytes are formatted manually.
+    private static func hexadecimalString(_ bytes: ByteString) -> String {
+        var characters = [UInt8]()
+        characters.reserveCapacity(bytes.count * 2)
+        for byte in bytes {
+            let high = byte >> 4
+            let low = byte & 0x0f
+            characters.append(high < 10 ? 48 + high : 87 + high)
+            characters.append(low < 10 ? 48 + low : 87 + low)
+        }
+        return String(decoding: characters, as: UTF8.self)
+    }
+
     /// Extract ID from an index key given a value subspace
+    ///
+    /// A key that unpacks to an empty tuple carries no primary-key elements.
+    /// Such an entry is physically corrupt; skipping it would silently shrink
+    /// query results, so the read fails instead.
     private func extractIDFromIndexKey(
         _ key: ByteString,
-        subspace: Subspace
-    ) throws -> Tuple? {
+        subspace: Subspace,
+        indexName: String
+    ) throws -> Tuple {
         let tuple = try subspace.unpack(key)
-        if tuple.count > 0 {
-            return tuple
+        guard tuple.count > 0 else {
+            throw CanonicalReadError.corruptedIndexEntry(
+                indexName: indexName,
+                reason: "index key unpacked to an empty tuple"
+            )
         }
-        return nil
+        return tuple
     }
 
     /// Extract ID from an index key given a base subspace and keyPaths count
@@ -579,11 +600,15 @@ package final class DatabaseDataStore: DataStore, Sendable {
     private func extractIDFromIndexKey(
         _ key: ByteString,
         baseSubspace: Subspace,
-        keyPathsCount: Int
-    ) throws -> Tuple? {
+        keyPathsCount: Int,
+        indexName: String
+    ) throws -> Tuple {
         let tuple = try baseSubspace.unpack(key)
         guard tuple.count > keyPathsCount else {
-            return nil
+            throw CanonicalReadError.corruptedIndexEntry(
+                indexName: indexName,
+                reason: "index key holds \(tuple.count) elements but needs more than \(keyPathsCount) to carry a primary key"
+            )
         }
 
         var idElements: [any TupleElement] = []
@@ -594,7 +619,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
             }
         }
         guard !idElements.isEmpty else {
-            return nil
+            throw CanonicalReadError.corruptedIndexEntry(
+                indexName: indexName,
+                reason: "index key primary-key elements decoded as null"
+            )
         }
         return Tuple(idElements)
     }
@@ -632,6 +660,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 }
                 indexed.sort { $0.0 < $1.0 }
 
+                // Missing rows are dropped, not raised: this fetch runs in a
+                // second transaction after the index scan, so an absent row is
+                // indistinguishable from a legitimate concurrent delete.
+                // Same-transaction reads go through fetchByIdsWithTransaction,
+                // which treats a missing row as a dangling index entry.
                 return indexed.compactMap { $0.1 }
             }
         }
@@ -1113,12 +1146,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
             )
             for (key, _) in sequence {
                 try workMeter?.consume(at: .storageRow)
-                if let idTuple = try self.extractIDFromIndexKey(
+                ids.append(try self.extractIDFromIndexKey(
                     key,
-                    subspace: valueSubspace
-                ) {
-                    ids.append(idTuple)
-                }
+                    subspace: valueSubspace,
+                    indexName: matchingIndex.name
+                ))
             }
 
         case .range(let begin, let end, let baseSubspace, let keyPathsCount):
@@ -1132,13 +1164,12 @@ package final class DatabaseDataStore: DataStore, Sendable {
             )
             for (key, _) in sequence {
                 try workMeter?.consume(at: .storageRow)
-                if let idTuple = try self.extractIDFromIndexKey(
+                ids.append(try self.extractIDFromIndexKey(
                     key,
                     baseSubspace: baseSubspace,
-                    keyPathsCount: keyPathsCount
-                ) {
-                    ids.append(idTuple)
-                }
+                    keyPathsCount: keyPathsCount,
+                    indexName: matchingIndex.name
+                ))
             }
         }
 
@@ -1151,6 +1182,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let models = try await fetchByIdsWithTransaction(
             T.self,
             ids: ids,
+            indexName: matchingIndex.name,
             transaction: transaction,
             workMeter: workMeter
         )
@@ -1160,9 +1192,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
     }
 
     /// Fetch models by IDs with an existing transaction (parallel reads)
+    ///
+    /// The index scan that produced `ids` and these row reads share one
+    /// transaction snapshot, so a missing row is a real index/row divergence,
+    /// not a racing delete, and surfaces as `danglingIndexEntry`.
     private func fetchByIdsWithTransaction<T: Persistable>(
         _ type: T.Type,
         ids: [Tuple],
+        indexName: String,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter?
     ) async throws -> [T] {
@@ -1177,26 +1214,30 @@ package final class DatabaseDataStore: DataStore, Sendable {
         try workMeter?.consume(UInt64(keys.count), at: .storageRow)
 
         // Parallel reads within the same transaction
-        return try await withThrowingTaskGroup(of: (Int, T?).self) { group in
+        return try await withThrowingTaskGroup(of: (Int, T).self) { group in
             for (index, key) in keys.enumerated() {
+                let primaryKey = ids[index]
                 group.addTask {
-                    if let bytes = try await storage.read(for: key) {
-                        let model: T = try DataAccess.deserialize(bytes)
-                        return (index, model)
+                    guard let bytes = try await storage.read(for: key) else {
+                        throw CanonicalReadError.danglingIndexEntry(
+                            indexName: indexName,
+                            primaryKey: Self.hexadecimalString(primaryKey.pack())
+                        )
                     }
-                    return (index, nil)
+                    let model: T = try DataAccess.deserialize(bytes)
+                    return (index, model)
                 }
             }
 
             // Collect results preserving order
-            var indexed: [(Int, T?)] = []
+            var indexed: [(Int, T)] = []
             indexed.reserveCapacity(keys.count)
             while let result = try await group.next() {
                 indexed.append(result)
             }
             indexed.sort { $0.0 < $1.0 }
 
-            return indexed.compactMap { $0.1 }
+            return indexed.map { $0.1 }
         }
     }
 

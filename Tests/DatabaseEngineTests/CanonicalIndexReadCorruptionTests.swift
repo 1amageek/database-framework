@@ -1,0 +1,143 @@
+import DatabaseKit
+import DatabaseRuntime
+import DatabaseTypes
+import ScalarIndex
+import StorageKit
+import Testing
+@testable import DatabaseEngine
+
+@Persistable
+private struct CorruptionProbeItem {
+    #Directory<CorruptionProbeItem>("corruption-probe", "items")
+
+    var id: String
+    var category: String
+}
+
+/// Verifies that physical index corruption surfaces as `CanonicalReadError`
+/// instead of silently shrinking query results.
+@Suite("Canonical Index Read Corruption")
+struct CanonicalIndexReadCorruptionTests {
+
+    @Test("A structurally invalid index key fails the read")
+    func corruptedIndexKeyFailsRead() async throws {
+        let scenario = try await makeScenario()
+        let context = scenario.container.newContext()
+        let item = CorruptionProbeItem(id: "probe", category: "vv")
+        try context.insert(item)
+        try await context.save()
+
+        let rangeQuery = Query<CorruptionProbeItem>().where(
+            CorruptionProbeItem.fields.category > "a"
+        )
+        let baseline = try await QueryExecutor(
+            context: scenario.container.newContext(),
+            query: rangeQuery
+        ).execute()
+        #expect(baseline.map(\.id) == [item.id])
+
+        // Plant an index key that carries the indexed value but no primary
+        // key elements: [indexSubspace]/[value] with nothing after it.
+        let categoryElement = try FieldValueTupleCodec.tupleElement(
+            for: .string("vv")
+        )
+        let corruptKey = scenario.store.indexSubspace
+            .subspace(scenario.indexName)
+            .pack(Tuple(categoryElement))
+        try await scenario.engine.withTransaction { transaction in
+            try transaction.setValue(ByteString(), for: corruptKey)
+        }
+
+        do {
+            _ = try await QueryExecutor(
+                context: scenario.container.newContext(),
+                query: rangeQuery
+            ).execute()
+            Issue.record("Expected CanonicalReadError.corruptedIndexEntry")
+        } catch CanonicalReadError.corruptedIndexEntry(let indexName, _) {
+            #expect(indexName == scenario.indexName)
+        }
+    }
+
+    @Test("An index entry whose row is missing in the same transaction fails the read")
+    func danglingIndexEntryFailsSameTransactionRead() async throws {
+        let scenario = try await makeScenario()
+        let context = scenario.container.newContext()
+        let item = CorruptionProbeItem(id: "probe", category: "vv")
+        try context.insert(item)
+        try await context.save()
+
+        let equalityQuery = Query<CorruptionProbeItem>().where(
+            CorruptionProbeItem.fields.category == "vv"
+        )
+        let baseline = try await scenario.container.newContext()
+            .withFetchedModelsInTransaction(equalityQuery) { models, _ in
+                models.map(\.id)
+            }
+        #expect(baseline == [item.id])
+
+        // Remove the canonical row directly, bypassing index maintenance,
+        // so the index entry dangles.
+        let rowKey = scenario.store.itemSubspace
+            .subspace(CorruptionProbeItem.persistableType)
+            .pack(Tuple(item.id))
+        try await scenario.engine.withTransaction { transaction in
+            try transaction.clear(key: rowKey)
+        }
+
+        do {
+            _ = try await scenario.container.newContext()
+                .withFetchedModelsInTransaction(equalityQuery) { models, _ in
+                    models.map(\.id)
+                }
+            Issue.record("Expected CanonicalReadError.danglingIndexEntry")
+        } catch CanonicalReadError.danglingIndexEntry(let indexName, _) {
+            #expect(indexName == scenario.indexName)
+        }
+    }
+
+    private func makeScenario() async throws -> CorruptionProbeScenario {
+        let indexName = "corruption_probe_by_category"
+        let descriptor = try IndexDescriptor(
+            name: indexName,
+            definition: .scalar,
+            fields: [CorruptionProbeItem.fields.category.ascending]
+        )
+        let engine = InMemoryEngine()
+        let schema = try Schema(
+            entities: [
+                try Schema.Entity(
+                    from: CorruptionProbeItem.self,
+                    including: [descriptor]
+                )
+            ]
+        )
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: engine),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        CorruptionProbeItem.self,
+                        including: [descriptor]
+                    )
+                ]
+            ),
+            security: .disabled
+        )
+        let store = try await container.store(for: CorruptionProbeItem.self)
+        return CorruptionProbeScenario(
+            container: container,
+            engine: engine,
+            store: store,
+            indexName: indexName
+        )
+    }
+}
+
+private struct CorruptionProbeScenario: Sendable {
+    let container: DBContainer
+    let engine: InMemoryEngine
+    let store: DatabaseDataStore
+    let indexName: String
+}

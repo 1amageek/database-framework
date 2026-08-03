@@ -82,7 +82,7 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3918 \
+    --expected-count 3920 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings

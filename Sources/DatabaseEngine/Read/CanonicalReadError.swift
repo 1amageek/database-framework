@@ -85,4 +85,16 @@ public enum CanonicalReadError: Error, Sendable {
     /// (e.g., FullText BM25 `score`, Vector `distance`). Replaces the
     /// previous `?? 0` silent default that produced misleading ranking.
     case missingAnnotation(String)
+
+    // MARK: Index integrity
+
+    /// An index entry's key could not be decoded back into a primary-key
+    /// tuple. The entry is physically corrupt; skipping it would silently
+    /// shrink query results, so the read fails instead.
+    case corruptedIndexEntry(indexName: String, reason: String)
+
+    /// An index entry resolved to a primary key whose canonical row does not
+    /// exist in the same transaction snapshot. The index and the row store
+    /// disagree; returning the remaining rows would hide the inconsistency.
+    case danglingIndexEntry(indexName: String, primaryKey: String)
 }

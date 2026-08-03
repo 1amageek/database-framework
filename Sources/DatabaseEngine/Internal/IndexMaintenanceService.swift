@@ -187,16 +187,3 @@ internal final class IndexMaintenanceService: Sendable {
 
 }
 
-// MARK: - Errors
-
-/// Errors from IndexMaintenanceService
-enum IndexMaintenanceError: Error, CustomStringConvertible {
-    case corruptedIndexKey(indexName: String)
-
-    var description: String {
-        switch self {
-        case .corruptedIndexKey(let indexName):
-            return "IndexMaintenanceError: Index '\(indexName)' contains a malformed key"
-        }
-    }
-}
