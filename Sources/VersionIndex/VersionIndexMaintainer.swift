@@ -110,12 +110,15 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         try await storeVersion(item: item, id: id, transaction: transaction)
     }
 
-    /// Version indexes don't have deterministic keys (versionstamp is set at commit)
+    /// Version index keys embed a versionstamp assigned at commit time, so the
+    /// expected key set cannot be computed from the item alone. Returning an
+    /// empty set would mark every item as intentionally unindexed (sparse), so
+    /// this reports the missing verification capability explicitly.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [ByteString] {
-        return []
+        throw IndexVerificationError.expectedKeysUnsupported
     }
 
     // MARK: - Query Methods
