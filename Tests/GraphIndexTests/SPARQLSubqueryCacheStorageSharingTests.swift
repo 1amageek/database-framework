@@ -276,7 +276,7 @@ private func makeKey(
 ) -> SPARQLSubqueryCacheKey {
     SPARQLSubqueryCacheKey(
         occurrenceIdentifier: occurrenceIdentifier,
-        graphScope: .defaultGraph
+        graphTarget: .defaultGraph
     )
 }
 

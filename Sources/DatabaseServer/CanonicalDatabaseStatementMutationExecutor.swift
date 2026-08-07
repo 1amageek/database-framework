@@ -301,7 +301,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             }
 
             var triples = document.takeTriples()
-            let scope = SPARQLBlankNodeScope(
+            let blankNodeResolver = SPARQLUpdateBlankNodeResolver(
                 idempotencyKey: idempotencyKey,
                 operationOrdinal: operationOrdinal,
                 solutionOrdinal: 0
@@ -310,14 +310,14 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 try workMeter.consume(at: .validation)
                 let triple = triples[index]
                 let scoped = RDFTriple(
-                    subject: try scopeBlankNodes(
+                    subject: try resolveBlankNodes(
                         triple.subject,
-                        scope: scope
+                        blankNodeResolver: blankNodeResolver
                     ),
                     predicate: triple.predicate,
-                    object: try scopeBlankNodes(
+                    object: try resolveBlankNodes(
                         triple.object,
-                        scope: scope
+                        blankNodeResolver: blankNodeResolver
                     )
                 )
                 do {
@@ -343,15 +343,15 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         }
     }
 
-    private func scopeBlankNodes(
+    private func resolveBlankNodes(
         _ subject: RDFSubject,
-        scope: SPARQLBlankNodeScope
+        blankNodeResolver: SPARQLUpdateBlankNodeResolver
     ) throws -> RDFSubject {
         switch subject {
         case .blankNode(let identifier):
             return .blankNode(
                 try RDFBlankNodeIdentifier(
-                    scope.identifier(for: identifier.rawValue)
+                    blankNodeResolver.identifier(for: identifier.rawValue)
                 )
             )
         case .iri:
@@ -359,22 +359,22 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         }
     }
 
-    private func scopeBlankNodes(
+    private func resolveBlankNodes(
         _ term: RDFTerm,
-        scope: SPARQLBlankNodeScope
+        blankNodeResolver: SPARQLUpdateBlankNodeResolver
     ) throws -> RDFTerm {
         switch term {
         case .blankNode(let identifier):
             return .blankNode(
                 try RDFBlankNodeIdentifier(
-                    scope.identifier(for: identifier.rawValue)
+                    blankNodeResolver.identifier(for: identifier.rawValue)
                 )
             )
         case .tripleTerm(let subject, let predicate, let object):
             return .tripleTerm(
-                subject: try scopeBlankNodes(subject, scope: scope),
+                subject: try resolveBlankNodes(subject, blankNodeResolver: blankNodeResolver),
                 predicate: predicate,
-                object: try scopeBlankNodes(object, scope: scope)
+                object: try resolveBlankNodes(object, blankNodeResolver: blankNodeResolver)
             )
         case .iri, .literal:
             return term

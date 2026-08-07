@@ -321,7 +321,7 @@ public struct GraphPatternConverter: Sendable {
         var loweredTriples: [ExecutionTriple] = []
         loweredTriples.reserveCapacity(expansionPlan.totalTripleCount)
         var loweredPaths: [ExecutionPattern] = []
-        var blankNodeScope = BlankNodeVariableScope(
+        var blankNodeResolver = BlankNodeVariableScope(
             identifier: blankNodeScopeIdentifier
         )
 
@@ -331,20 +331,20 @@ public struct GraphPatternConverter: Sendable {
                 try appendConvertedTriple(
                     triple,
                     prefixes: prefixes,
-                    blankNodeScope: &blankNodeScope,
+                    blankNodeResolver: &blankNodeResolver,
                     to: &loweredTriples
                 )
             case .propertyPath(let pathPattern):
                 let subject = try lowerTerm(
                     pathPattern.subject,
                     prefixes: prefixes,
-                    blankNodeScope: &blankNodeScope,
+                    blankNodeResolver: &blankNodeResolver,
                     supplementalTriples: &loweredTriples
                 )
                 let object = try lowerTerm(
                     pathPattern.object,
                     prefixes: prefixes,
-                    blankNodeScope: &blankNodeScope,
+                    blankNodeResolver: &blankNodeResolver,
                     supplementalTriples: &loweredTriples
                 )
                 loweredPaths.append(
@@ -452,25 +452,25 @@ public struct GraphPatternConverter: Sendable {
     private static func appendConvertedTriple(
         _ triple: TriplePattern,
         prefixes: [String: String],
-        blankNodeScope: inout BlankNodeVariableScope,
+        blankNodeResolver: inout BlankNodeVariableScope,
         to triples: inout [ExecutionTriple]
     ) throws {
         let subject = try lowerTerm(
             triple.subject,
             prefixes: prefixes,
-            blankNodeScope: &blankNodeScope,
+            blankNodeResolver: &blankNodeResolver,
             supplementalTriples: &triples
         )
         let predicate = try lowerTerm(
             triple.predicate,
             prefixes: prefixes,
-            blankNodeScope: &blankNodeScope,
+            blankNodeResolver: &blankNodeResolver,
             supplementalTriples: &triples
         )
         let object = try lowerTerm(
             triple.object,
             prefixes: prefixes,
-            blankNodeScope: &blankNodeScope,
+            blankNodeResolver: &blankNodeResolver,
             supplementalTriples: &triples
         )
         triples.append(
@@ -485,7 +485,7 @@ public struct GraphPatternConverter: Sendable {
     private static func lowerTerm(
         _ term: SPARQLTerm,
         prefixes: [String: String],
-        blankNodeScope: inout BlankNodeVariableScope,
+        blankNodeResolver: inout BlankNodeVariableScope,
         supplementalTriples: inout [ExecutionTriple]
     ) throws -> ExecutionTerm {
         switch term {
@@ -496,24 +496,24 @@ public struct GraphPatternConverter: Sendable {
         case .literal(let literal):
             return .value(try literal.toSPARQLFieldValue())
         case .blankNode(let identifier):
-            return .variable(blankNodeScope.variable(for: identifier))
+            return .variable(blankNodeResolver.variable(for: identifier))
         case .tripleTerm(let subject, let predicate, let object):
             let loweredSubject = try lowerTerm(
                 subject,
                 prefixes: prefixes,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 supplementalTriples: &supplementalTriples
             )
             let loweredPredicate = try lowerTerm(
                 predicate,
                 prefixes: prefixes,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 supplementalTriples: &supplementalTriples
             )
             let loweredObject = try lowerTerm(
                 object,
                 prefixes: prefixes,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 supplementalTriples: &supplementalTriples
             )
             return .tripleTerm(
@@ -525,25 +525,25 @@ public struct GraphPatternConverter: Sendable {
             let loweredSubject = try lowerTerm(
                 subject,
                 prefixes: prefixes,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 supplementalTriples: &supplementalTriples
             )
             let loweredPredicate = try lowerTerm(
                 predicate,
                 prefixes: prefixes,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 supplementalTriples: &supplementalTriples
             )
             let loweredObject = try lowerTerm(
                 object,
                 prefixes: prefixes,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 supplementalTriples: &supplementalTriples
             )
             let loweredReifier = try lowerTerm(
                 reifier,
                 prefixes: prefixes,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 supplementalTriples: &supplementalTriples
             )
             let tripleTerm = ExecutionTerm.tripleTerm(

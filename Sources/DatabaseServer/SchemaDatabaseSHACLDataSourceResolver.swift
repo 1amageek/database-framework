@@ -46,7 +46,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         ).resolve(
             entailment,
             executor: executor,
-            graphScope: resolved.graphScope,
+            dataGraph: resolved.dataGraph,
             workBudget: workBudget,
             transaction: transaction
         )
@@ -70,7 +70,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
             executor: executor.withOntology(
                 entailmentResolution.ontologyContext
             ),
-            graphScope: resolved.graphScope,
+            dataGraph: resolved.dataGraph,
             entailmentContext: entailmentResolution.entailmentContext,
             selectedFocusNodes: selectedFocusNodes,
             snapshotFingerprint: Self.bigEndianBytes(logicalVersion)
@@ -100,8 +100,8 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                 index: data.index
             )
         }
-        let coverage = try selection.metadata.graphScope.sourceCoverage
-        let graphScope = try resolveGraphScope(
+        let coverage = try selection.metadata.graphMapping.sourceCoverage
+        let dataGraph = try resolveDataGraph(
             data.graph,
             coverage: coverage,
             entity: data.entity,
@@ -136,16 +136,16 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                     storedFieldNames: selection.storedFieldNames
                 )
             },
-            graphScope: graphScope
+            dataGraph: dataGraph
         )
     }
 
-    private func resolveGraphScope(
+    private func resolveDataGraph(
         _ graph: SHACLExecuteOperation.DataGraph,
         coverage: RDFDatasetSourceCoverage,
         entity: String,
         index: String
-    ) throws -> SHACLDataGraphScope {
+    ) throws -> SHACLDataGraphTarget {
         switch graph {
         case .defaultGraph:
             guard coverage == .defaultGraph || coverage == .dataset else {
@@ -261,7 +261,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         let entity: Schema.Entity
         let selection: RDFDatasetIndexSelection
         let source: RDFDatasetSource?
-        let graphScope: SHACLDataGraphScope
+        let dataGraph: SHACLDataGraphTarget
     }
 }
 #endif

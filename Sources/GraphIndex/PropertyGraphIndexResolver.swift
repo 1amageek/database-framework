@@ -24,12 +24,12 @@ package struct ResolvedPropertyGraphIndex: Sendable {
 
     package func scanner(
         snapshot: GraphReadSnapshot,
-        scope: GraphScanScope = .all
+        graphTarget: GraphScanTarget = .all
     ) -> GraphEdgeScanner {
         GraphEdgeScanner(
             indexSubspace: indexSubspace,
             strategy: metadata.strategy,
-            scope: scope,
+            graphTarget: graphTarget,
             snapshot: snapshot
         )
     }

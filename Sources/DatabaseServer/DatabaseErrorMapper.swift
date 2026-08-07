@@ -1437,6 +1437,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             code = "INVALID_GRAPH_CONTINUATION"
         case .unsupportedSourceIndex, .expectedPropertyGraphIdentifier,
              .expectedRDFTerm, .invalidRDFPredicate, .invalidRDFGraphName,
+             .propertyGraphSourceDoesNotCoverNamedGraph,
              .rdfSourceDoesNotCoverDefaultGraph,
              .rdfSourceDoesNotCoverNamedGraph,
              .weightPropertyNotStored, .invalidInvocation,
@@ -1548,7 +1549,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .invalidContinuation:
             category = .invalidRequest
             code = "INVALID_CONTINUATION"
-        case .resolvedScopeMismatch, .resolvedGraphScopeMismatch,
+        case .resolvedDataSourceMismatch, .resolvedDataGraphMismatch,
              .resolvedEntailmentMismatch,
              .missingOWLEntailment, .invalidSnapshotFingerprint:
             category = .internalFailure

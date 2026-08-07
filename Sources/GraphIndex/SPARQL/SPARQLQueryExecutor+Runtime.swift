@@ -12,7 +12,7 @@ extension SPARQLQueryExecutor {
             wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
-            datasetScope: datasetScope,
+            dataset: dataset,
             functionRegistry: functionRegistry,
             ontologyContext: context,
             propertyPathConfiguration: propertyPathConfiguration
@@ -20,7 +20,7 @@ extension SPARQLQueryExecutor {
     }
 
     package func scanDatasetInTransaction(
-        graphScope: RDFGraphScanScope,
+        graphTarget: RDFGraphScanTarget,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
@@ -28,7 +28,7 @@ extension SPARQLQueryExecutor {
             subject: nil,
             predicate: nil,
             object: nil,
-            graphScope: graphScope,
+            graphTarget: graphTarget,
             limit: nil,
             readMode: readMode,
             transaction: transaction,
@@ -36,14 +36,14 @@ extension SPARQLQueryExecutor {
         )
     }
 
-    func scoped(to datasetScope: SPARQLDatasetExecutionScope) -> Self {
+    func scoped(to dataset: SPARQLExecutionDataset) -> Self {
         Self(
             database: database,
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
-            datasetScope: datasetScope,
+            dataset: dataset,
             functionRegistry: functionRegistry,
             ontologyContext: ontologyContext,
             propertyPathConfiguration: propertyPathConfiguration
@@ -57,7 +57,7 @@ extension SPARQLQueryExecutor {
             wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
-            datasetScope: datasetScope,
+            dataset: dataset,
             functionRegistry: functionRegistry,
             ontologyContext: ontologyContext,
             propertyPathConfiguration: propertyPathConfiguration,
@@ -89,7 +89,7 @@ extension SPARQLQueryExecutor {
             wallClock: wallClock,
             datasetScanner: datasetScanner,
             readMode: readMode,
-            datasetScope: datasetScope,
+            dataset: dataset,
             functionRegistry: functionRegistry,
             ontologyContext: ontologyContext,
             propertyPathConfiguration: propertyPathConfiguration,
@@ -108,7 +108,7 @@ extension SPARQLQueryExecutor {
         wallClock: any WallClock,
         datasetScanner: any RDFDatasetScanner,
         readMode: RDFDatasetReadMode,
-        datasetScope: SPARQLDatasetExecutionScope,
+        dataset: SPARQLExecutionDataset,
         functionRegistry: SPARQLFunctionRegistry,
         ontologyContext: OntologyContext?,
         propertyPathConfiguration: ExecutionPropertyPathConfiguration,
@@ -122,7 +122,7 @@ extension SPARQLQueryExecutor {
         self.wallClock = wallClock
         self.datasetScanner = datasetScanner
         self.readMode = readMode
-        self.datasetScope = datasetScope
+        self.dataset = dataset
         self.functionRegistry = functionRegistry
         self.ontologyContext = ontologyContext
         self.propertyPathConfiguration = propertyPathConfiguration
@@ -133,7 +133,7 @@ extension SPARQLQueryExecutor {
     }
 
     var initialActiveGraph: ActiveGraph {
-        ActiveGraph(scanScope: datasetScope.defaultGraphScope)
+        ActiveGraph(graphTarget: dataset.defaultGraphTarget)
     }
 
     func requiredWorkMeter() throws -> DatabaseWorkMeter {

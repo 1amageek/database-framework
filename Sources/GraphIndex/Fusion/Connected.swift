@@ -313,7 +313,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         let scanner = GraphEdgeScanner(
             indexSubspace: indexSubspace,
             strategy: strategy,
-            scope: .all
+            graphTarget: .all
         )
         let nodeIdentity = GraphIdentity.identifier(node)
         let edgeIdentity = edgeType.map(GraphIdentity.identifier)

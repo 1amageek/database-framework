@@ -150,7 +150,7 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
         let scanner = GraphEdgeScanner(
             indexSubspace: graphContext.subspace,
             strategy: .quadStore,
-            scope: .named(try .rdf(namedGraph))
+            graphTarget: .named(try .rdf(namedGraph))
         )
 
         let edges = try await StorageTransactionExecutor(
@@ -196,7 +196,7 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
         let scanner = GraphEdgeScanner(
             indexSubspace: subspace,
             strategy: .quadStore,
-            scope: .defaultGraph
+            graphTarget: .defaultGraph
         )
 
         do {
@@ -276,7 +276,7 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             storedFieldNames: index.storedFieldNames,
             layout: .rdf(
                 try ResolvedDatabaseGraphSource.RDFLayout(
-                    scope: .defaultGraph,
+                    graphTarget: .defaultGraph,
                     predicate: predicate
                 )
             )

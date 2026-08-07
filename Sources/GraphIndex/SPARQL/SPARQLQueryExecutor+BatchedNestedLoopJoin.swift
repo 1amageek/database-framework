@@ -30,7 +30,7 @@ extension SPARQLQueryExecutor {
                 let substituted = pattern.substitute(binding)
                 let signature = makeScanSignature(
                     for: substituted,
-                    graphScope: activeGraph.scanScope
+                    graphTarget: activeGraph.graphTarget
                 )
 
                 let matches: SPARQLRetainedBindings

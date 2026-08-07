@@ -34,14 +34,14 @@ public protocol RDFGraphMutationStore: RDFDatasetScanner {
 
     @discardableResult
     func clear(
-        _ scope: RDFGraphMutationScope,
+        _ graphTarget: RDFGraphMutationTarget,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64
 
     @discardableResult
     func drop(
-        _ scope: RDFGraphMutationScope,
+        _ graphTarget: RDFGraphMutationTarget,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64

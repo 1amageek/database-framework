@@ -4,7 +4,7 @@ import Synchronization
 
 struct SPARQLSubqueryCacheKey: Sendable, Hashable {
     let occurrenceIdentifier: UInt64
-    let graphScope: RDFGraphScanScope
+    let graphTarget: RDFGraphScanTarget
 }
 
 enum SPARQLSubqueryCacheError: Error, Sendable, Equatable {

@@ -1,17 +1,17 @@
 import DatabaseKit
 
 /// The executable RDF dataset selected by SPARQL dataset clauses.
-public struct SPARQLDatasetExecutionScope: Sendable, Hashable {
+public struct SPARQLExecutionDataset: Sendable, Hashable {
     private enum NamedGraphSelection: Sendable, Hashable {
         case all
-        case selected([RDFGraphName])
+        case selected(RDFNamedGraphSet)
     }
 
-    package let defaultGraphScope: RDFGraphScanScope
+    package let defaultGraphTarget: RDFGraphScanTarget
     private let namedGraphSelection: NamedGraphSelection
 
-    public static let implicit = SPARQLDatasetExecutionScope(
-        defaultGraphScope: .defaultGraph,
+    public static let implicit = SPARQLExecutionDataset(
+        defaultGraphTarget: .defaultGraph,
         namedGraphSelection: .all
     )
 
@@ -23,7 +23,7 @@ public struct SPARQLDatasetExecutionScope: Sendable, Hashable {
         case .explicit(let defaultGraphIRIs, let namedGraphIRIs):
             let defaultGraphs = try Self.graphNames(from: defaultGraphIRIs)
             let namedGraphs = try Self.graphNames(from: namedGraphIRIs)
-            self.defaultGraphScope = defaultGraphs.isEmpty
+            self.defaultGraphTarget = defaultGraphs.isEmpty
                 ? .empty
                 : .namedGraphUnion(defaultGraphs)
             self.namedGraphSelection = .selected(namedGraphs)
@@ -31,10 +31,10 @@ public struct SPARQLDatasetExecutionScope: Sendable, Hashable {
     }
 
     private init(
-        defaultGraphScope: RDFGraphScanScope,
+        defaultGraphTarget: RDFGraphScanTarget,
         namedGraphSelection: NamedGraphSelection
     ) {
-        self.defaultGraphScope = defaultGraphScope
+        self.defaultGraphTarget = defaultGraphTarget
         self.namedGraphSelection = namedGraphSelection
     }
 
@@ -48,7 +48,7 @@ public struct SPARQLDatasetExecutionScope: Sendable, Hashable {
     }
 
     /// `nil` means every named graph in the physical dataset is visible.
-    package var selectedNamedGraphs: [RDFGraphName]? {
+    package var selectedNamedGraphs: RDFNamedGraphSet? {
         switch namedGraphSelection {
         case .all:
             return nil
@@ -57,16 +57,14 @@ public struct SPARQLDatasetExecutionScope: Sendable, Hashable {
         }
     }
 
-    private static func graphNames(from iris: [String]) throws -> [RDFGraphName] {
-        var seen = Set<RDFGraphName>()
+    private static func graphNames(
+        from iris: [String]
+    ) throws -> RDFNamedGraphSet {
         var graphs: [RDFGraphName] = []
         graphs.reserveCapacity(iris.count)
         for iri in iris {
-            let graph = try RDFGraphName(iri: iri)
-            if seen.insert(graph).inserted {
-                graphs.append(graph)
-            }
+            graphs.append(try RDFGraphName(iri: iri))
         }
-        return graphs.sorted()
+        return RDFNamedGraphSet(graphs)
     }
 }

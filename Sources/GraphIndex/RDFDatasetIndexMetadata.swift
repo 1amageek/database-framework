@@ -5,7 +5,7 @@ package struct RDFDatasetIndexMetadata: Sendable {
     package let subjectFieldName: String
     package let predicateFieldName: String
     package let objectFieldName: String
-    package let graphScope: RDFDatasetGraphScope
+    package let graphMapping: RDFDatasetGraphMapping
 
     package var strategy: GraphIndexStrategy { .quadStore }
 }
@@ -72,7 +72,7 @@ package struct RDFDatasetIndexSelection: Sendable {
                 subjectFieldName: kind.fieldNames[0],
                 predicateFieldName: kind.fieldNames[1],
                 objectFieldName: kind.fieldNames[2],
-                graphScope: kind.fieldNames.count == 4
+                graphMapping: kind.fieldNames.count == 4
                     ? .entityField(kind.fieldNames[3])
                     : .defaultGraph
             )
@@ -89,7 +89,7 @@ package struct RDFDatasetIndexSelection: Sendable {
             try kind.validateFieldCount(0)
             _ = try kind.requireString("individualIRIBase")
 
-            let graphScope: RDFDatasetGraphScope
+            let graphMapping: RDFDatasetGraphMapping
             if kind.metadata["graph"] != nil {
                 let graph = try kind.requireRDFTerm("graph")
                 do {
@@ -97,7 +97,7 @@ package struct RDFDatasetIndexSelection: Sendable {
                         graph,
                         role: .graphName
                     )
-                    graphScope = .fixed(graph)
+                    graphMapping = .fixed(graph)
                 } catch let error {
                     throw RDFDatasetIndexMetadataError.invalidFixedGraph(
                         indexName: indexName,
@@ -105,13 +105,13 @@ package struct RDFDatasetIndexSelection: Sendable {
                     )
                 }
             } else {
-                graphScope = .defaultGraph
+                graphMapping = .defaultGraph
             }
             return RDFDatasetIndexMetadata(
                 subjectFieldName: "subject",
                 predicateFieldName: "predicate",
                 objectFieldName: "object",
-                graphScope: graphScope
+                graphMapping: graphMapping
             )
 
         default:

@@ -611,7 +611,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
                 from: fromValue.map(GraphIdentity.identifier),
                 edge: edgeValue.map(GraphIdentity.identifier),
                 to: toValue.map(GraphIdentity.identifier),
-                scope: .all,
+                graphTarget: .all,
                 propertyFilters: propertyFilters.isEmpty ? nil : propertyFilters,
                 transaction: transaction
             )

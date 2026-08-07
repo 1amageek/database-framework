@@ -333,7 +333,7 @@ struct GraphPropertyScannerTests {
                     from: .identifier(alice),
                     edge: "KNOWS",
                     to: nil,
-                    scope: .named(.identifier("graph-social")),
+                    graphTarget: .named(.identifier("graph-social")),
                     propertyFilters: nil,
                     transaction: transaction
                 )
@@ -349,7 +349,7 @@ struct GraphPropertyScannerTests {
                     from: .identifier(alice),
                     edge: "KNOWS",
                     to: nil,
-                    scope: .named(.identifier("graph-work")),
+                    graphTarget: .named(.identifier("graph-work")),
                     propertyFilters: nil,
                     transaction: transaction
                 )
@@ -365,7 +365,7 @@ struct GraphPropertyScannerTests {
                     from: .identifier(alice),
                     edge: "KNOWS",
                     to: nil,
-                    scope: .all,
+                    graphTarget: .all,
                     propertyFilters: nil,
                     transaction: transaction
                 )

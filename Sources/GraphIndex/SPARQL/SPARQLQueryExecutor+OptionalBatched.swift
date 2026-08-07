@@ -33,7 +33,7 @@ extension SPARQLQueryExecutor {
                 let substitutedTriple = rightTriple.substitute(leftBinding)
                 let signature = makeScanSignature(
                     for: substitutedTriple,
-                    graphScope: activeGraph.scanScope
+                    graphTarget: activeGraph.graphTarget
                 )
                 let rightBindings: SPARQLRetainedBindings
                 if let cached = scanCache[signature] {

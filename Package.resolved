@@ -1,13 +1,13 @@
 {
-  "originHash" : "e26aae7682c18563b01f8ed332c901cc38634673fd3b385a7484bd7ed229d3a7",
+  "originHash" : "390b82d50ecc57f913163b2247e2acbbcc8992cae269039fbfb391a455fe38e8",
   "pins" : [
     {
       "identity" : "database-kit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-kit.git",
       "state" : {
-        "revision" : "529860918623a3fb4cb077eb2e61c8f90d50f35e",
-        "version" : "26.803.0"
+        "revision" : "e6eb3732e4aa1038a4f233abd064887bef85a748",
+        "version" : "26.807.0"
       }
     },
     {
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/storage-kit.git",
       "state" : {
-        "revision" : "c23bb902a72a7ec9b4f1717a7c67e8c69f1782bd",
-        "version" : "26.803.1"
+        "revision" : "8ee5376c3df7526ed21921a3e3d418fc5150a51f",
+        "version" : "26.807.0"
       }
     },
     {
@@ -168,8 +168,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-syntax.git",
       "state" : {
-        "revision" : "b90056de69eed23b3fb39ab69cf1780071dfb664",
-        "version" : "604.0.0-prerelease-2026-06-05"
+        "revision" : "79e4b74a295b6eb74a8b585e3a39d29e70c1dbd1",
+        "version" : "603.0.2"
       }
     },
     {

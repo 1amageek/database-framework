@@ -7,18 +7,18 @@ import StorageKit
 
 actor MutableSnapshotSHACLDataSourceResolver: DatabaseSHACLDataSourceResolver {
     private let executor: SPARQLQueryExecutor
-    private let graphScope: SHACLDataGraphScope
+    private let dataGraph: SHACLDataGraphTarget
     private let entailmentContext: (any SHACLEntailmentContext)?
     private var snapshotFingerprint: ByteString
 
     init(
         executor: SPARQLQueryExecutor,
-        graphScope: SHACLDataGraphScope,
+        dataGraph: SHACLDataGraphTarget,
         entailmentContext: (any SHACLEntailmentContext)? = nil,
         snapshotFingerprint: ByteString
     ) {
         self.executor = executor
-        self.graphScope = graphScope
+        self.dataGraph = dataGraph
         self.entailmentContext = entailmentContext
         self.snapshotFingerprint = snapshotFingerprint
     }
@@ -41,7 +41,7 @@ actor MutableSnapshotSHACLDataSourceResolver: DatabaseSHACLDataSourceResolver {
             focus: focus,
             entailment: entailment,
             executor: executor,
-            graphScope: graphScope,
+            dataGraph: dataGraph,
             entailmentContext: entailmentContext,
             selectedFocusNodes: selectedNodes(for: focus),
             snapshotFingerprint: snapshotFingerprint

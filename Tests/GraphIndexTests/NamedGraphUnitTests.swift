@@ -97,8 +97,8 @@ struct ExecutionPatternNamedGraphTests {
         try RDFGraphName(iri: "https://example.com/graphs/\(component)")
     }
 
-    @Test("Named graph scopes a basic graph pattern")
-    func testNamedGraphScopesBasicPattern() throws {
+    @Test("Named graph targets a basic graph pattern")
+    func testNamedGraphTargetsBasicPattern() throws {
         let graph = try graphName("social")
         let knows = try term("https://example.com/vocabulary/knows")
         let basic = ExecutionPattern.basic([
@@ -143,7 +143,7 @@ struct ExecutionPatternNamedGraphTests {
     }
 
     @Test("Graph scopes a composed algebra subtree")
-    func testGraphScopesComposedAlgebraSubtree() throws {
+    func testGraphTargetsComposedAlgebraSubtree() throws {
         let graph = try graphName("social")
         let knows = try term("https://example.com/vocabulary/knows")
         let name = try term("https://example.com/vocabulary/name")
@@ -172,7 +172,7 @@ struct ExecutionPatternNamedGraphTests {
             .basic(let actualLeft),
             .basic(let actualRight)
         ) = scopedPattern else {
-            Issue.record("Expected the graph scope to retain the join")
+            Issue.record("Expected the graph target to retain the join")
             return
         }
         #expect(actualGraph == graph)
@@ -181,8 +181,8 @@ struct ExecutionPatternNamedGraphTests {
         #expect(pattern.patternCount == 2)
     }
 
-    @Test("Graph scope applies to property paths")
-    func testGraphScopeAppliesToPropertyPaths() throws {
+    @Test("Graph target applies to property paths")
+    func testGraphTargetAppliesToPropertyPaths() throws {
         let graph = try graphName("social")
         let propertyPath = ExecutionPattern.propertyPath(
             subject: .variable("?s"),
@@ -215,7 +215,7 @@ struct ExecutionPatternNamedGraphTests {
     }
 
     @Test("Graph scopes preserve distinct graph names")
-    func testGraphScopesPreserveDistinctGraphNames() throws {
+    func testGraphTargetsPreserveDistinctGraphNames() throws {
         let socialGraph = try graphName("social")
         let archiveGraph = try graphName("archive")
         let knows = try term("https://example.com/vocabulary/knows")
@@ -239,8 +239,8 @@ struct ExecutionPatternNamedGraphTests {
         #expect(actualSocial != actualArchive)
     }
 
-    @Test("Nested graph scopes remain explicit algebra nodes")
-    func testNestedGraphScopesRemainExplicit() throws {
+    @Test("Nested graph targets remain explicit algebra nodes")
+    func testNestedGraphTargetsRemainExplicit() throws {
         let outerGraph = try graphName("outer")
         let innerGraph = try graphName("inner")
         let knows = try term("https://example.com/vocabulary/knows")

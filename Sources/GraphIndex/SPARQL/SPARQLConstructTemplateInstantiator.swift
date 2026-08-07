@@ -21,28 +21,28 @@ struct SPARQLConstructTemplateInstantiator {
     static func append(
         _ pattern: TriplePattern,
         binding: borrowing VariableBinding,
-        blankNodeScope: inout SPARQLConstructBlankNodeScope,
+        blankNodeResolver: inout SPARQLConstructBlankNodeResolver,
         to output: inout DatabaseRetainedRDFGraphBuilder
     ) throws {
         let subject = try resolve(
             pattern.subject,
             binding: binding,
             role: .subject,
-            blankNodeScope: &blankNodeScope,
+            blankNodeResolver: &blankNodeResolver,
             output: &output
         )
         let predicate = try resolve(
             pattern.predicate,
             binding: binding,
             role: .predicate,
-            blankNodeScope: &blankNodeScope,
+            blankNodeResolver: &blankNodeResolver,
             output: &output
         )
         let object = try resolve(
             pattern.object,
             binding: binding,
             role: .object,
-            blankNodeScope: &blankNodeScope,
+            blankNodeResolver: &blankNodeResolver,
             output: &output
         )
         guard let subject, let predicate, let object else { return }
@@ -59,7 +59,7 @@ struct SPARQLConstructTemplateInstantiator {
         _ term: SPARQLTerm,
         binding: borrowing VariableBinding,
         role: Role,
-        blankNodeScope: inout SPARQLConstructBlankNodeScope,
+        blankNodeResolver: inout SPARQLConstructBlankNodeResolver,
         output: inout DatabaseRetainedRDFGraphBuilder
     ) throws -> RDFTerm? {
         let resolved: RDFTerm
@@ -89,7 +89,7 @@ struct SPARQLConstructTemplateInstantiator {
 
         case .blankNode(let label):
             isVariableSubstitution = false
-            let identifier = try blankNodeScope.identifier(for: label)
+            let identifier = try blankNodeResolver.identifier(for: label)
             resolved = .blankNode(
                 try RDFBlankNodeIdentifier(identifier)
             )
@@ -100,21 +100,21 @@ struct SPARQLConstructTemplateInstantiator {
                 subject,
                 binding: binding,
                 role: .subject,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 output: &output
             )
             let resolvedPredicate = try resolve(
                 predicate,
                 binding: binding,
                 role: .predicate,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 output: &output
             )
             let resolvedObject = try resolve(
                 object,
                 binding: binding,
                 role: .object,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 output: &output
             )
             guard let resolvedSubject,
@@ -139,28 +139,28 @@ struct SPARQLConstructTemplateInstantiator {
                 subject,
                 binding: binding,
                 role: .subject,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 output: &output
             )
             let resolvedPredicate = try resolve(
                 predicate,
                 binding: binding,
                 role: .predicate,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 output: &output
             )
             let resolvedObject = try resolve(
                 object,
                 binding: binding,
                 role: .object,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 output: &output
             )
             let resolvedReifier = try resolve(
                 reifier,
                 binding: binding,
                 role: .subject,
-                blankNodeScope: &blankNodeScope,
+                blankNodeResolver: &blankNodeResolver,
                 output: &output
             )
             guard let resolvedSubject,

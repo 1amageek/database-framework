@@ -130,8 +130,8 @@ struct NamedGraphStoreStrategyTests {
         )
     }
 
-    @Test("edge scanner applies named and default graph scopes")
-    func edgeScannerAppliesGraphScope() async throws {
+    @Test("edge scanner applies named and default graph targets")
+    func edgeScannerAppliesGraphTarget() async throws {
         let setup = try makeMaintainer()
         let database = InMemoryEngine()
         let named = NamedGraphStoreQuad(
@@ -164,17 +164,17 @@ struct NamedGraphStoreStrategyTests {
         }
 
         let namedEdges = try await scan(
-            scope: .named("social"),
+            graphTarget: .named("social"),
             setup: setup,
             database: database
         )
         let defaultEdges = try await scan(
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             setup: setup,
             database: database
         )
         let allEdges = try await scan(
-            scope: .all,
+            graphTarget: .all,
             setup: setup,
             database: database
         )
@@ -198,7 +198,7 @@ struct NamedGraphStoreStrategyTests {
     }
 
     private func scan(
-        scope: GraphScanScope,
+        graphTarget: GraphScanTarget,
         setup: (
             maintainer: GraphIndexMaintainer<NamedGraphStoreQuad>,
             indexSubspace: Subspace
@@ -208,7 +208,7 @@ struct NamedGraphStoreStrategyTests {
         let scanner = GraphEdgeScanner(
             indexSubspace: setup.indexSubspace,
             strategy: .namedGraphStore,
-            scope: scope
+            graphTarget: graphTarget
         )
         return try await StorageTransactionExecutor(
             engine: database

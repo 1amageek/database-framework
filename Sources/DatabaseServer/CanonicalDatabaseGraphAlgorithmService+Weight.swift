@@ -10,7 +10,7 @@ actor DatabaseIndexedWeightedGraphNeighborSource: WeightedGraphNeighborSource {
     }
 
     let scanner: GraphPropertyScanner
-    let scope: GraphScanScope
+    let graphTarget: GraphScanTarget
     let snapshot: GraphReadSnapshot
     let property: String
     let workBudget: GraphAlgorithmWorkBudget
@@ -28,7 +28,7 @@ actor DatabaseIndexedWeightedGraphNeighborSource: WeightedGraphNeighborSource {
             storedFieldNames: [property],
             snapshot: snapshot
         )
-        self.scope = source.scope
+        self.graphTarget = source.graphTarget
         self.snapshot = snapshot
         self.property = property
         self.workBudget = workBudget
@@ -47,7 +47,7 @@ actor DatabaseIndexedWeightedGraphNeighborSource: WeightedGraphNeighborSource {
             from: nil,
             edge: edgeLabel,
             to: nil,
-            scope: scope,
+            graphTarget: graphTarget,
             propertyFilters: nil,
             transaction: snapshot.transaction
         ).makeCursor()

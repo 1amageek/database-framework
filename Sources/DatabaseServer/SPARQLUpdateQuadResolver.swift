@@ -25,7 +25,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
     func resolve(
         _ quad: Quad,
         row: VariableBinding?,
-        blankNodeScope: SPARQLBlankNodeScope?,
+        blankNodeResolver: SPARQLUpdateBlankNodeResolver?,
         variablesAllowed: Bool,
         blankNodesAllowed: Bool
     ) throws -> [RDFQuad] {
@@ -36,7 +36,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 graphTerm,
                 row: row,
                 role: .graphName,
-                blankNodeScope: blankNodeScope,
+                blankNodeResolver: blankNodeResolver,
                 variablesAllowed: variablesAllowed,
                 blankNodesAllowed: blankNodesAllowed,
                 reifications: &reifications
@@ -53,7 +53,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
             quad.triple.subject,
             row: row,
             role: .subject,
-            blankNodeScope: blankNodeScope,
+            blankNodeResolver: blankNodeResolver,
             variablesAllowed: variablesAllowed,
             blankNodesAllowed: blankNodesAllowed,
             reifications: &reifications
@@ -61,7 +61,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
             quad.triple.predicate,
             row: row,
             role: .predicate,
-            blankNodeScope: blankNodeScope,
+            blankNodeResolver: blankNodeResolver,
             variablesAllowed: variablesAllowed,
             blankNodesAllowed: blankNodesAllowed,
             reifications: &reifications
@@ -69,7 +69,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
             quad.triple.object,
             row: row,
             role: .object,
-            blankNodeScope: blankNodeScope,
+            blankNodeResolver: blankNodeResolver,
             variablesAllowed: variablesAllowed,
             blankNodesAllowed: blankNodesAllowed,
             reifications: &reifications
@@ -104,7 +104,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
         _ term: SPARQLTerm,
         row: VariableBinding?,
         role: Role,
-        blankNodeScope: SPARQLBlankNodeScope?,
+        blankNodeResolver: SPARQLUpdateBlankNodeResolver?,
         variablesAllowed: Bool,
         blankNodesAllowed: Bool,
         reifications: inout [RDFQuad]
@@ -137,7 +137,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
             if case .blankNode(let label) = literal {
                 resolved = try blankNode(
                     label,
-                    scope: blankNodeScope,
+                    blankNodeResolver: blankNodeResolver,
                     allowed: blankNodesAllowed
                 )
             } else {
@@ -154,7 +154,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
             isVariableSubstitution = false
             resolved = try blankNode(
                 label,
-                scope: blankNodeScope,
+                blankNodeResolver: blankNodeResolver,
                 allowed: blankNodesAllowed
             )
 
@@ -164,7 +164,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 subject,
                 row: row,
                 role: .subject,
-                blankNodeScope: blankNodeScope,
+                blankNodeResolver: blankNodeResolver,
                 variablesAllowed: variablesAllowed,
                 blankNodesAllowed: blankNodesAllowed,
                 reifications: &reifications
@@ -172,7 +172,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 predicate,
                 row: row,
                 role: .predicate,
-                blankNodeScope: blankNodeScope,
+                blankNodeResolver: blankNodeResolver,
                 variablesAllowed: variablesAllowed,
                 blankNodesAllowed: blankNodesAllowed,
                 reifications: &reifications
@@ -180,7 +180,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 object,
                 row: row,
                 role: .object,
-                blankNodeScope: blankNodeScope,
+                blankNodeResolver: blankNodeResolver,
                 variablesAllowed: variablesAllowed,
                 blankNodesAllowed: blankNodesAllowed,
                 reifications: &reifications
@@ -204,7 +204,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 subject,
                 row: row,
                 role: .subject,
-                blankNodeScope: blankNodeScope,
+                blankNodeResolver: blankNodeResolver,
                 variablesAllowed: variablesAllowed,
                 blankNodesAllowed: blankNodesAllowed,
                 reifications: &reifications
@@ -212,7 +212,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 predicate,
                 row: row,
                 role: .predicate,
-                blankNodeScope: blankNodeScope,
+                blankNodeResolver: blankNodeResolver,
                 variablesAllowed: variablesAllowed,
                 blankNodesAllowed: blankNodesAllowed,
                 reifications: &reifications
@@ -220,7 +220,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 object,
                 row: row,
                 role: .object,
-                blankNodeScope: blankNodeScope,
+                blankNodeResolver: blankNodeResolver,
                 variablesAllowed: variablesAllowed,
                 blankNodesAllowed: blankNodesAllowed,
                 reifications: &reifications
@@ -228,7 +228,7 @@ struct SPARQLUpdateQuadResolver: Sendable {
                 reifier,
                 row: row,
                 role: .subject,
-                blankNodeScope: blankNodeScope,
+                blankNodeResolver: blankNodeResolver,
                 variablesAllowed: variablesAllowed,
                 blankNodesAllowed: blankNodesAllowed,
                 reifications: &reifications
@@ -271,17 +271,17 @@ struct SPARQLUpdateQuadResolver: Sendable {
 
     private func blankNode(
         _ label: String,
-        scope: SPARQLBlankNodeScope?,
+        blankNodeResolver: SPARQLUpdateBlankNodeResolver?,
         allowed: Bool
     ) throws -> RDFTerm {
         guard allowed else {
             throw SPARQLUpdateError.blankNodeNotAllowed(label)
         }
-        guard let scope else {
+        guard let blankNodeResolver else {
             throw SPARQLUpdateError.blankNodeNotAllowed(label)
         }
         return .blankNode(
-            try RDFBlankNodeIdentifier(scope.identifier(for: label))
+            try RDFBlankNodeIdentifier(blankNodeResolver.identifier(for: label))
         )
     }
 

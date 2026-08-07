@@ -45,7 +45,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
         subject: RDFTerm?,
         predicate: RDFTerm?,
         object: RDFTerm?,
-        graphScope: RDFGraphScanScope,
+        graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
         transaction: any TransactionAccess,
@@ -58,7 +58,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
             subject: subject,
             predicate: predicate,
             object: object,
-            graphScope: graphScope,
+            graphTarget: graphTarget,
             limit: limit,
             readMode: readMode,
             transaction: transaction,
@@ -142,12 +142,12 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     }
 
     func clear(
-        _ scope: RDFGraphMutationScope,
+        _ graphTarget: RDFGraphMutationTarget,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         let deleted = try await base.clear(
-            scope,
+            graphTarget,
             transaction: transaction,
             workMeter: workMeter
         )
@@ -160,12 +160,12 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     }
 
     func drop(
-        _ scope: RDFGraphMutationScope,
+        _ graphTarget: RDFGraphMutationTarget,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         try await base.drop(
-            scope,
+            graphTarget,
             transaction: transaction,
             workMeter: workMeter
         )

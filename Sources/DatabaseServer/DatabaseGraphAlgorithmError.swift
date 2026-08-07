@@ -11,6 +11,7 @@ public enum DatabaseGraphAlgorithmError: Error, Sendable, CustomStringConvertibl
     case expectedRDFTerm(GraphAlgorithmOperation.Term)
     case invalidRDFPredicate(GraphAlgorithmOperation.Term)
     case invalidRDFGraphName(GraphAlgorithmOperation.Term)
+    case propertyGraphSourceDoesNotCoverNamedGraph(index: String)
     case rdfSourceDoesNotCoverDefaultGraph(index: String)
     case rdfSourceDoesNotCoverNamedGraph(index: String, graph: RDFTerm)
     case weightPropertyNotStored(index: String, property: String)
@@ -43,6 +44,8 @@ public enum DatabaseGraphAlgorithmError: Error, Sendable, CustomStringConvertibl
             return "RDF edge labels must be IRI terms, received \(value)"
         case .invalidRDFGraphName(let value):
             return "RDF named graph selectors require an IRI or blank-node term, received \(value)"
+        case .propertyGraphSourceDoesNotCoverNamedGraph(let index):
+            return "Property graph source index '\(index)' has no namespace field for named graph selection"
         case .rdfSourceDoesNotCoverDefaultGraph(let index):
             return "RDF source index '\(index)' does not cover the default graph"
         case .rdfSourceDoesNotCoverNamedGraph(let index, let graph):

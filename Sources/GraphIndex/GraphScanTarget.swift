@@ -1,4 +1,4 @@
-public enum GraphScanScope: Sendable, Hashable {
+public enum GraphScanTarget: Sendable, Hashable {
     case all
     case defaultGraph
     case named(GraphIdentity)

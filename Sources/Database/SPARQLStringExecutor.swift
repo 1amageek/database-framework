@@ -26,7 +26,6 @@ extension DatabaseContext {
         return try await executeSPARQLSelectPlan(
             plan,
             on: type,
-            datasetScope: try SPARQLDatasetExecutionScope(query.dataset),
             budget: budget
         )
     }
@@ -92,8 +91,7 @@ func _executeSPARQLString(
         database: database,
         monotonicClock: monotonicClock,
         wallClock: wallClock,
-        sources: sources,
-        datasetScope: try SPARQLDatasetExecutionScope(query.dataset)
+        sources: sources
     )
     let startTime = monotonicClock.now
     let executionResult: ([VariableBinding], ExecutionStatistics)

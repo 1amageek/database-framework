@@ -198,7 +198,7 @@ struct RDFQuadIndexPhysicalCodecTests {
             subject: defaultQuad.subject.term,
             predicate: nil,
             object: nil,
-            graphScope: .defaultGraph,
+            graphTarget: .defaultGraph,
             expected: defaultQuad
         )
         try await expectScan(
@@ -207,7 +207,7 @@ struct RDFQuadIndexPhysicalCodecTests {
             subject: nil,
             predicate: defaultQuad.predicate.term,
             object: nil,
-            graphScope: .defaultGraph,
+            graphTarget: .defaultGraph,
             expected: defaultQuad
         )
         try await expectScan(
@@ -216,7 +216,7 @@ struct RDFQuadIndexPhysicalCodecTests {
             subject: nil,
             predicate: nil,
             object: defaultQuad.object,
-            graphScope: .defaultGraph,
+            graphTarget: .defaultGraph,
             expected: defaultQuad
         )
         try await expectScan(
@@ -225,7 +225,7 @@ struct RDFQuadIndexPhysicalCodecTests {
             subject: namedQuad.subject.term,
             predicate: nil,
             object: nil,
-            graphScope: .named(namedGraph),
+            graphTarget: .named(namedGraph),
             expected: namedQuad
         )
         try await expectScan(
@@ -234,7 +234,7 @@ struct RDFQuadIndexPhysicalCodecTests {
             subject: nil,
             predicate: namedQuad.predicate.term,
             object: nil,
-            graphScope: .named(namedGraph),
+            graphTarget: .named(namedGraph),
             expected: namedQuad
         )
         try await expectScan(
@@ -243,7 +243,7 @@ struct RDFQuadIndexPhysicalCodecTests {
             subject: nil,
             predicate: nil,
             object: namedQuad.object,
-            graphScope: .named(namedGraph),
+            graphTarget: .named(namedGraph),
             expected: namedQuad
         )
     }
@@ -424,7 +424,7 @@ struct RDFQuadIndexPhysicalCodecTests {
         subject: RDFTerm?,
         predicate: RDFTerm?,
         object: RDFTerm?,
-        graphScope: RDFGraphScanScope,
+        graphTarget: RDFGraphScanTarget,
         expected: RDFQuad
     ) async throws {
         try await engine.withTransaction { transaction in
@@ -432,7 +432,7 @@ struct RDFQuadIndexPhysicalCodecTests {
                 subject: subject,
                 predicate: predicate,
                 object: object,
-                graphScope: graphScope,
+                graphTarget: graphTarget,
                 limit: nil,
                 readMode: .snapshot,
                 transaction: transaction,

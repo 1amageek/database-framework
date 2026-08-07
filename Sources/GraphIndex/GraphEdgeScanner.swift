@@ -46,7 +46,7 @@ public struct GraphEdgeScanner: Sendable {
 
     private let indexSubspace: Subspace
     private let strategy: GraphIndexStrategy
-    private let scope: GraphScanScope
+    private let graphTarget: GraphScanTarget
     private let identityPool: GraphIdentityPool
     private let rdfPhysicalCodec: RDFQuadIndexPhysicalCodec
     fileprivate let readBudget: GraphAlgorithmWorkBudget?
@@ -54,11 +54,11 @@ public struct GraphEdgeScanner: Sendable {
     public init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
-        scope: GraphScanScope = .all
+        graphTarget: GraphScanTarget = .all
     ) {
         self.indexSubspace = indexSubspace
         self.strategy = strategy
-        self.scope = scope
+        self.graphTarget = graphTarget
         self.identityPool = GraphIdentityPool()
         self.rdfPhysicalCodec = RDFQuadIndexPhysicalCodec(
             baseSubspace: indexSubspace
@@ -69,12 +69,12 @@ public struct GraphEdgeScanner: Sendable {
     package init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        scope: GraphScanScope,
+        graphTarget: GraphScanTarget,
         snapshot: GraphReadSnapshot
     ) {
         self.indexSubspace = indexSubspace
         self.strategy = strategy
-        self.scope = scope
+        self.graphTarget = graphTarget
         self.identityPool = snapshot.identityPool
         self.rdfPhysicalCodec = RDFQuadIndexPhysicalCodec(
             baseSubspace: indexSubspace
@@ -311,7 +311,7 @@ public struct GraphEdgeScanner: Sendable {
         case .adjacency:
             return false
         case .namedGraphStore:
-            if case .all = scope { return true }
+            if case .all = graphTarget { return true }
             return false
         case .tripleStore, .hexastore, .quadStore:
             return false
@@ -478,7 +478,7 @@ public struct GraphEdgeScanner: Sendable {
 
     private func rdfGraphBinding(
     ) throws -> (isBound: Bool, component: RDFQuadIndexComponentWritePlan?) {
-        switch scope {
+        switch graphTarget {
         case .all:
             return (false, nil)
         case .defaultGraph:
@@ -491,7 +491,7 @@ public struct GraphEdgeScanner: Sendable {
 
     private func physicalGraphBinding(
     ) throws -> (isBound: Bool, element: (any TupleElement)?) {
-        switch scope {
+        switch graphTarget {
         case .all:
             return (false, nil)
         case .defaultGraph:
@@ -596,7 +596,7 @@ public struct GraphEdgeScanner: Sendable {
     }
 
     package func containsGraph(_ graph: GraphIdentity?) -> Bool {
-        scope.contains(graph)
+        graphTarget.contains(graph)
     }
 
     private func scanRange(

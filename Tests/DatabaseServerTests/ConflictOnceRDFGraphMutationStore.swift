@@ -20,7 +20,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
         subject: RDFTerm?,
         predicate: RDFTerm?,
         object: RDFTerm?,
-        graphScope: RDFGraphScanScope,
+        graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
         transaction: any TransactionAccess,
@@ -82,7 +82,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     }
 
     func clear(
-        _ scope: RDFGraphMutationScope,
+        _ graphTarget: RDFGraphMutationTarget,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
@@ -90,7 +90,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     }
 
     func drop(
-        _ scope: RDFGraphMutationScope,
+        _ graphTarget: RDFGraphMutationTarget,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {

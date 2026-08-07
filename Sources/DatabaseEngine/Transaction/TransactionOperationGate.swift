@@ -3,9 +3,9 @@ import Synchronization
 /// Owns admission and completion for capabilities issued by one logical
 /// database transaction.
 ///
-/// Closing a scope rejects work that has not started and waits for admitted
+/// Closing a gate rejects work that has not started and waits for admitted
 /// work to leave before the physical transaction can commit or be discarded.
-package final class DatabaseTransactionScope: Sendable {
+package final class TransactionOperationGate: Sendable {
     private struct State: Sendable {
         var acceptsOperations = true
         var activeOperationCount = 0

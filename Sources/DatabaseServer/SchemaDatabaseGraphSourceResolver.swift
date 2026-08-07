@@ -81,14 +81,20 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
         indexSubspace: StorageKit.Subspace,
         metadata: PropertyGraphIndexMetadata
     ) throws -> ResolvedDatabaseGraphSource {
-        let scope: ResolvedDatabaseGraphSource.PropertyGraphScope
+        let graphTarget: ResolvedDatabaseGraphSource.PropertyGraphTarget
         switch source.graph {
         case .all:
-            scope = .all
+            graphTarget = .all
         case .defaultGraph:
-            scope = .defaultGraph
+            graphTarget = .defaultGraph
         case .named(.identifier(let name)):
-            scope = .named(name)
+            guard metadata.namespaceFieldName != nil else {
+                throw DatabaseGraphAlgorithmError
+                    .propertyGraphSourceDoesNotCoverNamedGraph(
+                        index: source.index
+                    )
+            }
+            graphTarget = .named(name)
         case .named(let term):
             throw DatabaseGraphAlgorithmError.expectedPropertyGraphIdentifier(term)
         }
@@ -109,7 +115,7 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
             layout: .propertyGraph(
                 ResolvedDatabaseGraphSource.PropertyGraphLayout(
                     strategy: metadata.declarativeStrategy,
-                    scope: scope,
+                    graphTarget: graphTarget,
                     edgeLabel: edgeLabel
                 )
             )
@@ -122,20 +128,20 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
         indexSubspace: StorageKit.Subspace,
         metadata: RDFDatasetIndexMetadata
     ) throws -> ResolvedDatabaseGraphSource {
-        let scope: ResolvedDatabaseGraphSource.RDFScope
+        let graphTarget: ResolvedDatabaseGraphSource.RDFGraphTarget
         switch source.graph {
         case .all:
-            scope = .all
+            graphTarget = .all
         case .defaultGraph:
-            scope = .defaultGraph
+            graphTarget = .defaultGraph
         case .named(.rdf(let graph)):
-            scope = .named(graph)
+            graphTarget = .named(graph)
         case .named(let term):
             throw DatabaseGraphAlgorithmError.expectedRDFTerm(term)
         }
         try validateRDFCoverage(
-            metadata.graphScope,
-            requestedScope: scope,
+            metadata.graphMapping,
+            requestedGraphTarget: graphTarget,
             indexName: source.index
         )
         let predicate: RDFTerm?
@@ -154,7 +160,7 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
             storedFieldNames: owned.descriptor.storedFieldNames,
             layout: .rdf(
                 try ResolvedDatabaseGraphSource.RDFLayout(
-                    scope: scope,
+                    graphTarget: graphTarget,
                     predicate: predicate
                 )
             )
@@ -162,11 +168,11 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
     }
 
     private func validateRDFCoverage(
-        _ coverage: RDFDatasetGraphScope,
-        requestedScope: ResolvedDatabaseGraphSource.RDFScope,
+        _ coverage: RDFDatasetGraphMapping,
+        requestedGraphTarget: ResolvedDatabaseGraphSource.RDFGraphTarget,
         indexName: String
     ) throws {
-        switch requestedScope {
+        switch requestedGraphTarget {
         case .all:
             return
         case .defaultGraph:

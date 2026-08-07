@@ -18,7 +18,7 @@ extension SPARQLQueryExecutor {
             subject: try boundRDFTerm(pattern.subject),
             predicate: try boundRDFTerm(pattern.predicate),
             object: try boundRDFTerm(pattern.object),
-            graphScope: activeGraph.scanScope,
+            graphTarget: activeGraph.graphTarget,
             limit: resultLimit,
             readMode: readMode,
             transaction: transaction,
@@ -91,13 +91,13 @@ extension SPARQLQueryExecutor {
 
     func makeScanSignature(
         for pattern: ExecutionTriple,
-        graphScope: RDFGraphScanScope
+        graphTarget: RDFGraphScanTarget
     ) -> ScanSignature {
         ScanSignature(
             subject: pattern.subject,
             predicate: pattern.predicate,
             object: pattern.object,
-            graphScope: graphScope
+            graphTarget: graphTarget
         )
     }
 
@@ -283,7 +283,7 @@ extension SPARQLQueryExecutor {
             object: object,
             seed: consume seed,
             resultLimit: resultLimit,
-            graphScope: activeGraph.scanScope,
+            graphTarget: activeGraph.graphTarget,
             transaction: transaction
         )
         return EvaluationResult(

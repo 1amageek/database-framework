@@ -205,7 +205,7 @@ struct SPARQLUpdateExecutor: Sendable {
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
-        let scope = try blankNodeScope(
+        let blankNodeResolver = try makeBlankNodeResolver(
             context: context,
             operationOrdinal: operationOrdinal,
             solutionOrdinal: 0
@@ -217,7 +217,7 @@ struct SPARQLUpdateExecutor: Sendable {
             let resolved = try resolver.resolve(
                 quad,
                 row: nil,
-                blankNodeScope: scope,
+                blankNodeResolver: blankNodeResolver,
                 variablesAllowed: false,
                 blankNodesAllowed: true
             )
@@ -254,7 +254,7 @@ struct SPARQLUpdateExecutor: Sendable {
             let resolved = try resolver.resolve(
                 quad,
                 row: nil,
-                blankNodeScope: nil,
+                blankNodeResolver: nil,
                 variablesAllowed: false,
                 blankNodesAllowed: false
             )
@@ -309,7 +309,7 @@ struct SPARQLUpdateExecutor: Sendable {
                         defaultGraph: query.withGraph
                     ),
                     row: row,
-                    blankNodeScope: nil,
+                    blankNodeResolver: nil,
                     variablesAllowed: true,
                     blankNodesAllowed: false
                 )
@@ -329,7 +329,7 @@ struct SPARQLUpdateExecutor: Sendable {
         var inserted: UInt64 = 0
         var createdGraphs: UInt64 = 0
         for (ordinal, row) in rows.enumerated() {
-            let scope = try blankNodeScope(
+            let blankNodeResolver = try makeBlankNodeResolver(
                 context: context,
                 operationOrdinal: operationOrdinal,
                 solutionOrdinal: UInt64(ordinal)
@@ -342,7 +342,7 @@ struct SPARQLUpdateExecutor: Sendable {
                         defaultGraph: query.withGraph
                     ),
                     row: row,
-                    blankNodeScope: scope,
+                    blankNodeResolver: blankNodeResolver,
                     variablesAllowed: true,
                     blankNodesAllowed: true
                 )
@@ -409,7 +409,7 @@ struct SPARQLUpdateExecutor: Sendable {
             wallClock: context.container.wallClock,
             datasetScanner: graphStore,
             readMode: .serializable,
-            datasetScope: try SPARQLDatasetExecutionScope(dataset),
+            dataset: try SPARQLExecutionDataset(dataset),
             functionRegistry: functionRegistry
         )
         let (bindings, _) = try await executor.executeInTransaction(
@@ -452,7 +452,7 @@ struct SPARQLUpdateExecutor: Sendable {
                 let quads = try resolver.resolve(
                     template,
                     row: row,
-                    blankNodeScope: nil,
+                    blankNodeResolver: nil,
                     variablesAllowed: true,
                     blankNodesAllowed: false
                 )
@@ -477,7 +477,7 @@ struct SPARQLUpdateExecutor: Sendable {
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
-        let scope = try mutationScope(query.target)
+        let graphTarget = try mutationTarget(query.target)
         if case .graph(let iri) = query.target {
             let graph = try RDFGraphName(iri: iri)
             guard try await graphStore.containsGraph(
@@ -493,7 +493,7 @@ struct SPARQLUpdateExecutor: Sendable {
             }
         }
         let deleted = try await graphStore.clear(
-            scope,
+            graphTarget,
             transaction: transaction,
             workMeter: workMeter
         )
@@ -533,7 +533,7 @@ struct SPARQLUpdateExecutor: Sendable {
         workMeter: DatabaseWorkMeter,
         mutationMeter: SPARQLMutationMeter
     ) async throws -> MutationExecuteOperation.RDFEffect {
-        let scope = try mutationScope(query.target)
+        let graphTarget = try mutationTarget(query.target)
         if case .graph(let iri) = query.target {
             let graph = try RDFGraphName(iri: iri)
             guard try await graphStore.containsGraph(
@@ -554,7 +554,7 @@ struct SPARQLUpdateExecutor: Sendable {
             workMeter: workMeter
         )
         let deleted = try await graphStore.drop(
-            scope,
+            graphTarget,
             transaction: transaction,
             workMeter: workMeter
         )
@@ -657,9 +657,9 @@ struct SPARQLUpdateExecutor: Sendable {
         )
     }
 
-    private func mutationScope(
+    private func mutationTarget(
         _ target: SPARQLGraphTarget
-    ) throws -> RDFGraphMutationScope {
+    ) throws -> RDFGraphMutationTarget {
         switch target {
         case .graph(let iri):
             return .named(try RDFGraphName(iri: iri))
@@ -704,18 +704,18 @@ struct SPARQLUpdateExecutor: Sendable {
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
-        let graphScope: RDFGraphScanScope
+        let graphTarget: RDFGraphScanTarget
         switch endpoint {
         case .default:
-            graphScope = .defaultGraph
+            graphTarget = .defaultGraph
         case .graph(let iri):
-            graphScope = .named(try RDFGraphName(iri: iri))
+            graphTarget = .named(try RDFGraphName(iri: iri))
         }
         let result = try await graphStore.scan(
             subject: nil,
             predicate: nil,
             object: nil,
-            graphScope: graphScope,
+            graphTarget: graphTarget,
             limit: try mutationDetectionLimit(),
             readMode: .serializable,
             transaction: transaction,
@@ -880,15 +880,15 @@ struct SPARQLUpdateExecutor: Sendable {
         )
     }
 
-    private func blankNodeScope(
+    private func makeBlankNodeResolver(
         context: DatabaseOperationContext,
         operationOrdinal: UInt64,
         solutionOrdinal: UInt64
-    ) throws -> SPARQLBlankNodeScope {
+    ) throws -> SPARQLUpdateBlankNodeResolver {
         guard let key = context.metadata.idempotencyKey, !key.isEmpty else {
             throw DatabaseMutationError.idempotencyKeyRequired
         }
-        return SPARQLBlankNodeScope(
+        return SPARQLUpdateBlankNodeResolver(
             idempotencyKey: key,
             operationOrdinal: operationOrdinal,
             solutionOrdinal: solutionOrdinal

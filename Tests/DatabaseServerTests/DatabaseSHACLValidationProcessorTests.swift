@@ -280,7 +280,7 @@ struct DatabaseSHACLValidationProcessorTests {
         )
         let resolver = MutableSnapshotSHACLDataSourceResolver(
             executor: executor,
-            graphScope: .named(try RDFGraphName(iri: Self.dataGraph)),
+            dataGraph: .named(try RDFGraphName(iri: Self.dataGraph)),
             entailmentContext: entailmentContext,
             snapshotFingerprint: [1]
         )

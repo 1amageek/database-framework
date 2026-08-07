@@ -39,7 +39,7 @@ public protocol SPARQLSourceExecutor: Sendable {
     func executeConstructInTransaction(
         context: DatabaseContext,
         constructQuery: ConstructQuery,
-        resultScope: DatabaseGraphResultScope,
+        nodeNamespace: GraphResultNodeNamespace,
         options: ReadExecutionContext,
         partitions: FieldObject,
         transaction: any TransactionAccess

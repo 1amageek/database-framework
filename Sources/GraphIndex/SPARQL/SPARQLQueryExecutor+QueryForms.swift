@@ -26,7 +26,7 @@ extension SPARQLQueryExecutor {
 
     package func executeConstructInTransaction(
         _ query: ConstructQuery,
-        resultScope: DatabaseGraphResultScope,
+        nodeNamespace: GraphResultNodeNamespace,
         structuralLimits: QueryStructuralLimits,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
@@ -55,8 +55,8 @@ extension SPARQLQueryExecutor {
             sourceIndex,
             fingerprint,
             occurrence in
-            var blankNodeScope = try SPARQLConstructBlankNodeScope(
-                resultScope: resultScope,
+            var blankNodeResolver = try SPARQLConstructBlankNodeResolver(
+                nodeNamespace: nodeNamespace,
                 bindingFingerprint: copy fingerprint,
                 occurrence: occurrence,
                 workMeter: workMeter
@@ -67,7 +67,7 @@ extension SPARQLQueryExecutor {
                     try SPARQLConstructTemplateInstantiator.append(
                         template,
                         binding: binding,
-                        blankNodeScope: &blankNodeScope,
+                        blankNodeResolver: &blankNodeResolver,
                         to: &output
                     )
                 }
@@ -164,7 +164,7 @@ extension SPARQLQueryExecutor {
                     subject: copy resource,
                     predicate: nil,
                     object: nil,
-                    graphScope: plan.ordered.datasetScope.defaultGraphScope,
+                    graphTarget: plan.ordered.dataset.defaultGraphTarget,
                     limit: nil,
                     readMode: readMode,
                     transaction: transaction,

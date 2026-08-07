@@ -333,7 +333,7 @@ struct PostgreSQLConcurrencyTests {
                 )
 
                 // The inner operations via context should reuse
-                // the ActiveTransactionScope connection
+                // the ActiveTransactionContext connection
                 let fetched = try await outerTx.fetch(
                     PGCounter.self,
                     identifiedBy: itemId

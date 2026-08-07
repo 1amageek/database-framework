@@ -26,7 +26,7 @@ extension CanonicalDatabaseGraphAlgorithmService {
                 snapshot: snapshot,
                 subspace: source.indexSubspace,
                 strategy: source.strategy,
-                scope: source.scope,
+                graphTarget: source.graphTarget,
                 configuration: ShortestPathConfiguration(
                     maxDepth: maximumDepth,
                     bidirectional: bidirectional,
@@ -136,7 +136,7 @@ extension CanonicalDatabaseGraphAlgorithmService {
                 snapshot: snapshot,
                 subspace: source.indexSubspace,
                 strategy: source.strategy,
-                scope: source.scope,
+                graphTarget: source.graphTarget,
                 configuration: PageRankConfiguration(
                     dampingFactor: dampingFactor,
                     maxIterations: maximumIterations,
@@ -200,7 +200,7 @@ extension CanonicalDatabaseGraphAlgorithmService {
                 snapshot: snapshot,
                 subspace: source.indexSubspace,
                 strategy: source.strategy,
-                scope: source.scope,
+                graphTarget: source.graphTarget,
                 configuration: CommunityDetectionConfiguration(
                     maxIterations: maximumIterations,
                     computeModularity: computeModularity,
@@ -241,7 +241,7 @@ extension CanonicalDatabaseGraphAlgorithmService {
                 snapshot: snapshot,
                 subspace: source.indexSubspace,
                 strategy: source.strategy,
-                scope: source.scope,
+                graphTarget: source.graphTarget,
                 configuration: CycleDetectorConfiguration(
                     maxCycles: maximumCycles,
                     maxNodes: maximumNodes
@@ -288,7 +288,7 @@ extension CanonicalDatabaseGraphAlgorithmService {
             let scanner = GraphEdgeScanner(
                 indexSubspace: source.indexSubspace,
                 strategy: source.strategy,
-                scope: source.scope,
+                graphTarget: source.graphTarget,
                 snapshot: snapshot
             )
             let finder = SCCFinder(
@@ -322,7 +322,7 @@ extension CanonicalDatabaseGraphAlgorithmService {
                 snapshot: snapshot,
                 subspace: source.indexSubspace,
                 strategy: source.strategy,
-                scope: source.scope,
+                graphTarget: source.graphTarget,
                 configuration: TopologicalSortConfiguration(maxNodes: maximumNodes)
             )
             let result = try await sorter.sort(edgeLabel: source.edgeLabel)

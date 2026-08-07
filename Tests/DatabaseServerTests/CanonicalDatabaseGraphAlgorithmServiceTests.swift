@@ -439,7 +439,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             layout: .propertyGraph(
                 ResolvedDatabaseGraphSource.PropertyGraphLayout(
                     strategy: .tripleStore,
-                    scope: .all,
+                    graphTarget: .all,
                     edgeLabel: "link"
                 )
             )

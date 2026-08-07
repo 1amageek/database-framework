@@ -53,7 +53,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
             resolved.focus
                 == SHACLExecuteOperation.Focus.entities([identity])
         )
-        #expect(resolved.graphScope == .named(try RDFGraphName(iri: "urn:data")))
+        #expect(resolved.dataGraph == .named(try RDFGraphName(iri: "urn:data")))
         #expect(
             resolved.selectedFocusNodes
                 == [try RDFTerm.iri(validating: "urn:person:1")]

@@ -32,7 +32,7 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3918 \
+    --expected-count 3923 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -48,7 +48,7 @@ index implementations. `Relationships` remains independent.
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0731.3",
+    from: "26.0807.0",
     traits: ["SQLite", "GraphIndexes"]
 )
 ~~~

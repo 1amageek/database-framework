@@ -117,7 +117,7 @@ struct NamedGraphStoreSQLiteTests {
                 subject: nil,
                 predicate: try .iri(validating: amountPredicate),
                 object: nil,
-                graphScope: .named(try RDFGraphName(iri: receiptGraphIRI)),
+                graphTarget: .named(try RDFGraphName(iri: receiptGraphIRI)),
                 limit: nil,
                 readMode: .snapshot,
                 transaction: transaction,

@@ -170,7 +170,7 @@ public final class TopologicalSorter: Sendable {
         snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
-        scope: GraphScanScope = .all,
+        graphTarget: GraphScanTarget = .all,
         configuration: TopologicalSortConfiguration = .default
     ) {
         self.snapshot = snapshot
@@ -178,7 +178,7 @@ public final class TopologicalSorter: Sendable {
         self.scanner = GraphEdgeScanner(
             indexSubspace: subspace,
             strategy: strategy,
-            scope: scope,
+            graphTarget: graphTarget,
             snapshot: snapshot
         )
         self.workBudget = snapshot.workBudget

@@ -85,7 +85,7 @@ extension SPARQLQueryExecutor {
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> EvaluationResult {
-        let executor = try scoped(to: plan.datasetScope)
+        let executor = try scoped(to: plan.dataset)
             .requestScoped(by: workMeter)
             .transactionAttemptScoped()
         let evaluated = try await executor.evaluateOrderedSolutionPlan(
@@ -104,7 +104,7 @@ extension SPARQLQueryExecutor {
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> EvaluationResult {
-        let executor = try scoped(to: plan.ordered.datasetScope)
+        let executor = try scoped(to: plan.ordered.dataset)
             .requestScoped(by: workMeter)
             .transactionAttemptScoped()
         let evaluated = try await executor.evaluateOrderedSolutionPlan(
@@ -131,7 +131,7 @@ extension SPARQLQueryExecutor {
         selectPlan: SPARQLSelectExecutionPlan,
         workMeter: DatabaseWorkMeter
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
-        let executor = try scoped(to: selectPlan.ordered.datasetScope)
+        let executor = try scoped(to: selectPlan.ordered.dataset)
             .requestScoped(by: workMeter)
         return try await StorageTransactionExecutor(engine: database)
             .withTransaction(
@@ -159,7 +159,7 @@ extension SPARQLQueryExecutor {
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
-        let executor = try scoped(to: selectPlan.ordered.datasetScope)
+        let executor = try scoped(to: selectPlan.ordered.dataset)
             .requestScoped(by: workMeter)
             .transactionAttemptScoped()
         let evaluated = try await executor.evaluateSelectPlan(

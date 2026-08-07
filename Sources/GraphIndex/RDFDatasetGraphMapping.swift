@@ -1,7 +1,7 @@
 import DatabaseTypes
 import DatabaseKit
 
-package enum RDFDatasetGraphScope: Sendable, Equatable {
+package enum RDFDatasetGraphMapping: Sendable, Equatable {
     case defaultGraph
     case entityField(String)
     case fixed(RDFTerm)

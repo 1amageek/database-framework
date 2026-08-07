@@ -64,8 +64,8 @@ struct DatabaseQueryContinuationEndpointTests {
         expectInvalidContinuation(error)
     }
 
-    @Test("a continuation is rejected for a different partition scope")
-    func continuationRejectsDifferentPartitionScope() async throws {
+    @Test("a continuation is rejected for a different partition selection")
+    func continuationRejectsDifferentPartitionSelection() async throws {
         let endpoint = try await makeEndpoint()
         let first = try await successfulPage(
             request(

@@ -73,14 +73,14 @@ public final class PageRankComputer: Sendable {
         snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
-        scope: GraphScanScope = .all,
+        graphTarget: GraphScanTarget = .all,
         configuration: PageRankConfiguration = .default
     ) {
         self.snapshot = snapshot
         self.scanner = GraphEdgeScanner(
             indexSubspace: subspace,
             strategy: strategy,
-            scope: scope,
+            graphTarget: graphTarget,
             snapshot: snapshot
         )
         self.configuration = configuration

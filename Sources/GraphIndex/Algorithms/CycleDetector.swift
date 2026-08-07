@@ -249,7 +249,7 @@ public final class CycleDetector: Sendable {
         snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
-        scope: GraphScanScope = .all,
+        graphTarget: GraphScanTarget = .all,
         configuration: CycleDetectorConfiguration = .default
     ) {
         self.snapshot = snapshot
@@ -257,7 +257,7 @@ public final class CycleDetector: Sendable {
         self.scanner = GraphEdgeScanner(
             indexSubspace: subspace,
             strategy: strategy,
-            scope: scope,
+            graphTarget: graphTarget,
             snapshot: snapshot
         )
         self.workBudget = snapshot.workBudget

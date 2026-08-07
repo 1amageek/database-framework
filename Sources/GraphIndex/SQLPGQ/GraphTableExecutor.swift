@@ -249,7 +249,7 @@ public struct GraphTableExecutor: Sendable {
                         orientation: orientation,
                         strategy: strategy
                     ).map(GraphIdentity.identifier),
-                    scope: .all,
+                    graphTarget: .all,
                     propertyFilters: propertyFilters.isEmpty ? nil : propertyFilters,
                     transaction: transaction
                 )

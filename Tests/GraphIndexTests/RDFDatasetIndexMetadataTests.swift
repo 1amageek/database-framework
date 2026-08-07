@@ -21,8 +21,8 @@ struct RDFDatasetIndexMetadataTests {
         #expect(selection.metadata.subjectFieldName == "subject")
         #expect(selection.metadata.predicateFieldName == "predicate")
         #expect(selection.metadata.objectFieldName == "object")
-        #expect(selection.metadata.graphScope == .entityField("graph"))
-        #expect(try selection.metadata.graphScope.sourceCoverage == .dataset)
+        #expect(selection.metadata.graphMapping == .entityField("graph"))
+        #expect(try selection.metadata.graphMapping.sourceCoverage == .dataset)
     }
 
     @Test("RDF quad metadata without a graph field selects the default graph")
@@ -37,8 +37,8 @@ struct RDFDatasetIndexMetadataTests {
             try RDFDatasetIndexSelection(descriptor: descriptor)
         )
 
-        #expect(selection.metadata.graphScope == .defaultGraph)
-        #expect(try selection.metadata.graphScope.sourceCoverage == .defaultGraph)
+        #expect(selection.metadata.graphMapping == .defaultGraph)
+        #expect(try selection.metadata.graphMapping.sourceCoverage == .defaultGraph)
     }
 
     @Test("OWL metadata preserves a fixed named graph")
@@ -60,9 +60,9 @@ struct RDFDatasetIndexMetadataTests {
             try RDFDatasetIndexSelection(descriptor: descriptor)
         )
 
-        #expect(selection.metadata.graphScope == .fixed(graph))
+        #expect(selection.metadata.graphMapping == .fixed(graph))
         #expect(
-            try selection.metadata.graphScope.sourceCoverage
+            try selection.metadata.graphMapping.sourceCoverage
                 == .namedGraph(RDFGraphName(graph))
         )
     }

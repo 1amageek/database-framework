@@ -17,7 +17,7 @@ struct RDFDatasetScanReservationTests {
             subject: RDFTerm?,
             predicate: RDFTerm?,
             object: RDFTerm?,
-            graphScope: RDFGraphScanScope,
+            graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
             transaction: any TransactionAccess,
@@ -67,7 +67,7 @@ struct RDFDatasetScanReservationTests {
             scanner: IndexedRDFDatasetScanner(
                 sources: [store.datasetSource]
             ),
-            graphScope: .named(graph),
+            graphTarget: .named(graph),
             database: engine,
             workMeter: meter
         )
@@ -163,7 +163,7 @@ struct RDFDatasetScanReservationTests {
                 scanner: IndexedRDFDatasetScanner(
                     sources: [store.datasetSource]
                 ),
-                graphScope: .named(graph),
+                graphTarget: .named(graph),
                 database: engine,
                 workMeter: meter
             )
@@ -208,7 +208,7 @@ struct RDFDatasetScanReservationTests {
                 scanner: IndexedRDFDatasetScanner(
                     sources: [store.datasetSource]
                 ),
-                graphScope: .named(graph),
+                graphTarget: .named(graph),
                 database: engine,
                 workMeter: meter
             )
@@ -240,7 +240,7 @@ struct RDFDatasetScanReservationTests {
             scanner: IndexedRDFDatasetScanner(
                 sources: [store.datasetSource, store.datasetSource]
             ),
-            graphScope: .named(graph),
+            graphTarget: .named(graph),
             database: engine,
             workMeter: meter
         )
@@ -282,7 +282,9 @@ struct RDFDatasetScanReservationTests {
             scanner: IndexedRDFDatasetScanner(
                 sources: [store.datasetSource]
             ),
-            graphScope: .namedGraphUnion([firstGraph, secondGraph]),
+            graphTarget: .namedGraphUnion(
+                RDFNamedGraphSet([firstGraph, secondGraph])
+            ),
             database: engine,
             workMeter: meter
         )
@@ -299,6 +301,85 @@ struct RDFDatasetScanReservationTests {
         result = nil
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Named graph union standardizes blank nodes apart by source graph")
+    func namedGraphUnionSeparatesBlankNodeIdentity() async throws {
+        let engine = InMemoryEngine()
+        let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
+        let firstGraph = try makeGraph("blank-union-a")
+        let secondGraph = try makeGraph("blank-union-b")
+        let shared = try RDFBlankNodeIdentifier("shared")
+        let predicate = try RDFPredicateIRI(
+            "https://example.com/predicate/blank-union"
+        )
+        let nestedPredicate = try RDFPredicateIRI(
+            "https://example.com/predicate/nested"
+        )
+        let object = RDFTerm.tripleTerm(
+            subject: .blankNode(shared),
+            predicate: nestedPredicate,
+            object: .blankNode(shared)
+        )
+        let first = RDFQuad(
+            subject: .blankNode(shared),
+            predicate: predicate,
+            object: object,
+            graph: firstGraph
+        )
+        let second = RDFQuad(
+            subject: .blankNode(shared),
+            predicate: predicate,
+            object: object,
+            graph: secondGraph
+        )
+        try await insert([first, second], into: store, database: engine)
+
+        let result = try await scan(
+            scanner: IndexedRDFDatasetScanner(
+                sources: [store.datasetSource]
+            ),
+            graphTarget: .namedGraphUnion(
+                RDFNamedGraphSet([secondGraph, firstGraph, firstGraph])
+            ),
+            database: engine,
+            workMeter: makeMeter()
+        )
+
+        #expect(result.count == 2)
+        var sourceIdentifiers = Set<RDFBlankNodeIdentifier>()
+        for row in result {
+            let quad = row.quad
+            #expect(quad.graph == nil)
+            guard case .blankNode(let subjectIdentifier) = quad.subject,
+                  case .tripleTerm(
+                    let nestedSubject,
+                    _,
+                    let nestedObject
+                  ) = quad.object,
+                  case .blankNode(let nestedSubjectIdentifier) = nestedSubject,
+                  case .blankNode(let nestedObjectIdentifier) = nestedObject else {
+                Issue.record("Expected relabelled nested blank nodes")
+                continue
+            }
+            #expect(subjectIdentifier == nestedSubjectIdentifier)
+            #expect(subjectIdentifier == nestedObjectIdentifier)
+            sourceIdentifiers.insert(subjectIdentifier)
+        }
+        #expect(sourceIdentifiers.count == 2)
+    }
+
+    @Test("Named graph set is sorted and deduplicated")
+    func namedGraphSetIsCanonical() throws {
+        let firstGraph = try makeGraph("canonical-a")
+        let secondGraph = try makeGraph("canonical-b")
+        let graphs = RDFNamedGraphSet([
+            secondGraph,
+            firstGraph,
+            secondGraph,
+        ])
+
+        #expect(Array(graphs) == [firstGraph, secondGraph])
     }
 
     @Test("Nested RDF-star terms are measured with a constant-space cursor")
@@ -389,7 +470,7 @@ struct RDFDatasetScanReservationTests {
 
     private func scan(
         scanner: IndexedRDFDatasetScanner,
-        graphScope: RDFGraphScanScope,
+        graphTarget: RDFGraphScanTarget,
         database: InMemoryEngine,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
@@ -402,7 +483,7 @@ struct RDFDatasetScanReservationTests {
                 subject: nil,
                 predicate: nil,
                 object: nil,
-                graphScope: graphScope,
+                graphTarget: graphTarget,
                 limit: nil,
                 readMode: .snapshot,
                 transaction: transaction,

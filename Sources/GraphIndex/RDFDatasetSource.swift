@@ -36,7 +36,7 @@ public struct RDFDatasetSource: Sendable {
             entityName: entityName,
             indexName: selection.indexName,
             indexSubspace: indexSubspace,
-            coverage: try selection.metadata.graphScope.sourceCoverage,
+            coverage: try selection.metadata.graphMapping.sourceCoverage,
             storedFieldNames: selection.storedFieldNames
         )
     }

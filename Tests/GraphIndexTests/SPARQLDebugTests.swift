@@ -238,7 +238,7 @@ struct SPARQLDebugTests {
                 from: .identifier(alice),
                 edge: "knows",
                 to: nil,
-                scope: .all,
+                graphTarget: .all,
                 propertyFilters: nil,
                 transaction: transaction
             )

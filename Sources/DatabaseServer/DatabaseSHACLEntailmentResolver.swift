@@ -24,7 +24,7 @@ struct DatabaseSHACLEntailmentResolver: Sendable {
     func resolve(
         _ entailment: SHACLExecuteOperation.Entailment,
         executor: SPARQLQueryExecutor,
-        graphScope: SHACLDataGraphScope,
+        dataGraph: SHACLDataGraphTarget,
         workBudget: SHACLValidationWorkBudget,
         transaction: any TransactionAccess
     ) async throws -> Resolution {
@@ -34,7 +34,7 @@ struct DatabaseSHACLEntailmentResolver: Sendable {
         case .rdfs:
             let rdfs = try await RDFSGraphEntailment.resolve(
                 executor: executor,
-                graphScope: graphScope,
+                dataGraph: dataGraph,
                 transaction: transaction,
                 budget: workBudget
             )

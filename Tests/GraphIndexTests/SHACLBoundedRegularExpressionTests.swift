@@ -208,13 +208,13 @@ struct SHACLBoundedRegularExpressionTests {
             let targetResolver = SHACLTargetResolver(
                 executor: executor,
                 transaction: transaction,
-                graphScope: .defaultGraph,
+                dataGraph: .defaultGraph,
                 budget: budget
             )
             let evaluator = SHACLConstraintEvaluator(
                 executor: executor,
                 transaction: transaction,
-                graphScope: .defaultGraph,
+                dataGraph: .defaultGraph,
                 budget: budget
             )
             let validator = SHACLValidator(

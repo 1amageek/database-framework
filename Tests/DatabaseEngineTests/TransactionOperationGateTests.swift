@@ -1,20 +1,20 @@
 @testable import DatabaseEngine
 import Testing
 
-@Suite("Database transaction scope")
-struct DatabaseTransactionScopeTests {
+@Suite("Transaction operation gate")
+struct TransactionOperationGateTests {
     @Test(
-        "A scope rejects overlapping operation admission",
+        "A gate rejects overlapping operation admission",
         .timeLimit(.minutes(1))
     )
     func rejectsOverlappingAdmission() throws {
-        let scope = DatabaseTransactionScope()
+        let gate = TransactionOperationGate()
 
-        try scope.enter()
+        try gate.enter()
         #expect(throws: DatabaseTransactionError.concurrentOperation) {
-            try scope.enter()
+            try gate.enter()
         }
-        scope.leave()
+        gate.leave()
     }
 
     @Test(
@@ -22,19 +22,19 @@ struct DatabaseTransactionScopeTests {
         .timeLimit(.minutes(1))
     )
     func closeWaitsForAdmittedOperation() async throws {
-        let scope = DatabaseTransactionScope()
-        try scope.enter()
+        let gate = TransactionOperationGate()
+        try gate.enter()
 
         let close = Task {
-            await scope.closeAndWait()
+            await gate.closeAndWait()
         }
-        let observedClosedAdmission = await waitUntilAdmissionCloses(scope)
+        let observedClosedAdmission = await waitUntilAdmissionCloses(gate)
         #expect(observedClosedAdmission)
 
-        scope.leave()
+        gate.leave()
         await close.value
         #expect(throws: DatabaseTransactionError.closed) {
-            try scope.enter()
+            try gate.enter()
         }
     }
 
@@ -43,29 +43,29 @@ struct DatabaseTransactionScopeTests {
         .timeLimit(.minutes(1))
     )
     func leavingResumesEveryCloseWaiter() async throws {
-        let scope = DatabaseTransactionScope()
-        try scope.enter()
+        let gate = TransactionOperationGate()
+        try gate.enter()
 
         let firstClose = Task {
-            await scope.closeAndWait()
+            await gate.closeAndWait()
         }
         let secondClose = Task {
-            await scope.closeAndWait()
+            await gate.closeAndWait()
         }
-        let observedClosedAdmission = await waitUntilAdmissionCloses(scope)
+        let observedClosedAdmission = await waitUntilAdmissionCloses(gate)
         #expect(observedClosedAdmission)
 
-        scope.leave()
+        gate.leave()
         await firstClose.value
         await secondClose.value
     }
 
     private func waitUntilAdmissionCloses(
-        _ scope: DatabaseTransactionScope
+        _ gate: TransactionOperationGate
     ) async -> Bool {
         for _ in 0..<1_000 {
             do {
-                try scope.enter()
+                try gate.enter()
             } catch DatabaseTransactionError.closed {
                 return true
             } catch DatabaseTransactionError.concurrentOperation {

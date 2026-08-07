@@ -9,7 +9,7 @@ public protocol RDFDatasetScanner: Sendable {
         subject: RDFTerm?,
         predicate: RDFTerm?,
         object: RDFTerm?,
-        graphScope: RDFGraphScanScope,
+        graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
         transaction: any TransactionAccess,

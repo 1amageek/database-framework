@@ -201,7 +201,7 @@ public enum SPARQLQueryLevelPlanCompiler {
             .filter { !SPARQLInternalVariable.isInternal($0) }
             .sorted()
         return SPARQLOrderedSolutionPlan(
-            datasetScope: try SPARQLDatasetExecutionScope(dataset),
+            dataset: try SPARQLExecutionDataset(dataset),
             algebra: consume algebra,
             orderKeys: try compileOrderKeys(
                 rewrittenOrderBy,

@@ -17,6 +17,7 @@ public enum RDFDatasetScannerError: Error, Sendable, Equatable {
         component: RDFDatasetIndexComponent,
         reason: RDFTermStorageError
     )
+    case namedGraphMergeRequiresBoundGraph
     case retainedByteCountOverflow(
         operation: RetainedByteCountOperation,
         left: UInt64,

@@ -25,8 +25,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
 
     private let container: DBContainer
     private let mutationMaintenanceService: PersistableMutationMaintenanceService
-    private let transactionScope = DatabaseTransactionScope()
-    private var validationScope: DatabaseTransactionScope?
+    private let operationGate = TransactionOperationGate()
+    private var validationGate: TransactionOperationGate?
     private var state: State = .open
     private var nextOperationID: UInt64 = 1
     private var subspaceCache = DatabaseStoreCache<ResolvedSubspaces>()
@@ -482,19 +482,19 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func prepareForCommit() async throws {
-        await transactionScope.closeAndWait()
+        await operationGate.closeAndWait()
         guard state == .open else {
             throw lifecycleError(for: state)
         }
         let operationID = try issueOperationID()
         state = .preparingCommit(operationID)
-        let validationScope = DatabaseTransactionScope()
-        self.validationScope = validationScope
+        let validationGate = TransactionOperationGate()
+        self.validationGate = validationGate
         let context = PersistableValidationContext(
             schema: container.schema,
             transaction: self,
             operationID: operationID,
-            scope: validationScope
+            operationGate: validationGate
         )
         do {
             try await mutationMaintenanceService.validateFinalState(
@@ -505,11 +505,11 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             guard state == .preparingCommit(operationID) else {
                 throw lifecycleError(for: state)
             }
-            self.validationScope = nil
+            self.validationGate = nil
             state = .closed
         } catch {
             await context.closeAndWait()
-            self.validationScope = nil
+            self.validationGate = nil
             state = .closed
             throw error
         }
@@ -517,8 +517,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
 
     package func invalidate() async {
         state = .closed
-        await transactionScope.closeAndWait()
-        await validationScope?.closeAndWait()
+        await operationGate.closeAndWait()
+        await validationGate?.closeAndWait()
     }
 
     // MARK: - Persistence pipeline
@@ -804,7 +804,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     private func performOperation<Value: ~Copyable & Sendable>(
         _ operation: (UInt64) async throws -> sending Value
     ) async throws -> sending Value {
-        try transactionScope.enter()
+        try operationGate.enter()
         var operationID: UInt64?
         do {
             try ensureDatabaseTaskIsActive()
@@ -823,13 +823,13 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 throw lifecycleError(for: state)
             }
             state = .open
-            transactionScope.leave()
+            operationGate.leave()
             return value
         } catch {
             if let operationID, state == .executing(operationID) {
                 state = .closed
             }
-            transactionScope.leave()
+            operationGate.leave()
             throw error
         }
     }

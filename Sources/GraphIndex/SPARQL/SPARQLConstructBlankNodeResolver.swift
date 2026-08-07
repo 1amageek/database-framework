@@ -4,14 +4,14 @@ import DatabaseEngine
 import DatabaseTypes
 
 /// Deterministic, request-accounted blank-node identity for one solution.
-struct SPARQLConstructBlankNodeScope: ~Copyable {
+struct SPARQLConstructBlankNodeResolver: ~Copyable {
     private static let domain: ByteString = [0x43, 0x42, 0x4e, 0x01]
     private static let cacheContainerByteCount: UInt64 = 64
     private static let cacheSlotByteCount: UInt64 = 128
     private static let stringStorageByteCount: UInt64 = 16
     private static let identifierUTF8Count: UInt64 = 65
 
-    private let resultScope: DatabaseGraphResultScope
+    private let nodeNamespace: GraphResultNodeNamespace
     private let bindingFingerprint: ByteString
     private let occurrence: UInt64
     private let workMeter: DatabaseWorkMeter
@@ -20,12 +20,12 @@ struct SPARQLConstructBlankNodeScope: ~Copyable {
     private var accountedCapacity: Int
 
     init(
-        resultScope: DatabaseGraphResultScope,
+        nodeNamespace: GraphResultNodeNamespace,
         bindingFingerprint: ByteString,
         occurrence: UInt64,
         workMeter: DatabaseWorkMeter
     ) throws {
-        self.resultScope = resultScope
+        self.nodeNamespace = nodeNamespace
         self.bindingFingerprint = bindingFingerprint
         self.occurrence = occurrence
         self.workMeter = workMeter
@@ -73,7 +73,7 @@ struct SPARQLConstructBlankNodeScope: ~Copyable {
         let hashWork = try checkedAdd(
             UInt64(label.utf8.count),
             UInt64(
-                resultScope.bytes.count
+                nodeNamespace.bytes.count
                     + bindingFingerprint.count
                     + Self.domain.count
                     + 32
@@ -92,7 +92,7 @@ struct SPARQLConstructBlankNodeScope: ~Copyable {
     private func makeIdentifier(for label: String) -> String {
         var hasher = SHA256Accumulator()
         update(Self.domain, hasher: &hasher)
-        update(resultScope.bytes, hasher: &hasher)
+        update(nodeNamespace.bytes, hasher: &hasher)
         update(bindingFingerprint, hasher: &hasher)
         update(occurrence, hasher: &hasher)
         update(label, hasher: &hasher)

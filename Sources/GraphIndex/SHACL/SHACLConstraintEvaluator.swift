@@ -19,7 +19,7 @@ public struct SHACLConstraintEvaluator: Sendable {
 
     private let executor: SPARQLQueryExecutor
     private let transaction: any TransactionAccess
-    private let graphScope: SHACLDataGraphScope
+    private let dataGraph: SHACLDataGraphTarget
     private let valueComparator: SPARQLValueComparator
     private let entailmentContext: (any SHACLEntailmentContext)?
     private let budget: SHACLValidationWorkBudget
@@ -27,14 +27,14 @@ public struct SHACLConstraintEvaluator: Sendable {
     public init(
         executor: SPARQLQueryExecutor,
         transaction: any TransactionAccess,
-        graphScope: SHACLDataGraphScope,
+        dataGraph: SHACLDataGraphTarget,
         xsdValidationLimits: XSDValidationLimits = .default,
         entailmentContext: (any SHACLEntailmentContext)? = nil,
         budget: SHACLValidationWorkBudget
     ) {
         self.executor = executor
         self.transaction = transaction
-        self.graphScope = graphScope
+        self.dataGraph = dataGraph
         self.valueComparator = SPARQLValueComparator(
             limits: xsdValidationLimits
         )
@@ -197,7 +197,7 @@ public struct SHACLConstraintEvaluator: Sendable {
             )
         ])
         let (bindings, _) = try await executor.executeInTransaction(
-            pattern: graphScope.apply(to: pattern),
+            pattern: dataGraph.apply(to: pattern),
             transaction: transaction,
             limit: nil,
             offset: 0,
@@ -785,7 +785,7 @@ public struct SHACLConstraintEvaluator: Sendable {
             )
         ])
         let (bindings, _) = try await executor.executeInTransaction(
-            pattern: graphScope.apply(to: pattern),
+            pattern: dataGraph.apply(to: pattern),
             transaction: transaction,
             limit: nil,
             offset: 0,
@@ -869,7 +869,7 @@ public struct SHACLConstraintEvaluator: Sendable {
         )
 
         let (bindings, _) = try await executor.executeInTransaction(
-            pattern: graphScope.apply(to: pattern),
+            pattern: dataGraph.apply(to: pattern),
             transaction: transaction,
             limit: nil,
             offset: 0,

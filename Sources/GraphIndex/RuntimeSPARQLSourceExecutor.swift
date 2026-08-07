@@ -92,7 +92,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     func executeConstructInTransaction(
         context: DatabaseContext,
         constructQuery: ConstructQuery,
-        resultScope: DatabaseGraphResultScope,
+        nodeNamespace: GraphResultNodeNamespace,
         options: ReadExecutionContext,
         partitions: FieldObject,
         transaction: any TransactionAccess
@@ -108,7 +108,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             dataset: constructQuery.dataset
         ).executeConstructInTransaction(
             constructQuery,
-            resultScope: resultScope,
+            nodeNamespace: nodeNamespace,
             structuralLimits: options.queryStructuralLimits,
             transaction: transaction,
             workMeter: options.workMeter
@@ -212,7 +212,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             entityName: resolution.entity.name,
             indexName: resolution.indexDescriptor.name,
             indexSubspace: index.subspace,
-            coverage: try resolution.metadata.graphScope.sourceCoverage,
+            coverage: try resolution.metadata.graphMapping.sourceCoverage,
             storedFieldNames: resolution.indexDescriptor.storedFieldNames
         )
     }
@@ -227,7 +227,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             monotonicClock: context.container.monotonicClock,
             wallClock: context.container.wallClock,
             datasetScanner: scanner,
-            datasetScope: try SPARQLDatasetExecutionScope(dataset),
+            dataset: try SPARQLExecutionDataset(dataset),
             functionRegistry: functionRegistry
         )
     }

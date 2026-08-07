@@ -82,7 +82,7 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3920 \
+    --expected-count 3923 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -122,8 +122,8 @@ the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
 The release gates above were last executed against the published dependency
-graph on 2026-08-03: database-kit 26.0803.0, storage-kit 26.0803.0, and
-swift-hnsw 1.1.4. FoundationDB passed 3,918 tests, SQLite passed 101 tests, and
+graph on 2026-08-07: database-kit 26.0807.0, storage-kit 26.0807.0, and
+swift-hnsw 1.1.4. FoundationDB passed 3,923 tests, SQLite passed 101 tests, and
 PostgreSQL passed 71 tests with zero failures, skips, expected failures, or
 runtime warnings. Standard WASM, Embedded WASM, and the static
 `aarch64-swift-linux-musl` `DatabaseCLICore` product compiled and linked in

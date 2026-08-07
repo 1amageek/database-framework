@@ -5,6 +5,10 @@ import StorageKit
 
 /// Scans one logical RDF dataset assembled from canonical six-way quad indexes.
 public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
+    private static let namedGraphMergeBlankNodeDomain: ByteString = [
+        0x52, 0x44, 0x46, 0x4d, 0x42, 0x4e, 0x01,
+    ]
+
     private enum ScanControl: Error {
         case logicalLimitReached
     }
@@ -32,6 +36,18 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         case allNamedGraphs
     }
 
+    private struct DigestSink: RDFTermStorageSink {
+        var hasher: SHA256Accumulator
+
+        mutating func write(_ byte: UInt8) {
+            hasher.update(byte)
+        }
+
+        mutating func write(_ bytes: UnsafeRawBufferPointer) {
+            hasher.update(bytes)
+        }
+    }
+
     private let sources: [RDFDatasetSource]
 
     public init(sources: [RDFDatasetSource]) {
@@ -42,7 +58,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         subject: RDFTerm?,
         predicate: RDFTerm?,
         object: RDFTerm?,
-        graphScope: RDFGraphScanScope,
+        graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
         transaction: any TransactionAccess,
@@ -52,12 +68,12 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
             return .empty()
         }
 
-        if case .empty = graphScope {
+        if case .empty = graphTarget {
             return .empty()
         }
 
         let mergesNamedGraphs: Bool
-        if case .namedGraphUnion = graphScope {
+        if case .namedGraphUnion = graphTarget {
             mergesNamedGraphs = true
         } else {
             mergesNamedGraphs = false
@@ -75,12 +91,25 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         scanLoop: for source in sources {
             let graphConstraints = try graphConstraints(
                 for: source.coverage,
-                requested: graphScope
+                requested: graphTarget
             )
 
             for graphConstraint in graphConstraints {
                 try workMeter.consume(at: .indexScan)
                 physicalScanCount += 1
+                let mergeBlankNodeHasher: SHA256Accumulator?
+                if mergesNamedGraphs {
+                    guard case .bound(_, let graph?) = graphConstraint else {
+                        throw RDFDatasetScannerError
+                            .namedGraphMergeRequiresBoundGraph
+                    }
+                    mergeBlankNodeHasher = try namedGraphMergeHasher(
+                        graph: graph,
+                        workMeter: workMeter
+                    )
+                } else {
+                    mergeBlankNodeHasher = nil
+                }
                 let ordering = GraphIndexScanPlanner.ordering(
                     strategy: .quadStore,
                     subjectBound: subject != nil,
@@ -134,7 +163,15 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                         }
                         try workMeter.consume(at: .deduplication)
                         if mergesNamedGraphs {
-                            let triple = quad.triple
+                            guard let mergeBlankNodeHasher else {
+                                throw RDFDatasetScannerError
+                                    .namedGraphMergeRequiresBoundGraph
+                            }
+                            let triple = try mergedNamedGraphTriple(
+                                quad,
+                                hasher: mergeBlankNodeHasher,
+                                workMeter: workMeter
+                            )
                             guard seenMergedTriples.insert(triple).inserted else {
                                 continue
                             }
@@ -226,6 +263,150 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                 bytes: metrics.retainedByteCount,
                 at: .deduplication
             )
+        }
+    }
+
+    private func namedGraphMergeHasher(
+        graph: RDFTerm,
+        workMeter: DatabaseWorkMeter
+    ) throws -> SHA256Accumulator {
+        let plan = try RDFTermStorageFormat.encodingPlan(
+            graph,
+            role: .graphName
+        )
+        try workMeter.consume(
+            UInt64(
+                Self.namedGraphMergeBlankNodeDomain.count
+                    + MemoryLayout<UInt64>.size
+                    + plan.byteCount
+            ),
+            at: .deduplication
+        )
+        var hasher = SHA256Accumulator()
+        hasher.update(Self.namedGraphMergeBlankNodeDomain)
+        Self.update(UInt64(plan.byteCount), hasher: &hasher)
+        var sink = DigestSink(hasher: hasher)
+        try RDFTermStorageFormat.encode(plan, into: &sink)
+        return sink.hasher
+    }
+
+    private func mergedNamedGraphTriple(
+        _ quad: RDFQuad,
+        hasher: SHA256Accumulator,
+        workMeter: DatabaseWorkMeter
+    ) throws -> RDFTriple {
+        RDFTriple(
+            subject: try mergedNamedGraphSubject(
+                quad.subject,
+                hasher: hasher,
+                workMeter: workMeter
+            ),
+            predicate: quad.predicate,
+            object: try mergedNamedGraphTerm(
+                quad.object,
+                hasher: hasher,
+                workMeter: workMeter
+            )
+        )
+    }
+
+    private func mergedNamedGraphSubject(
+        _ subject: RDFSubject,
+        hasher: SHA256Accumulator,
+        workMeter: DatabaseWorkMeter
+    ) throws -> RDFSubject {
+        switch subject {
+        case .iri:
+            return subject
+        case .blankNode(let identifier):
+            return .blankNode(
+                try mergedNamedGraphBlankNode(
+                    identifier,
+                    hasher: hasher,
+                    workMeter: workMeter
+                )
+            )
+        }
+    }
+
+    private func mergedNamedGraphTerm(
+        _ term: RDFTerm,
+        hasher: SHA256Accumulator,
+        workMeter: DatabaseWorkMeter
+    ) throws -> RDFTerm {
+        switch term {
+        case .iri, .literal:
+            return term
+        case .blankNode(let identifier):
+            return .blankNode(
+                try mergedNamedGraphBlankNode(
+                    identifier,
+                    hasher: hasher,
+                    workMeter: workMeter
+                )
+            )
+        case .tripleTerm(let subject, let predicate, let object):
+            return .tripleTerm(
+                subject: try mergedNamedGraphSubject(
+                    subject,
+                    hasher: hasher,
+                    workMeter: workMeter
+                ),
+                predicate: predicate,
+                object: try mergedNamedGraphTerm(
+                    object,
+                    hasher: hasher,
+                    workMeter: workMeter
+                )
+            )
+        }
+    }
+
+    private func mergedNamedGraphBlankNode(
+        _ identifier: RDFBlankNodeIdentifier,
+        hasher: SHA256Accumulator,
+        workMeter: DatabaseWorkMeter
+    ) throws -> RDFBlankNodeIdentifier {
+        let labelByteCount = identifier.rawValue.utf8.count
+        try workMeter.consume(
+            UInt64(MemoryLayout<UInt64>.size + labelByteCount),
+            at: .deduplication
+        )
+        var digest = hasher
+        Self.update(UInt64(labelByteCount), hasher: &digest)
+        digest.update(utf8: identifier.rawValue)
+        // RDF merge changes blank-node identity, so the new owned label is the
+        // required semantic output boundary; graph and source labels are fed
+        // directly into the digest without an intermediate encoded payload.
+        let value = digest.withUnsafeDigestBytes { bytes in
+            "m" + Self.lowercaseHex(bytes)
+        }
+        return try RDFBlankNodeIdentifier(value)
+    }
+
+    private static func update(
+        _ value: UInt64,
+        hasher: inout SHA256Accumulator
+    ) {
+        var encoded = value.bigEndian
+        withUnsafeBytes(of: &encoded) { bytes in
+            hasher.update(bytes)
+        }
+    }
+
+    private static func lowercaseHex(
+        _ digest: UnsafeRawBufferPointer
+    ) -> String {
+        String(unsafeUninitializedCapacity: digest.count * 2) { output in
+            var outputIndex = 0
+            for byte in digest {
+                let high = byte >> 4
+                let low = byte & 0x0f
+                output[outputIndex] = high < 10 ? high + 0x30 : high + 0x57
+                output[outputIndex + 1] = low < 10 ? low + 0x30 : low + 0x57
+                outputIndex += 2
+            }
+            return outputIndex
         }
     }
 
@@ -407,7 +588,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
 
     private func graphConstraints(
         for coverage: RDFDatasetSourceCoverage,
-        requested: RDFGraphScanScope
+        requested: RDFGraphScanTarget
     ) throws -> [PhysicalGraphConstraint] {
         switch requested {
         case .empty:

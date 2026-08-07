@@ -499,7 +499,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                     entityName: entityName,
                     indexName: indexDescriptor.name,
                     indexSubspace: readableIndex.subspace,
-                    coverage: try metadata.graphScope.sourceCoverage,
+                    coverage: try metadata.graphMapping.sourceCoverage,
                     storedFieldNames: storedFieldNames
                 )
             ]

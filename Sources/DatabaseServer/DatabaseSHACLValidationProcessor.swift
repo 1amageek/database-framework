@@ -85,14 +85,14 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
         let targetResolver = SHACLTargetResolver(
             executor: resolved.executor,
             transaction: transaction,
-            graphScope: resolved.graphScope,
+            dataGraph: resolved.dataGraph,
             entailmentContext: resolved.entailmentContext,
             budget: workBudget
         )
         let evaluator = SHACLConstraintEvaluator(
             executor: resolved.executor,
             transaction: transaction,
-            graphScope: resolved.graphScope,
+            dataGraph: resolved.dataGraph,
             entailmentContext: resolved.entailmentContext,
             budget: workBudget
         )
@@ -188,21 +188,21 @@ public struct DatabaseSHACLValidationProcessor: DatabaseSHACLProcessor {
     ) throws {
         guard resolved.data == expectedData,
               resolved.focus == expectedFocus else {
-            throw DatabaseSHACLValidationError.resolvedScopeMismatch
+            throw DatabaseSHACLValidationError.resolvedDataSourceMismatch
         }
         guard resolved.entailment == expectedEntailment else {
             throw DatabaseSHACLValidationError.resolvedEntailmentMismatch
         }
-        let expectedGraphScope: SHACLDataGraphScope
+        let expectedDataGraph: SHACLDataGraphTarget
         switch expectedData.graph {
         case .defaultGraph:
-            expectedGraphScope = .defaultGraph
+            expectedDataGraph = .defaultGraph
         case .named(let graph):
-            expectedGraphScope = .named(try RDFGraphName(graph))
+            expectedDataGraph = .named(try RDFGraphName(graph))
         }
-        guard resolved.graphScope == expectedGraphScope else {
+        guard resolved.dataGraph == expectedDataGraph else {
             throw DatabaseSHACLValidationError
-                .resolvedGraphScopeMismatch
+                .resolvedDataGraphMismatch
         }
         guard !resolved.snapshotFingerprint.isEmpty,
               resolved.snapshotFingerprint.count <=

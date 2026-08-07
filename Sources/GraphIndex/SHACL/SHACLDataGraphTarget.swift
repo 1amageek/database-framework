@@ -1,7 +1,7 @@
 import DatabaseKit
 
 /// Selects the RDF graph that SHACL queries evaluate as the data graph.
-public enum SHACLDataGraphScope: Sendable, Hashable {
+public enum SHACLDataGraphTarget: Sendable, Hashable {
     case defaultGraph
     case named(RDFGraphName)
 

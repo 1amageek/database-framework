@@ -177,7 +177,7 @@ public struct SHACLContextAPI: Sendable {
             if entailment == .rdfs {
                 let rdfs = try await RDFSGraphEntailment.resolve(
                     executor: executor,
-                    graphScope: .defaultGraph,
+                    dataGraph: .defaultGraph,
                     transaction: transaction,
                     budget: workBudget
                 )
@@ -193,14 +193,14 @@ public struct SHACLContextAPI: Sendable {
             let targetResolver = SHACLTargetResolver(
                 executor: validationExecutor,
                 transaction: transaction,
-                graphScope: .defaultGraph,
+                dataGraph: .defaultGraph,
                 entailmentContext: entailmentContext,
                 budget: workBudget
             )
             let constraintEvaluator = SHACLConstraintEvaluator(
                 executor: validationExecutor,
                 transaction: transaction,
-                graphScope: .defaultGraph,
+                dataGraph: .defaultGraph,
                 entailmentContext: entailmentContext,
                 budget: workBudget
             )
@@ -261,13 +261,13 @@ public struct SHACLContextAPI: Sendable {
             let targetResolver = SHACLTargetResolver(
                 executor: executor,
                 transaction: transaction,
-                graphScope: .defaultGraph,
+                dataGraph: .defaultGraph,
                 budget: workBudget
             )
             let constraintEvaluator = SHACLConstraintEvaluator(
                 executor: executor,
                 transaction: transaction,
-                graphScope: .defaultGraph,
+                dataGraph: .defaultGraph,
                 budget: workBudget
             )
             let validator = SHACLValidator(

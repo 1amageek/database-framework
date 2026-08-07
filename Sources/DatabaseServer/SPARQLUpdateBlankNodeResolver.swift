@@ -4,7 +4,7 @@ import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 
-struct SPARQLBlankNodeScope: Sendable {
+struct SPARQLUpdateBlankNodeResolver: Sendable {
     let idempotencyKey: String
     let operationOrdinal: UInt64
     let solutionOrdinal: UInt64
@@ -14,13 +14,21 @@ struct SPARQLBlankNodeScope: Sendable {
             operation: .mutationExecute
         )
         accumulator.update([0x42, 0x4e, 0x02])
-        accumulator.update(utf8: idempotencyKey)
+        Self.updateFramed(idempotencyKey, accumulator: &accumulator)
         accumulator.update(bigEndian: operationOrdinal)
         accumulator.update(bigEndian: solutionOrdinal)
-        accumulator.update(utf8: label)
+        Self.updateFramed(label, accumulator: &accumulator)
         return "u" + DatabaseTextFormatting.lowercaseHex(
             accumulator.finalize()
         )
+    }
+
+    private static func updateFramed(
+        _ value: String,
+        accumulator: inout DatabaseRequestDigestAccumulator
+    ) {
+        accumulator.update(bigEndian: UInt64(value.utf8.count))
+        accumulator.update(utf8: value)
     }
 }
 

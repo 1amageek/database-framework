@@ -205,7 +205,7 @@ internal struct TransactionRunner: Sendable {
         operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
         try configuration.validate()
-        guard !ActiveTransactionScope.isActive else {
+        guard !ActiveTransactionContext.isActive else {
             throw StorageError.invalidOperation(
                 "Nested transaction runners are not supported; pass the active transaction to the nested operation"
             )
@@ -427,7 +427,7 @@ internal struct TransactionRunner: Sendable {
         operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
         guard let deadline else {
-            return try await ActiveTransactionScope.withActiveTransaction(
+            return try await ActiveTransactionContext.withActiveTransaction(
                 transaction
             ) { access in
                 try await operation(access)
@@ -442,7 +442,7 @@ internal struct TransactionRunner: Sendable {
         ) { group in
             group.addTask {
                 do {
-                    let value = try await ActiveTransactionScope
+                    let value = try await ActiveTransactionContext
                         .withActiveTransaction(transaction) { access in
                             try await operation(access)
                     }

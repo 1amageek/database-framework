@@ -287,6 +287,24 @@ cursor when they stop before exhaustion. Tuple range bounds use prefix
 successors so inclusive and exclusive bounds include or exclude the complete
 set of compound keys sharing the indexed tuple prefix.
 
+## Graph selection vocabulary
+
+Graph execution names each value for its concrete responsibility. A `Target`
+selects the graph or graph set consumed by one operation, an
+`SPARQLExecutionDataset` is the normalized logical dataset for a query, and an
+`RDFDatasetGraphMapping` maps persisted entity data into RDF graphs. Blank-node
+`Resolver` values derive deterministic identities, while
+`GraphResultNodeNamespace` provides domain separation for result identities.
+`SPARQLVariableScope` retains the standards-defined lexical binding meaning of
+scope; these execution values do not represent an authorization or knowledge
+boundary.
+
+An RDF named-graph union is an RDF merge, not a concatenation of stored quads.
+`RDFNamedGraphSet` canonicalizes the selected graph set, and the scanner
+standardizes blank nodes apart by source graph before triple deduplication.
+Canonical graph bytes stream directly into the identity digest; only the new
+semantic blank-node identifier is materialized.
+
 ## Synchronization
 
 Shared mutable state uses the same actor or Synchronization.Mutex owner on native
@@ -294,7 +312,7 @@ and WASI targets. Target conditions may select an ABI or platform facility, but
 must not weaken isolation, Sendable, ownership, or shutdown semantics.
 
 DBContainer and DatabaseTransaction retain actor ownership of asynchronous
-database behavior. DatabaseTransactionScope protects only short, in-memory
+database behavior. TransactionOperationGate protects only short, in-memory
 admission state with `Synchronization.Mutex`: no I/O or suspension occurs while
 the lock is held, and close continuations resume after the lock is released.
 This synchronization and lifecycle contract is identical on native and WASI

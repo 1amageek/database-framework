@@ -34,7 +34,7 @@ struct DatabaseGraphQueryService: Sendable {
             return try await executor.executeConstructInTransaction(
                 context: context.container.newContext(),
                 constructQuery: query,
-                resultScope: try DatabaseGraphResultScope(
+                nodeNamespace: try GraphResultNodeNamespace(
                     requestFingerprint
                 ),
                 options: readExecution(

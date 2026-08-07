@@ -141,7 +141,7 @@ struct DatabaseTransactionLifecycleTests {
     }
 
     @Test(
-        "Commit drains a child operation admitted by the transaction scope",
+        "Commit drains a child operation admitted by the operation gate",
         .timeLimit(.minutes(1))
     )
     func commitDrainsAdmittedChildOperation() async throws {

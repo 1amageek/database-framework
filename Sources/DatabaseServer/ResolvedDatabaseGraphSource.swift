@@ -11,7 +11,7 @@ public struct ResolvedDatabaseGraphSource: Sendable {
         case rdf(RDFLayout)
     }
 
-    public enum PropertyGraphScope: Sendable, Equatable {
+    public enum PropertyGraphTarget: Sendable, Equatable {
         case all
         case defaultGraph
         case named(String)
@@ -19,21 +19,21 @@ public struct ResolvedDatabaseGraphSource: Sendable {
 
     public struct PropertyGraphLayout: Sendable {
         public let strategy: PropertyGraphIndexStrategy
-        public let scope: PropertyGraphScope
+        public let graphTarget: PropertyGraphTarget
         public let edgeLabel: String?
 
         public init(
             strategy: PropertyGraphIndexStrategy,
-            scope: PropertyGraphScope,
+            graphTarget: PropertyGraphTarget,
             edgeLabel: String?
         ) {
             self.strategy = strategy
-            self.scope = scope
+            self.graphTarget = graphTarget
             self.edgeLabel = edgeLabel
         }
 
-        package var scannerScope: GraphScanScope {
-            switch scope {
+        package var scannerGraphTarget: GraphScanTarget {
+            switch graphTarget {
             case .all:
                 return .all
             case .defaultGraph:
@@ -48,34 +48,34 @@ public struct ResolvedDatabaseGraphSource: Sendable {
         }
     }
 
-    public enum RDFScope: Sendable, Equatable {
+    public enum RDFGraphTarget: Sendable, Equatable {
         case all
         case defaultGraph
         case named(RDFTerm)
     }
 
     public struct RDFLayout: Sendable {
-        public let scope: RDFScope
+        public let graphTarget: RDFGraphTarget
         public let predicate: RDFTerm?
-        package let scannerScope: GraphScanScope
+        package let scannerGraphTarget: GraphScanTarget
         package let scannerEdgeLabel: GraphIdentity?
 
         public init(
-            scope: RDFScope,
+            graphTarget: RDFGraphTarget,
             predicate: RDFTerm?
         ) throws {
-            switch scope {
+            switch graphTarget {
             case .all:
-                self.scannerScope = .all
+                self.scannerGraphTarget = .all
             case .defaultGraph:
-                self.scannerScope = .defaultGraph
+                self.scannerGraphTarget = .defaultGraph
             case .named(let graph):
                 do {
                     _ = try RDFGraphName(graph)
                 } catch {
                     throw DatabaseGraphAlgorithmError.invalidRDFGraphName(.rdf(graph))
                 }
-                self.scannerScope = .named(try .rdf(graph))
+                self.scannerGraphTarget = .named(try .rdf(graph))
             }
             if let predicate {
                 guard case .iri = predicate else {
@@ -85,7 +85,7 @@ public struct ResolvedDatabaseGraphSource: Sendable {
             } else {
                 self.scannerEdgeLabel = nil
             }
-            self.scope = scope
+            self.graphTarget = graphTarget
             self.predicate = predicate
         }
     }
@@ -119,12 +119,12 @@ public struct ResolvedDatabaseGraphSource: Sendable {
         }
     }
 
-    package var scope: GraphScanScope {
+    package var graphTarget: GraphScanTarget {
         switch layout {
         case .propertyGraph(let layout):
-            return layout.scannerScope
+            return layout.scannerGraphTarget
         case .rdf(let layout):
-            return layout.scannerScope
+            return layout.scannerGraphTarget
         }
     }
 

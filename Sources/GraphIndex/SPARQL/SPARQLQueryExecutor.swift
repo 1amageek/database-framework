@@ -31,7 +31,7 @@ public struct SPARQLQueryExecutor: Sendable {
     let propertyPathConfiguration: ExecutionPropertyPathConfiguration
     let workMeter: DatabaseWorkMeter?
     let expressionContext: SPARQLQueryExpressionContext?
-    let datasetScope: SPARQLDatasetExecutionScope
+    let dataset: SPARQLExecutionDataset
     let functionRegistry: SPARQLFunctionRegistry
     let subqueryCache: SPARQLSubqueryResultCache?
     let nestedExpressionStatistics: SPARQLNestedExpressionStatistics?
@@ -49,16 +49,16 @@ public struct SPARQLQueryExecutor: Sendable {
         let subject: ExecutionTerm
         let predicate: ExecutionTerm
         let object: ExecutionTerm
-        let graphScope: RDFGraphScanScope
+        let graphTarget: RDFGraphScanTarget
     }
 
     struct ActiveGraph: Sendable, Hashable {
-        let scanScope: RDFGraphScanScope
+        let graphTarget: RDFGraphScanTarget
 
-        static let defaultGraph = ActiveGraph(scanScope: .defaultGraph)
+        static let defaultGraph = ActiveGraph(graphTarget: .defaultGraph)
 
         static func named(_ graph: RDFGraphName) -> ActiveGraph {
-            ActiveGraph(scanScope: .named(graph))
+            ActiveGraph(graphTarget: .named(graph))
         }
     }
 
@@ -98,7 +98,7 @@ public struct SPARQLQueryExecutor: Sendable {
         wallClock: any WallClock,
         datasetScanner: any RDFDatasetScanner,
         readMode: RDFDatasetReadMode = .snapshot,
-        datasetScope: SPARQLDatasetExecutionScope = .implicit,
+        dataset: SPARQLExecutionDataset = .implicit,
         functionRegistry: SPARQLFunctionRegistry = .empty,
         ontologyContext: OntologyContext? = nil,
         propertyPathConfiguration: ExecutionPropertyPathConfiguration = .default
@@ -108,7 +108,7 @@ public struct SPARQLQueryExecutor: Sendable {
         self.wallClock = wallClock
         self.datasetScanner = datasetScanner
         self.readMode = readMode
-        self.datasetScope = datasetScope
+        self.dataset = dataset
         self.functionRegistry = functionRegistry
         self.ontologyContext = ontologyContext
         self.propertyPathConfiguration = propertyPathConfiguration
@@ -125,7 +125,7 @@ public struct SPARQLQueryExecutor: Sendable {
         wallClock: any WallClock,
         sources: [RDFDatasetSource],
         readMode: RDFDatasetReadMode = .snapshot,
-        datasetScope: SPARQLDatasetExecutionScope = .implicit,
+        dataset: SPARQLExecutionDataset = .implicit,
         functionRegistry: SPARQLFunctionRegistry = .empty,
         ontologyContext: OntologyContext? = nil,
         propertyPathConfiguration: ExecutionPropertyPathConfiguration = .default
@@ -136,7 +136,7 @@ public struct SPARQLQueryExecutor: Sendable {
             wallClock: wallClock,
             datasetScanner: IndexedRDFDatasetScanner(sources: sources),
             readMode: readMode,
-            datasetScope: datasetScope,
+            dataset: dataset,
             functionRegistry: functionRegistry,
             ontologyContext: ontologyContext,
             propertyPathConfiguration: propertyPathConfiguration

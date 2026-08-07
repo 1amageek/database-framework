@@ -114,7 +114,7 @@ public final class CommunityDetector: Sendable {
         snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
-        scope: GraphScanScope = .all,
+        graphTarget: GraphScanTarget = .all,
         configuration: CommunityDetectionConfiguration = .default
     ) {
         self.snapshot = snapshot
@@ -122,7 +122,7 @@ public final class CommunityDetector: Sendable {
         self.scanner = GraphEdgeScanner(
             indexSubspace: subspace,
             strategy: strategy,
-            scope: scope,
+            graphTarget: graphTarget,
             snapshot: snapshot
         )
         self.workBudget = snapshot.workBudget

@@ -158,12 +158,12 @@ public struct GraphPropertyScanner: Sendable {
         self.snapshot = snapshot
     }
 
-    /// Scans a structural pattern inside an explicit graph scope.
+    /// Scans a structural pattern inside an explicit graph target.
     public func scanEdges(
         from source: GraphIdentity?,
         edge edgeLabel: GraphIdentity?,
         to target: GraphIdentity?,
-        scope: GraphScanScope = .all,
+        graphTarget: GraphScanTarget = .all,
         propertyFilters: [PropertyFilter]?,
         transaction: any TransactionAccess
     ) -> GraphPropertyScan {
@@ -172,14 +172,14 @@ public struct GraphPropertyScanner: Sendable {
             scanner = GraphEdgeScanner(
                 indexSubspace: indexSubspace,
                 strategy: strategy,
-                scope: scope,
+                graphTarget: graphTarget,
                 snapshot: snapshot
             )
         } else {
             scanner = GraphEdgeScanner(
                 indexSubspace: indexSubspace,
                 strategy: strategy,
-                scope: scope
+                graphTarget: graphTarget
             )
         }
         return GraphPropertyScan(

@@ -90,12 +90,12 @@ struct SPARQLStatementMutationExecutorTests {
         let store = CanonicalRDFGraphStore()
         let defaultRows = try await scan(
             store,
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         )
         let namedRows = try await scan(
             store,
-            scope: .named(try RDFGraphName(iri: graphIRI)),
+            graphTarget: .named(try RDFGraphName(iri: graphIRI)),
             container: container
         )
         #expect(defaultRows.count == 1)
@@ -109,7 +109,7 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(deleted.deletedQuads == 1)
         #expect(try await scan(
             store,
-            scope: .named(try RDFGraphName(iri: graphIRI)),
+            graphTarget: .named(try RDFGraphName(iri: graphIRI)),
             container: container
         ).isEmpty)
     }
@@ -163,7 +163,7 @@ struct SPARQLStatementMutationExecutorTests {
 
         let rows = try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         )
         #expect(rows.count == 1)
@@ -254,7 +254,7 @@ struct SPARQLStatementMutationExecutorTests {
 
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         ).isEmpty)
     }
@@ -287,7 +287,7 @@ struct SPARQLStatementMutationExecutorTests {
 
         let rows = try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         )
         let subjects = Set(rows.map(\.subject))
@@ -341,7 +341,7 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(effect.deletedQuads == 1)
         let rows = try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         )
         #expect(rows.count == 1)
@@ -423,12 +423,12 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(effect.insertedQuads == 1)
         let targetRows = try await scan(
             CanonicalRDFGraphStore(),
-            scope: .named(try RDFGraphName(iri: target)),
+            graphTarget: .named(try RDFGraphName(iri: target)),
             container: container
         )
         let sourceRows = try await scan(
             CanonicalRDFGraphStore(),
-            scope: .named(try RDFGraphName(iri: source)),
+            graphTarget: .named(try RDFGraphName(iri: source)),
             container: container
         )
         #expect(targetRows.count == 1)
@@ -558,12 +558,12 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(copied.deletedQuads == 1)
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .named(try RDFGraphName(iri: source)),
+            graphTarget: .named(try RDFGraphName(iri: source)),
             container: container
         ).count == 1)
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .named(try RDFGraphName(iri: destination)),
+            graphTarget: .named(try RDFGraphName(iri: destination)),
             container: container
         ).count == 1)
 
@@ -584,7 +584,7 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(try await !containsGraph(source, container: container))
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         ).count == 1)
 
@@ -711,7 +711,7 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(effect.deletedQuads == 1)
         let rows = try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         )
         #expect(rows.count == 1)
@@ -768,7 +768,7 @@ struct SPARQLStatementMutationExecutorTests {
 
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         ).isEmpty)
     }
@@ -804,7 +804,7 @@ struct SPARQLStatementMutationExecutorTests {
 
         let rows = try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         )
         #expect(rows.isEmpty)
@@ -855,7 +855,7 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(source.callCount == 0)
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         ).isEmpty)
     }
@@ -895,7 +895,7 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(effect.createdGraphs == 1)
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .named(try RDFGraphName(iri: graph)),
+            graphTarget: .named(try RDFGraphName(iri: graph)),
             container: container
         ).count == 1)
     }
@@ -1031,7 +1031,7 @@ struct SPARQLStatementMutationExecutorTests {
 
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         ).isEmpty)
     }
@@ -1106,7 +1106,7 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(first == replay)
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         ).count == 1)
     }
@@ -1167,7 +1167,7 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(store.scanReadModes.allSatisfy { $0 == .serializable })
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .defaultGraph,
+            graphTarget: .defaultGraph,
             container: container
         ).count == 2)
     }
@@ -1215,7 +1215,7 @@ struct SPARQLStatementMutationExecutorTests {
 
         #expect(try await scan(
             CanonicalRDFGraphStore(),
-            scope: .named(graph),
+            graphTarget: .named(graph),
             container: container
         ).count == 1)
     }
@@ -1373,7 +1373,7 @@ struct SPARQLStatementMutationExecutorTests {
 
     private func scan(
         _ store: CanonicalRDFGraphStore,
-        scope: RDFGraphScanScope,
+        graphTarget: RDFGraphScanTarget,
         container: DBContainer
     ) async throws -> RDFDatasetScanResult {
         try await container.engine.withTransaction { transaction in
@@ -1381,7 +1381,7 @@ struct SPARQLStatementMutationExecutorTests {
                 subject: nil,
                 predicate: nil,
                 object: nil,
-                graphScope: scope,
+                graphTarget: graphTarget,
                 limit: nil,
                 readMode: .snapshot,
                 transaction: transaction,

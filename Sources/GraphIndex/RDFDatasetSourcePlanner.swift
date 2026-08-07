@@ -19,7 +19,7 @@ public struct RDFDatasetSourcePlanner: Sendable {
                     continue
                 }
                 let metadata = selection.metadata
-                switch metadata.graphScope {
+                switch metadata.graphMapping {
                 case .defaultGraph:
                     continue
                 case .entityField:
@@ -42,7 +42,7 @@ public struct RDFDatasetSourcePlanner: Sendable {
                         entityName: entity.name,
                         indexName: descriptor.name,
                         indexSubspace: readableIndex.subspace,
-                        coverage: try metadata.graphScope.sourceCoverage,
+                        coverage: try metadata.graphMapping.sourceCoverage,
                         storedFieldNames: selection.storedFieldNames
                     )
                 )

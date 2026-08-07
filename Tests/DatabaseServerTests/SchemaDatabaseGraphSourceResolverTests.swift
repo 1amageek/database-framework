@@ -29,12 +29,29 @@ struct SchemaDatabaseGraphSourceResolverTests {
         }
         #expect(source.entityName == DatabaseGraphSourceEdge.persistableType)
         #expect(layout.strategy == .adjacency)
-        #expect(layout.scope == .named("calendar"))
+        #expect(layout.graphTarget == .named("calendar"))
         #expect(layout.edgeLabel == "contains")
         #expect(source.storedFieldNames == ["weight"])
         #expect(
             try source.encodeVertex(.identifier("event:1")) == "event:1"
         )
+    }
+
+    @Test("named property graph selection requires namespace metadata")
+    func rejectsNamedPropertyGraphWithoutNamespace() async throws {
+        let container = try await makeContainer()
+
+        await #expect(
+            throws: DatabaseGraphAlgorithmError.self
+        ) {
+            try await resolve(
+                GraphAlgorithmOperation.Source(
+                    index: "source_graph_default",
+                    graph: .named(.identifier("calendar"))
+                ),
+                container: container
+            )
+        }
     }
 
     @Test("RDF terms retain typed identity and canonical binary storage")
@@ -63,8 +80,8 @@ struct SchemaDatabaseGraphSourceResolverTests {
             return
         }
         #expect(
-            layout.scope
-                == ResolvedDatabaseGraphSource.RDFScope.defaultGraph
+            layout.graphTarget
+                == ResolvedDatabaseGraphSource.RDFGraphTarget.defaultGraph
         )
         #expect(
             layout.predicate

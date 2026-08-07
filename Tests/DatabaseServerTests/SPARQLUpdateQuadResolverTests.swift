@@ -18,7 +18,7 @@ struct SPARQLUpdateQuadResolverTests {
                 )
             ),
             row: VariableBinding(),
-            blankNodeScope: nil,
+            blankNodeResolver: nil,
             variablesAllowed: true,
             blankNodesAllowed: false
         )
@@ -48,7 +48,7 @@ struct SPARQLUpdateQuadResolverTests {
                     ),
                 ]
             ),
-            blankNodeScope: nil,
+            blankNodeResolver: nil,
             variablesAllowed: true,
             blankNodesAllowed: false
         )
@@ -68,7 +68,7 @@ struct SPARQLUpdateQuadResolverTests {
                     )
                 ),
                 row: nil,
-                blankNodeScope: nil,
+                blankNodeResolver: nil,
                 variablesAllowed: false,
                 blankNodesAllowed: false
             )

@@ -16,7 +16,7 @@ package struct GraphTraverser: Sendable {
         snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
-        scope: GraphScanScope = .all,
+        graphTarget: GraphScanTarget = .all,
         configuration: GraphTraverserConfiguration = .default
     ) throws {
         guard configuration.maximumDepth >= 0 else {
@@ -33,7 +33,7 @@ package struct GraphTraverser: Sendable {
         self.scanner = GraphEdgeScanner(
             indexSubspace: subspace,
             strategy: strategy,
-            scope: scope,
+            graphTarget: graphTarget,
             snapshot: snapshot
         )
         self.configuration = configuration

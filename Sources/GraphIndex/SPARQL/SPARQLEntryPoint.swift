@@ -199,7 +199,7 @@ extension DatabaseContext {
         limit: Int? = nil,
         offset: Int = 0,
         orderBy: [BindingSortKey] = [],
-        datasetScope: SPARQLDatasetExecutionScope = .implicit,
+        dataset: SPARQLExecutionDataset = .implicit,
         budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLResult {
         guard offset >= 0, limit.map({ $0 >= 0 }) ?? true else {
@@ -264,7 +264,7 @@ extension DatabaseContext {
                     monotonicClock: self.container.monotonicClock,
                     wallClock: self.container.wallClock,
                     sources: sources,
-                    datasetScope: datasetScope
+                    dataset: dataset
                 )
                 return try await executor.executeInTransaction(
                     pattern: pattern,
@@ -340,7 +340,6 @@ extension DatabaseContext {
     public func executeSPARQLSelectPlan<T: Persistable>(
         _ plan: SPARQLSelectExecutionPlan,
         on type: T.Type,
-        datasetScope: SPARQLDatasetExecutionScope = .implicit,
         budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLResult {
         let candidates = try indexQueryContext.indexDescriptors(
@@ -381,8 +380,7 @@ extension DatabaseContext {
                     database: self.container.engine,
                     monotonicClock: self.container.monotonicClock,
                     wallClock: self.container.wallClock,
-                    sources: sources,
-                    datasetScope: datasetScope
+                    sources: sources
                 )
                 return try await executor.executeInTransaction(
                     selectPlan: plan,

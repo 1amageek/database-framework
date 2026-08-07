@@ -13,7 +13,7 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
 
     private let transaction: DatabaseTransaction
     private let operationID: UInt64
-    private let scope: DatabaseTransactionScope
+    private let operationGate: TransactionOperationGate
     package let storageAccess: any TransactionAccess
 
     package init(
@@ -25,7 +25,7 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
         self.schema = schema
         self.transaction = transaction
         self.operationID = operationID
-        self.scope = DatabaseTransactionScope()
+        self.operationGate = TransactionOperationGate()
         self.storageAccess = storageAccess
     }
 
@@ -102,20 +102,20 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
     }
 
     package func closeAndWait() async {
-        await scope.closeAndWait()
+        await operationGate.closeAndWait()
     }
 
     private func perform<Value: Sendable>(
         _ operation: () async throws -> Value
     ) async throws -> Value {
-        try scope.enter()
+        try operationGate.enter()
         do {
             try ensureDatabaseTaskIsActive()
             let value = try await operation()
-            scope.leave()
+            operationGate.leave()
             return value
         } catch {
-            scope.leave()
+            operationGate.leave()
             throw error
         }
     }

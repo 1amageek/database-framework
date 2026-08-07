@@ -21,7 +21,7 @@ extension SPARQLQueryExecutor {
             }
             let key = SPARQLSubqueryCacheKey(
                 occurrenceIdentifier: plan.occurrenceIdentifier,
-                graphScope: activeGraph.scanScope
+                graphTarget: activeGraph.graphTarget
             )
             if let cached = subqueryCache.value(for: key) {
                 unfiltered = EvaluationResult(

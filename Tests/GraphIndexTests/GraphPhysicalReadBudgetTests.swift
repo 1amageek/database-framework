@@ -28,7 +28,7 @@ struct GraphPhysicalReadBudgetTests {
             let scanner = GraphEdgeScanner(
                 indexSubspace: seededIndex.subspace,
                 strategy: .adjacency,
-                scope: .all,
+                graphTarget: .all,
                 snapshot: snapshot
             )
 
@@ -68,7 +68,7 @@ struct GraphPhysicalReadBudgetTests {
             let scanner = GraphEdgeScanner(
                 indexSubspace: seededIndex.subspace,
                 strategy: .adjacency,
-                scope: .all,
+                graphTarget: .all,
                 snapshot: snapshot
             )
 
@@ -108,7 +108,7 @@ struct GraphPhysicalReadBudgetTests {
             let scanner = GraphEdgeScanner(
                 indexSubspace: seededIndex.subspace,
                 strategy: .adjacency,
-                scope: .all,
+                graphTarget: .all,
                 snapshot: snapshot
             )
 
@@ -140,7 +140,7 @@ struct GraphPhysicalReadBudgetTests {
             let scanner = GraphEdgeScanner(
                 indexSubspace: seededIndex.subspace,
                 strategy: .adjacency,
-                scope: .all
+                graphTarget: .all
             )
             var iterator = scanner.batchScanOutgoing(
                 from: [.identifier("source-0"), .identifier("source-1")],
@@ -174,7 +174,7 @@ struct GraphPhysicalReadBudgetTests {
             let scanner = GraphEdgeScanner(
                 indexSubspace: seededIndex.subspace,
                 strategy: .adjacency,
-                scope: .all
+                graphTarget: .all
             )
             var edges: [EdgeInfo] = []
 
@@ -474,7 +474,7 @@ struct GraphPhysicalReadBudgetTests {
             let scanner = GraphEdgeScanner(
                 indexSubspace: subspace,
                 strategy: .quadStore,
-                scope: .defaultGraph
+                graphTarget: .defaultGraph
             )
             let edge = try #require(
                 try await firstEdge(

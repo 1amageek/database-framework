@@ -3,8 +3,8 @@ public enum DatabaseSHACLValidationError: Error, Sendable, Equatable,
     CustomStringConvertible {
     case shapesGraphNotFound(String)
     case invalidShapesGraph(String)
-    case resolvedScopeMismatch
-    case resolvedGraphScopeMismatch
+    case resolvedDataSourceMismatch
+    case resolvedDataGraphMismatch
     case resolvedEntailmentMismatch
     case missingOWLEntailment(String)
     case invalidSnapshotFingerprint
@@ -17,10 +17,10 @@ public enum DatabaseSHACLValidationError: Error, Sendable, Equatable,
             return "SHACL shapes graph was not found: \(graph)"
         case .invalidShapesGraph(let reason):
             return "SHACL shapes graph is invalid: \(reason)"
-        case .resolvedScopeMismatch:
-            return "SHACL data source resolver returned a different data scope"
-        case .resolvedGraphScopeMismatch:
-            return "SHACL data source resolver returned a different RDF graph scope"
+        case .resolvedDataSourceMismatch:
+            return "SHACL data source resolver returned a different data source"
+        case .resolvedDataGraphMismatch:
+            return "SHACL data source resolver returned a different RDF graph target"
         case .resolvedEntailmentMismatch:
             return "SHACL data source resolver returned a different entailment mode"
         case .missingOWLEntailment(let ontology):

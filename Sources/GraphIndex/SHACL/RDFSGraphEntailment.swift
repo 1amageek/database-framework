@@ -16,19 +16,19 @@ public struct RDFSGraphEntailment: SHACLEntailmentContext, Sendable {
 
     public static func resolve(
         executor: SPARQLQueryExecutor,
-        graphScope: SHACLDataGraphScope,
+        dataGraph: SHACLDataGraphTarget,
         transaction: any TransactionAccess,
         budget: SHACLValidationWorkBudget
     ) async throws -> Self {
-        let scanScope: RDFGraphScanScope
-        switch graphScope {
+        let graphTarget: RDFGraphScanTarget
+        switch dataGraph {
         case .defaultGraph:
-            scanScope = .defaultGraph
+            graphTarget = .defaultGraph
         case .named(let graph):
-            scanScope = .named(graph)
+            graphTarget = .named(graph)
         }
         let scan = try await executor.scanDatasetInTransaction(
-            graphScope: scanScope,
+            graphTarget: graphTarget,
             transaction: transaction,
             workMeter: budget.workMeter
         )
