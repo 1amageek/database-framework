@@ -57,13 +57,11 @@ let package = Package(
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
         .library(name: "BenchmarkFramework", targets: ["BenchmarkFramework"]),
-        .library(name: "DatabaseCLICore", targets: ["DatabaseCLICore"]),
         .library(name: "DatabaseServer", targets: ["DatabaseServer"]),
         .library(
             name: "DatabaseServerFoundation",
             targets: ["DatabaseServerFoundation"]
         ),
-        .executable(name: "database", targets: ["DatabaseCLI"]),
     ],
     traits: [
         .default(enabledTraits: ["FoundationDB", "AllRuntimeFeatures"]),
@@ -107,7 +105,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0807.0"
+            from: "26.0808.0"
         ),
         .package(
             url: "https://github.com/1amageek/swift-hnsw.git",
@@ -119,7 +117,6 @@ let package = Package(
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
-        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/1amageek/swift-testing-heartbeat.git", from: "0.1.0"),
     ],
     targets: [
@@ -539,22 +536,6 @@ let package = Package(
                 .product(name: "StorageKit", package: "storage-kit"),
             ]
         ),
-        // DatabaseCLICore - Embeddable CLI library with REPL, commands, and catalog access
-        .target(
-            name: "DatabaseCLICore",
-            dependencies: [
-                "DatabaseEngine",
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "FDBStorage", package: "storage-kit",
-                         condition: .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
-            ],
-            exclude: ["README.md"],
-            swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
-            ]
-        ),
         // DatabaseServer - Remote client endpoint library
         .target(
             name: "DatabaseServer",
@@ -601,22 +582,6 @@ let package = Package(
                     package: "database-types"
                 ),
             ]
-        ),
-        // DatabaseCLI - Standalone executable entry point
-        .executableTarget(
-            name: "DatabaseCLI",
-            dependencies: [
-                "DatabaseCLICore",
-                "DatabaseEngine",
-                .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "StorageKitSystemClock", package: "storage-kit"),
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-            ],
-            exclude: ["README.md"],
-            swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
-            ],
-            linkerSettings: foundationDBClientLinkerSettings
         ),
         // Test Support (shared test utilities)
         .target(
@@ -908,20 +873,6 @@ let package = Package(
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 "TestSupport",
-            ],
-            linkerSettings: foundationDBClientLinkerSettings
-        ),
-        // CLI tests
-        .testTarget(
-            name: "DatabaseCLITests",
-            dependencies: [
-                "DatabaseCLICore",
-                "Database",
-                "TestSupport",
-                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
-            ],
-            swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
             ],
             linkerSettings: foundationDBClientLinkerSettings
         ),

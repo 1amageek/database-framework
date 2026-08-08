@@ -214,7 +214,7 @@ or WASI.
         --traits FoundationDB,AllRuntimeFeatures \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3923 \
+        --expected-count 3910 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
@@ -246,7 +246,7 @@ For local testing, the repository includes an isolated cluster wrapper:
         --traits FoundationDB,AllRuntimeFeatures \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3923 \
+        --expected-count 3910 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
@@ -583,10 +583,21 @@ logical key/value model in their own tables and indexes.
 | ScalarIndex, VectorIndex, FullTextIndex, ... | individual index modules |
 | QueryAST | SQL/SPARQL parsing and serialization |
 | DatabaseServer | DatabaseWire/WebSocket server endpoint |
-| DatabaseCLICore | embeddable inspection and administration library |
 
 Import Database for the standard application path, or import individual
 products when compile time and dependency size matter.
+
+## Command-line client
+
+The authenticated command-line client is owned by the independent
+[`database-cli`](https://github.com/1amageek/database-cli) package. It reaches
+this framework through `DatabaseClient`, DatabaseWire, and
+`DatabaseServerRuntime`; it does not bypass runtime authorization or connect a
+`StorageEngine` directly. FoundationDB lifecycle and read-only diagnostics are
+isolated in that package's version-matched `database-fdb` companion.
+
+The former `DatabaseCLICore` library and `database` executable were removed
+from this package. No compatibility product or alias remains.
 
 ## Build and Test
 

@@ -102,14 +102,6 @@ swift build \
   -c release \
   -debug-info-format none
 
-swift build \
-  --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_static-linux-0.1.0 \
-  --triple aarch64-swift-linux-musl \
-  --product DatabaseCLICore \
-  --disable-default-traits \
-  --traits PostgreSQL \
-  -c release \
-  -debug-info-format none
 ~~~
 
 The Xcode harness keeps the source manifest unchanged, selects traits in an
@@ -121,20 +113,22 @@ successfully. Do not replace these invocations with a direct package-wide
 the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
-The release gates above were last executed against the published dependency
-graph on 2026-08-07: database-kit 26.0807.0, storage-kit 26.0807.0, and
-swift-hnsw 1.1.4. FoundationDB passed 3,923 tests, SQLite passed 101 tests, and
-PostgreSQL passed 71 tests with zero failures, skips, expected failures, or
-runtime warnings. Standard WASM, Embedded WASM, and the static
-`aarch64-swift-linux-musl` `DatabaseCLICore` product compiled and linked in
-release mode.
+The FoundationDB release gate was last executed against the published
+dependency graph on 2026-08-08: database-kit 26.0808.0, storage-kit 26.0807.0,
+and swift-hnsw 1.1.4. It passed 3,910 tests with zero failures, skips, expected
+failures, or runtime warnings. The SQLite and PostgreSQL gates last passed 101
+and 71 tests respectively on 2026-08-07 with the same storage-kit and
+swift-hnsw releases. Standard WASM and Embedded WASM last compiled and linked
+in release mode on 2026-08-07.
+
+Command-line portability and process verification belong to the independent
+[`database-cli`](https://github.com/1amageek/database-cli) package. This
+framework does not publish a CLI product or link a command-line executable to
+a storage backend.
 
 Release WASM builds disable debug information because reactor artifacts do not
 ship it and host-side `dsymutil` cannot reliably verify snapshot-built macro
-dependency objects. Compiler diagnostics remain enabled. The static Musl build
-compiles and links the Linux CLI/runtime boundary, including `DatabaseMath`,
-`DatabaseEngine`, and PostgreSQL storage dependencies; it is a portability
-gate, not a substitute for the real PostgreSQL integration suite.
+dependency objects. Compiler diagnostics remain enabled.
 
 Run PostgreSQL integration tests only when `POSTGRES_TEST_UNIX_SOCKET` or
 `POSTGRES_TEST_HOST` identifies an isolated test database. The Unix-socket

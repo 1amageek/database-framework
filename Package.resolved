@@ -1,13 +1,13 @@
 {
-  "originHash" : "390b82d50ecc57f913163b2247e2acbbcc8992cae269039fbfb391a455fe38e8",
+  "originHash" : "04531f0a52dfbb8ccdd4a451f98b562349fe18a653304d5e5959f982e017255c",
   "pins" : [
     {
       "identity" : "database-kit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-kit.git",
       "state" : {
-        "revision" : "e6eb3732e4aa1038a4f233abd064887bef85a748",
-        "version" : "26.807.0"
+        "revision" : "4d1d3359d6dd0b92287bb6f6f4646fa0492d2712",
+        "version" : "26.808.0"
       }
     },
     {
@@ -44,15 +44,6 @@
       "state" : {
         "revision" : "8ee5376c3df7526ed21921a3e3d418fc5150a51f",
         "version" : "26.807.0"
-      }
-    },
-    {
-      "identity" : "swift-argument-parser",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-argument-parser.git",
-      "state" : {
-        "revision" : "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b",
-        "version" : "1.7.1"
       }
     },
     {
