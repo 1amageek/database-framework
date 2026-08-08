@@ -26,7 +26,7 @@ import StorageKit
 /// - Insert: Set count to 0 (first version, no updates yet)
 /// - Update: Increment count by 1
 /// - Delete: Remove the count entry
-public struct CountUpdatesIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+public struct CountUpdatesIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     public let index: Index

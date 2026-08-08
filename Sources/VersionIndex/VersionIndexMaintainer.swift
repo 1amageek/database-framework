@@ -38,7 +38,7 @@ private enum VersionValueLayout {
 /// Key: [I]/Document_version/[uuid]/[versionstamp1] = [timestamp1][snapshot1]
 /// Key: [I]/Document_version/[uuid]/[versionstamp2] = [timestamp2][snapshot2]
 /// ```
-public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+public struct VersionIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     /// Index definition

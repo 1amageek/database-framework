@@ -287,7 +287,10 @@ struct DatabaseQueryContinuationEndpointTests {
             metadata: OperationRequestMetadata(),
             request: request
         )
-        let responseFrame = try await endpoint.execute(requestFrame)
+        let responseFrame = try await endpoint.execute(
+            requestFrame,
+            context: DatabaseRequestExecutionContext(authorization: .anonymous)
+        )
         let decoder = DatabaseWireDecoder()
         let header = try decoder.decodeResponseHeader(responseFrame)
         #expect(header.requestID == requestID)

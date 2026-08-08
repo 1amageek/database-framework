@@ -23,8 +23,8 @@ public enum FullTextReadExecutors {
         PolymorphicFullTextReadExecutor()
     }
 
-    public static func register<Model: Persistable>(
-        with definition: inout EntityRuntimeDefinition<Model>
+    public static func register(
+        with definition: inout EntityRuntimeDefinition
     ) throws(DatabaseRuntimeConfigurationError) {
         try definition.register(FullTextReadExecutor())
     }
@@ -42,12 +42,12 @@ private enum FullTextReadError: Error, Sendable {
 private struct FullTextReadExecutor: IndexReadExecutor {
     let kindIdentifier = "fulltext"
 
-    func executeRows<T: Persistable>(
+    func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
         index: IndexDescriptor,
         indexScan: IndexScanSource,
-        as type: T.Type,
+        entity: Schema.Entity,
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
@@ -65,22 +65,18 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             requested: options.consistency,
             default: .snapshot
         )
-        let queryContext = try context.indexQueryContext.withPartitions(partitions, for: T.self)
-        guard let fieldNumber = T.fieldNumber(for: fieldName) else {
+        guard index.kindIdentifier == kindIdentifier,
+              index.fieldNames.contains(fieldName),
+              entity.fieldMapByName[fieldName] != nil else {
             throw FullTextReadError.invalidParameter(
                 FullTextReadParameter.fieldName
             )
         }
-        var builder = FullTextQueryBuilder<T>(
-            queryContext: queryContext,
-            field: FieldIdentity(name: fieldName, number: fieldNumber),
-            selectedIndexName: index.name
+        try context.authorizeCanonicalListAccess(
+            entity: entity,
+            selectQuery: selectQuery
         )
-            .terms(terms, mode: matchMode)
-
-        if let limit {
-            builder = builder.limit(limit)
-        }
+        let configuration = try FullTextIndexConfiguration(metadata: index.kind)
 
         if includeFacets {
             let facetFields = try requireStringArray(FullTextReadParameter.facetFields, from: indexScan.parameters)
@@ -88,17 +84,18 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 FullTextReadParameter.facetLimit,
                 from: indexScan.parameters
             ) ?? 10
-            builder = builder.facets(
-                try facetFields.map { name in
-                    guard let number = T.fieldNumber(for: name) else {
-                        throw FullTextReadError.invalidParameter(name)
-                    }
-                    return FieldIdentity(name: name, number: number)
-                },
-                limit: facetLimit
-            )
-            let result = try await builder.executeFacetedDirect(
-                configuration: execution.transactionConfiguration
+            let result = try await executeFacetedSearch(
+                context: context,
+                entity: entity,
+                configuration: configuration,
+                terms: terms,
+                matchMode: matchMode,
+                limit: limit,
+                facetFields: facetFields,
+                facetLimit: facetLimit,
+                index: index,
+                partitions: partitions,
+                execution: execution
             )
             let rows = try result.items.map { try IndexReadRow.materializing($0) }
             return IndexReadResult(
@@ -115,9 +112,20 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             let b = indexScan.parameters[
                 FullTextReadParameter.bm25B
             ]?.float64Value ?? Double(BM25Parameters.default.b)
-            builder = builder.bm25(k1: Float(k1), b: Float(b))
-            let results = try await builder.executeScoredDirect(
-                configuration: execution.transactionConfiguration
+            let results = try await executeScoredSearch(
+                context: context,
+                entity: entity,
+                configuration: configuration,
+                terms: terms,
+                matchMode: matchMode,
+                limit: limit,
+                bm25Parameters: BM25Parameters(
+                    k1: Float(k1),
+                    b: Float(b)
+                ),
+                index: index,
+                partitions: partitions,
+                execution: execution
             )
             let rows = try results.map { result in
                 try IndexReadRow.materializing(
@@ -128,11 +136,246 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             return IndexReadResult(rows: rows, ordering: .orderedByIndex)
         }
 
-        let results = try await builder.executeDirect(
-            configuration: execution.transactionConfiguration
+        let results = try await executePlainSearch(
+            context: context,
+            entity: entity,
+            configuration: configuration,
+            terms: terms,
+            matchMode: matchMode,
+            limit: limit,
+            index: index,
+            partitions: partitions,
+            execution: execution
         )
         let rows = try results.map { try IndexReadRow.materializing($0) }
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
+    }
+
+    private func executePlainSearch(
+        context: DatabaseContext,
+        entity: Schema.Entity,
+        configuration: FullTextIndexConfiguration,
+        terms: [String],
+        matchMode: TextMatchMode,
+        limit: Int?,
+        index: IndexDescriptor,
+        partitions: FieldObject,
+        execution: CanonicalReadExecution
+    ) async throws -> [PersistedModel] {
+        let search = PolymorphicFullTextReadExecutor()
+        return try await context.indexQueryContext.withReadableIndex(
+            named: index.name,
+            kindIdentifier: kindIdentifier,
+            forEntityName: entity.name,
+            partitions: partitions,
+            configuration: execution.transactionConfiguration
+        ) { readableIndex, transaction in
+            guard let readableIndex else { return [] }
+            let identifiers: [Tuple]
+            if matchMode == .phrase {
+                identifiers = try await search.searchPhrase(
+                    configuration: configuration,
+                    terms: terms,
+                    indexSubspace: readableIndex.subspace,
+                    transaction: transaction
+                )
+            } else {
+                identifiers = try await search.searchFullText(
+                    terms: terms,
+                    matchMode: matchMode,
+                    configuration: configuration,
+                    indexSubspace: readableIndex.subspace,
+                    transaction: transaction
+                )
+            }
+            let limited = try limitIdentifiers(identifiers, limit: limit)
+            return try requireModels(
+                identifiers: limited,
+                fetched: try await context.fetchPersistedModelsPreservingOrder(
+                    entity: entity,
+                    primaryKeys: limited,
+                    partitions: partitions,
+                    transaction: transaction
+                )
+            )
+        }
+    }
+
+    private func executeScoredSearch(
+        context: DatabaseContext,
+        entity: Schema.Entity,
+        configuration: FullTextIndexConfiguration,
+        terms: [String],
+        matchMode: TextMatchMode,
+        limit: Int?,
+        bm25Parameters: BM25Parameters,
+        index: IndexDescriptor,
+        partitions: FieldObject,
+        execution: CanonicalReadExecution
+    ) async throws -> [(item: PersistedModel, score: Double)] {
+        let search = PolymorphicFullTextReadExecutor()
+        return try await context.indexQueryContext.withReadableIndex(
+            named: index.name,
+            kindIdentifier: kindIdentifier,
+            forEntityName: entity.name,
+            partitions: partitions,
+            configuration: execution.transactionConfiguration
+        ) { readableIndex, transaction in
+            guard let readableIndex else { return [] }
+            let scored = try await search.searchWithScores(
+                terms: terms,
+                matchMode: matchMode,
+                configuration: configuration,
+                bm25Params: bm25Parameters,
+                indexSubspace: readableIndex.subspace,
+                transaction: transaction,
+                limit: limit
+            )
+            let identifiers = scored.map(\.id)
+            let models = try requireModels(
+                identifiers: identifiers,
+                fetched: try await context.fetchPersistedModelsPreservingOrder(
+                    entity: entity,
+                    primaryKeys: identifiers,
+                    partitions: partitions,
+                    transaction: transaction
+                )
+            )
+            return zip(models, scored).map {
+                (item: $0.0, score: $0.1.score)
+            }
+        }
+    }
+
+    private func executeFacetedSearch(
+        context: DatabaseContext,
+        entity: Schema.Entity,
+        configuration: FullTextIndexConfiguration,
+        terms: [String],
+        matchMode: TextMatchMode,
+        limit: Int?,
+        facetFields: [String],
+        facetLimit: Int,
+        index: IndexDescriptor,
+        partitions: FieldObject,
+        execution: CanonicalReadExecution
+    ) async throws -> (
+        items: [PersistedModel],
+        facets: [String: [(value: String, count: Int64)]],
+        totalCount: Int
+    ) {
+        guard facetLimit >= 0 else {
+            throw FullTextReadError.invalidParameter(
+                FullTextReadParameter.facetLimit
+            )
+        }
+        let search = PolymorphicFullTextReadExecutor()
+        return try await context.indexQueryContext.withReadableIndex(
+            named: index.name,
+            kindIdentifier: kindIdentifier,
+            forEntityName: entity.name,
+            partitions: partitions,
+            configuration: execution.transactionConfiguration
+        ) { readableIndex, transaction in
+            guard let readableIndex else {
+                return (items: [], facets: [:], totalCount: 0)
+            }
+            let identifiers: [Tuple]
+            if matchMode == .phrase {
+                identifiers = try await search.searchPhrase(
+                    configuration: configuration,
+                    terms: terms,
+                    indexSubspace: readableIndex.subspace,
+                    transaction: transaction
+                )
+            } else {
+                identifiers = try await search.searchFullText(
+                    terms: terms,
+                    matchMode: matchMode,
+                    configuration: configuration,
+                    indexSubspace: readableIndex.subspace,
+                    transaction: transaction
+                )
+            }
+            let allModels = try requireModels(
+                identifiers: identifiers,
+                fetched: try await context.fetchPersistedModelsPreservingOrder(
+                    entity: entity,
+                    primaryKeys: identifiers,
+                    partitions: partitions,
+                    transaction: transaction
+                )
+            )
+            var facets: [String: [(value: String, count: Int64)]] = [:]
+            for fieldName in facetFields {
+                guard let field = entity.fieldMapByName[fieldName] else {
+                    throw FullTextReadError.invalidParameter(fieldName)
+                }
+                var counts: [String: Int64] = [:]
+                for model in allModels {
+                    for value in try FullTextFieldValueExtractor.strings(
+                        from: model,
+                        entity: entity.name,
+                        field: FieldIdentity(
+                            name: field.name,
+                            number: field.fieldNumber
+                        )
+                    ) where !value.isEmpty {
+                        counts[value, default: 0] += 1
+                    }
+                }
+                var buckets: [(value: String, count: Int64)] = counts.map {
+                    (value: $0.key, count: $0.value)
+                }
+                buckets.sort {
+                    $0.count == $1.count
+                        ? $0.value < $1.value
+                        : $0.count > $1.count
+                }
+                facets[fieldName] = Array(buckets.prefix(facetLimit))
+            }
+            return (
+                items: try limitIdentifiers(allModels, limit: limit),
+                facets: facets,
+                totalCount: allModels.count
+            )
+        }
+    }
+
+    private func requireModels(
+        identifiers: [Tuple],
+        fetched: [PersistedModel?]
+    ) throws -> [PersistedModel] {
+        guard identifiers.count == fetched.count else {
+            throw FullTextReadError.fetchedItemCountMismatch(
+                expected: identifiers.count,
+                actual: fetched.count
+            )
+        }
+        var models: [PersistedModel] = []
+        models.reserveCapacity(fetched.count)
+        for (identifier, model) in zip(identifiers, fetched) {
+            guard let model else {
+                throw FullTextReadError.missingFetchedEntity(
+                    identifier.pack()
+                )
+            }
+            models.append(model)
+        }
+        return models
+    }
+
+    private func limitIdentifiers<Value>(
+        _ values: [Value],
+        limit: Int?
+    ) throws -> [Value] {
+        guard let limit else { return values }
+        guard limit >= 0 else {
+            throw FullTextReadError.invalidParameter(
+                FullTextReadParameter.limit
+            )
+        }
+        return values.count > limit ? Array(values.prefix(limit)) : values
     }
 
     private func facetMetadata(
@@ -608,7 +851,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return entities
     }
 
-    private func searchPhrase(
+    fileprivate func searchPhrase(
         configuration: FullTextIndexConfiguration,
         terms: [String],
         indexSubspace: Subspace,
@@ -664,7 +907,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return matches
     }
 
-    private func searchWithScores(
+    fileprivate func searchWithScores(
         terms: [String],
         matchMode: TextMatchMode,
         configuration: FullTextIndexConfiguration,
@@ -829,7 +1072,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return false
     }
 
-    private func searchFullText(
+    fileprivate func searchFullText(
         terms: [String],
         matchMode: TextMatchMode,
         configuration: FullTextIndexConfiguration,

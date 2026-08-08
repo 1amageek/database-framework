@@ -20,7 +20,7 @@ import StorageKit
 /// Key: [indexSubspace][groupValue1][groupValue2]...
 /// Value: Int64 (8 bytes little-endian)
 /// ```
-public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintainer {
+public struct CountIndexMaintainer<Item: PersistedEntityValue>: CountAggregationMaintainer {
     // MARK: - Properties
 
     public let index: Index

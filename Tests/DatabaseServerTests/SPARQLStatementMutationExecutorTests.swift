@@ -1362,7 +1362,12 @@ struct SPARQLStatementMutationExecutorTests {
         )
         let response = try DatabaseWireDecoder().decodeResponse(
             DatabaseOperations.mutationExecute,
-            from: try await endpoint.execute(request),
+            from: try await endpoint.execute(
+                request,
+                context: DatabaseRequestExecutionContext(
+                    authorization: .anonymous
+                )
+            ),
             matching: requestID
         )
         guard case .success(let value) = response else {

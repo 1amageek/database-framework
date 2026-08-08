@@ -33,7 +33,7 @@ import StorageKit
 /// **Field Access**:
 /// Uses the shared aggregation extractor. The value is evaluated first for
 /// sparse semantics; nullable grouping fields are canonicalized as null keys.
-public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMaintainer {
+public struct CountNotNullIndexMaintainer<Item: PersistedEntityValue>: CountAggregationMaintainer {
     // MARK: - Properties
 
     public let index: Index

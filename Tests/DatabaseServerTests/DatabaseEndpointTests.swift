@@ -45,7 +45,10 @@ struct DatabaseEndpointTests {
             payload: EmptyOperationPayload()
         )
 
-        let responseBytes = try await endpoint.execute(request)
+        let responseBytes = try await endpoint.execute(
+            request,
+            context: DatabaseRequestExecutionContext(authorization: .anonymous)
+        )
         let header = try DatabaseWireDecoder().decodeResponseHeader(
             responseBytes
         )
@@ -95,7 +98,10 @@ struct DatabaseEndpointTests {
             payload: EmptyOperationPayload()
         )
 
-        _ = try await endpoint.execute(request)
+        _ = try await endpoint.execute(
+            request,
+            context: DatabaseRequestExecutionContext(authorization: .anonymous)
+        )
         let invocationCount = await middleware.invocationCount
         let traceID = await middleware.traceID
         let requestID = await middleware.requestID
@@ -128,7 +134,10 @@ struct DatabaseEndpointTests {
         )
 
         await #expect(throws: CancellationError.self) {
-            _ = try await endpoint.execute(request)
+            _ = try await endpoint.execute(
+                request,
+                context: DatabaseRequestExecutionContext(authorization: .anonymous)
+            )
         }
     }
 
@@ -141,7 +150,10 @@ struct DatabaseEndpointTests {
             payload: EmptyOperationPayload()
         )
 
-        let responseBytes = try await endpoint.execute(request)
+        let responseBytes = try await endpoint.execute(
+            request,
+            context: DatabaseRequestExecutionContext(authorization: .anonymous)
+        )
         let response = try DatabaseWireDecoder().decodeResponse(
             DatabaseOperations.schemaDescribe,
             from: responseBytes,
@@ -195,7 +207,10 @@ struct DatabaseEndpointTests {
             payload: EmptyOperationPayload()
         )
 
-        let responseBytes = try await endpoint.execute(request)
+        let responseBytes = try await endpoint.execute(
+            request,
+            context: DatabaseRequestExecutionContext(authorization: .anonymous)
+        )
         let decoded = try DatabaseWireDecoder(limits: limits).decodeResponse(
             DatabaseOperations.capabilitiesDescribe,
             from: responseBytes,
@@ -383,7 +398,10 @@ struct DatabaseEndpointTests {
             requestID: requestID,
             payload: EmptyOperationPayload()
         )
-        let responseBytes = try await endpoint.execute(request)
+        let responseBytes = try await endpoint.execute(
+            request,
+            context: DatabaseRequestExecutionContext(authorization: .anonymous)
+        )
         let header = try DatabaseWireDecoder().decodeResponseHeader(
             responseBytes
         )
@@ -419,7 +437,10 @@ struct DatabaseEndpointTests {
         endpoint: DatabaseEndpoint
     ) async {
         do {
-            _ = try await endpoint.execute(request)
+            _ = try await endpoint.execute(
+                request,
+                context: DatabaseRequestExecutionContext(authorization: .anonymous)
+            )
             Issue.record("Expected an invalid request frame error")
         } catch DatabaseEndpointError.invalidRequestFrame {
         } catch {

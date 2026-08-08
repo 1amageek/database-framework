@@ -27,7 +27,7 @@ The package separates application behavior from storage deployment:
             |
             v
     database-framework
-      DBContainer, Context, query planner, migrations, index maintainers
+      DBContainer, schema generations, query planner, migrations, indexes
             |
             v
     storage-kit
@@ -47,7 +47,8 @@ container owns.
 ### Responsibilities
 
 - DBContainer owns the schema, storage engine, directory resolution, and
-  index lifecycle.
+  index lifecycle. Online schema publication replaces one immutable runtime
+  generation; an in-flight operation retains its original generation.
 - DatabaseContext is the backend-neutral user-facing change-tracking context
   and application transaction entry point.
 - DatabaseEngine provides backend-neutral persistence, transaction
@@ -97,7 +98,7 @@ documented semantic mapping.
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0807.0"
+            from: "26.0809.0"
         )
     ]
 
@@ -111,7 +112,7 @@ The package that consumes database-framework selects that composition:
 
     .package(
         url: "https://github.com/1amageek/database-framework.git",
-        from: "26.0807.0",
+        from: "26.0809.0",
         traits: ["GraphIndexes"]
     )
 
@@ -494,6 +495,45 @@ Migration execution uses the same StorageEngine selected for the container.
 Backend-specific provisioning remains outside application migration code when
 the backend requires administrative setup, such as a DML-only Cloud SQL role.
 
+The framework supports two explicit composition models:
+
+| Model | Schema owner | Evolution contract |
+|---|---|---|
+| Compiled application | Swift application and `SchemaMigrationPlan` | Redeploy the application with its registered migration plan |
+| Schema-driven application | Durable schema catalog | `schemaExecute.plan` and compare-and-swap `schemaExecute.apply` |
+
+`SchemaDrivenDatabaseApplication` restores an empty database as schema version
+`0.0.0`, builds `PersistedModel` runtime registrations directly from canonical
+schema metadata, and advertises `schema.execute` version 1. It does not create a
+synthetic `Persistable` type. A typed application converts its model to
+`PersistedModel` once at the persistence boundary and uses the same canonical
+index core.
+
+```text
+DatabaseWire request
+        |
+        v
+DatabaseSchemaLease ── retains schema + runtime + authorization policy
+        |
+        v
+DBContainer / query / mutation / index execution
+
+schemaExecute.apply
+        -> validate target runtime and backend capabilities
+        -> commit catalog + fingerprint + generation + optional job atomically
+        -> publish the immutable generation
+        -> existing leases finish on the old generation
+```
+
+Schema apply requires the caller's expected fingerprint and an idempotency key.
+Compatible additions publish atomically. Added indexes over existing rows are
+kept non-readable and rebuilt by a persistent resumable job while mutations
+continue maintaining them. A schema-driven server rejects incompatible changes
+with a typed migration-required error; it never invents a data migration or
+silently substitutes an index implementation. Compiled applications continue
+to use their application-owned `SchemaMigrationPlan` through the maintenance
+operation family.
+
 ## Optional Features
 
 ### Graph and Ontology
@@ -512,6 +552,13 @@ DatabaseServer exposes a DBContainer to
 [database-client](https://github.com/1amageek/database-client) through the
 DatabaseWire protocol. The server layer is separate from the storage engine;
 it can host a container backed by any engine supported by the target.
+
+`DatabaseServerApplication` is the single host-independent composition
+contract. It produces a `DatabaseContainerDefinition` and the corresponding
+`DatabaseServerRuntimeConfiguration`. Native HTTP/WebSocket/stdio listeners
+belong to the independent
+[`database-server`](https://github.com/1amageek/database-server) package;
+Cloudflare lifecycle remains in `database-framework-cloudflare`.
 
 ### Cloudflare Durable Objects
 

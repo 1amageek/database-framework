@@ -748,6 +748,8 @@ public struct MigrationContext: Sendable {
         // `#Directory` even when V2 is also registered for the same entity name.
         let itemType = T.persistableType
         let container = self.container
+        let targetRuntime = container.runtimeConfiguration.entityRuntimes
+            .registration(named: itemType)
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -761,7 +763,8 @@ public struct MigrationContext: Sendable {
                         itemType: itemType,
                         storeInfo: info,
                         container: container,
-                        batchSize: batchSize
+                        batchSize: batchSize,
+                        targetRuntime: targetRuntime
                     )
                     var iterator = enumerator.makeStream().makeAsyncIterator()
                     while let item = try await iterator.next() {
@@ -1142,12 +1145,20 @@ public enum DatabaseRuntimeError: Error, CustomStringConvertible {
     let storeInfo: MigrationStoreInfo
     let container: DBContainer
     let batchSize: Int
+    let targetRuntime: EntityRuntimeRegistration?
 
-    init(itemType: String, storeInfo: MigrationStoreInfo, container: DBContainer, batchSize: Int) {
+    init(
+        itemType: String,
+        storeInfo: MigrationStoreInfo,
+        container: DBContainer,
+        batchSize: Int,
+        targetRuntime: EntityRuntimeRegistration?
+    ) {
         self.itemType = itemType
         self.storeInfo = storeInfo
         self.container = container
         self.batchSize = batchSize
+        self.targetRuntime = targetRuntime
     }
 
 	    func makeStream() -> AsyncThrowingStream<T, Error> {
@@ -1156,6 +1167,7 @@ public enum DatabaseRuntimeError: Error, CustomStringConvertible {
         let info = self.storeInfo
         let container = self.container
         let batchSize = self.batchSize
+        let targetRuntime = self.targetRuntime
 
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -1198,7 +1210,27 @@ public enum DatabaseRuntimeError: Error, CustomStringConvertible {
 	                                let item: T = try DataAccess.deserialize(value)
 	                                continuation.yield(item)
                             } catch {
-                                // Log decode error but continue processing
+                                // An interrupted or concurrent idempotent stage
+                                // can already have rewritten this key in the
+                                // target representation. Accept only bytes that
+                                // the registered target runtime fully decodes
+                                // and canonicalizes; malformed source data must
+                                // remain an explicit failure.
+                                if let targetRuntime {
+                                    do {
+                                        let model = try DataAccess
+                                            .deserializePersistedModel(
+                                                value,
+                                                expectedEntity: itemType
+                                            )
+                                        _ = try targetRuntime.canonicalized(model)
+                                        lastKey = key
+                                        continue
+                                    } catch {
+                                        // Preserve the source decode failure
+                                        // contract below.
+                                    }
+                                }
                                 continuation.finish(throwing: DatabaseRuntimeError.internalError(
                                     "Failed to decode a persisted \(itemType) item"
                                 ))

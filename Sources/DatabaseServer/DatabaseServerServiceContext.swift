@@ -8,6 +8,7 @@ public struct DatabaseServerServiceContext: Sendable {
     public let runtimeLimits: DatabaseRuntimeLimits
     public let wireLimits: DatabaseWireLimits
     public let clock: AnyDatabaseWallClock
+    public let hostServices: DatabaseServerHostServices
     #if DATABASE_SERVER_GRAPH_INDEXES
     public let graphOperationLimits: GraphOperationLimits
     #endif
@@ -18,7 +19,8 @@ public struct DatabaseServerServiceContext: Sendable {
         coordinator: DatabaseTransactionalOperationCoordinator,
         runtimeLimits: DatabaseRuntimeLimits,
         wireLimits: DatabaseWireLimits,
-        clock: AnyDatabaseWallClock
+        clock: AnyDatabaseWallClock,
+        hostServices: DatabaseServerHostServices = .none
     ) {
         self.container = container
         self.stateStore = stateStore
@@ -26,6 +28,7 @@ public struct DatabaseServerServiceContext: Sendable {
         self.runtimeLimits = runtimeLimits
         self.wireLimits = wireLimits
         self.clock = clock
+        self.hostServices = hostServices
         #if DATABASE_SERVER_GRAPH_INDEXES
         self.graphOperationLimits = .default
         #endif
@@ -39,7 +42,8 @@ public struct DatabaseServerServiceContext: Sendable {
         runtimeLimits: DatabaseRuntimeLimits,
         wireLimits: DatabaseWireLimits,
         clock: AnyDatabaseWallClock,
-        graphOperationLimits: GraphOperationLimits
+        graphOperationLimits: GraphOperationLimits,
+        hostServices: DatabaseServerHostServices = .none
     ) {
         self.container = container
         self.stateStore = stateStore
@@ -48,6 +52,34 @@ public struct DatabaseServerServiceContext: Sendable {
         self.wireLimits = wireLimits
         self.clock = clock
         self.graphOperationLimits = graphOperationLimits
+        self.hostServices = hostServices
     }
     #endif
+
+    public func withHostServices(
+        _ hostServices: DatabaseServerHostServices
+    ) -> DatabaseServerServiceContext {
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        DatabaseServerServiceContext(
+            container: container,
+            stateStore: stateStore,
+            coordinator: coordinator,
+            runtimeLimits: runtimeLimits,
+            wireLimits: wireLimits,
+            clock: clock,
+            graphOperationLimits: graphOperationLimits,
+            hostServices: hostServices
+        )
+        #else
+        DatabaseServerServiceContext(
+            container: container,
+            stateStore: stateStore,
+            coordinator: coordinator,
+            runtimeLimits: runtimeLimits,
+            wireLimits: wireLimits,
+            clock: clock,
+            hostServices: hostServices
+        )
+        #endif
+    }
 }

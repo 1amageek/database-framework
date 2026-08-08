@@ -40,7 +40,7 @@ import StorageKit
 /// )
 /// ```
 public struct RankIndexMaintainer<
-    Item: Persistable,
+    Item: PersistedEntityValue,
     Score: IndexNumericValue & TupleDecodable
 >: SubspaceIndexMaintainer {
     public let index: Index

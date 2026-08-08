@@ -9,6 +9,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
     public let wireLimits: DatabaseWireLimits
     public let errorMapper: AnyDatabaseErrorMapper
     public let clock: AnyDatabaseWallClock
+    public let schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory?
     #if DATABASE_SERVER_GRAPH_INDEXES
     public let graphOperationLimits: GraphOperationLimits
     #endif
@@ -19,6 +20,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
         serviceFactory: AnyDatabaseServerServiceFactory,
         admissionPolicy: AnyDatabaseOperationAdmissionPolicy,
         clock: Clock,
+        schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory? = nil,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
         runtimeLimits: DatabaseRuntimeLimits = .default,
         wireLimits: DatabaseWireLimits = .default,
@@ -35,6 +37,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
         self.wireLimits = wireLimits
         self.errorMapper = errorMapper
         self.clock = AnyDatabaseWallClock(clock)
+        self.schemaRuntimeFactory = schemaRuntimeFactory
         #if DATABASE_SERVER_GRAPH_INDEXES
         self.graphOperationLimits = .default
         #endif
@@ -47,6 +50,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
         admissionPolicy: AnyDatabaseOperationAdmissionPolicy,
         clock: Clock,
         graphOperationLimits: GraphOperationLimits,
+        schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory? = nil,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
         runtimeLimits: DatabaseRuntimeLimits = .default,
         wireLimits: DatabaseWireLimits = .default,
@@ -63,6 +67,7 @@ public final class DatabaseServerRuntimeConfiguration: Sendable {
         self.wireLimits = wireLimits
         self.errorMapper = errorMapper
         self.clock = AnyDatabaseWallClock(clock)
+        self.schemaRuntimeFactory = schemaRuntimeFactory
         self.graphOperationLimits = graphOperationLimits
     }
     #endif

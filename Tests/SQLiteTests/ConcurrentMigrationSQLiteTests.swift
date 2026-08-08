@@ -219,5 +219,191 @@ struct ConcurrentMigrationSQLiteTests {
             "user3@example.com", "user4@example.com"
         ])
     }
+
+    @Test("Interrupted migration skips rows already encoded for the target")
+    func interruptedMigrationResumesPastTargetRows() async throws {
+        let database = try SQLiteTestDatabase(
+            prefix: "concurrent-migration-partial"
+        )
+        defer { database.remove() }
+        await concurrentMigrationCounter.reset()
+
+        let initialContainer = try await DBContainer.open(
+            for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SQLiteConcurrentMigrationUserV1.self
+                    ),
+                ]
+            ),
+            security: .disabled
+        )
+        defer { await initialContainer.shutdown() }
+        let initialContext = initialContainer.newContext()
+        for index in 0..<2 {
+            var user = SQLiteConcurrentMigrationUserV1(
+                name: "User\(index)",
+                email: "user\(index)@example.com"
+            )
+            user.id = "sqlite-partial-user-\(index)"
+            try initialContext.insert(user)
+        }
+        try await initialContext.save()
+        try await initialContainer.installSchemaSnapshot(
+            for: Schema.Version(1, 0, 0)
+        )
+
+        let subspace = try await initialContainer.resolveDirectory(
+            for: SQLiteConcurrentMigrationUserV1.self
+        )
+        var alreadyMigrated = SQLiteConcurrentMigrationUserV2(
+            fullName: "User0",
+            email: "user0@example.com"
+        )
+        alreadyMigrated.id = "sqlite-partial-user-0"
+        let alreadyMigratedKey = subspace
+            .subspace(SubspaceKey.items)
+            .subspace(SQLiteConcurrentMigrationUserV1.persistableType)
+            .pack(try alreadyMigrated.persistableIdentifierTuple())
+        let alreadyMigratedBytes = try DataAccess.serialize(alreadyMigrated)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
+        try await initialContainer.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: initialContainer.monotonicClock
+        ) { transaction in
+            let storage = initialContainer.itemStorageFactory.make(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            try await storage.write(alreadyMigratedBytes, for: alreadyMigratedKey)
+        }
+        await initialContainer.shutdown()
+
+        let migratedContainer = try await DBContainer.open(
+            for: SQLiteConcurrentMigrationSchemaV2.self,
+            migrationPlan: SQLiteConcurrentMigrationPlan.self,
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SQLiteConcurrentMigrationUserV2.self
+                    ),
+                ]
+            ),
+            security: .disabled
+        )
+        defer { await migratedContainer.shutdown() }
+
+        try await migratedContainer.migrateIfNeeded()
+        let users = try await migratedContainer.newContext()
+            .fetch(SQLiteConcurrentMigrationUserV2.self)
+            .orderBy(SQLiteConcurrentMigrationUserV2.fields.fullName)
+            .execute()
+
+        #expect(users.map(\.fullName) == ["User0", "User1"])
+        #expect(
+            try await migratedContainer.getCurrentSchemaVersion()
+                == Schema.Version(2, 0, 0)
+        )
+    }
+
+    @Test("Migration never treats malformed source bytes as target data")
+    func malformedSourceDataFailsMigration() async throws {
+        let database = try SQLiteTestDatabase(
+            prefix: "concurrent-migration-corruption"
+        )
+        defer { database.remove() }
+
+        let initialContainer = try await DBContainer.open(
+            for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SQLiteConcurrentMigrationUserV1.self
+                    ),
+                ]
+            ),
+            security: .disabled
+        )
+        defer { await initialContainer.shutdown() }
+        let initialContext = initialContainer.newContext()
+        var user = SQLiteConcurrentMigrationUserV1(
+            name: "Corrupt",
+            email: "corrupt@example.com"
+        )
+        user.id = "sqlite-corrupt-migration-user"
+        try initialContext.insert(user)
+        try await initialContext.save()
+        try await initialContainer.installSchemaSnapshot(
+            for: Schema.Version(1, 0, 0)
+        )
+
+        let subspace = try await initialContainer.resolveDirectory(
+            for: SQLiteConcurrentMigrationUserV1.self
+        )
+        let itemKey = subspace
+            .subspace(SubspaceKey.items)
+            .subspace(SQLiteConcurrentMigrationUserV1.persistableType)
+            .pack(try user.persistableIdentifierTuple())
+        let malformedBytes = ByteString([0xFF])
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
+        try await initialContainer.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: initialContainer.monotonicClock
+        ) { transaction in
+            let storage = initialContainer.itemStorageFactory.make(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            try await storage.write(malformedBytes, for: itemKey)
+        }
+        await initialContainer.shutdown()
+
+        let migratedContainer = try await DBContainer.open(
+            for: SQLiteConcurrentMigrationSchemaV2.self,
+            migrationPlan: SQLiteConcurrentMigrationPlan.self,
+            configuration: .file(database.path),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SQLiteConcurrentMigrationUserV2.self
+                    ),
+                ]
+            ),
+            security: .disabled
+        )
+        defer { await migratedContainer.shutdown() }
+
+        do {
+            try await migratedContainer.migrateIfNeeded()
+            Issue.record("Expected malformed persisted data to fail migration")
+        } catch let error as DatabaseRuntimeError {
+            guard case .internalError(let message) = error else {
+                Issue.record("Unexpected migration error: \(error)")
+                return
+            }
+            #expect(message.contains("Failed to decode a persisted"))
+        }
+
+        #expect(
+            try await migratedContainer.getCurrentSchemaVersion()
+                == Schema.Version(1, 0, 0)
+        )
+        let persistedPayload = try await migratedContainer.transactionExecutor
+            .withTransaction(
+                configuration: .readOnly,
+                clock: migratedContainer.monotonicClock
+            ) { transaction in
+                let storage = migratedContainer.itemStorageFactory.make(
+                    transaction: transaction,
+                    blobsSubspace: blobsSubspace
+                )
+                return try await storage.read(for: itemKey, snapshot: true)
+            }
+        #expect(persistedPayload == malformedBytes)
+    }
 }
 #endif

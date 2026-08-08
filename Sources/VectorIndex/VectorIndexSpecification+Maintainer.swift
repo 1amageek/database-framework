@@ -3,7 +3,7 @@ import DatabaseEngine
 import StorageKit
 
 extension VectorIndexSpecification {
-    func makeIndexMaintainer<Item: Persistable>(
+    func makeIndexMaintainer<Item: PersistedEntityValue>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,

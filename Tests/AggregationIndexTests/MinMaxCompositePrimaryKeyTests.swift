@@ -138,9 +138,9 @@ struct MinMaxCompositePrimaryKeyTests {
 
         try await database.withTransaction { transaction in
             for order in orders {
-                try await maintainer.updateIndex(
-                    oldItem: nil as MultiTenantOrder?,
-                    newItem: order,
+                try await maintainer.scanItem(
+                    order,
+                    id: try order.persistableIdentifierTuple(),
                     transaction: transaction
                 )
             }
@@ -223,9 +223,9 @@ struct MinMaxCompositePrimaryKeyTests {
 
         try await database.withTransaction { transaction in
             for order in orders {
-                try await maintainer.updateIndex(
-                    oldItem: nil as MultiTenantOrder?,
-                    newItem: order,
+                try await maintainer.scanItem(
+                    order,
+                    id: try order.persistableIdentifierTuple(),
                     transaction: transaction
                 )
             }

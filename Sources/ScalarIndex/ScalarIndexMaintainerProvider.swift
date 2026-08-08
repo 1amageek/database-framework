@@ -17,7 +17,7 @@ public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
 
     public init() {}
 
-    public func makeIndexMaintainer<Item: Persistable>(
+    public func makeIndexMaintainer<Item: PersistedEntityValue>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
@@ -34,7 +34,7 @@ public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
         )
     }
 
-    public func makeIndexUniquenessMaintainer<Item: Persistable>(
+    public func makeIndexUniquenessMaintainer<Item: PersistedEntityValue>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,

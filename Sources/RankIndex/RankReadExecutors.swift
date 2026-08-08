@@ -22,8 +22,8 @@ public enum RankReadExecutors {
         PolymorphicRankReadExecutor()
     }
 
-    public static func register<Model: Persistable>(
-        with definition: inout EntityRuntimeDefinition<Model>
+    public static func register(
+        with definition: inout EntityRuntimeDefinition
     ) throws(DatabaseRuntimeConfigurationError) {
         try definition.register(RankReadExecutor())
     }
@@ -53,12 +53,12 @@ private func validatePercentile(_ value: Double) throws {
 private struct RankReadExecutor: IndexReadExecutor {
     let kindIdentifier = "rank"
 
-    func executeRows<T: Persistable>(
+    func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
         index: IndexDescriptor,
         indexScan: IndexScanSource,
-        as type: T.Type,
+        entity: Schema.Entity,
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
@@ -71,13 +71,64 @@ private struct RankReadExecutor: IndexReadExecutor {
             requested: options.consistency,
             default: .snapshot
         )
-        let queryContext = try context.indexQueryContext.withPartitions(partitions, for: T.self)
-        var builder = RankQueryBuilder<T>(
-            queryContext: queryContext,
-            fieldName: fieldName,
-            selectedIndexName: index.name
+        guard index.kindIdentifier == kindIdentifier,
+              index.fieldNames == [fieldName] else {
+            throw RankReadError.invalidParameter(RankReadParameter.fieldName)
+        }
+        try context.authorizeCanonicalListAccess(
+            entity: entity,
+            selectQuery: selectQuery
         )
+        let results = try await context.indexQueryContext.withReadableIndex(
+            named: index.name,
+            kindIdentifier: kindIdentifier,
+            forEntityName: entity.name,
+            partitions: partitions,
+            configuration: execution.transactionConfiguration
+        ) { readableIndex, transaction -> [(item: PersistedModel, rank: Int)] in
+            guard let readableIndex else { return [] }
+            let rankedKeys = try await scanRanked(
+                indexSubspace: readableIndex.subspace,
+                transaction: transaction,
+                parameters: parameters
+            )
+            let fetched = try await context.fetchPersistedModelsPreservingOrder(
+                entity: entity,
+                primaryKeys: rankedKeys.map(\.primaryKey),
+                partitions: partitions,
+                transaction: transaction
+            )
+            var results: [(item: PersistedModel, rank: Int)] = []
+            results.reserveCapacity(fetched.count)
+            for (rankedKey, item) in zip(rankedKeys, fetched) {
+                guard let item else {
+                    throw RankReadError.missingFetchedEntity(
+                        primaryKey: rankedKey.primaryKey.pack()
+                    )
+                }
+                results.append((item, rankedKey.rank))
+            }
+            return results
+        }
+        let rows = try results.map { result in
+            try IndexReadRow.materializing(
+                result.item,
+                annotations: ["rank": .int64(Int64(result.rank))]
+            )
+        }
+        return IndexReadResult(rows: rows, ordering: .orderedByIndex)
+    }
 
+    private func scanRanked(
+        indexSubspace: Subspace,
+        transaction: any TransactionAccess,
+        parameters: IndexReadParameters
+    ) async throws -> [(primaryKey: Tuple, rank: Int)] {
+        let scoresSubspace = indexSubspace.subspace("scores")
+        let scanner = RankScanner(
+            scoresSubspace: scoresSubspace,
+            transaction: transaction
+        )
         let mode = try parameters.requireString(named: RankReadParameter.mode)
         switch mode {
         case RankReadParameter.topMode:
@@ -85,13 +136,28 @@ private struct RankReadExecutor: IndexReadExecutor {
                 named: RankReadParameter.count
             )
             try validateRankCount(count)
-            builder = builder.top(count)
+            return try await scanner.top(k: count).enumerated().map {
+                (primaryKey: $0.element.primaryKey, rank: $0.offset)
+            }
         case RankReadParameter.bottomMode:
             let count = try parameters.requireInteger(
                 named: RankReadParameter.count
             )
             try validateRankCount(count)
-            builder = builder.bottom(count)
+            let entries = try await scanner.bottom(k: count)
+            let countKey = indexSubspace.pack(Tuple("_count"))
+            let countBytes = try await transaction.getValue(
+                for: countKey,
+                snapshot: true
+            )
+            let totalCount = try countBytes.map(RankCounterCodec.decodeInt) ?? 0
+            let startRank = try RankScanner.bottomStartPosition(
+                totalCount: totalCount,
+                returnedCount: entries.count
+            )
+            return entries.enumerated().map {
+                (primaryKey: $0.element.primaryKey, rank: startRank - $0.offset)
+            }
         case RankReadParameter.rangeMode:
             let from = try parameters.requireInteger(
                 named: RankReadParameter.from
@@ -100,28 +166,33 @@ private struct RankReadExecutor: IndexReadExecutor {
                 named: RankReadParameter.to
             )
             try validateRankRange(from: from, to: to)
-            builder = builder.range(from: from, to: to)
+            return try await scanner.rangeDescending(
+                from: from,
+                to: to
+            ).enumerated().map {
+                (primaryKey: $0.element.primaryKey, rank: from + $0.offset)
+            }
         case RankReadParameter.percentileMode:
             let percentile = try parameters.requireFloatingPoint(
                 named: RankReadParameter.percentile
             )
             try validatePercentile(percentile)
-            builder = builder.percentile(percentile)
+            let countKey = indexSubspace.pack(Tuple("_count"))
+            let countBytes = try await transaction.getValue(
+                for: countKey,
+                snapshot: true
+            )
+            let totalCount = try countBytes.map(RankCounterCodec.decodeInt) ?? 0
+            guard totalCount > 0 else { return [] }
+            let targetRank = Int(Double(totalCount) * (1.0 - percentile))
+            let safeRank = max(0, min(targetRank, totalCount - 1))
+            guard let entry = try await scanner.nthFromTop(safeRank) else {
+                throw RankReadError.missingRankEntry(rank: safeRank)
+            }
+            return [(primaryKey: entry.primaryKey, rank: safeRank)]
         default:
             throw RankReadError.invalidParameter(RankReadParameter.mode)
         }
-
-        let results = try await builder.executeDirect(
-            configuration: execution.transactionConfiguration
-        )
-
-        let rows = try results.map { result in
-            try IndexReadRow.materializing(
-                result.item,
-                annotations: ["rank": .int64(Int64(result.rank))]
-            )
-        }
-        return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 }
 

@@ -11,12 +11,12 @@ public protocol IndexReadExecutor: Sendable {
     /// responsible only for producing the candidate rows ordered in index-native
     /// form (e.g. distance ascending, rank descending) together with any
     /// per-row annotations (`distance`, `score`, `rank`, …).
-    func executeRows<T: Persistable>(
+    func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
         index: IndexDescriptor,
         indexScan: IndexScanSource,
-        as type: T.Type,
+        entity: Schema.Entity,
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult

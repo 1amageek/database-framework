@@ -47,14 +47,26 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             container: container,
             subspace: target.subspace
         )
+        let persistedState = try await lifecycleStore.persistedState(
+            of: index,
+            transaction: transaction
+        )
+        let effectiveState: IndexState
+        if let persistedState {
+            effectiveState = persistedState
+        } else {
+            let pending = try await container.pendingSchemaIndexBuilds(
+                entity: entity,
+                indexes: [index],
+                transaction: transaction
+            )
+            effectiveState = pending.contains(index) ? .writeOnly : .disabled
+        }
         return DatabaseIndexMaintenanceStatus(
             entity: entity,
             index: index,
             partitions: target.partitions,
-            indexState: try await lifecycleStore.state(
-                of: index,
-                transaction: transaction
-            ),
+            indexState: effectiveState,
             rebuildState: try await loadRebuildState(
                 key: rebuildStateKey(target: target),
                 entity: entity,

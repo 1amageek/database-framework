@@ -68,7 +68,7 @@ public let fullTextMaxTermBytes: Int = 8000
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression

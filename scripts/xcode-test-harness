@@ -506,6 +506,18 @@ test_arguments=(
   -resultBundlePath "$test_result"
   -enableCodeCoverage NO
 )
+if [[ -n "${FDB_CLUSTER_FILE:-}" \
+    || -n "${POSTGRES_TEST_UNIX_SOCKET:-}" \
+    || -n "${POSTGRES_TEST_HOST:-}" ]]; then
+  # Scenario actors serialize access only within one test process. Xcode test
+  # bundle parallelism would create multiple coordinators against the same
+  # isolated service and invalidate transaction timeout/isolation evidence.
+  # Compilation and Swift Testing within each bundle remain parallel.
+  test_arguments+=(
+    -parallel-testing-enabled NO
+    -maximum-parallel-testing-workers 1
+  )
+fi
 if (( ${#ONLY_TESTING[@]} > 0 )); then
   for identifier in "${ONLY_TESTING[@]}"; do
     test_arguments+=("-only-testing:$identifier")

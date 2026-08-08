@@ -1,7 +1,9 @@
 @_spi(DatabaseServer) import DatabaseWire
 
 enum DatabaseRuntimeCapabilityCatalog {
-    static let operations: [DatabaseOperationIdentifier] = {
+    static func operations(
+        includesSchemaExecution: Bool
+    ) -> [DatabaseOperationIdentifier] {
         var operations: [DatabaseOperationIdentifier] = [
             .capabilitiesDescribe,
             .schemaDescribe,
@@ -14,6 +16,9 @@ enum DatabaseRuntimeCapabilityCatalog {
             .jobResult,
             .jobCancel,
         ]
+        if includesSchemaExecution {
+            operations.append(.schemaExecute)
+        }
         #if DATABASE_SERVER_GRAPH_INDEXES
         operations.append(contentsOf: [
             .graphAlgorithm,
@@ -22,13 +27,17 @@ enum DatabaseRuntimeCapabilityCatalog {
         ])
         #endif
         return operations.sorted { $0.rawValue < $1.rawValue }
-    }()
+    }
 
-    static let features = operations.map {
+    static func features(
+        includesSchemaExecution: Bool
+    ) -> [CapabilitiesDescribeOperation.Feature] {
+        operations(includesSchemaExecution: includesSchemaExecution).map {
         CapabilitiesDescribeOperation.Feature(
             identifier: identifier(for: $0),
             version: 1
         )
+        }
     }
 
     private static func identifier(
@@ -39,6 +48,8 @@ enum DatabaseRuntimeCapabilityCatalog {
             "capabilities.describe"
         case .schemaDescribe:
             "schema.describe"
+        case .schemaExecute:
+            "schema.execute"
         case .queryExecute:
             "query.execute"
         case .mutationExecute:

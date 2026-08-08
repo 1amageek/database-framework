@@ -105,7 +105,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0808.0"
+            from: "26.0809.4"
         ),
         .package(
             url: "https://github.com/1amageek/swift-hnsw.git",
@@ -980,6 +980,8 @@ let package = Package(
             dependencies: [
                 "Database",
                 "DatabaseRuntime",
+                "DatabaseServer",
+                "DatabaseServerFoundation",
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(
                     name: "DatabaseKitFoundation",

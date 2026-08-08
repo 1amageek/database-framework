@@ -33,7 +33,12 @@
   warnings, and internal compiler, macro-plugin, or profiler errors.
 - The harness may skip Xcode's interactive macro approval only after verifying
   that every existing dependency pin, including macro packages, is unchanged.
-- The strict backend contracts are 3,910 FoundationDB tests, 101 SQLite tests,
+- When FoundationDB or PostgreSQL service variables are present, the harness
+  disables Xcode test-bundle parallelism. Scenario actors coordinate suites
+  only inside one test process, so separate bundles must not concurrently
+  share the same disposable service. Target compilation and Swift Testing
+  inside each bundle retain their normal parallelism.
+- The strict backend contracts are 3,926 FoundationDB tests, 111 SQLite tests,
   and 71 PostgreSQL tests. PostgreSQL tests require an isolated real server.
 - FoundationDB verification requires the C SDK header and client library under
   `/usr/local/include` and `/usr/local/lib`, or explicit

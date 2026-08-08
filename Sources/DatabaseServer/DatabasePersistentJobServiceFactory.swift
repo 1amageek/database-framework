@@ -2,19 +2,16 @@ public final class DatabasePersistentJobServiceFactory:
     DatabaseJobServiceFactory,
     Sendable {
     private let registry: DatabaseResumableOperationRegistry
-    private let scheduler: AnyDatabaseJobScheduler
     private let identifierGenerator: AnyDatabaseUUIDGenerator
     private let errorMapper: AnyDatabaseErrorMapper
     private let configuration: DatabaseJobRuntimeConfiguration
     private let storageLimits: DatabasePersistentJobStorageLimits
 
     public init<
-        Scheduler: DatabaseJobScheduler,
         IdentifierGenerator: DatabaseUUIDGenerator,
         ErrorMapper: DatabaseErrorMapper
     >(
         registry: DatabaseResumableOperationRegistry,
-        scheduler: Scheduler,
         identifierGenerator: IdentifierGenerator,
         errorMapper: ErrorMapper,
         storageLimits: DatabasePersistentJobStorageLimits,
@@ -23,7 +20,6 @@ public final class DatabasePersistentJobServiceFactory:
         try configuration.validate()
         try storageLimits.validate()
         self.registry = registry
-        self.scheduler = AnyDatabaseJobScheduler(scheduler)
         self.identifierGenerator = AnyDatabaseUUIDGenerator(identifierGenerator)
         self.errorMapper = AnyDatabaseErrorMapper(errorMapper)
         self.configuration = configuration
@@ -31,18 +27,15 @@ public final class DatabasePersistentJobServiceFactory:
     }
 
     public convenience init<
-        Scheduler: DatabaseJobScheduler,
         IdentifierGenerator: DatabaseUUIDGenerator
     >(
         registry: DatabaseResumableOperationRegistry,
-        scheduler: Scheduler,
         identifierGenerator: IdentifierGenerator,
         storageLimits: DatabasePersistentJobStorageLimits,
         configuration: DatabaseJobRuntimeConfiguration = .init()
     ) throws {
         try self.init(
             registry: registry,
-            scheduler: scheduler,
             identifierGenerator: identifierGenerator,
             errorMapper: CanonicalDatabaseErrorMapper(),
             storageLimits: storageLimits,
@@ -53,6 +46,9 @@ public final class DatabasePersistentJobServiceFactory:
     public func makeJobService(
         context: DatabaseServerServiceContext
     ) async throws -> AnyDatabaseJobService {
+        guard let scheduler = context.hostServices.jobScheduler else {
+            throw DatabaseServerHostServiceError.missingJobScheduler
+        }
         let store = try await DatabasePersistentJobStore(
             container: context.container,
             wireLimits: context.wireLimits,

@@ -2,9 +2,7 @@ import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
-private protocol EntityIndexProvider<Model>: Sendable {
-    associatedtype Model: Persistable
-
+private protocol EntityIndexProvider: Sendable {
     var kindIdentifier: String { get }
     var runtimeRequirements: IndexRuntimeRequirements { get }
     var supportsUniquenessConstraints: Bool { get }
@@ -15,18 +13,17 @@ private protocol EntityIndexProvider<Model>: Sendable {
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
-    ) throws -> any IndexMaintainer<Model>
+    ) throws -> any IndexMaintainer<PersistedModel>
 
     func makeUniquenessMaintainer(
         index: Index,
         subspace: Subspace,
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration]
-    ) throws -> any IndexUniquenessMaintainer<Model>
+    ) throws -> any IndexUniquenessMaintainer<PersistedModel>
 }
 
 private struct ModelIndependentEntityIndexProvider<
-    Model: Persistable,
     Provider: IndexMaintainerProvider
 >: EntityIndexProvider {
     let provider: Provider
@@ -45,7 +42,7 @@ private struct ModelIndependentEntityIndexProvider<
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
-    ) throws -> any IndexMaintainer<Model> {
+    ) throws -> any IndexMaintainer<PersistedModel> {
         try provider.makeIndexMaintainer(
             index: index,
             subspace: subspace,
@@ -60,7 +57,7 @@ private struct ModelIndependentEntityIndexProvider<
         subspace: Subspace,
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration]
-    ) throws -> any IndexUniquenessMaintainer<Model> {
+    ) throws -> any IndexUniquenessMaintainer<PersistedModel> {
         try provider.makeIndexUniquenessMaintainer(
             index: index,
             subspace: subspace,
@@ -70,11 +67,9 @@ private struct ModelIndependentEntityIndexProvider<
     }
 }
 
-private struct ModelSpecificEntityIndexProvider<
-    Provider: EntityIndexMaintainerProvider
+private struct CanonicalEntityIndexProvider<
+    Provider: CanonicalEntityIndexMaintainerProvider
 >: EntityIndexProvider {
-    typealias Model = Provider.Model
-
     let provider: Provider
 
     var kindIdentifier: String { provider.kindIdentifier }
@@ -91,7 +86,7 @@ private struct ModelSpecificEntityIndexProvider<
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
-    ) throws -> any IndexMaintainer<Model> {
+    ) throws -> any IndexMaintainer<PersistedModel> {
         try provider.makeIndexMaintainer(
             index: index,
             subspace: subspace,
@@ -106,7 +101,7 @@ private struct ModelSpecificEntityIndexProvider<
         subspace: Subspace,
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration]
-    ) throws -> any IndexUniquenessMaintainer<Model> {
+    ) throws -> any IndexUniquenessMaintainer<PersistedModel> {
         try provider.makeIndexUniquenessMaintainer(
             index: index,
             subspace: subspace,
@@ -120,7 +115,7 @@ private struct EntityIndexProviderDescriptor: Sendable {
     let runtimeRequirements: IndexRuntimeRequirements
     let supportsUniquenessConstraints: Bool
 
-    init<Model: Persistable>(_ provider: any EntityIndexProvider<Model>) {
+    init(_ provider: any EntityIndexProvider) {
         self.runtimeRequirements = provider.runtimeRequirements
         self.supportsUniquenessConstraints = provider.supportsUniquenessConstraints
     }
@@ -140,11 +135,15 @@ struct EntityTableRows: Sendable {
     let offsetPushed: Bool
 }
 
-public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
+public struct EntityRuntimeDefinition: Sendable {
     public let entity: Schema.Entity
 
     private var indexReaders: [String: IndexReader]
-    private var indexProviders: [String: any EntityIndexProvider<Model>]
+    private var indexProviders: [String: any EntityIndexProvider]
+    private let canonicalizeModel: EntityRuntimeRegistration.CanonicalizeModel
+    private let makePersistedModel: EntityRuntimeRegistration.MakePersistedModel
+    private let resolveIdentity: EntityRuntimeRegistration.ResolveIdentity
+    private let fetchTableRows: EntityRuntimeRegistration.FetchTableRows
 
     fileprivate typealias IndexReader = @Sendable (
         _ context: DatabaseContext,
@@ -155,16 +154,104 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
         _ partitions: FieldObject
     ) async throws -> IndexReadResult
 
-    public init(
+    public init<Model: Persistable>(
         _ model: Model.Type,
         including additionalIndexes: [IndexDescriptor] = []
     ) throws(SchemaEntityError) {
-        self.entity = try Schema.Entity(
+        let entity = try Schema.Entity(
             from: model,
             including: additionalIndexes
         )
+        let compiledIndexDescriptors = entity.indexDescriptors
+        self.entity = entity
         self.indexReaders = [:]
         self.indexProviders = [:]
+        self.canonicalizeModel = {
+            try PersistedModel($0.decode(as: Model.self))
+        }
+        self.makePersistedModel = {
+            try PersistedModel(Model.decodePersistedObject($0))
+        }
+        self.resolveIdentity = {
+            try EntityReferenceEncoder.encode($0.decode(as: Model.self))
+        }
+        self.fetchTableRows = {
+            context,
+            sourceName,
+            selectQuery,
+            options,
+            transaction in
+            let plan = try SelectQueryPlanner.plan(
+                selectQuery,
+                as: Model.self,
+                indexDescriptors: compiledIndexDescriptors,
+                options: options
+            )
+            let items: [Model]
+            if let transaction {
+                items = try await context.fetch(
+                    plan.typedQuery,
+                    transaction: transaction
+                )
+            } else {
+                items = try await context.fetch(plan.typedQuery)
+            }
+            let rows = try items.map { item -> CanonicalSourceRow in
+                try options.workMeter.consume(at: .resultMaterialization)
+                let row = try QueryRowCodec.encode(item)
+                return CanonicalSourceRow.fromBaseFields(
+                    row.fields,
+                    sourceName: sourceName,
+                    annotations: row.annotations,
+                    version: row.version
+                )
+            }
+            return EntityTableRows(
+                rows: rows,
+                residualFilter: plan.residualFilter,
+                residualOrderBy: plan.residualOrderBy,
+                limitPushed: plan.limitPushed,
+                offsetPushed: plan.offsetPushed
+            )
+        }
+    }
+
+    /// Builds the canonical runtime for an entity loaded from a schema
+    /// manifest. No synthetic `Persistable` type is introduced.
+    public init(schemaDriven entity: Schema.Entity) {
+        self.entity = entity
+        self.indexReaders = [:]
+        self.indexProviders = [:]
+        self.canonicalizeModel = { model in
+            try Self.canonicalModel(model, entity: entity)
+        }
+        self.makePersistedModel = { object in
+            try Self.canonicalModel(
+                try Self.persistedModel(from: object, entity: entity),
+                entity: entity
+            )
+        }
+        self.resolveIdentity = { model in
+            try Self.identity(
+                for: try Self.canonicalModel(model, entity: entity),
+                entity: entity
+            )
+        }
+        self.fetchTableRows = {
+            context,
+            sourceName,
+            selectQuery,
+            options,
+            transaction in
+            try await Self.fetchSchemaDrivenRows(
+                entity: entity,
+                context: context,
+                sourceName: sourceName,
+                selectQuery: selectQuery,
+                options: options,
+                transaction: transaction
+            )
+        }
     }
 
     public mutating func register<Executor: IndexReadExecutor>(
@@ -173,6 +260,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
         guard indexReaders[executor.kindIdentifier] == nil else {
             throw .duplicateIndexReadExecutor(executor.kindIdentifier)
         }
+        let registeredEntity = entity
         indexReaders[executor.kindIdentifier] = {
             context,
             selectQuery,
@@ -185,7 +273,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                 selectQuery: selectQuery,
                 index: index,
                 indexScan: indexScan,
-                as: Model.self,
+                entity: registeredEntity,
                 options: options,
                 partitions: partitions
             )
@@ -199,20 +287,19 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             throw .duplicateIndexMaintainerProvider(provider.kindIdentifier)
         }
         indexProviders[provider.kindIdentifier] =
-            ModelIndependentEntityIndexProvider<Model, Provider>(
+            ModelIndependentEntityIndexProvider<Provider>(
                 provider: provider
             )
     }
 
-    public mutating func register<Provider: EntityIndexMaintainerProvider>(
+    public mutating func register<Provider: CanonicalEntityIndexMaintainerProvider>(
         _ provider: Provider
-    ) throws(DatabaseRuntimeConfigurationError)
-    where Provider.Model == Model {
+    ) throws(DatabaseRuntimeConfigurationError) {
         guard indexProviders[provider.kindIdentifier] == nil else {
             throw .duplicateIndexMaintainerProvider(provider.kindIdentifier)
         }
         indexProviders[provider.kindIdentifier] =
-            ModelSpecificEntityIndexProvider(provider: provider)
+            CanonicalEntityIndexProvider(provider: provider)
     }
 
     public consuming func registration() -> EntityRuntimeRegistration {
@@ -221,64 +308,24 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             entity: entity,
             indexReaders: indexReaders,
             indexProviders: indexProviders,
-            canonicalizeModel: {
-                try PersistedModel($0.decode(as: Model.self))
-            },
-            makePersistedModel: {
-                try PersistedModel(Model.decodePersistedObject($0))
-            },
-            resolveIdentity: {
-                try EntityReferenceEncoder.encode($0.decode(as: Model.self))
-            },
-            fetchTableRows: {
-                context,
-                sourceName,
-                selectQuery,
-                options,
-                transaction in
-                let plan = try SelectQueryPlanner.plan(
-                    selectQuery,
-                    as: Model.self,
-                    indexDescriptors: compiledIndexDescriptors,
-                    options: options
-                )
-                let items: [Model]
-                if let transaction {
-                    items = try await context.fetch(
-                        plan.typedQuery,
-                        transaction: transaction
-                    )
-                } else {
-                    items = try await context.fetch(plan.typedQuery)
-                }
-                let rows = try items.map { item -> CanonicalSourceRow in
-                    try options.workMeter.consume(at: .resultMaterialization)
-                    let row = try QueryRowCodec.encode(item)
-                    return CanonicalSourceRow.fromBaseFields(
-                        row.fields,
-                        sourceName: sourceName,
-                        annotations: row.annotations,
-                        version: row.version
-                    )
-                }
-                return EntityTableRows(
-                    rows: rows,
-                    residualFilter: plan.residualFilter,
-                    residualOrderBy: plan.residualOrderBy,
-                    limitPushed: plan.limitPushed,
-                    offsetPushed: plan.offsetPushed
-                )
-            },
+            canonicalizeModel: canonicalizeModel,
+            makePersistedModel: makePersistedModel,
+            resolveIdentity: resolveIdentity,
+            fetchTableRows: fetchTableRows,
             updateIndexes: Self.makeUpdateIndexesOperation(
                 entity: entity,
                 indexDescriptors: compiledIndexDescriptors,
                 providers: indexProviders
             ),
             buildIndex: Self.makeBuildIndexOperation(
-                providers: indexProviders
+                entity: entity,
+                providers: indexProviders,
+                canonicalizeModel: canonicalizeModel
             ),
             runIndexSlice: Self.makeIndexSliceOperation(
-                providers: indexProviders
+                entity: entity,
+                providers: indexProviders,
+                canonicalizeModel: canonicalizeModel
             ),
             finalizeIndex: Self.makeIndexFinalizationOperation(
                 providers: indexProviders
@@ -286,10 +333,301 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
         )
     }
 
-    private static func makeUpdateIndexesOperation(
+    private static func canonicalModel(
+        _ model: PersistedModel,
+        entity: Schema.Entity
+    ) throws -> PersistedModel {
+        guard model.entity == entity.name else {
+            throw SchemaDrivenEntityRuntimeError.entityMismatch(
+                expected: entity.name,
+                actual: model.entity
+            )
+        }
+        for field in model.fields where entity.fieldMapByName[field.name] == nil {
+            throw SchemaDrivenEntityRuntimeError.unknownField(
+                entity: entity.name,
+                field: field.name
+            )
+        }
+
+        var canonicalFields: [PersistableField] = []
+        canonicalFields.reserveCapacity(entity.fields.count)
+        for schema in entity.fields.sorted(by: {
+            ($0.fieldNumber, $0.name) < ($1.fieldNumber, $1.name)
+        }) {
+            guard schema.fieldNumber > 0,
+                  let number = UInt32(exactly: schema.fieldNumber) else {
+                throw SchemaDrivenEntityRuntimeError.invalidFieldNumber(
+                    entity: entity.name,
+                    field: schema.name,
+                    number: schema.fieldNumber
+                )
+            }
+            let value: FieldValue
+            if let persisted = model.value(forFieldNamed: schema.name) {
+                value = persisted
+            } else if schema.isOptional {
+                value = .null
+            } else {
+                throw SchemaDrivenEntityRuntimeError.missingRequiredField(
+                    entity: entity.name,
+                    field: schema.name
+                )
+            }
+            try validate(value, schema: schema, entity: entity.name)
+            canonicalFields.append(
+                try PersistableField(
+                    number: number,
+                    name: schema.name,
+                    value: value
+                )
+            )
+        }
+        return try PersistedModel(
+            entity: entity.name,
+            fields: canonicalFields
+        )
+    }
+
+    private static func persistedModel(
+        from object: FieldObject,
+        entity: Schema.Entity
+    ) throws -> PersistedModel {
+        var fields: [PersistableField] = []
+        fields.reserveCapacity(object.count)
+        for field in object.fields {
+            guard let schema = entity.fieldMapByName[field.key] else {
+                throw SchemaDrivenEntityRuntimeError.unknownField(
+                    entity: entity.name,
+                    field: field.key
+                )
+            }
+            guard schema.fieldNumber > 0,
+                  let number = UInt32(exactly: schema.fieldNumber) else {
+                throw SchemaDrivenEntityRuntimeError.invalidFieldNumber(
+                    entity: entity.name,
+                    field: schema.name,
+                    number: schema.fieldNumber
+                )
+            }
+            fields.append(
+                try PersistableField(
+                    number: number,
+                    name: schema.name,
+                    value: field.value
+                )
+            )
+        }
+        return try PersistedModel(entity: entity.name, fields: fields)
+    }
+
+    private static func validate(
+        _ value: FieldValue,
+        schema: FieldSchema,
+        entity: String
+    ) throws {
+        if value == .null {
+            guard schema.isOptional else {
+                throw SchemaDrivenEntityRuntimeError.nullRequiredField(
+                    entity: entity,
+                    field: schema.name
+                )
+            }
+            return
+        }
+        if schema.isArray {
+            guard case .array(let values) = value,
+                  values.allSatisfy({
+                      $0 != .null
+                          && FieldSchemaValueValidator.accepts(
+                              $0,
+                              as: schema.type
+                          )
+                  }) else {
+                throw SchemaDrivenEntityRuntimeError.invalidFieldValue(
+                    entity: entity,
+                    field: schema.name,
+                    expected: schema.type
+                )
+            }
+            return
+        }
+        guard FieldSchemaValueValidator.accepts(value, as: schema.type) else {
+            throw SchemaDrivenEntityRuntimeError.invalidFieldValue(
+                entity: entity,
+                field: schema.name,
+                expected: schema.type
+            )
+        }
+    }
+
+    private static func identity(
+        for model: PersistedModel,
+        entity: Schema.Entity
+    ) throws -> EntityReference {
+        let identifier: ReferenceIdentifier
+        do {
+            guard let value = model.value(forFieldNamed: "id") else {
+                throw SchemaDrivenEntityRuntimeError.invalidIdentifier(
+                    entity: entity.name
+                )
+            }
+            identifier = try referenceIdentifier(
+                from: value,
+                expectedType: entity.identifierType,
+                entity: entity.name
+            )
+            try PersistableIdentifierValidator.validate(
+                identifier,
+                as: entity.identifierType
+            )
+        } catch {
+            throw SchemaDrivenEntityRuntimeError.invalidIdentifier(
+                entity: entity.name
+            )
+        }
+        var partitions: [(key: String, value: FieldValue)] = []
+        partitions.reserveCapacity(entity.dynamicFieldNames.count)
+        for fieldName in entity.dynamicFieldNames {
+            guard let schema = entity.fieldMapByName[fieldName],
+                  let value = model.value(forFieldNamed: fieldName),
+                  value != .null,
+                  !schema.isOptional,
+                  !schema.isArray,
+                  FieldSchemaValueValidator.accepts(
+                      value,
+                      as: schema.type
+                  ) else {
+                throw SchemaDrivenEntityRuntimeError.invalidPartition(
+                    entity: entity.name,
+                    field: fieldName
+                )
+            }
+            partitions.append((key: fieldName, value: value))
+        }
+        return try EntityReference(
+            entity: entity.name,
+            id: identifier,
+            partitions: FieldObject(partitions)
+        )
+    }
+
+    private static func referenceIdentifier(
+        from value: FieldValue,
+        expectedType: PersistableIdentifierType,
+        entity: String
+    ) throws -> ReferenceIdentifier {
+        switch (value, expectedType) {
+        case (.bool(let value), .bool):
+            return .bool(value)
+        case (.int8(let value), .int8):
+            return .int8(value)
+        case (.int16(let value), .int16):
+            return .int16(value)
+        case (.int32(let value), .int32):
+            return .int32(value)
+        case (.int64(let value), .int64):
+            return .int64(value)
+        case (.uint8(let value), .uint8):
+            return .uint8(value)
+        case (.uint16(let value), .uint16):
+            return .uint16(value)
+        case (.uint32(let value), .uint32):
+            return .uint32(value)
+        case (.uint64(let value), .uint64):
+            return .uint64(value)
+        case (.string(let value), .string):
+            return .string(value)
+        case (.bytes(let value), .bytes):
+            return .bytes(value)
+        case (.uuid(let value), .uuid):
+            return .uuid(value)
+        case (
+            .array(let values),
+            .composite(let expectedComponents)
+        ) where values.count == expectedComponents.count:
+            var components: [ReferenceIdentifier] = []
+            components.reserveCapacity(values.count)
+            for index in values.indices {
+                components.append(
+                    try referenceIdentifier(
+                        from: values[index],
+                        expectedType: expectedComponents[index],
+                        entity: entity
+                    )
+                )
+            }
+            return .composite(components)
+        default:
+            throw SchemaDrivenEntityRuntimeError.invalidIdentifier(
+                entity: entity
+            )
+        }
+    }
+
+    private static func fetchSchemaDrivenRows(
+        entity: Schema.Entity,
+        context: DatabaseContext,
+        sourceName: String,
+        selectQuery: SelectQuery,
+        options: ReadExecutionContext,
+        transaction: (any TransactionAccess)?
+    ) async throws -> EntityTableRows {
+        guard case .table(let table) = selectQuery.source,
+              table.table == entity.name else {
+            throw CanonicalReadError.unsupportedSource(
+                "Schema-driven runtime expected table '\(entity.name)'"
+            )
+        }
+        let readLimit = try options.workMeter.storageReadLimitWithSentinel(
+            at: .storageRow
+        )
+        let execution = CanonicalReadExecution.resolve(
+            requested: options.consistency,
+            default: .serializable
+        )
+        let models = try await context.scanPersistedModels(
+            entity: entity,
+            partitions: table.partitions,
+            limit: readLimit,
+            configuration: execution.transactionConfiguration,
+            transaction: transaction
+        )
+        var rows: [CanonicalSourceRow] = []
+        rows.reserveCapacity(models.count)
+        for model in models {
+            try options.workMeter.consume(at: .storageRow)
+            let row = try QueryRowCodec.encode(model)
+            rows.append(
+                CanonicalSourceRow.fromBaseFields(
+                    row.fields,
+                    sourceName: sourceName,
+                    annotations: row.annotations,
+                    version: row.version
+                )
+            )
+        }
+        return EntityTableRows(
+            rows: rows,
+            residualFilter: selectQuery.filter,
+            residualOrderBy: selectQuery.orderBy,
+            limitPushed: false,
+            offsetPushed: false
+        )
+    }
+
+}
+
+private protocol EntityRuntimeIndexOperationBuilding {}
+
+extension EntityRuntimeDefinition: EntityRuntimeIndexOperationBuilding {}
+
+private extension EntityRuntimeIndexOperationBuilding {
+
+    static func makeUpdateIndexesOperation(
         entity: Schema.Entity,
         indexDescriptors: [IndexDescriptor],
-        providers: [String: any EntityIndexProvider<Model>]
+        providers: [String: any EntityIndexProvider]
     ) -> EntityRuntimeRegistration.UpdateIndexes {
         {
             lifecycleStore,
@@ -304,8 +642,6 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             logicalTypeName,
             transaction in
             guard oldModel != nil || newModel != nil else { return }
-            let typedOld = try oldModel?.decode(as: Model.self)
-            let typedNew = try newModel?.decode(as: Model.self)
             let maintainedIndexes = overrideDescriptors ?? indexDescriptors
             guard !maintainedIndexes.isEmpty else { return }
             let states = try await lifecycleStore.states(
@@ -325,7 +661,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                         indexName: descriptor.name
                     )
                 }
-                let index = makeIndex(
+                let index = makeCanonicalEntityIndex(
                     descriptor,
                     entity: logicalTypeName ?? entity.name
                 )
@@ -338,7 +674,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                     configurations: configurations,
                     wallClock: wallClock
                 )
-                if descriptor.isUnique, let typedNew {
+                if descriptor.isUnique, let newModel {
                     let uniquenessMaintainer = try provider.makeUniquenessMaintainer(
                         index: index,
                         subspace: subspace,
@@ -347,7 +683,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                     )
                     try await IndexUniquenessConstraint.enforce(
                         index: index,
-                        item: typedNew,
+                        item: newModel,
                         id: id,
                         state: state,
                         maintainer: uniquenessMaintainer,
@@ -356,16 +692,18 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                     )
                 }
                 try await maintainer.updateIndex(
-                    oldItem: typedOld,
-                    newItem: typedNew,
+                    oldItem: oldModel,
+                    newItem: newModel,
                     transaction: transaction
                 )
             }
         }
     }
 
-    private static func makeBuildIndexOperation(
-        providers: [String: any EntityIndexProvider<Model>]
+    static func makeBuildIndexOperation(
+        entity: Schema.Entity,
+        providers: [String: any EntityIndexProvider],
+        canonicalizeModel: @escaping EntityRuntimeRegistration.CanonicalizeModel
     ) -> EntityRuntimeRegistration.BuildIndex {
         {
             container,
@@ -391,7 +729,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                 configurations: configurations,
                 wallClock: container.wallClock
             )
-            let uniquenessMaintainer: (any IndexUniquenessMaintainer<Model>)?
+            let uniquenessMaintainer: (any IndexUniquenessMaintainer<PersistedModel>)?
             if index.isUnique {
                 uniquenessMaintainer = try provider.makeUniquenessMaintainer(
                     index: index,
@@ -402,22 +740,32 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             } else {
                 uniquenessMaintainer = nil
             }
-            let indexer = try OnlineIndexer<Model>(
+            let indexer = try OnlineIndexer<PersistedModel>(
                 container: container,
                 storeSubspace: storeSubspace,
-                itemType: Model.persistableType,
+                itemType: entity.name,
                 index: index,
                 indexMaintainer: maintainer,
                 uniquenessMaintainer: uniquenessMaintainer,
                 indexLifecycleStore: lifecycleStore,
-                batchSize: batchSize
+                batchSize: batchSize,
+                decodeItem: {
+                    try canonicalizeModel(
+                        DataAccess.deserializePersistedModel(
+                            $0,
+                            expectedEntity: entity.name
+                        )
+                    )
+                }
             )
             try await indexer.buildIndex(clearFirst: false)
         }
     }
 
-    private static func makeIndexSliceOperation(
-        providers: [String: any EntityIndexProvider<Model>]
+    static func makeIndexSliceOperation(
+        entity: Schema.Entity,
+        providers: [String: any EntityIndexProvider],
+        canonicalizeModel: @escaping EntityRuntimeRegistration.CanonicalizeModel
     ) -> EntityRuntimeRegistration.RunIndexSlice {
         {
             container,
@@ -444,7 +792,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                 configurations: configurations,
                 wallClock: container.wallClock
             )
-            let uniquenessMaintainer: (any IndexUniquenessMaintainer<Model>)?
+            let uniquenessMaintainer: (any IndexUniquenessMaintainer<PersistedModel>)?
             if index.isUnique {
                 uniquenessMaintainer = try provider.makeUniquenessMaintainer(
                     index: index,
@@ -457,7 +805,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             }
             let itemTypeSubspace = storeSubspace
                 .subspace(SubspaceKey.items)
-                .subspace(Model.persistableType)
+                .subspace(entity.name)
             let range = itemTypeSubspace.range()
             let begin = lastProcessedKey.map { $0.appending(0) } ?? range.begin
             let storage = container.itemStorageFactory.make(
@@ -470,7 +818,7 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                 snapshot: false,
                 limit: maximumWorkUnits + 1
             )
-            var batch: [(item: Model, id: Tuple)] = []
+            var batch: [(item: PersistedModel, id: Tuple)] = []
             batch.reserveCapacity(maximumWorkUnits)
             var lastKey: ByteString?
             var hasMore = false
@@ -480,7 +828,12 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
                     hasMore = true
                     continue
                 }
-                let item: Model = try DataAccess.deserialize(data)
+                let item = try canonicalizeModel(
+                    DataAccess.deserializePersistedModel(
+                        data,
+                        expectedEntity: entity.name
+                    )
+                )
                 batch.append((item: item, id: try itemTypeSubspace.unpack(key)))
                 lastKey = key
             }
@@ -503,25 +856,8 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
         }
     }
 
-    private static func makeIndex(
-        _ descriptor: IndexDescriptor,
-        entity: String
-    ) -> Index {
-        Index(
-            name: descriptor.name,
-            kind: descriptor.kind,
-            rootExpression: KeyExpressionFactory.from(
-                keyPaths: descriptor.fieldNames
-            ),
-            subspaceKey: descriptor.name,
-            itemTypes: Set([entity]),
-            isUnique: descriptor.isUnique,
-            storedFieldNames: descriptor.storedFieldNames
-        )
-    }
-
-    private static func makeIndexFinalizationOperation(
-        providers: [String: any EntityIndexProvider<Model>]
+    static func makeIndexFinalizationOperation(
+        providers: [String: any EntityIndexProvider]
     ) -> EntityRuntimeRegistration.FinalizeIndex {
         { container, storeSubspace, index, configurations, transaction in
             guard let provider = providers[index.kind.identifier] else {
@@ -542,6 +878,23 @@ public struct EntityRuntimeDefinition<Model: Persistable>: Sendable {
             try await maintainer.finalizeBuild(transaction: transaction)
         }
     }
+}
+
+private func makeCanonicalEntityIndex(
+    _ descriptor: IndexDescriptor,
+    entity: String
+) -> Index {
+    Index(
+        name: descriptor.name,
+        kind: descriptor.kind,
+        rootExpression: KeyExpressionFactory.from(
+            keyPaths: descriptor.fieldNames
+        ),
+        subspaceKey: descriptor.name,
+        itemTypes: Set([entity]),
+        isUnique: descriptor.isUnique,
+        storedFieldNames: descriptor.storedFieldNames
+    )
 }
 
 public struct EntityRuntimeRegistration: Sendable {
@@ -627,10 +980,10 @@ public struct EntityRuntimeRegistration: Sendable {
         any TransactionAccess
     ) async throws -> Void
 
-    fileprivate init<Model: Persistable>(
+    fileprivate init(
         entity: Schema.Entity,
         indexReaders: [String: IndexReader],
-        indexProviders: [String: any EntityIndexProvider<Model>],
+        indexProviders: [String: any EntityIndexProvider],
         canonicalizeModel: @escaping CanonicalizeModel,
         makePersistedModel: @escaping MakePersistedModel,
         resolveIdentity: @escaping ResolveIdentity,

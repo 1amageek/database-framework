@@ -1,5 +1,6 @@
 import DatabaseKit
 import DatabaseTypes
+import StorageKit
 
 /// Immutable, container-scoped composition of runtime extension points.
 public struct DatabaseRuntimeConfiguration: Sendable {
@@ -112,6 +113,76 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                     reason: "maintainer schema validation failed"
                 )
             }
+        }
+    }
+
+    /// Validates requirements supplied by the selected storage backend before
+    /// a schema generation can become observable.
+    public func validateStorageRequirements(
+        schema: Schema,
+        transactionCapabilities: TransactionCapabilities
+    ) throws(DatabaseRuntimeConfigurationError) {
+        for entity in schema.entities {
+            guard let entityRuntime = entityRuntimes.registration(
+                named: entity.name
+            ) else {
+                throw .missingCompiledEntityType(entityName: entity.name)
+            }
+            for descriptor in entity.indexDescriptors {
+                guard let requirements = entityRuntime.runtimeRequirements(
+                    for: descriptor.kindIdentifier
+                ) else {
+                    throw .missingIndexMaintainerProvider(
+                        source: .entity(entity.name),
+                        indexName: descriptor.name,
+                        kindIdentifier: descriptor.kindIdentifier
+                    )
+                }
+                try validateStorageRequirements(
+                    source: .entity(entity.name),
+                    indexName: descriptor.name,
+                    kindIdentifier: descriptor.kindIdentifier,
+                    requirements: requirements,
+                    transactionCapabilities: transactionCapabilities
+                )
+            }
+        }
+        for group in schema.polymorphicGroups {
+            for descriptor in group.indexes {
+                guard let requirements = indexMaintainerProviders
+                    .runtimeRequirements(for: descriptor.kindIdentifier) else {
+                    throw .missingIndexMaintainerProvider(
+                        source: .polymorphicGroup(group.identifier),
+                        indexName: descriptor.name,
+                        kindIdentifier: descriptor.kindIdentifier
+                    )
+                }
+                try validateStorageRequirements(
+                    source: .polymorphicGroup(group.identifier),
+                    indexName: descriptor.name,
+                    kindIdentifier: descriptor.kindIdentifier,
+                    requirements: requirements,
+                    transactionCapabilities: transactionCapabilities
+                )
+            }
+        }
+    }
+
+    private func validateStorageRequirements(
+        source: DatabaseRuntimeIndexRequirementSource,
+        indexName: String,
+        kindIdentifier: String,
+        requirements: IndexRuntimeRequirements,
+        transactionCapabilities: TransactionCapabilities
+    ) throws(DatabaseRuntimeConfigurationError) {
+        if requirements.requiresVersionstampedMutations,
+           !transactionCapabilities.versionstampedMutations {
+            throw .unsupportedStorageCapability(
+                source: source,
+                indexName: indexName,
+                kindIdentifier: kindIdentifier,
+                capability: .versionstampedMutations
+            )
         }
     }
 

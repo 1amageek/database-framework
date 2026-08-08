@@ -105,7 +105,7 @@ public struct HNSWSearchParameters: Sendable {
 /// **Usage**:
 /// - For small datasets (<10K vectors): inline indexing via updateIndex()
 /// - For large datasets: batch indexing via OnlineIndexer with scanItems()
-public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression

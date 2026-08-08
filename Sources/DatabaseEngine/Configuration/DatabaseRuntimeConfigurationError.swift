@@ -41,6 +41,12 @@ public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
     )
     case missingGraphTableSourceExecutor
     case missingSPARQLSourceExecutor
+    case unsupportedStorageCapability(
+        source: DatabaseRuntimeIndexRequirementSource,
+        indexName: String,
+        kindIdentifier: String,
+        capability: DatabaseRuntimeStorageCapability
+    )
     case missingPersistableMutationMaintainer(
         entityName: String,
         descriptorName: String,

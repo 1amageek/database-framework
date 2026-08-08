@@ -22,8 +22,8 @@ public enum VectorReadExecutors {
         )
     }
 
-    public static func register<Model: Persistable>(
-        with definition: inout EntityRuntimeDefinition<Model>,
+    public static func register(
+        with definition: inout EntityRuntimeDefinition,
         graphResourceLimits: HNSWGraphResourceLimits = .default,
         maximumGraphCacheCost: Int = 24 * 1_024 * 1_024
     ) throws(DatabaseRuntimeConfigurationError) {
@@ -57,12 +57,12 @@ private struct VectorReadExecutor: IndexReadExecutor {
         self.graphCache = HNSWGraphCache(maximumCost: maximumGraphCacheCost)
     }
 
-    func executeRows<T: Persistable>(
+    func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
         index: IndexDescriptor,
         indexScan: IndexScanSource,
-        as type: T.Type,
+        entity: Schema.Entity,
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
@@ -75,38 +75,78 @@ private struct VectorReadExecutor: IndexReadExecutor {
         let k = try requireInt(VectorReadParameter.k, from: indexScan.parameters)
         let metricRawValue = try requireString(VectorReadParameter.metric, from: indexScan.parameters)
 
-        guard let metric = VectorMetric(rawValue: metricRawValue) else {
-            throw VectorReadError.invalidParameter(VectorReadParameter.metric)
-        }
-        let distanceMetric: VectorDistanceMetric
-        switch metric {
-        case .cosine:
-            distanceMetric = .cosine
-        case .euclidean:
-            distanceMetric = .euclidean
-        case .dotProduct:
-            distanceMetric = .dotProduct
+        let specification = try VectorIndexSpecification(index.kind)
+        guard index.kindIdentifier == kindIdentifier,
+              index.fieldNames == [fieldName],
+              specification.dimensions == dimensions,
+              specification.metric.rawValue == metricRawValue,
+              queryVector.count == dimensions,
+              k > 0 else {
+            throw VectorReadError.invalidParameter(
+                VectorReadParameter.fieldName
+            )
         }
 
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .snapshot
         )
-        let queryContext = try context.indexQueryContext.withPartitions(partitions, for: T.self)
-        let builder = VectorQueryBuilder<T>(
-            queryContext: queryContext,
-            fieldName: fieldName,
-            dimensions: dimensions,
-            selectedIndexName: index.name,
+        try context.authorizeCanonicalListAccess(
+            entity: entity,
+            selectQuery: selectQuery
+        )
+        let search = PolymorphicVectorReadExecutor(
             graphCache: graphCache,
             graphResourceLimits: graphResourceLimits
         )
-            .metric(distanceMetric)
-        let configuredBuilder = try builder.query(queryVector, k: k)
-
-        let results: [(item: T, distance: Double)] = try await configuredBuilder.executeDirect(
+        let results = try await context.indexQueryContext.withReadableIndex(
+            named: index.name,
+            kindIdentifier: kindIdentifier,
+            forEntityName: entity.name,
+            partitions: partitions,
             configuration: execution.transactionConfiguration
-        )
+        ) { readableIndex, transaction -> [(item: PersistedModel, distance: Double)] in
+            guard let readableIndex else { return [] }
+            let indexSubspace = try search.resolvedIndexSubspace(
+                baseIndexSubspace: readableIndex.subspace,
+                context: context,
+                indexName: index.name
+            )
+            let matches = try await search.executeSearch(
+                specification: specification,
+                indexName: index.name,
+                fieldName: fieldName,
+                indexSubspace: indexSubspace,
+                queryVector: queryVector,
+                k: k,
+                context: context,
+                transaction: transaction
+            )
+            let identifiers = matches.map { Tuple($0.primaryKey) }
+            let fetched = try await context.fetchPersistedModelsPreservingOrder(
+                entity: entity,
+                primaryKeys: identifiers,
+                partitions: partitions,
+                transaction: transaction
+            )
+            guard fetched.count == matches.count else {
+                throw VectorReadError.fetchedItemCountMismatch(
+                    expected: matches.count,
+                    actual: fetched.count
+                )
+            }
+            var results: [(item: PersistedModel, distance: Double)] = []
+            results.reserveCapacity(matches.count)
+            for (match, item) in zip(matches, fetched) {
+                guard let item else {
+                    throw VectorReadError.missingFetchedEntity(
+                        Tuple(match.primaryKey).pack()
+                    )
+                }
+                results.append((item, match.distance))
+            }
+            return results
+        }
         let rows = try results.map { result in
             try IndexReadRow.materializing(
                 result.item,
@@ -162,6 +202,14 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     ) {
         self.graphResourceLimits = graphResourceLimits
         self.graphCache = HNSWGraphCache(maximumCost: maximumGraphCacheCost)
+    }
+
+    fileprivate init(
+        graphCache: HNSWGraphCache,
+        graphResourceLimits: HNSWGraphResourceLimits
+    ) {
+        self.graphCache = graphCache
+        self.graphResourceLimits = graphResourceLimits
     }
 
     func executeRows(
@@ -262,7 +310,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         }
     }
 
-    private func executeSearch(
+    fileprivate func executeSearch(
         specification: VectorIndexSpecification,
         indexName: String,
         fieldName: String,
@@ -430,7 +478,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         throw VectorReadError.indexNotFound(indexName)
     }
 
-    private func resolvedIndexSubspace(
+    fileprivate func resolvedIndexSubspace(
         baseIndexSubspace: Subspace,
         context: DatabaseContext,
         indexName: String

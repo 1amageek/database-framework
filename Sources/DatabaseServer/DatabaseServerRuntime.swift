@@ -7,7 +7,8 @@ public final class DatabaseServerRuntime: Sendable {
 
     public init(
         container: DBContainer,
-        configuration: DatabaseServerRuntimeConfiguration
+        configuration: DatabaseServerRuntimeConfiguration,
+        hostServices: DatabaseServerHostServices = .none
     ) async throws {
         try await container.migrateIfNeeded()
         let stateStore = try await DatabaseMutationStateStore(
@@ -26,7 +27,8 @@ public final class DatabaseServerRuntime: Sendable {
             runtimeLimits: configuration.runtimeLimits,
             wireLimits: configuration.wireLimits,
             clock: configuration.clock,
-            graphOperationLimits: configuration.graphOperationLimits
+            graphOperationLimits: configuration.graphOperationLimits,
+            hostServices: hostServices
         )
         #else
         let serviceContext = DatabaseServerServiceContext(
@@ -35,11 +37,16 @@ public final class DatabaseServerRuntime: Sendable {
             coordinator: coordinator,
             runtimeLimits: configuration.runtimeLimits,
             wireLimits: configuration.wireLimits,
-            clock: configuration.clock
+            clock: configuration.clock,
+            hostServices: hostServices
         )
         #endif
         let services = try await configuration.makeServices(
             context: serviceContext
+        )
+        let includesSchemaExecution = configuration.schemaRuntimeFactory != nil
+        let advertisedOperations = DatabaseRuntimeCapabilityCatalog.operations(
+            includesSchemaExecution: includesSchemaExecution
         )
         #if DATABASE_SERVER_GRAPH_INDEXES
         let graphOperations = services.graphOperations
@@ -48,7 +55,10 @@ public final class DatabaseServerRuntime: Sendable {
             AnyDatabaseOperationHandler(
                 CapabilitiesDescribeHandler(
                     identity: configuration.identity,
-                    jobOperations: services.jobService.jobOperations
+                    jobOperations: services.jobService.jobOperations,
+                    features: DatabaseRuntimeCapabilityCatalog.features(
+                        includesSchemaExecution: includesSchemaExecution
+                    )
                 )
             ),
             AnyDatabaseOperationHandler(
@@ -68,6 +78,19 @@ public final class DatabaseServerRuntime: Sendable {
                 )
             ),
         ]
+        if let schemaRuntimeFactory = configuration.schemaRuntimeFactory {
+            handlers.append(
+                AnyDatabaseOperationHandler(
+                    SchemaExecuteHandler(
+                        coordinator: DatabaseSchemaCoordinator(
+                            container: container,
+                            runtimeFactory: schemaRuntimeFactory,
+                            jobService: services.jobService
+                        )
+                    )
+                )
+            )
+        }
         #if DATABASE_SERVER_GRAPH_INDEXES
         handlers.append(contentsOf: [
             AnyDatabaseOperationHandler(
@@ -123,7 +146,7 @@ public final class DatabaseServerRuntime: Sendable {
         ])
         let registry = try DatabaseOperationRegistry(
             handlers: handlers,
-            requiredOperations: DatabaseRuntimeCapabilityCatalog.operations
+            requiredOperations: advertisedOperations
         )
         self.jobService = services.jobService
         self.endpoint = DatabaseEndpoint(
@@ -136,8 +159,11 @@ public final class DatabaseServerRuntime: Sendable {
         )
     }
 
-    public func execute(_ bytes: ByteString) async throws -> ByteString {
-        try await endpoint.execute(bytes)
+    public func execute(
+        _ bytes: ByteString,
+        context: DatabaseRequestExecutionContext
+    ) async throws -> ByteString {
+        try await endpoint.execute(bytes, context: context)
     }
 
     public func runScheduledWork() async throws {

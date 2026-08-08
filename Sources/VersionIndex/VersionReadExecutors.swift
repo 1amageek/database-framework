@@ -13,8 +13,8 @@ public enum VersionReadExecutors {
         PolymorphicVersionReadExecutor()
     }
 
-    public static func register<Model: Persistable>(
-        with definition: inout EntityRuntimeDefinition<Model>
+    public static func register(
+        with definition: inout EntityRuntimeDefinition
     ) throws(DatabaseRuntimeConfigurationError) {
         try definition.register(VersionReadExecutor())
     }
@@ -27,12 +27,12 @@ private enum VersionReadError: Error, Sendable {
 private struct VersionReadExecutor: IndexReadExecutor {
     let kindIdentifier = "version"
 
-    func executeRows<T: Persistable>(
+    func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
         index: IndexDescriptor,
         indexScan: IndexScanSource,
-        as type: T.Type,
+        entity: Schema.Entity,
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
@@ -46,22 +46,48 @@ private struct VersionReadExecutor: IndexReadExecutor {
             requested: options.consistency,
             default: .snapshot
         )
-        let queryContext = try context.indexQueryContext.withPartitions(partitions, for: T.self)
-        var builder = VersionQueryBuilder<T>(
-            queryContext: queryContext,
-            primaryKey: primaryKey
+        try context.authorizeCanonicalListAccess(
+            entity: entity,
+            selectQuery: selectQuery
         )
-
-        if let limit = try parameters.optionalInteger(
+        let limit = try parameters.optionalInteger(
             named: VersionReadParameter.limit
-        ) {
-            builder = builder.limit(limit)
-        }
-        builder = builder.index(index.name)
-
-        let results = try await builder.executeDirect(
-            configuration: execution.transactionConfiguration
         )
+        let rawResults = try await context.indexQueryContext.withReadableIndex(
+            named: index.name,
+            kindIdentifier: kindIdentifier,
+            forEntityName: entity.name,
+            partitions: partitions,
+            configuration: execution.transactionConfiguration
+        ) { readableIndex, transaction -> [(version: Version, data: ByteString)] in
+            guard let readableIndex else { return [] }
+            return try await VersionIndexReader(
+                subspace: readableIndex.subspace
+            ).history(
+                primaryKey: primaryKey,
+                limit: limit,
+                transaction: transaction
+            )
+        }
+
+        guard let runtime = context.container.runtimeConfiguration
+            .entityRuntimes.registration(named: entity.name) else {
+            throw VersionReadError.invalidParameter(
+                VersionReadParameter.primaryKey
+            )
+        }
+        var results: [(version: Version, item: PersistedModel)] = []
+        results.reserveCapacity(rawResults.count)
+        for result in rawResults {
+            guard !result.data.isEmpty else { continue }
+            let persisted = try DataAccess.deserializePersistedModel(
+                result.data,
+                expectedEntity: entity.name
+            )
+            let canonical = try runtime.canonicalized(persisted)
+            try context.container.securityDelegate?.evaluateGet(persisted)
+            results.append((result.version, canonical))
+        }
 
         let rows = try results.map { result in
             try IndexReadRow.materializing(

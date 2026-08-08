@@ -13,7 +13,7 @@ struct AggregationContributionFields {
 /// null elements and therefore form one real group. Only a null aggregate value
 /// suppresses a SUM/AVG/MIN/MAX/DISTINCT/PERCENTILE contribution.
 enum AggregationFieldExtractor {
-    static func grouping<Item: Persistable, FieldNames: Collection>(
+    static func grouping<Item: PersistedEntityValue, FieldNames: Collection>(
         from item: Item,
         fieldNames: FieldNames,
         indexName: String
@@ -36,7 +36,7 @@ enum AggregationFieldExtractor {
     /// Extracts the value before evaluating grouping fields. This ordering is
     /// required for sparse aggregates: an item whose aggregate value is null
     /// contributes nothing, even when a grouping path is also null.
-    static func contribution<Item: Persistable>(
+    static func contribution<Item: PersistedEntityValue>(
         from item: Item,
         index: Index
     ) throws -> AggregationContributionFields? {
@@ -81,34 +81,14 @@ enum AggregationFieldExtractor {
         case excluded
     }
 
-    private static func fieldElement<Item: Persistable>(
+    private static func fieldElement<Item: PersistedEntityValue>(
         from item: Item,
         fieldName: String,
         nullBehavior: NullBehavior,
         indexName: String
     ) throws -> any TupleElement {
-        let elements: [any TupleElement]
-        do {
-            elements = try DataAccess.extractField(
-                from: item,
-                keyPath: fieldName
-            )
-        } catch let error as DataAccessError {
-            let isKnownNull: Bool
-            switch error {
-            case .nilValueCannotBeIndexed:
-                isKnownNull = true
-            case .fieldNotFound(_, let keyPath):
-                isKnownNull = keyPath == fieldName
-                    && Item.fieldSchemas.contains(where: {
-                        $0.name == fieldName && $0.isOptional
-                    })
-            default:
-                isKnownNull = false
-            }
-            guard isKnownNull else {
-                throw error
-            }
+        let value = try canonicalValue(from: item, at: fieldName)
+        if value.isNull {
             switch nullBehavior {
             case .encode:
                 return try FieldValue.null.toTupleElement()
@@ -116,6 +96,10 @@ enum AggregationFieldExtractor {
                 throw AggregationNullValue.excluded
             }
         }
+        let elements = try DataAccess.extractField(
+            from: item,
+            keyPath: fieldName
+        )
 
         guard elements.count == 1, let element = elements.first else {
             throw AggregationIndexError.invalidStructure(
@@ -132,5 +116,37 @@ enum AggregationFieldExtractor {
             }
         }
         return element
+    }
+
+    private static func canonicalValue<Item: PersistedEntityValue>(
+        from item: Item,
+        at fieldPath: String
+    ) throws -> FieldValue {
+        let components = fieldPath.split(
+            separator: ".",
+            omittingEmptySubsequences: false
+        )
+        guard let first = components.first,
+              !first.isEmpty,
+              var value = try item.persistedValue(
+                forFieldNamed: String(first)
+              ) else {
+            throw DataAccessError.fieldNotFound(
+                itemType: item.persistedEntityName,
+                keyPath: fieldPath
+            )
+        }
+        for component in components.dropFirst() {
+            guard !component.isEmpty,
+                  case .object(let object) = value,
+                  let nested = object[String(component)] else {
+                throw DataAccessError.fieldNotFound(
+                    itemType: item.persistedEntityName,
+                    keyPath: fieldPath
+                )
+            }
+            value = nested
+        }
+        return value
     }
 }

@@ -228,7 +228,7 @@ struct DimensionConfiguredIndexKind: IndexKind {
 struct DimensionConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
     let kindIdentifier = DimensionConfiguredIndexKind.identifier
 
-    func makeIndexMaintainer<Item: Persistable>(
+    func makeIndexMaintainer<Item: PersistedEntityValue>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
@@ -275,7 +275,7 @@ struct LanguageConfiguredIndexKind: IndexKind {
 struct LanguageConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
     let kindIdentifier = LanguageConfiguredIndexKind.identifier
 
-    func makeIndexMaintainer<Item: Persistable>(
+    func makeIndexMaintainer<Item: PersistedEntityValue>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
@@ -300,7 +300,7 @@ struct LanguageConfiguredIndexMaintainerProvider: IndexMaintainerProvider {
 // MARK: - Recording Index Maintainers
 
 /// Entities the dimension configuration selected by the provider.
-struct ConfigurationRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer {
+struct ConfigurationRecordingIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     let index: Index
     let subspace: Subspace
     let idExpression: KeyExpression
@@ -327,7 +327,7 @@ struct ConfigurationRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer
 }
 
 /// Entities every language configuration selected by the provider.
-struct LanguageRecordingIndexMaintainer<Item: Persistable>: IndexMaintainer {
+struct LanguageRecordingIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     let index: Index
     let subspace: Subspace
     let idExpression: KeyExpression

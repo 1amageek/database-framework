@@ -125,14 +125,23 @@ struct OWLClassRDFDescriptorTests {
 
 @Suite("OWLClass RDF Index Maintainer Tests", .heartbeat)
 struct OWLClassRDFIndexMaintainerTests {
+    private func makeMaintainer() -> OWLClassRDFIndexMaintainer {
+        OWLClassRDFIndexMaintainer(
+            subspace: Subspace("test_owl"),
+            entityName: OntoPerson.persistableType,
+            classIRI: OntoPerson.ontologyClassIRI,
+            individualIRIBase: OntoPerson.ontologyIndividualIRIBase,
+            graph: OntoPerson.ontologyGraph,
+            properties: OntoPerson.ontologyPropertyDescriptors
+        )
+    }
+
     @Test("Each projected quad produces six canonical orderings")
     func keyCount() async throws {
-        let maintainer = OWLClassRDFIndexMaintainer<OntoPerson>(
-            subspace: Subspace("test_owl")
-        )
+        let maintainer = makeMaintainer()
         let person = OntoPerson(name: "Alice", email: "alice@example.com")
         let keys = try await maintainer.computeIndexKeys(
-            for: person,
+            for: PersistedModel(person),
             id: Tuple([person.id])
         )
 
@@ -141,16 +150,31 @@ struct OWLClassRDFIndexMaintainerTests {
 
     @Test("An empty string remains a valid xsd:string assertion")
     func emptyStringIsRetained() async throws {
-        let maintainer = OWLClassRDFIndexMaintainer<OntoPerson>(
-            subspace: Subspace("test_owl")
-        )
+        let maintainer = makeMaintainer()
         let person = OntoPerson(name: "", email: "noname@example.com")
         let keys = try await maintainer.computeIndexKeys(
-            for: person,
+            for: PersistedModel(person),
             id: Tuple([person.id])
         )
 
         #expect(keys.count == 18)
+    }
+
+    @Test("Canonical and compiled OWL projections are identical")
+    func canonicalProjectionParity() throws {
+        let organization = OntoOrganization(name: "Database Group")
+        let person = OntoPerson(
+            name: "Alice",
+            email: "alice@example.com",
+            organizationID: organization.id
+        )
+
+        let typed = try person.ontologyQuads()
+        let canonical = try makeMaintainer().projectedQuads(
+            for: PersistedModel(person)
+        )
+
+        #expect(canonical == typed)
     }
 
     @Test("The projection preserves typed RDF terms")

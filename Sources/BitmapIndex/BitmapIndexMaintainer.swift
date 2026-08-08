@@ -49,7 +49,7 @@ import StorageKit
 /// Key: [I]/User_bitmap_status/["ids"]/[1] = "user-def"
 /// Key: [I]/User_bitmap_status/["pks"]/["user-abc"] = 0
 /// ```
-public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+public struct BitmapIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMaintainer {
     enum StorageError: Error, Sendable, Equatable {
         case invalidSequentialID(Int64)
     }

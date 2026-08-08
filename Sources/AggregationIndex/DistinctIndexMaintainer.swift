@@ -49,7 +49,7 @@ private struct DistinctIndexReadGroup {
 /// reference to a value rebuilds the affected summary from exact membership in
 /// the same transaction. TypeScript and storage adapters therefore never own
 /// DISTINCT semantics.
-public struct DistinctIndexMaintainer<Item: Persistable>:
+public struct DistinctIndexMaintainer<Item: PersistedEntityValue>:
     SubspaceIndexMaintainer,
     GroupingKeySupport {
     public static var supportedPersistedPrecision: ClosedRange<Int> { 4...17 }

@@ -1,6 +1,7 @@
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
+@_spi(DatabaseServer) import DatabaseWire
 import Synchronization
 
 /// DBContainer - Application resource manager for database persistence
@@ -72,6 +73,8 @@ public final class DBContainer: Sendable {
         let format: DatabaseFormatDescriptor
         let partitionCatalog: DatabasePartitionCatalog
         let metadataSubspace: Subspace
+        let schemaGeneration: UInt64
+        let transactionCapabilities: TransactionCapabilities
     }
 
     // MARK: - Properties
@@ -89,8 +92,14 @@ public final class DBContainer: Sendable {
     /// on an existential engine in Embedded Swift.
     public let transactionExecutor: StorageTransactionExecutor
 
-    /// Schema (version, entities, indexes)
-    public let schema: Schema
+    /// Optional transaction semantics guaranteed by the selected backend.
+    public let transactionCapabilities: TransactionCapabilities
+
+    /// Schema (version, entities, indexes) from the request's retained
+    /// generation, or the currently published generation outside a request.
+    public var schema: Schema {
+        activeSchemaLease.schema
+    }
 
     /// Configuration
     public let configuration: DBConfiguration
@@ -104,8 +113,10 @@ public final class DBContainer: Sendable {
         configuration.wallClock
     }
 
-    /// Container-scoped runtime extensions and operation dependencies.
-    public let runtimeConfiguration: DatabaseRuntimeConfiguration
+    /// Container-scoped runtime extensions paired atomically with `schema`.
+    public var runtimeConfiguration: DatabaseRuntimeConfiguration {
+        activeSchemaLease.runtimeConfiguration
+    }
 
     /// Container-scoped factory for the database's canonical entity format.
     public let itemStorageFactory: ItemStorageFactory
@@ -119,7 +130,9 @@ public final class DBContainer: Sendable {
     /// Security delegate for DataStore operations
     ///
     /// Created from securityConfiguration and uses TaskLocal for auth context.
-    public let securityDelegate: (any DataStoreSecurityDelegate)?
+    public var securityDelegate: (any DataStoreSecurityDelegate)? {
+        activeSchemaLease.securityDelegate
+    }
 
     /// Container-scoped observer for data store metrics.
     internal let dataStoreDelegate: any DataStoreDelegate
@@ -134,10 +147,13 @@ public final class DBContainer: Sendable {
     private let partitionCatalog: DatabasePartitionCatalog
 
     /// Stable metadata namespace used by schema lifecycle operations.
-    private let metadataSubspace: Subspace
+    package let metadataSubspace: Subspace
 
     /// Migration plan
     private let migrationPlanStorage: Mutex<(any SchemaMigrationPlan.Type)?>
+
+    /// Atomic owner of the currently published immutable execution generation.
+    private let schemaGenerationStore: DatabaseSchemaGenerationStore
 
     // MARK: - Initialization
 
@@ -186,11 +202,6 @@ public final class DBContainer: Sendable {
     ) async throws -> DBContainer {
         let storageEngine = try configuration.claimStorageEngine()
         do {
-            guard !schema.entities.isEmpty else {
-                throw DatabaseRuntimeError.internalError(
-                    "Schema must contain at least one entity"
-                )
-            }
             try runtimeConfiguration.validate(schema: schema)
             try IndexRuntimeConfigurationValidator.validate(
                 configuration.indexConfigurations,
@@ -198,12 +209,25 @@ public final class DBContainer: Sendable {
                 entityRuntimes: runtimeConfiguration.entityRuntimes
             )
 
+            let transactionCapabilities = try await inspectTransactionCapabilities(
+                storageEngine: storageEngine
+            )
+            try runtimeConfiguration.validateStorageRequirements(
+                schema: schema,
+                transactionCapabilities: transactionCapabilities
+            )
+
             let preparedStorage = try await prepareStorage(
                 storageEngine: storageEngine,
-                configuration: configuration
+                configuration: configuration,
+                transactionCapabilities: transactionCapabilities
             )
+            let schemaFingerprint = try SchemaManifest(schema: schema)
+                .fingerprint()
             let container = DBContainer(
                 schema: schema,
+                schemaFingerprint: schemaFingerprint,
+                schemaGeneration: nil,
                 configuration: configuration,
                 runtimeConfiguration: runtimeConfiguration,
                 security: security,
@@ -221,6 +245,56 @@ public final class DBContainer: Sendable {
                 )
                 try await registry.persist(schema)
             }
+            try configuration.finishOpeningStorageEngine()
+            return container
+        } catch {
+            await configuration.shutdownStorageEngine()
+            throw error
+        }
+    }
+
+    /// Opens the canonical schema persisted by `schemaExecute` and builds a
+    /// type-independent runtime for it. A completely new store starts with an
+    /// empty schema at version `0.0.0`; partial schema metadata is rejected.
+    public static func openRestoringSchema(
+        configuration: DBConfiguration,
+        security: SecurityConfiguration = .enabled(),
+        runtimeFactory: @escaping @Sendable (
+            Schema
+        ) async throws -> DatabaseRuntimeConfiguration
+    ) async throws -> DBContainer {
+        let storageEngine = try configuration.claimStorageEngine()
+        do {
+            let preparedStorage = try await prepareStorage(
+                storageEngine: storageEngine,
+                configuration: configuration
+            )
+            let restored = try await restoreSchemaState(
+                storageEngine: storageEngine,
+                metadataSubspace: preparedStorage.metadataSubspace,
+                clock: configuration.monotonicClock
+            )
+            let runtimeConfiguration = try await runtimeFactory(restored.schema)
+            try runtimeConfiguration.validate(schema: restored.schema)
+            try IndexRuntimeConfigurationValidator.validate(
+                configuration.indexConfigurations,
+                schema: restored.schema,
+                entityRuntimes: runtimeConfiguration.entityRuntimes
+            )
+            try runtimeConfiguration.validateStorageRequirements(
+                schema: restored.schema,
+                transactionCapabilities: preparedStorage.transactionCapabilities
+            )
+            let container = DBContainer(
+                schema: restored.schema,
+                schemaFingerprint: restored.fingerprint,
+                schemaGeneration: restored.generation,
+                configuration: configuration,
+                runtimeConfiguration: runtimeConfiguration,
+                security: security,
+                preparedStorage: preparedStorage
+            )
+            try await container.ensureIndexesReady()
             try configuration.finishOpeningStorageEngine()
             return container
         } catch {
@@ -262,8 +336,17 @@ public final class DBContainer: Sendable {
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
     private static func prepareStorage(
         storageEngine: any StorageEngine,
-        configuration: DBConfiguration
+        configuration: DBConfiguration,
+        transactionCapabilities: TransactionCapabilities? = nil
     ) async throws -> PreparedStorage {
+        let resolvedTransactionCapabilities: TransactionCapabilities
+        if let transactionCapabilities {
+            resolvedTransactionCapabilities = transactionCapabilities
+        } else {
+            resolvedTransactionCapabilities = try await inspectTransactionCapabilities(
+                storageEngine: storageEngine
+            )
+        }
         let expectedFormat = DatabaseFormatDescriptor.v1(
             itemStorage: configuration.itemStorage
         )
@@ -278,16 +361,67 @@ public final class DBContainer: Sendable {
         let metadataSubspace = try await storageEngine.resolveOrCreateNamespace(
             path: ["_metadata"]
         )
+        let schemaGeneration = try await loadSchemaGeneration(
+            storageEngine: storageEngine,
+            metadataSubspace: metadataSubspace,
+            clock: configuration.monotonicClock
+        )
         return PreparedStorage(
             engine: storageEngine,
             format: persistedFormat,
             partitionCatalog: partitionCatalog,
-            metadataSubspace: metadataSubspace
+            metadataSubspace: metadataSubspace,
+            schemaGeneration: schemaGeneration,
+            transactionCapabilities: resolvedTransactionCapabilities
         )
+    }
+
+    private static func inspectTransactionCapabilities(
+        storageEngine: any StorageEngine
+    ) async throws -> TransactionCapabilities {
+        let transaction = try storageEngine.createOwnedTransaction()
+        let capabilities = transaction.capabilities
+        try await transaction.cancel()
+        return capabilities
+    }
+
+    private static func loadSchemaGeneration(
+        storageEngine: any StorageEngine,
+        metadataSubspace: Subspace,
+        clock: any StorageMonotonicClock
+    ) async throws -> UInt64 {
+        try await StorageTransactionExecutor(engine: storageEngine)
+            .withTransaction(configuration: .default, clock: clock) {
+                transaction in
+                guard let bytes = try await transaction.getValue(
+                    for: schemaGenerationKey(metadataSubspace: metadataSubspace),
+                    snapshot: true
+                ) else {
+                    return 0
+                }
+                let tuple = try Tuple(packed: bytes)
+                guard tuple.count == 1 else {
+                    throw DatabaseRuntimeError.internalError(
+                        "Invalid schema generation format"
+                    )
+                }
+                switch try tuple.value(at: 0) {
+                case .unsignedInteger(let generation):
+                    return generation
+                case .signedInteger(let generation) where generation >= 0:
+                    return UInt64(generation)
+                default:
+                    throw DatabaseRuntimeError.internalError(
+                        "Invalid schema generation format"
+                    )
+                }
+            }
     }
 
     private init(
         schema: Schema,
+        schemaFingerprint: SchemaFingerprint,
+        schemaGeneration: UInt64?,
         configuration: DBConfiguration,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration,
@@ -297,20 +431,28 @@ public final class DBContainer: Sendable {
         self.transactionExecutor = StorageTransactionExecutor(
             engine: preparedStorage.engine
         )
-        self.schema = schema
+        self.transactionCapabilities = preparedStorage.transactionCapabilities
         self.configuration = configuration
-        self.runtimeConfiguration = runtimeConfiguration
         self.itemStorageFactory = ItemStorageFactory(
             configuration: preparedStorage.format.itemStorage
         )
         self.databaseFormat = preparedStorage.format
         self.securityConfiguration = security
-        self.securityDelegate = security.isEnabled
+        let securityDelegate: (any DataStoreSecurityDelegate)? = security.isEnabled
             ? RequestSecurityPolicyDelegate(
                 configuration: security,
                 policies: runtimeConfiguration.authorizationPolicies
             )
             : nil
+        self.schemaGenerationStore = DatabaseSchemaGenerationStore(
+            initial: DatabaseSchemaGeneration(
+                identifier: schemaGeneration ?? preparedStorage.schemaGeneration,
+                fingerprint: schemaFingerprint,
+                schema: schema,
+                runtimeConfiguration: runtimeConfiguration,
+                securityDelegate: securityDelegate
+            )
+        )
         self.dataStoreDelegate = MetricsDataStoreDelegate(
             metrics: configuration.metrics
         )
@@ -325,6 +467,66 @@ public final class DBContainer: Sendable {
         self.migrationPlanStorage = Mutex(nil)
         self.partitionCatalog = preparedStorage.partitionCatalog
         self.metadataSubspace = preparedStorage.metadataSubspace
+    }
+
+    private var activeSchemaLease: DatabaseSchemaLease {
+        DatabaseSchemaExecutionScope.lease ?? schemaGenerationStore.acquire()
+    }
+
+    /// Returns the latest atomically published generation even when the
+    /// caller is executing under an older request lease. Schema coordination
+    /// uses this boundary to serialize publications against current state;
+    /// ordinary request execution must continue to use `activeSchemaLease`.
+    package func acquirePublishedSchemaLease() -> DatabaseSchemaLease {
+        schemaGenerationStore.acquire()
+    }
+
+    /// Acquires one immutable schema generation and binds it to all container
+    /// reads performed by `operation` until that asynchronous operation ends.
+    public func withSchemaLease<Result: Sendable>(
+        _ operation: @Sendable (DatabaseSchemaLease) async throws -> Result
+    ) async rethrows -> Result {
+        let lease = schemaGenerationStore.acquire()
+        return try await DatabaseSchemaExecutionScope.$lease.withValue(lease) {
+            try await operation(lease)
+        }
+    }
+
+    /// The generation bound to the current request, or the currently published
+    /// generation when called outside a request.
+    public var schemaGeneration: UInt64 {
+        activeSchemaLease.generation
+    }
+
+    /// The canonical fingerprint paired with `schema` in the active lease.
+    public var schemaFingerprint: SchemaFingerprint {
+        activeSchemaLease.fingerprint
+    }
+
+    /// Publishes a fully built generation after its durable schema transaction
+    /// has committed. Existing request leases continue to retain the old value.
+    package func publishSchemaGeneration(
+        _ schema: Schema,
+        fingerprint: SchemaFingerprint,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
+        generation: UInt64
+    ) {
+        let securityDelegate: (any DataStoreSecurityDelegate)? =
+            securityConfiguration.isEnabled
+            ? RequestSecurityPolicyDelegate(
+                configuration: securityConfiguration,
+                policies: runtimeConfiguration.authorizationPolicies
+            )
+            : nil
+        schemaGenerationStore.publish(
+            DatabaseSchemaGeneration(
+                identifier: generation,
+                fingerprint: fingerprint,
+                schema: schema,
+                runtimeConfiguration: runtimeConfiguration,
+                securityDelegate: securityDelegate
+            )
+        )
     }
 
     /// Releases the storage engine owned by this container.
@@ -358,13 +560,25 @@ public final class DBContainer: Sendable {
             let subspace = try await resolveDirectory(for: entity)
             let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
             let indexNames = entity.indexDescriptors.map { $0.name }
-            try await lifecycleStore.ensureReadable(
-                indexNames,
-                entityRange: subspace
-                    .subspace(SubspaceKey.items)
-                    .subspace(entity.name)
-                    .range()
-            )
+            try await transactionExecutor.withTransaction(
+                configuration: .batch,
+                clock: monotonicClock
+            ) { transaction in
+                let pending = try await self.pendingSchemaIndexBuilds(
+                    entity: entity.name,
+                    indexes: indexNames,
+                    transaction: transaction
+                )
+                try await lifecycleStore.ensureReadable(
+                    indexNames,
+                    entityRange: subspace
+                        .subspace(SubspaceKey.items)
+                        .subspace(entity.name)
+                        .range(),
+                    pendingBuildIndexes: pending,
+                    transaction: transaction
+                )
+            }
         }
         for group in schema.polymorphicGroups {
             guard !group.indexes.isEmpty else { continue }
@@ -456,7 +670,7 @@ public final class DBContainer: Sendable {
         )
     }
 
-    private func resolveDirectory(
+    package func resolveDirectory(
         for candidate: Schema.Entity,
         declaredIn authoritySchema: Schema,
         path: AnyDirectoryPath? = nil,
@@ -594,6 +808,20 @@ public final class DBContainer: Sendable {
         )
     }
 
+    package func partitionCatalogPage(
+        entity: String,
+        continuation: ByteString? = nil,
+        limit: Int,
+        transaction: any TransactionAccess
+    ) async throws -> DatabasePartitionCatalogPage {
+        try await partitionCatalog.page(
+            entity: entity,
+            continuation: continuation,
+            limit: limit,
+            transaction: transaction
+        )
+    }
+
 
     // MARK: - Store Access
 
@@ -676,13 +904,25 @@ public final class DBContainer: Sendable {
         guard !indexNames.isEmpty else { return }
 
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
-        try await lifecycleStore.initializeMissingStates(
-            indexNames,
-            entityRange: subspace
-                .subspace(SubspaceKey.items)
-                .subspace(entity.name)
-                .range()
-        )
+        try await transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: monotonicClock
+        ) { transaction in
+            let pending = try await self.pendingSchemaIndexBuilds(
+                entity: entity.name,
+                indexes: indexNames,
+                transaction: transaction
+            )
+            try await lifecycleStore.initializeMissingStates(
+                indexNames,
+                entityRange: subspace
+                    .subspace(SubspaceKey.items)
+                    .subspace(entity.name)
+                    .range(),
+                pendingBuildIndexes: pending,
+                transaction: transaction
+            )
+        }
     }
 
     private func initializeIndexStates(
@@ -694,12 +934,18 @@ public final class DBContainer: Sendable {
         guard !indexNames.isEmpty else { return }
 
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
+        let pending = try await pendingSchemaIndexBuilds(
+            entity: entity.name,
+            indexes: indexNames,
+            transaction: transaction
+        )
         try await lifecycleStore.initializeMissingStates(
             indexNames,
             entityRange: subspace
                 .subspace(SubspaceKey.items)
                 .subspace(entity.name)
                 .range(),
+            pendingBuildIndexes: pending,
             transaction: transaction
         )
     }
@@ -948,7 +1194,7 @@ extension DBContainer {
         }
     }
 
-    private static func setCurrentSchemaSnapshot(
+    package static func setCurrentSchemaSnapshot(
         _ schema: Schema,
         metadataSubspace: Subspace,
         transaction: any TransactionAccess
@@ -971,6 +1217,14 @@ extension DBContainer {
             try DatabaseSchemaFingerprint.compute(schema),
             for: fingerprintKey
         )
+    }
+
+    package static func schemaGenerationKey(
+        metadataSubspace: Subspace
+    ) -> ByteString {
+        metadataSubspace
+            .subspace("schema")
+            .pack(Tuple("generation"))
     }
 
     /// Key holding the in-progress migration stage marker.

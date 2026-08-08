@@ -51,7 +51,7 @@ private struct MinMaxSubspaces: Sendable {
 /// - `getAllMins()`: O(G) - Layer 2 range scan
 /// - Insert/Update: O(log N) + O(log M) - Layer 1 write + Layer 2 update
 /// - Delete: O(log N) + O(log M) - Layer 1 clear + Layer 2 recomputation
-public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>: SubspaceIndexMaintainer {
+public struct MinIndexMaintainer<Item: PersistedEntityValue, Value: IndexComparableValue>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     public let index: Index
@@ -420,7 +420,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: IndexComparableValue>
 /// - `getAllMaxs()`: O(G) - Layer 2 range scan
 /// - Insert/Update: O(log N) + O(log M) - Layer 1 write + Layer 2 update
 /// - Delete: O(log N) + O(log M) - Layer 1 clear + Layer 2 recomputation
-public struct MaxIndexMaintainer<Item: Persistable, Value: IndexComparableValue>: SubspaceIndexMaintainer {
+public struct MaxIndexMaintainer<Item: PersistedEntityValue, Value: IndexComparableValue>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     public let index: Index

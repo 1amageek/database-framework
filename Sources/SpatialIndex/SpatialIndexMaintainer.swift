@@ -30,7 +30,7 @@ import StorageKit
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+public struct SpatialIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression
@@ -192,17 +192,13 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// If the coordinate field is nil, returns nil (no index entry).
     ///
     private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> ByteString? {
-        guard let expression = index.rootExpression as? FieldKeyExpression,
-              let fieldNumber = Item.fieldNumber(for: expression.fieldName) else {
+        guard let expression = index.rootExpression as? FieldKeyExpression else {
             throw SpatialIndexMaintenanceError.invalidFieldExpression(
                 indexName: index.name
             )
         }
-        guard let value = try item.persistedFieldValue(
-            for: FieldIdentity(
-                name: expression.fieldName,
-                number: fieldNumber
-            )
+        guard let value = try item.persistedValue(
+            forFieldNamed: expression.fieldName
         ) else {
             throw SpatialIndexMaintenanceError.missingCoordinate(
                 fieldName: expression.fieldName

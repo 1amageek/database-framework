@@ -341,6 +341,93 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let catalogError = error as? DatabasePartitionCatalogError {
             return Self.map(catalogError)
         }
+        if let schemaError = error as? DatabaseSchemaPublicationError {
+            switch schemaError {
+            case .fingerprintConflict:
+                return RemoteOperationError(
+                    category: .conflict,
+                    code: "SCHEMA_FINGERPRINT_CONFLICT",
+                    message: schemaError.description,
+                    retryability: .never
+                )
+            case .idempotencyKeyReused:
+                return RemoteOperationError(
+                    category: .conflict,
+                    code: "SCHEMA_IDEMPOTENCY_KEY_REUSED",
+                    message: schemaError.description,
+                    retryability: .never
+                )
+            case .invalidIdempotencyKey:
+                return RemoteOperationError(
+                    category: .invalidRequest,
+                    code: "INVALID_SCHEMA_IDEMPOTENCY_KEY",
+                    message: schemaError.description,
+                    retryability: .never
+                )
+            case .persistentIndexBuildJobRequired:
+                return RemoteOperationError(
+                    category: .unavailable,
+                    code: "SCHEMA_INDEX_BUILD_JOB_REQUIRED",
+                    message: schemaError.description,
+                    retryability: .never
+                )
+            case .generationOverflow, .corruptedState:
+                return RemoteOperationError(
+                    category: .internalFailure,
+                    code: "SCHEMA_PUBLICATION_STATE_INVALID",
+                    message: schemaError.description,
+                    retryability: .never
+                )
+            }
+        }
+        if let schemaError = error as? DatabaseSchemaExecutionError {
+            switch schemaError {
+            case .migrationRequired:
+                return RemoteOperationError(
+                    category: .conflict,
+                    code: "SCHEMA_MIGRATION_REQUIRED",
+                    message: schemaError.description,
+                    retryability: .never
+                )
+            case .runtimeUnavailable:
+                return RemoteOperationError(
+                    category: .unavailable,
+                    code: "SCHEMA_RUNTIME_UNAVAILABLE",
+                    message: schemaError.description,
+                    retryability: .never
+                )
+            case .storageCapabilityUnavailable:
+                return RemoteOperationError(
+                    category: .unavailable,
+                    code: "SCHEMA_STORAGE_CAPABILITY_UNAVAILABLE",
+                    message: schemaError.description,
+                    retryability: .never
+                )
+            case .persistentJobServiceUnavailable:
+                return RemoteOperationError(
+                    category: .unavailable,
+                    code: "SCHEMA_PERSISTENT_JOB_SERVICE_UNAVAILABLE",
+                    message: schemaError.description,
+                    retryability: .never
+                )
+            }
+        }
+        if let schemaJobError = error as? DatabaseSchemaApplyJobError {
+            return RemoteOperationError(
+                category: .internalFailure,
+                code: "SCHEMA_INDEX_BUILD_FAILED",
+                message: schemaJobError.description,
+                retryability: .never
+            )
+        }
+        if let registryError = error as? SchemaRegistryError {
+            return RemoteOperationError(
+                category: .conflict,
+                code: "SCHEMA_INCOMPATIBLE",
+                message: registryError.description,
+                retryability: .never
+            )
+        }
         if let compactionError = error as? StorageCompactionError {
             return Self.map(compactionError)
         }

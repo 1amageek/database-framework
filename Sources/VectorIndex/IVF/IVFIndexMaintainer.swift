@@ -40,7 +40,7 @@ import StorageKit
 ///     parameters: IVFParameters(nlist: 100, nprobe: 10)
 /// )
 /// ```
-public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct IVFIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     private struct StoredListEntry: Sendable {
         let primaryKey: Tuple
         let payload: ByteString

@@ -7,7 +7,7 @@ import StorageKit
 /// This is an engine storage format, not the client/server wire protocol.
 enum SchemaEntityEntryCodec {
     private static let magic: UInt32 = 0x4353_4244
-    private static let version: UInt16 = 1
+    private static let version: UInt16 = 2
 
     static func encode(
         _ entity: Schema.Entity,
@@ -244,21 +244,36 @@ enum SchemaEntityEntryCodec {
             return
         }
         switch ontology {
-        case .owlClass(let iri, let dataPropertyIRIs):
+        case .owlClass(let iri, let properties):
             writer.writeUInt8(1)
             try writer.writeString(iri)
-            try writeStringArray(dataPropertyIRIs, into: &writer)
+            try write(properties, into: &writer)
         case .owlObjectProperty(
             let iri,
             let fromField,
             let toField,
-            let dataPropertyIRIs
+            let properties
         ):
             writer.writeUInt8(2)
             try writer.writeString(iri)
             try writer.writeString(fromField)
             try writer.writeString(toField)
-            try writeStringArray(dataPropertyIRIs, into: &writer)
+            try write(properties, into: &writer)
+        }
+    }
+
+    private static func write(
+        _ properties: [OWLDataPropertyDescriptor],
+        into writer: inout StorageFrameEncoder
+    ) throws(StorageFrameError) {
+        try writer.writeCount(properties.count)
+        for property in properties {
+            try writer.writeString(property.name)
+            try writer.writeString(property.fieldName)
+            try writer.writeString(property.iri)
+            try writer.writeOptionalString(property.label)
+            try writer.writeOptionalString(property.targetTypeName)
+            try writer.writeOptionalString(property.targetFieldName)
         }
     }
 
@@ -713,18 +728,39 @@ enum SchemaEntityEntryCodec {
         case 1:
             return .owlClass(
                 iri: try reader.readString(),
-                dataPropertyIRIs: try readStringArray(from: &reader)
+                properties: try readOWLProperties(from: &reader)
             )
         case 2:
             return .owlObjectProperty(
                 iri: try reader.readString(),
                 fromField: try reader.readString(),
                 toField: try reader.readString(),
-                dataPropertyIRIs: try readStringArray(from: &reader)
+                properties: try readOWLProperties(from: &reader)
             )
         case let tag:
             throw SchemaEntityEntryCodecError.invalidMetadataTag(tag)
         }
+    }
+
+    private static func readOWLProperties(
+        from reader: inout StorageFrameDecoder
+    ) throws -> [OWLDataPropertyDescriptor] {
+        let count = try reader.readCount()
+        var properties: [OWLDataPropertyDescriptor] = []
+        properties.reserveCapacity(count)
+        for _ in 0..<count {
+            properties.append(
+                OWLDataPropertyDescriptor(
+                    name: try reader.readString(),
+                    fieldName: try reader.readString(),
+                    iri: try reader.readString(),
+                    label: try reader.readOptionalString(),
+                    targetTypeName: try reader.readOptionalString(),
+                    targetFieldName: try reader.readOptionalString()
+                )
+            )
+        }
+        return properties
     }
 
     private static func readPolymorphicMembership(

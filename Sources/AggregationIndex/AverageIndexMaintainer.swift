@@ -29,7 +29,7 @@ import StorageKit
 /// Key: [indexSubspace][groupValue1]...["count"]
 /// Value: Int64 (8 bytes little-endian)
 /// ```
-public struct AverageIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: NumericAggregationMaintainer {
+public struct AverageIndexMaintainer<Item: PersistedEntityValue, Value: IndexNumericValue>: NumericAggregationMaintainer {
     // MARK: - Properties
 
     public let index: Index

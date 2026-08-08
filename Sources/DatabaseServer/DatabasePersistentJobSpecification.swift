@@ -1,14 +1,16 @@
+import DatabaseKit
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 
 struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashable {
-    private static let formatVersion: UInt8 = 1
+    private static let formatVersion: UInt8 = 2
 
     let jobID: DatabaseTypes.UUID
     let operation: JobOperationIdentifier
     let requestDigest: ByteString
     let requestID: UInt64
     let traceID: String?
+    let authorization: AuthorizationContext
     let maximumSliceWorkUnits: UInt64
     let sliceTimeoutMilliseconds: UInt32
     let retryPolicy: JobStartOperation.RetryPolicy
@@ -22,7 +24,8 @@ struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashabl
               sliceTimeoutMilliseconds > 0,
               retryPolicy.maximumAttempts > 0,
               retryPolicy.initialBackoffMilliseconds
-                <= retryPolicy.maximumBackoffMilliseconds else {
+                <= retryPolicy.maximumBackoffMilliseconds,
+              authorization.principal?.identifier.isEmpty != true else {
             throw DatabaseJobRuntimeError.corruptedSpecification
         }
     }
@@ -36,6 +39,7 @@ struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashabl
         try writer.writeBytes(requestDigest)
         writer.writeUInt64(requestID)
         try writer.writeOptionalString(traceID)
+        try Self.encode(authorization, into: &writer)
         writer.writeUInt64(maximumSliceWorkUnits)
         writer.writeUInt32(sliceTimeoutMilliseconds)
         writer.writeUInt32(retryPolicy.maximumAttempts)
@@ -58,6 +62,7 @@ struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashabl
             requestDigest: try reader.readBytes(),
             requestID: try reader.readUInt64(),
             traceID: try reader.readOptionalString(),
+            authorization: try Self.decodeAuthorization(from: &reader),
             maximumSliceWorkUnits: try reader.readUInt64(),
             sliceTimeoutMilliseconds: try reader.readUInt32(),
             retryPolicy: JobStartOperation.RetryPolicy(
@@ -76,6 +81,7 @@ struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashabl
         requestDigest: ByteString,
         requestID: UInt64,
         traceID: String?,
+        authorization: AuthorizationContext,
         maximumSliceWorkUnits: UInt64,
         sliceTimeoutMilliseconds: UInt32,
         retryPolicy: JobStartOperation.RetryPolicy,
@@ -87,10 +93,59 @@ struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashabl
         self.requestDigest = requestDigest
         self.requestID = requestID
         self.traceID = traceID
+        self.authorization = authorization
         self.maximumSliceWorkUnits = maximumSliceWorkUnits
         self.sliceTimeoutMilliseconds = sliceTimeoutMilliseconds
         self.retryPolicy = retryPolicy
         self.planDigest = planDigest
         self.createdAt = createdAt
+    }
+
+    private static func encode(
+        _ authorization: AuthorizationContext,
+        into writer: inout DatabaseWireWriter
+    ) throws(DatabaseWireError) {
+        switch authorization {
+        case .anonymous:
+            writer.writeUInt8(0)
+        case .authenticated(let principal):
+            writer.writeUInt8(1)
+            try writer.writeString(principal.identifier)
+            let roles = principal.roles.sorted()
+            try writer.writeCount(roles.count)
+            for role in roles {
+                try writer.writeString(role)
+            }
+            try principal.claims.encode(into: &writer)
+        }
+    }
+
+    private static func decodeAuthorization(
+        from reader: inout DatabaseWireReader
+    ) throws(DatabaseWireError) -> AuthorizationContext {
+        switch try reader.readUInt8() {
+        case 0:
+            return .anonymous
+        case 1:
+            let identifier = try reader.readString()
+            let roleCount = try reader.readCount()
+            var roles = Set<String>()
+            roles.reserveCapacity(roleCount)
+            for _ in 0..<roleCount {
+                let role = try reader.readString()
+                guard roles.insert(role).inserted else {
+                    throw .invalidFieldObject(.duplicateKey(role))
+                }
+            }
+            return .authenticated(
+                Principal(
+                    identifier: identifier,
+                    roles: roles,
+                    claims: try FieldObject(from: &reader)
+                )
+            )
+        case let tag:
+            throw .invalidValueTag(tag)
+        }
     }
 }

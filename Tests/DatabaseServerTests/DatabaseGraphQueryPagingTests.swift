@@ -473,7 +473,10 @@ struct DatabaseGraphQueryPagingTests {
             request: operationRequest
         )
 
-        let responseFrame = try await endpoint.execute(frame)
+        let responseFrame = try await endpoint.execute(
+            frame,
+            context: DatabaseRequestExecutionContext(authorization: .anonymous)
+        )
         let header = try decoder.decodeResponseHeader(responseFrame)
         let decoded = try decoder.decodeResponse(
             DatabaseOperations.queryExecute,

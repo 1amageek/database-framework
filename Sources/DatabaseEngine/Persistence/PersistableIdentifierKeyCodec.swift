@@ -4,6 +4,21 @@ import StorageKit
 
 /// Resolves every model and wire identifier through one canonical storage-key path.
 public enum PersistableIdentifierKeyCodec {
+    /// Encodes an identifier already represented as a canonical persisted
+    /// field value. This is the type-independent counterpart of
+    /// `tuple(for model:)`; both produce the same physical storage key.
+    public static func tuple(
+        forPersistedIdentifier value: FieldValue,
+        limits: PersistableIdentifierKeyLimits = .default
+    ) throws(PersistableIdentifierKeyError) -> Tuple {
+        let identifier = try persistedIdentifier(from: value)
+        return try tuple(
+            for: identifier.value,
+            expectedType: identifier.type,
+            limits: limits
+        )
+    }
+
     public static func tuple<ID: PersistableIdentifier>(
         for identifier: ID,
         limits: PersistableIdentifierKeyLimits = .default
@@ -251,6 +266,59 @@ public enum PersistableIdentifierKeyCodec {
             throw .invalidTupleValue(expected: expectedType)
         }
         return value
+    }
+
+    private static func persistedIdentifier(
+        from value: FieldValue
+    ) throws(PersistableIdentifierKeyError) -> (
+        value: ReferenceIdentifier,
+        type: PersistableIdentifierType
+    ) {
+        switch value {
+        case .bool(let value):
+            return (.bool(value), .bool)
+        case .int8(let value):
+            return (.int8(value), .int8)
+        case .int16(let value):
+            return (.int16(value), .int16)
+        case .int32(let value):
+            return (.int32(value), .int32)
+        case .int64(let value):
+            return (.int64(value), .int64)
+        case .uint8(let value):
+            return (.uint8(value), .uint8)
+        case .uint16(let value):
+            return (.uint16(value), .uint16)
+        case .uint32(let value):
+            return (.uint32(value), .uint32)
+        case .uint64(let value):
+            return (.uint64(value), .uint64)
+        case .string(let value):
+            return (.string(value), .string)
+        case .bytes(let value):
+            return (.bytes(value), .bytes)
+        case .uuid(let value):
+            return (.uuid(value), .uuid)
+        case .array(let values):
+            guard !values.isEmpty else {
+                throw .unsupportedPersistedIdentifierValue
+            }
+            var components: [ReferenceIdentifier] = []
+            var componentTypes: [PersistableIdentifierType] = []
+            components.reserveCapacity(values.count)
+            componentTypes.reserveCapacity(values.count)
+            for value in values {
+                let component = try persistedIdentifier(from: value)
+                components.append(component.value)
+                componentTypes.append(component.type)
+            }
+            return (
+                .composite(components),
+                .composite(componentTypes)
+            )
+        default:
+            throw .unsupportedPersistedIdentifierValue
+        }
     }
 
     private static func unsignedInteger<

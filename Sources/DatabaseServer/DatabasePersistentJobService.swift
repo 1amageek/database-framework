@@ -3,7 +3,10 @@ import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 
-public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
+public final class DatabasePersistentJobService:
+    DatabaseJobService,
+    DatabasePersistentJobCreating,
+    Sendable {
     public var jobOperations: [JobOperationIdentifier] {
         registry.identifiers
     }
@@ -48,108 +51,20 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
         context: DatabaseOperationContext
     ) async throws -> JobStartExecutionResult {
         try validate(request)
-        let store = self.store
-        let registry = self.registry
-        let identifierGenerator = self.identifierGenerator
-        let clock = self.clock
-        let configuration = self.configuration
         let runtimeLimits = self.runtimeLimits
         let wireLimits = self.wireLimits
-        let storageLimits = self.storageLimits
         let requestPayload = context.requestPayload
+        let service = self
         let coordinated = try await coordinator.execute(
             operation: JobStartOperation.identifier,
             requestPayload: requestPayload,
             context: context,
             timeoutMilliseconds: runtimeLimits.maximumTimeoutMilliseconds
         ) { transactionContext in
-            let operation = try registry.resolve(request.operation)
-            let jobID = identifierGenerator.generate()
-            let createdAt = clock.now
-            let compiled = try await operation.compile(
-                requestPayload: request.requestPayload,
-                context: DatabaseResumableOperationStartContext(
-                    jobID: jobID,
-                    maximumSliceWorkUnits: request.maximumSliceWorkUnits,
-                    transaction: transactionContext,
-                    operationContext: context
-                ),
-                limits: wireLimits,
-                storageLimits: storageLimits
-            )
-            guard compiled.sliceTimeoutMilliseconds
-                    <= runtimeLimits.maximumTimeoutMilliseconds else {
-                throw DatabaseRuntimeLimitError.invalidTimeout(
-                    requested: compiled.sliceTimeoutMilliseconds,
-                    maximum: runtimeLimits.maximumTimeoutMilliseconds
-                )
-            }
-            try configuration.validate(
-                sliceTimeoutMilliseconds: compiled.sliceTimeoutMilliseconds
-            )
-
-            let requestDigest = DatabaseRequestDigest.compute(
-                jobOperation: request.operation,
-                payload: request.requestPayload
-            )
-            let planDigest = DatabasePersistentJobDigest.plan(
-                operation: request.operation,
-                payload: compiled.planPayload
-            )
-            let specification = DatabasePersistentJobSpecification(
-                jobID: jobID,
-                operation: request.operation,
-                requestDigest: requestDigest,
-                requestID: context.requestID,
-                traceID: context.metadata.traceID,
-                maximumSliceWorkUnits: request.maximumSliceWorkUnits,
-                sliceTimeoutMilliseconds: compiled.sliceTimeoutMilliseconds,
-                retryPolicy: request.retryPolicy,
-                planDigest: planDigest,
-                createdAt: createdAt
-            )
-            try specification.validate()
-            let preparedSpecification = try store.prepareSpecification(
-                specification
-            )
-            let specificationDigest = preparedSpecification.digest
-            let plan = DatabasePersistentJobPlan(
-                jobID: jobID,
-                operation: request.operation,
-                specificationDigest: specificationDigest,
-                payload: compiled.planPayload
-            )
-            let state = DatabasePersistentJobState(
-                jobID: jobID,
-                specificationDigest: specificationDigest,
-                revision: 0,
-                status: .pending,
-                operationStatePayload: compiled.initialStatePayload,
-                completedWorkUnits: 0,
-                totalWorkUnits: nil,
-                executionCount: 0,
-                currentSliceAttempt: 0,
-                unsuccessfulOutcomeCommitAttempt: 0,
-                pendingUnsuccessfulOutcome: nil,
-                lastUnsuccessfulOutcomeCommitError: nil,
-                cancellationRequested: false,
-                nextAttemptAt: createdAt,
-                leaseOwner: nil,
-                leaseToken: nil,
-                leaseExpiresAt: nil,
-                resultDigest: nil,
-                failure: nil,
-                updatedAt: createdAt
-            )
-            try await store.create(
-                specification: preparedSpecification,
-                plan: plan,
-                state: state,
-                transaction: transactionContext.storageAccess
-            )
-            return JobIdentity(
-                jobID: jobID,
-                operation: request.operation
+            try await service.createPersistentJob(
+                request,
+                context: context,
+                transaction: transactionContext
             )
         } makeResponse: { job, _ in
             return DatabaseOperationResponseEncoder(
@@ -162,6 +77,104 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
             coordinated: coordinated,
             limits: wireLimits
         )
+    }
+
+    package func createPersistentJob(
+        _ request: JobStartOperation.Request,
+        context: DatabaseOperationContext,
+        transaction: DatabaseTransaction
+    ) async throws -> JobIdentity {
+        try validate(request)
+        let operation = try registry.resolve(request.operation)
+        let jobID = identifierGenerator.generate()
+        let createdAt = clock.now
+        let compiled = try await operation.compile(
+            requestPayload: request.requestPayload,
+            context: DatabaseResumableOperationStartContext(
+                jobID: jobID,
+                maximumSliceWorkUnits: request.maximumSliceWorkUnits,
+                transaction: transaction,
+                operationContext: context
+            ),
+            limits: wireLimits,
+            storageLimits: storageLimits
+        )
+        guard compiled.sliceTimeoutMilliseconds
+                <= runtimeLimits.maximumTimeoutMilliseconds else {
+            throw DatabaseRuntimeLimitError.invalidTimeout(
+                requested: compiled.sliceTimeoutMilliseconds,
+                maximum: runtimeLimits.maximumTimeoutMilliseconds
+            )
+        }
+        try configuration.validate(
+            sliceTimeoutMilliseconds: compiled.sliceTimeoutMilliseconds
+        )
+
+        let requestDigest = DatabaseRequestDigest.compute(
+            jobOperation: request.operation,
+            payload: request.requestPayload
+        )
+        let planDigest = DatabasePersistentJobDigest.plan(
+            operation: request.operation,
+            payload: compiled.planPayload
+        )
+        let specification = DatabasePersistentJobSpecification(
+            jobID: jobID,
+            operation: request.operation,
+            requestDigest: requestDigest,
+            requestID: context.requestID,
+            traceID: context.metadata.traceID,
+            authorization: context.authorization,
+            maximumSliceWorkUnits: request.maximumSliceWorkUnits,
+            sliceTimeoutMilliseconds: compiled.sliceTimeoutMilliseconds,
+            retryPolicy: request.retryPolicy,
+            planDigest: planDigest,
+            createdAt: createdAt
+        )
+        try specification.validate()
+        let preparedSpecification = try store.prepareSpecification(
+            specification
+        )
+        let specificationDigest = preparedSpecification.digest
+        let plan = DatabasePersistentJobPlan(
+            jobID: jobID,
+            operation: request.operation,
+            specificationDigest: specificationDigest,
+            payload: compiled.planPayload
+        )
+        let state = DatabasePersistentJobState(
+            jobID: jobID,
+            specificationDigest: specificationDigest,
+            revision: 0,
+            status: .pending,
+            operationStatePayload: compiled.initialStatePayload,
+            completedWorkUnits: 0,
+            totalWorkUnits: nil,
+            executionCount: 0,
+            currentSliceAttempt: 0,
+            unsuccessfulOutcomeCommitAttempt: 0,
+            pendingUnsuccessfulOutcome: nil,
+            lastUnsuccessfulOutcomeCommitError: nil,
+            cancellationRequested: false,
+            nextAttemptAt: createdAt,
+            leaseOwner: nil,
+            leaseToken: nil,
+            leaseExpiresAt: nil,
+            resultDigest: nil,
+            failure: nil,
+            updatedAt: createdAt
+        )
+        try await store.create(
+            specification: preparedSpecification,
+            plan: plan,
+            state: state,
+            transaction: transaction.storageAccess
+        )
+        return JobIdentity(jobID: jobID, operation: request.operation)
+    }
+
+    package func recoverPersistentJobSchedule() async throws {
+        try await runner.recoverSchedule()
     }
 
     public func status(
@@ -397,6 +410,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
             metadata: OperationRequestMetadata(
                 traceID: snapshot.specification.traceID
             ),
+            authorization: snapshot.specification.authorization,
             requestPayload: [],
             requestDigest: snapshot.specification.requestDigest
         )

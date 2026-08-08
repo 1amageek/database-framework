@@ -230,6 +230,31 @@ public struct IndexQueryContext: Sendable {
         }
     }
 
+    /// Owns a read transaction and resolves an index through schema metadata,
+    /// without requiring a compiled model type.
+    public func withReadableIndex<Result: Sendable>(
+        named indexName: String,
+        kindIdentifier: String,
+        forEntityName entityName: String,
+        partitions: FieldObject,
+        configuration: TransactionConfiguration = .default,
+        _ operation: @Sendable @escaping (
+            ReadableIndex?,
+            any TransactionAccess
+        ) async throws -> Result
+    ) async throws -> Result {
+        try await withTransaction(configuration: configuration) { transaction in
+            let index = try await readableIndex(
+                named: indexName,
+                kindIdentifier: kindIdentifier,
+                forEntityName: entityName,
+                partitions: partitions,
+                transaction: transaction
+            )
+            return try await operation(index, transaction)
+        }
+    }
+
     /// Bind raw storage reads to one already-admitted transaction.
     package func storageReader(
         transaction: any TransactionAccess

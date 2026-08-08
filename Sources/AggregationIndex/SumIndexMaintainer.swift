@@ -34,7 +34,7 @@ import StorageKit
 /// The index expression must produce: [grouping_fields..., sum_field]
 /// - All fields except the last are grouping keys
 /// - The last field is the value to sum
-public struct SumIndexMaintainer<Item: Persistable, Value: IndexNumericValue>: NumericAggregationMaintainer {
+public struct SumIndexMaintainer<Item: PersistedEntityValue, Value: IndexNumericValue>: NumericAggregationMaintainer {
     // MARK: - Properties
 
     public let index: Index

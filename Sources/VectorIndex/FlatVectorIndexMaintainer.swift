@@ -32,7 +32,7 @@ import StorageKit
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct FlatVectorIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression

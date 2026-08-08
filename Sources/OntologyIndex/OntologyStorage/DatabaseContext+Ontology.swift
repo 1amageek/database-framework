@@ -404,20 +404,20 @@ public struct OntologyContextAPI: Sendable {
                     continue
                 }
 
-                let dataPropertyIRIs: [String]
+                let properties: [OWLDataPropertyDescriptor]
                 switch binding {
-                case .owlClass(let classIRI, let propertyIRIs):
+                case .owlClass(let classIRI, let descriptors):
                     do {
                         try await validator.validateClass(classIRI, in: ontologyIRI, transaction: transaction)
                     } catch let error as OntologyValidationError {
                         collected.append(error)
                     }
-                    dataPropertyIRIs = propertyIRIs
+                    properties = descriptors
                 case .owlObjectProperty(
                     let propertyIRI,
                     _,
                     _,
-                    let propertyIRIs
+                    let descriptors
                 ):
                     do {
                         try await validator.validateObjectProperty(
@@ -428,12 +428,24 @@ public struct OntologyContextAPI: Sendable {
                     } catch let error as OntologyValidationError {
                         collected.append(error)
                     }
-                    dataPropertyIRIs = propertyIRIs
+                    properties = descriptors
                 }
 
-                for iri in dataPropertyIRIs {
+                for property in properties {
                     do {
-                        try await validator.validateDataProperty(iri, in: ontologyIRI, transaction: transaction)
+                        if property.isObjectProperty {
+                            try await validator.validateObjectProperty(
+                                property.iri,
+                                in: ontologyIRI,
+                                transaction: transaction
+                            )
+                        } else {
+                            try await validator.validateDataProperty(
+                                property.iri,
+                                in: ontologyIRI,
+                                transaction: transaction
+                            )
+                        }
                     } catch let error as OntologyValidationError {
                         collected.append(error)
                     }

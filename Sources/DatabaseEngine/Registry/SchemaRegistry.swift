@@ -37,7 +37,7 @@ public struct SchemaRegistry: Sendable {
     /// Persist all entities and ontology from a Schema
     ///
     /// Called during `DBContainer.init` after `ensureIndexesReady()`.
-    /// Overwrites existing entries. Entity and ontology are written atomically.
+    /// Replaces changed entries. Entity and ontology are updated atomically.
     public func persist(
         _ schema: Schema,
         mode: SchemaRegistryPersistMode = .strict
@@ -80,17 +80,25 @@ public struct SchemaRegistry: Sendable {
             snapshot: false,
             streamingMode: .wantAll
         )
+        var existingValuesByName: [String: ByteString] = [:]
+        existingValuesByName.reserveCapacity(existingRows.count)
         for (key, value) in existingRows {
             let existing = try SchemaEntityEntryCodec.decode(value)
-            if !targetNames.contains(existing.name) {
+            let expectedKey = Self.key(for: existing.name)
+            if !targetNames.contains(existing.name) || key != expectedKey {
                 try transaction.clear(key: key)
+                continue
             }
+            existingValuesByName[existing.name] = value
         }
         for entity in entities {
-            try transaction.setValue(
-                try SchemaEntityEntryCodec.encode(entity),
-                for: Self.key(for: entity.name)
-            )
+            let encodedEntity = try SchemaEntityEntryCodec.encode(entity)
+            if existingValuesByName[entity.name] != encodedEntity {
+                try transaction.setValue(
+                    encodedEntity,
+                    for: Self.key(for: entity.name)
+                )
+            }
         }
         cache.clear()
     }
@@ -147,6 +155,30 @@ public struct SchemaRegistry: Sendable {
         cache.set(entities)
 
         return entities
+    }
+
+    /// Loads the complete catalog from a caller-owned transaction so schema,
+    /// version, fingerprint, and generation can share one storage snapshot.
+    package func loadAll(
+        transaction: any TransactionAccess
+    ) async throws -> [Schema.Entity] {
+        let prefix = Tuple([Self.catalogPrefix]).pack()
+        let range = Subspace(prefix: prefix).range()
+        let rows = try await TransactionRangeCollection.collect(
+            using: transaction,
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
+            limit: 0,
+            reverse: false,
+            snapshot: false,
+            streamingMode: .wantAll
+        )
+        var entities: [Schema.Entity] = []
+        entities.reserveCapacity(rows.count)
+        for (_, value) in rows {
+            entities.append(try SchemaEntityEntryCodec.decode(value))
+        }
+        return entities.sorted { $0.name < $1.name }
     }
 
     /// Load a single Schema.Entity by name

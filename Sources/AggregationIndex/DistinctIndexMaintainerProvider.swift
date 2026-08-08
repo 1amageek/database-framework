@@ -8,7 +8,7 @@ public struct DistinctIndexMaintainerProvider: IndexMaintainerProvider {
 
     public init() {}
 
-    public func makeIndexMaintainer<Item: Persistable>(
+    public func makeIndexMaintainer<Item: PersistedEntityValue>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,

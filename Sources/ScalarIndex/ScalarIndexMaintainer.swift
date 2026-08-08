@@ -43,7 +43,7 @@ import StorageKit
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct ScalarIndexMaintainer<Item: Persistable>: IndexUniquenessMaintainer {
+public struct ScalarIndexMaintainer<Item: PersistedEntityValue>: IndexUniquenessMaintainer {
     // MARK: - Properties
 
     /// Index definition

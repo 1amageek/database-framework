@@ -41,7 +41,10 @@ public final class DatabaseEndpoint: Sendable {
         self.errorMapper = AnyDatabaseErrorMapper(errorMapper)
     }
 
-    public func execute(_ bytes: ByteString) async throws -> ByteString {
+    public func execute(
+        _ bytes: ByteString,
+        context executionContext: DatabaseRequestExecutionContext
+    ) async throws -> ByteString {
         let request: DatabaseWireRequestEnvelope
         do {
             request = try DatabaseWireDecoder(limits: limits)
@@ -50,10 +53,27 @@ public final class DatabaseEndpoint: Sendable {
             throw DatabaseEndpointError.invalidRequestFrame(error)
         }
 
+        return try await container.withSchemaLease { _ in
+            try await RequestAuthorization.$context.withValue(
+                executionContext.authorization
+            ) {
+                try await execute(
+                    request,
+                    executionContext: executionContext
+                )
+            }
+        }
+    }
+
+    private func execute(
+        _ request: DatabaseWireRequestEnvelope,
+        executionContext: DatabaseRequestExecutionContext
+    ) async throws -> ByteString {
         let admissionRequest = DatabaseOperationAdmissionRequest(
             requestID: request.requestID,
             operation: request.operation,
-            metadata: request.metadata
+            metadata: request.metadata,
+            authorization: executionContext.authorization
         )
         if case .deny(let denial) = admissionPolicy.decision(
             for: admissionRequest
@@ -74,6 +94,7 @@ public final class DatabaseEndpoint: Sendable {
             container: container,
             requestID: request.requestID,
             metadata: request.metadata,
+            authorization: executionContext.authorization,
             requestPayload: request.payload
         )
         let result: DatabaseOperationResult

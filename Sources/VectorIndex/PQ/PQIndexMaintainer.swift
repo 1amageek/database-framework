@@ -40,7 +40,7 @@ import StorageKit
 ///     parameters: PQParameters(m: 8)
 /// )
 /// ```
-public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct PQIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     private struct StoredVector: Sendable {
         let primaryKey: Tuple
         let vector: [Float]

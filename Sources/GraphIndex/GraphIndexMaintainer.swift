@@ -34,7 +34,7 @@ import StorageKit
 ///
 /// **Reference**: Weiss, C., Karras, P., & Bernstein, A. (2008).
 /// "Hexastore: sextuple indexing for semantic web data management"
-public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct GraphIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     // MARK: - Properties
 
     /// Index definition
@@ -47,16 +47,16 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public let idExpression: KeyExpression
 
     /// Source node field.
-    private let sourceField: FieldIdentity
+    private let sourceField: String
 
     /// Edge label field. `nil` represents one implicit edge label.
-    private let labelField: FieldIdentity?
+    private let labelField: String?
 
     /// Target node field.
-    private let targetField: FieldIdentity
+    private let targetField: String
 
     /// Optional property-graph namespace field.
-    private let namespaceField: FieldIdentity?
+    private let namespaceField: String?
 
     /// Storage strategy
     private let strategy: PropertyGraphIndexStrategy
@@ -82,18 +82,12 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
-        self.sourceField = try Self.requireField(
-            named: metadata.sourceFieldName
-        )
+        self.sourceField = metadata.sourceFieldName
         self.labelField = metadata.labelFieldName.isEmpty
             ? nil
-            : try Self.requireField(named: metadata.labelFieldName)
-        self.targetField = try Self.requireField(
-            named: metadata.targetFieldName
-        )
-        self.namespaceField = try metadata.namespaceFieldName.map {
-            try Self.requireField(named: $0)
-        }
+            : metadata.labelFieldName
+        self.targetField = metadata.targetFieldName
+        self.namespaceField = metadata.namespaceFieldName
         self.strategy = metadata.declarativeStrategy
         self.strategySubspaces = StrategySubspaces(
             base: subspace,
@@ -366,15 +360,17 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         // Graph field is special: nil means "default graph", not a missing field
         // Unlike other fields, nil graph values should be indexed
-        guard let value = try item.persistedFieldValue(for: namespaceField)
+        guard let value = try item.persistedValue(
+            forFieldNamed: namespaceField
+        )
         else {
             throw GraphIndexError.fieldNotFound(
-                fieldName: namespaceField.name,
-                itemType: Item.persistableType
+                fieldName: namespaceField,
+                itemType: item.persistedEntityName
             )
         }
         guard value != .null else { return nil }
-        return try tupleElement(value, fieldName: namespaceField.name)
+        return try tupleElement(value, fieldName: namespaceField)
     }
 
     /// Extract a field value from an item
@@ -385,18 +381,18 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// `buildIndexKeys` to skip indexing.
     private func extractField(
         from item: Item,
-        field: FieldIdentity
+        field: String
     ) throws -> any TupleElement {
-        guard let value = try item.persistedFieldValue(for: field) else {
+        guard let value = try item.persistedValue(forFieldNamed: field) else {
             throw GraphIndexError.fieldNotFound(
-                fieldName: field.name,
-                itemType: Item.persistableType
+                fieldName: field,
+                itemType: item.persistedEntityName
             )
         }
         guard value != .null else {
             throw DataAccessError.nilValueCannotBeIndexed
         }
-        return try tupleElement(value, fieldName: field.name)
+        return try tupleElement(value, fieldName: field)
     }
 
     private func tupleElement(
@@ -413,17 +409,6 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         return string
     }
 
-    private static func requireField(
-        named fieldName: String
-    ) throws -> FieldIdentity {
-        guard let fieldNumber = Item.fieldNumber(for: fieldName) else {
-            throw GraphIndexError.fieldNotFound(
-                fieldName: fieldName,
-                itemType: Item.persistableType
-            )
-        }
-        return FieldIdentity(name: fieldName, number: fieldNumber)
-    }
 }
 
 // MARK: - StrategySubspaces

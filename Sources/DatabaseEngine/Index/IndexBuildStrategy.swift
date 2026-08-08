@@ -42,7 +42,7 @@ import DatabaseKit
 /// }
 /// ```
 public protocol IndexBuildStrategy<Item>: Sendable {
-    associatedtype Item: Persistable
+    associatedtype Item: PersistedEntityValue
 
     /// Build the index using custom strategy
     ///

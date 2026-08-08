@@ -400,12 +400,13 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         let factory = try DatabasePersistentJobServiceFactory(
             registry: registry,
-            scheduler: scheduler,
             identifierGenerator: identifiers,
             storageLimits: maintenanceJobTestStorageLimits
         )
         let firstService = try await factory.makeJobService(
-            context: maintenanceContext.serviceContext
+            context: maintenanceContext.serviceContext.withHostServices(
+                DatabaseServerHostServices(jobScheduler: scheduler)
+            )
         )
         let startRequest = JobStartOperation.Request(
             operation: JobOperations.maintenance.identifier,
@@ -435,7 +436,9 @@ struct DatabaseMaintenanceOperationServiceTests {
         #expect(pending.completedWorkUnits == 1)
 
         let recreatedService = try await factory.makeJobService(
-            context: maintenanceContext.serviceContext
+            context: maintenanceContext.serviceContext.withHostServices(
+                DatabaseServerHostServices(jobScheduler: scheduler)
+            )
         )
         try await recreatedService.runScheduledWork()
         let result = try await recreatedService.result(
@@ -697,12 +700,14 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         let factory = try DatabasePersistentJobServiceFactory(
             registry: registry,
-            scheduler: RecordingScheduler(),
             identifierGenerator: identifiers,
             storageLimits: maintenanceJobTestStorageLimits
         )
+        let scheduler = RecordingScheduler()
         let service = try await factory.makeJobService(
-            context: maintenanceContext.serviceContext
+            context: maintenanceContext.serviceContext.withHostServices(
+                DatabaseServerHostServices(jobScheduler: scheduler)
+            )
         )
         let startRequest = JobStartOperation.Request(
             operation: JobOperations.maintenance.identifier,
@@ -822,12 +827,13 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         let factory = try DatabasePersistentJobServiceFactory(
             registry: registry,
-            scheduler: scheduler,
             identifierGenerator: identifiers,
             storageLimits: storageLimits
         )
         return try await factory.makeJobService(
-            context: maintenanceContext.serviceContext
+            context: maintenanceContext.serviceContext.withHostServices(
+                DatabaseServerHostServices(jobScheduler: scheduler)
+            )
         )
     }
 

@@ -29,7 +29,7 @@ public struct VectorIndexMaintainerProvider: IndexMaintainerProvider {
         self.trainingResourceLimits = trainingResourceLimits
     }
 
-    public func makeIndexMaintainer<Item: Persistable>(
+    public func makeIndexMaintainer<Item: PersistedEntityValue>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,

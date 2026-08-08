@@ -12,7 +12,7 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
 
     public init() {}
 
-    public func makeIndexMaintainer<Item: Persistable>(
+    public func makeIndexMaintainer<Item: PersistedEntityValue>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
@@ -53,7 +53,7 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
     }
 
     private func make<
-        Item: Persistable,
+        Item: PersistedEntityValue,
         Score: IndexNumericValue & TupleDecodable
     >(
         _ scoreType: Score.Type,

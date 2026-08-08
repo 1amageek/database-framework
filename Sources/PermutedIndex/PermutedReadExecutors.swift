@@ -19,8 +19,8 @@ public enum PermutedReadExecutors {
         PolymorphicPermutedReadExecutor()
     }
 
-    public static func register<Model: Persistable>(
-        with definition: inout EntityRuntimeDefinition<Model>
+    public static func register(
+        with definition: inout EntityRuntimeDefinition
     ) throws(DatabaseRuntimeConfigurationError) {
         try definition.register(PermutedReadExecutor())
     }
@@ -35,12 +35,12 @@ private enum PermutedReadError: Error, Sendable {
 private struct PermutedReadExecutor: IndexReadExecutor {
     let kindIdentifier = "permuted"
 
-    func executeRows<T: Persistable>(
+    func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
         index: IndexDescriptor,
         indexScan: IndexScanSource,
-        as type: T.Type,
+        entity: Schema.Entity,
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
@@ -49,44 +49,122 @@ private struct PermutedReadExecutor: IndexReadExecutor {
             requested: options.consistency,
             default: .snapshot
         )
-        let queryContext = try context.indexQueryContext.withPartitions(partitions, for: T.self)
-        var builder = PermutedQueryBuilder<T>(
-            queryContext: queryContext,
-            indexName: index.name,
-            permutation: try decodePermutation(parameters)
+        try context.authorizeCanonicalListAccess(
+            entity: entity,
+            selectQuery: selectQuery
         )
-
-        if let limit = try parameters.optionalInteger(
-            named: PermutedReadParameter.limit
-        ) {
-            guard limit >= 0 else {
+        let permutation = try resolvePermutation(
+            parameters: parameters,
+            descriptor: index
+        )
+        let models = try await context.indexQueryContext.withReadableIndex(
+            named: index.name,
+            kindIdentifier: kindIdentifier,
+            forEntityName: entity.name,
+            partitions: partitions,
+            configuration: execution.transactionConfiguration
+        ) { readableIndex, transaction -> [PersistedModel] in
+            guard let readableIndex else { return [] }
+            let reader = PermutedIndexReader(
+                permutation: permutation,
+                subspace: readableIndex.subspace
+            )
+            let queryType = try parameters.requireString(
+                named: PermutedReadParameter.queryType
+            )
+            let primaryKeys: [Tuple]
+            switch queryType {
+            case PermutedReadParameter.prefixQuery:
+                primaryKeys = try await reader.primaryKeys(
+                    prefixedBy: decodeTupleArray(parameters),
+                    transaction: transaction
+                ).map(Tuple.init)
+            case PermutedReadParameter.exactQuery:
+                primaryKeys = try await reader.primaryKeys(
+                    matching: decodeTupleArray(parameters),
+                    transaction: transaction
+                ).map(Tuple.init)
+            case PermutedReadParameter.allQuery:
+                primaryKeys = try await reader.entries(
+                    transaction: transaction
+                ).map { Tuple($0.primaryKey) }
+            default:
                 throw PermutedReadError.invalidParameter(
-                    PermutedReadParameter.limit
+                    PermutedReadParameter.queryType
                 )
             }
-            builder = builder.limit(limit)
+            let limitedKeys = try limit(primaryKeys, parameters: parameters)
+            let fetched = try await context.fetchPersistedModelsPreservingOrder(
+                entity: entity,
+                primaryKeys: limitedKeys,
+                partitions: partitions,
+                transaction: transaction
+            )
+            var models: [PersistedModel] = []
+            models.reserveCapacity(fetched.count)
+            for (primaryKey, model) in zip(limitedKeys, fetched) {
+                guard let model else {
+                    throw PermutedReadError.missingFetchedEntity(
+                        primaryKey.pack()
+                    )
+                }
+                models.append(model)
+            }
+            return models
         }
-
-        let queryType = try parameters.requireString(
-            named: PermutedReadParameter.queryType
-        )
-        switch queryType {
-        case PermutedReadParameter.prefixQuery:
-            builder = builder.prefix(try decodeTupleArray(parameters))
-        case PermutedReadParameter.exactQuery:
-            builder = builder.exact(try decodeTupleArray(parameters))
-        case PermutedReadParameter.allQuery:
-            break
-        default:
-            throw PermutedReadError.invalidParameter(PermutedReadParameter.queryType)
-        }
-
-        let results = try await builder.executeDirect(
-            configuration: execution.transactionConfiguration
-        )
-
-        let rows = try results.map { try IndexReadRow.materializing($0) }
+        let rows = try models.map { try IndexReadRow.materializing($0) }
         return IndexReadResult(rows: rows, ordering: .orderedByIndex)
+    }
+
+    private func resolvePermutation(
+        parameters: IndexReadParameters,
+        descriptor: IndexDescriptor
+    ) throws -> Permutation {
+        guard descriptor.kindIdentifier == kindIdentifier,
+              case .array(let encodedIndices)? = descriptor.kind.metadata[
+                PermutedReadParameter.permutation
+              ] else {
+            throw PermutedReadError.missingParameter(
+                PermutedReadParameter.permutation
+            )
+        }
+        let canonical = try Permutation(
+            indices: integerValues(
+                encodedIndices,
+                parameter: PermutedReadParameter.permutation
+            )
+        )
+        guard canonical.size == descriptor.fieldNames.count else {
+            throw PermutedReadError.invalidParameter(
+                PermutedReadParameter.permutation
+            )
+        }
+        if let requested = try decodePermutation(parameters),
+           requested != canonical {
+            throw PermutedReadError.invalidParameter(
+                PermutedReadParameter.permutation
+            )
+        }
+        return canonical
+    }
+
+    private func limit(
+        _ primaryKeys: [Tuple],
+        parameters: IndexReadParameters
+    ) throws -> [Tuple] {
+        guard let limit = try parameters.optionalInteger(
+            named: PermutedReadParameter.limit
+        ) else {
+            return primaryKeys
+        }
+        guard limit >= 0 else {
+            throw PermutedReadError.invalidParameter(
+                PermutedReadParameter.limit
+            )
+        }
+        return primaryKeys.count > limit
+            ? Array(primaryKeys.prefix(limit))
+            : primaryKeys
     }
 
     private func decodePermutation(

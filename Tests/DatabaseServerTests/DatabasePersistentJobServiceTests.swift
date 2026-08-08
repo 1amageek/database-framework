@@ -14,6 +14,90 @@ private let persistentJobTestStorageLimits =
 
 @Suite("Persistent Database Job Service Tests", .serialized)
 struct DatabasePersistentJobServiceTests {
+    @Test("Scheduled slices bind persisted authorization and one schema generation")
+    func scheduledSliceBindsExecutionContext() async throws {
+        let gate = OperationExecutionGate()
+        let probe = ContextBindingProbe()
+        let jobContext = try await makePersistentJobServiceContext(
+            operation: ContextBindingResumableOperation(
+                executionGate: gate,
+                probe: probe
+            )
+        )
+        let request = JobStartOperation.Request(
+            operation: try ContextBindingJob.operation().identifier,
+            requestPayload: try encodedValue(13),
+            maximumSliceWorkUnits: 1
+        )
+        let authorization = AuthorizationContext.authenticated(
+            Principal(identifier: "persistent-job-user", roles: ["writer"])
+        )
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "job-context-binding",
+            authorization: authorization
+        )
+        let service = try await jobContext.makeService()
+        _ = try await service.start(request, context: context)
+        let initialGeneration = jobContext.container.schemaGeneration
+
+        let execution = Task {
+            try await service.runScheduledWork()
+        }
+        await gate.waitUntilEntered()
+
+        let nextSchema = try Schema(
+            entities: [try DatabaseEndpointEntity.schemaEntity],
+            version: Schema.Version(1, 0, 1)
+        )
+        let nextFingerprint = try SchemaManifest(schema: nextSchema)
+            .fingerprint()
+        let nextRuntime = try DatabaseFrameworkRuntime.configuration(
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    DatabaseEndpointEntity.self
+                ),
+            ]
+        )
+        let publicationResult: Result<
+            DatabaseSchemaPublicationResult,
+            any Error
+        >
+        do {
+            publicationResult = .success(
+                try await jobContext.container.publishSchema(
+                    nextSchema,
+                    fingerprint: nextFingerprint,
+                    expectedFingerprint: jobContext.container
+                        .schemaFingerprint.detached(),
+                    idempotencyKey: "publish-during-job-slice",
+                    runtimeConfiguration: nextRuntime
+                )
+            )
+        } catch {
+            publicationResult = .failure(error)
+        }
+        await gate.release()
+        let executionResult: Result<Void, any Error>
+        do {
+            try await execution.value
+            executionResult = .success(())
+        } catch {
+            executionResult = .failure(error)
+        }
+
+        let publication = try publicationResult.get()
+        try executionResult.get()
+
+        let observation = try #require(probe.observation)
+        #expect(observation.generationBeforeSuspension == initialGeneration)
+        #expect(observation.generationAfterSuspension == initialGeneration)
+        #expect(observation.operationAuthorization == authorization)
+        #expect(observation.taskLocalAuthorization == authorization)
+        #expect(jobContext.container.schemaGeneration == publication.generation)
+    }
+
     @Test("Job resumes across runtime recreation and returns its typed payload")
     func resumesAcrossRuntimeRecreation() async throws {
         let compilationCounter = CompilationCounter()
@@ -552,6 +636,7 @@ struct DatabasePersistentJobServiceTests {
                     requestDigest: specification.requestDigest,
                     requestID: specification.requestID,
                     traceID: specification.traceID,
+                    authorization: specification.authorization,
                     maximumSliceWorkUnits: specification.maximumSliceWorkUnits,
                     sliceTimeoutMilliseconds: specification.sliceTimeoutMilliseconds,
                     retryPolicy: specification.retryPolicy,
@@ -1599,7 +1684,6 @@ struct DatabasePersistentJobServiceTests {
         )
         let factory = try DatabasePersistentJobServiceFactory(
             registry: missingRegistry,
-            scheduler: jobContext.scheduler,
             identifierGenerator: jobContext.identifiers,
             storageLimits: persistentJobTestStorageLimits
         )
@@ -1610,7 +1694,10 @@ struct DatabasePersistentJobServiceTests {
                 coordinator: jobContext.coordinator,
                 runtimeLimits: .default,
                 wireLimits: .default,
-                clock: AnyDatabaseWallClock(jobContext.clock)
+                clock: AnyDatabaseWallClock(jobContext.clock),
+                hostServices: DatabaseServerHostServices(
+                    jobScheduler: jobContext.scheduler
+                )
             )
         )
 
@@ -1678,7 +1765,6 @@ struct DatabasePersistentJobServiceTests {
         let scheduler = FailOnceScheduler()
         let factory = try DatabasePersistentJobServiceFactory(
             registry: jobContext.registry,
-            scheduler: scheduler,
             identifierGenerator: jobContext.identifiers,
             storageLimits: persistentJobTestStorageLimits
         )
@@ -1689,7 +1775,10 @@ struct DatabasePersistentJobServiceTests {
                 coordinator: jobContext.coordinator,
                 runtimeLimits: .default,
                 wireLimits: .default,
-                clock: AnyDatabaseWallClock(jobContext.clock)
+                clock: AnyDatabaseWallClock(jobContext.clock),
+                hostServices: DatabaseServerHostServices(
+                    jobScheduler: scheduler
+                )
             )
         )
         let request = try jobRequest()
@@ -2238,13 +2327,15 @@ struct DatabasePersistentJobServiceTests {
     private func operationContext(
         container: DBContainer,
         request: JobStartOperation.Request,
-        idempotencyKey: String
+        idempotencyKey: String,
+        authorization: AuthorizationContext = .anonymous
     ) throws -> DatabaseOperationContext {
         try operationContext(
             container: container,
             operation: DatabaseOperations.jobStart,
             request: request,
-            idempotencyKey: idempotencyKey
+            idempotencyKey: idempotencyKey,
+            authorization: authorization
         )
     }
 
@@ -2252,7 +2343,8 @@ struct DatabasePersistentJobServiceTests {
         container: DBContainer,
         operation: DatabaseOperation<Request, Response>,
         request: Request,
-        idempotencyKey: String
+        idempotencyKey: String,
+        authorization: AuthorizationContext = .anonymous
     ) throws -> DatabaseOperationContext {
         DatabaseOperationContext(
             container: container,
@@ -2261,6 +2353,7 @@ struct DatabasePersistentJobServiceTests {
                 traceID: "trace",
                 idempotencyKey: idempotencyKey
             ),
+            authorization: authorization,
             requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
                 operation,
                 request: request
@@ -2286,7 +2379,6 @@ struct DatabasePersistentJobServiceTests {
         ) async throws -> any DatabaseJobService {
             let factory = try DatabasePersistentJobServiceFactory(
                 registry: registry,
-                scheduler: scheduler,
                 identifierGenerator: identifiers,
                 storageLimits: persistentJobTestStorageLimits
             )
@@ -2297,7 +2389,10 @@ struct DatabasePersistentJobServiceTests {
                     coordinator: coordinator,
                     runtimeLimits: .default,
                     wireLimits: .default,
-                    clock: AnyDatabaseWallClock(clock)
+                    clock: AnyDatabaseWallClock(clock),
+                    hostServices: DatabaseServerHostServices(
+                        jobScheduler: scheduler
+                    )
                 )
             )
         }
@@ -2474,6 +2569,15 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
+    private enum ContextBindingJob: PersistentJobTestDescriptor {
+        static let kind = "database.test.context-binding"
+
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response> {
+            try PersistentJobTestOperations.operation(for: Self.self)
+        }
+    }
+
     private protocol PersistentJobTestOperation: DatabaseResumableOperation
     where Request == CommandRequest,
           Response == CommandExecuteOperation.Response {
@@ -2535,6 +2639,25 @@ struct DatabasePersistentJobServiceTests {
 
         func recordExecution() {
             storage.withLock { $0 += 1 }
+        }
+    }
+
+    private struct ContextBindingObservation: Sendable, Equatable {
+        let generationBeforeSuspension: UInt64
+        let generationAfterSuspension: UInt64
+        let operationAuthorization: AuthorizationContext
+        let taskLocalAuthorization: AuthorizationContext
+    }
+
+    private final class ContextBindingProbe: Sendable {
+        private let storage = Mutex<ContextBindingObservation?>(nil)
+
+        var observation: ContextBindingObservation? {
+            storage.withLock { $0 }
+        }
+
+        func record(_ observation: ContextBindingObservation) {
+            storage.withLock { $0 = observation }
         }
     }
 
@@ -2679,6 +2802,73 @@ struct DatabasePersistentJobServiceTests {
                 marker,
                 identifiedBy: Self.unsuccessfulOutcomeMarkerID,
                 using: context.transaction
+            )
+        }
+    }
+
+    private struct ContextBindingResumableOperation:
+        PersistentJobTestOperation,
+        DatabaseUnsuccessfulOutcomeIndependentOperation {
+        typealias TestDescriptor = ContextBindingJob
+        typealias Plan = JobStepValue
+        typealias State = JobStepValue
+
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response> {
+            try TestDescriptor.operation()
+        }
+
+        let executionGate: OperationExecutionGate
+        let probe: ContextBindingProbe
+
+        func compile(
+            _ request: CommandRequest,
+            context: DatabaseResumableOperationStartContext
+        ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(
+                in: request
+            )
+            guard request == JobStepValue(13) else {
+                throw PersistentJobScenarioError.invalidPayload
+            }
+            _ = context
+            return DatabasePreparedResumableJob(
+                plan: request,
+                initialState: JobStepValue(0),
+                sliceTimeoutMilliseconds: 30_000
+            )
+        }
+
+        func runSlice(
+            plan: JobStepValue,
+            state: JobStepValue,
+            maximumWorkUnits: UInt64,
+            context: DatabaseResumableOperationContext
+        ) async throws -> sending DatabaseResumableOperationSlice<
+            State,
+            Response
+        > {
+            guard plan == JobStepValue(13),
+                  state == JobStepValue(0),
+                  maximumWorkUnits == 1 else {
+                throw PersistentJobScenarioError.invalidPayload
+            }
+            let generationBeforeSuspension = context.operationContext
+                .container.schemaGeneration
+            await executionGate.waitForRelease()
+            probe.record(ContextBindingObservation(
+                generationBeforeSuspension: generationBeforeSuspension,
+                generationAfterSuspension: context.operationContext
+                    .container.schemaGeneration,
+                operationAuthorization: context.operationContext.authorization,
+                taskLocalAuthorization: RequestAuthorization.context
+            ))
+            return .complete(
+                completedWorkUnits: 1,
+                totalWorkUnits: 1,
+                result: DatabasePersistentJobServiceTests.commandResponse(
+                    step: 13
+                )
             )
         }
     }

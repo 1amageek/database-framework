@@ -7,19 +7,21 @@ enum FullTextFieldValueError: Error, Sendable {
 }
 
 enum FullTextFieldValueExtractor {
-    static func strings<Item: Persistable>(
+    static func strings<Item: PersistedEntityValue>(
         from item: Item,
         field: FieldIdentity
     ) throws -> [String] {
-        guard let value = try item.persistedFieldValue(for: field) else {
+        guard let value = try item.persistedValue(
+            forFieldNamed: field.name
+        ) else {
             throw FullTextFieldValueError.missingField(
-                entity: Item.persistableType,
+                entity: item.persistedEntityName,
                 field: field
             )
         }
         return try strings(
             from: value,
-            entity: Item.persistableType,
+            entity: item.persistedEntityName,
             field: field
         )
     }

@@ -28,7 +28,11 @@ struct DatabaseServerRuntimeTests {
         )
 
         #expect(response.runtimeVersion == "test-runtime")
-        #expect(response.features == DatabaseRuntimeCapabilityCatalog.features)
+        #expect(
+            response.features == DatabaseRuntimeCapabilityCatalog.features(
+                includesSchemaExecution: false
+            )
+        )
         #expect(
             response.jobOperations == [
                 try JobOperationIdentifier(
@@ -124,8 +128,14 @@ struct DatabaseServerRuntimeTests {
             )
         )
 
-        _ = try await runtime.execute(first)
-        let responseBytes = try await runtime.execute(conflicting)
+        let executionContext = DatabaseRequestExecutionContext(
+            authorization: .anonymous
+        )
+        _ = try await runtime.execute(first, context: executionContext)
+        let responseBytes = try await runtime.execute(
+            conflicting,
+            context: executionContext
+        )
         let response = try DatabaseWireDecoder().decodeResponse(
             DatabaseOperations.commandExecute,
             from: responseBytes,
@@ -171,7 +181,12 @@ struct DatabaseServerRuntimeTests {
 
         let response = try DatabaseWireDecoder(limits: limits).decodeResponse(
             DatabaseOperations.commandExecute,
-            from: try await runtime.execute(request),
+            from: try await runtime.execute(
+                request,
+                context: DatabaseRequestExecutionContext(
+                    authorization: .anonymous
+                )
+            ),
             matching: 5
         )
         guard case .failure(let error) = response else {
@@ -283,7 +298,12 @@ struct DatabaseServerRuntimeTests {
         )
         let response = try DatabaseWireDecoder().decodeResponse(
             operation,
-            from: try await runtime.execute(requestBytes),
+            from: try await runtime.execute(
+                requestBytes,
+                context: DatabaseRequestExecutionContext(
+                    authorization: .anonymous
+                )
+            ),
             matching: requestID
         )
         switch response {

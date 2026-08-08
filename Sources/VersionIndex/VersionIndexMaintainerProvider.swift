@@ -5,11 +5,11 @@ import StorageKit
 /// Canonical runtime provider for version-history indexes.
 public struct VersionIndexMaintainerProvider: IndexMaintainerProvider {
     public let kindIdentifier = "version"
-    public let runtimeRequirements: IndexRuntimeRequirements = .entityAndPolymorphicReads
+    public let runtimeRequirements: IndexRuntimeRequirements = .versionHistory
 
     public init() {}
 
-    public func makeIndexMaintainer<Item: Persistable>(
+    public func makeIndexMaintainer<Item: PersistedEntityValue>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,

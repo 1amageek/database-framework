@@ -8,4 +8,5 @@ public enum PersistableIdentifierKeyError: Error, Sendable, Equatable {
     case compositeDepthExceeded(actual: Int, maximum: Int)
     case invalidTupleElementCount(actual: Int)
     case invalidTupleValue(expected: PersistableIdentifierType)
+    case unsupportedPersistedIdentifierValue
 }

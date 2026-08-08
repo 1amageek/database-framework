@@ -89,6 +89,24 @@ public actor DatabasePersistentJobRunner {
             for: leasedSnapshot,
             container: container
         )
+        try await container.withSchemaLease { _ in
+            try await RequestAuthorization.$context.withValue(
+                operationContext.authorization
+            ) {
+                try await run(
+                    leasedJob,
+                    snapshot: leasedSnapshot,
+                    operationContext: operationContext
+                )
+            }
+        }
+    }
+
+    private func run(
+        _ leasedJob: LeasedJob,
+        snapshot leasedSnapshot: DatabasePersistentJobSnapshot,
+        operationContext: DatabaseOperationContext
+    ) async throws {
         switch leasedJob.action {
         case .execute:
             let operation: AnyDatabaseResumableOperation

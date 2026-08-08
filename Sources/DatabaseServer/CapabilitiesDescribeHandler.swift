@@ -5,13 +5,29 @@ public struct CapabilitiesDescribeHandler: DatabaseOperationHandler {
 
     private let identity: DatabaseRuntimeIdentity
     private let jobOperations: [JobOperationIdentifier]
+    private let features: [CapabilitiesDescribeOperation.Feature]
 
     public init(
         identity: DatabaseRuntimeIdentity,
         jobOperations: [JobOperationIdentifier]
     ) {
+        self.init(
+            identity: identity,
+            jobOperations: jobOperations,
+            features: DatabaseRuntimeCapabilityCatalog.features(
+                includesSchemaExecution: false
+            )
+        )
+    }
+
+    public init(
+        identity: DatabaseRuntimeIdentity,
+        jobOperations: [JobOperationIdentifier],
+        features: [CapabilitiesDescribeOperation.Feature]
+    ) {
         self.identity = identity
         self.jobOperations = jobOperations
+        self.features = features
     }
 
     public func handle(
@@ -20,7 +36,7 @@ public struct CapabilitiesDescribeHandler: DatabaseOperationHandler {
     ) async throws -> CapabilitiesDescribeOperation.Response {
         CapabilitiesDescribeOperation.Response(
             runtimeVersion: identity.version,
-            features: DatabaseRuntimeCapabilityCatalog.features,
+            features: features,
             jobOperations: jobOperations
         )
     }

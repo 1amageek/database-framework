@@ -145,43 +145,119 @@ package struct DatabasePartitionCatalog: Sendable {
             configuration: .batch,
             clock: clock
         ) { transaction in
-            let rows = try await TransactionRangeCollection.collect(using: transaction,
-                from: begin,
-                to: .firstGreaterOrEqual(range.end),
-                limit: limit + 1,
-                reverse: false,
+            try await page(
+                entity: entity,
+                begin: begin,
+                rangeEnd: range.end,
+                limit: limit,
                 snapshot: true,
-                streamingMode: .iterator
-            )
-            let visibleRows = rows.prefix(limit)
-            var decodedEntries: [DatabasePartitionCatalogEntry] = []
-            decodedEntries.reserveCapacity(visibleRows.count)
-            for row in visibleRows {
-                decodedEntries.append(
-                    try decodeEntry(
-                        key: row.0,
-                        bytes: row.1
-                    )
-                )
-            }
-
-            let next: ByteString?
-            if rows.count > limit, let lastKey = visibleRows.last?.0 {
-                next = try StorageFrameCodec.encode(
-                    DatabasePartitionCatalogContinuation(
-                        entity: entity,
-                        lastKey: lastKey
-                    ),
-                    limits: storageLimits
-                )
-            } else {
-                next = nil
-            }
-            return DatabasePartitionCatalogPage(
-                entries: decodedEntries,
-                continuation: next
+                transaction: transaction
             )
         }
+    }
+
+    /// Reads a partition page in a caller-owned transaction.
+    package func page(
+        entity: String,
+        continuation: ByteString?,
+        limit: Int,
+        transaction: any TransactionAccess
+    ) async throws -> DatabasePartitionCatalogPage {
+        guard limit > 0, limit <= Self.maximumPageSize else {
+            throw DatabasePartitionCatalogError.invalidPageLimit(
+                actual: limit,
+                maximum: Self.maximumPageSize
+            )
+        }
+        guard !entity.isEmpty else {
+            throw DatabasePartitionCatalogError.invalidEntity(entity)
+        }
+        let scanSpace = entries.subspace(entity)
+        let range = scanSpace.range()
+        let begin: KeySelector
+        if let continuation {
+            let decoded: DatabasePartitionCatalogContinuation
+            do {
+                decoded = try StorageFrameCodec.decode(
+                    DatabasePartitionCatalogContinuation.self,
+                    from: continuation,
+                    limits: storageLimits
+                )
+            } catch {
+                throw DatabasePartitionCatalogError.invalidContinuation
+            }
+            guard decoded.entity == entity,
+                  scanSpace.contains(decoded.lastKey) else {
+                throw DatabasePartitionCatalogError.invalidContinuation
+            }
+            begin = .firstGreaterThan(decoded.lastKey)
+        } else {
+            begin = .firstGreaterOrEqual(range.begin)
+        }
+        return try await page(
+            entity: entity,
+            begin: begin,
+            rangeEnd: range.end,
+            limit: limit,
+            snapshot: false,
+            transaction: transaction
+        )
+    }
+
+    package func containsEntries(
+        entity: String,
+        transaction: any TransactionAccess
+    ) async throws -> Bool {
+        let page = try await page(
+            entity: entity,
+            continuation: nil,
+            limit: 1,
+            transaction: transaction
+        )
+        return !page.entries.isEmpty
+    }
+
+    private func page(
+        entity: String?,
+        begin: KeySelector,
+        rangeEnd: ByteString,
+        limit: Int,
+        snapshot: Bool,
+        transaction: any TransactionAccess
+    ) async throws -> DatabasePartitionCatalogPage {
+        let rows = try await TransactionRangeCollection.collect(
+            using: transaction,
+            from: begin,
+            to: .firstGreaterOrEqual(rangeEnd),
+            limit: limit + 1,
+            reverse: false,
+            snapshot: snapshot,
+            streamingMode: .iterator
+        )
+        let visibleRows = rows.prefix(limit)
+        var decodedEntries: [DatabasePartitionCatalogEntry] = []
+        decodedEntries.reserveCapacity(visibleRows.count)
+        for row in visibleRows {
+            decodedEntries.append(
+                try decodeEntry(key: row.0, bytes: row.1)
+            )
+        }
+        let next: ByteString?
+        if rows.count > limit, let lastKey = visibleRows.last?.0 {
+            next = try StorageFrameCodec.encode(
+                DatabasePartitionCatalogContinuation(
+                    entity: entity,
+                    lastKey: lastKey
+                ),
+                limits: storageLimits
+            )
+        } else {
+            next = nil
+        }
+        return DatabasePartitionCatalogPage(
+            entries: decodedEntries,
+            continuation: next
+        )
     }
 
     private func decodeEntry(

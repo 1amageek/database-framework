@@ -136,26 +136,28 @@ struct DBConfigurationOwnershipTests {
     @Test("Opening failure releases its engine exactly once")
     func openingFailureShutsDownEngine() async throws {
         let engine = ShutdownRecordingEngine()
-        let emptySchema = try Schema(entities: [])
+        let schema = try Schema(
+            entities: [try ConfigurationEntity.schemaEntity]
+        )
         let runtime = try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: []
         )
 
         do {
             _ = try await DBContainer.open(
-                testing: emptySchema,
+                testing: schema,
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: runtime,
                 security: .disabled,
                 initializeIndexes: false
             )
-            Issue.record("Expected an empty schema to fail")
-        } catch let error as DatabaseRuntimeError {
-            guard case .internalError(let message) = error else {
-                Issue.record("Expected an internal runtime error")
+            Issue.record("Expected a missing entity runtime to fail")
+        } catch let error as DatabaseRuntimeConfigurationError {
+            guard case .missingCompiledEntityType(let entityName) = error else {
+                Issue.record("Expected a missing entity runtime error")
                 return
             }
-            #expect(message == "Schema must contain at least one entity")
+            #expect(entityName == ConfigurationEntity.persistableType)
         } catch {
             Issue.record("Unexpected error: \(error)")
         }

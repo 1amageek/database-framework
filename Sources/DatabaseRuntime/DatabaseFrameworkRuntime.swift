@@ -59,6 +59,26 @@ public enum DatabaseFrameworkRuntime {
         #endif
     }
 
+    public static func configuration(
+        schema: Schema,
+        authorizationPolicies: [AuthorizationPolicyHandler] = []
+    ) throws -> DatabaseRuntimeConfiguration {
+        #if DATABASE_RUNTIME_GRAPH_INDEXES
+        try configuration(
+            schema: schema,
+            sparqlFunctionRegistry: .empty,
+            authorizationPolicies: authorizationPolicies
+        )
+        #else
+        try makeConfiguration(
+            entityRuntimes: try schema.entities.map(schemaDrivenEntity),
+            authorizationPolicies: authorizationPolicies,
+            graphTableSourceExecutor: nil,
+            sparqlSourceExecutor: nil
+        )
+        #endif
+    }
+
     #if DATABASE_RUNTIME_GRAPH_INDEXES
     public static func configuration(
         entityRuntimes: [EntityRuntimeRegistration],
@@ -67,6 +87,21 @@ public enum DatabaseFrameworkRuntime {
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         try makeConfiguration(
             entityRuntimes: entityRuntimes,
+            authorizationPolicies: authorizationPolicies,
+            graphTableSourceExecutor: GraphTableReadExecutors.sourceExecutor,
+            sparqlSourceExecutor: SPARQLReadExecutors.sourceExecutor(
+                functionRegistry: sparqlFunctionRegistry
+            )
+        )
+    }
+
+    public static func configuration(
+        schema: Schema,
+        sparqlFunctionRegistry: SPARQLFunctionRegistry,
+        authorizationPolicies: [AuthorizationPolicyHandler] = []
+    ) throws -> DatabaseRuntimeConfiguration {
+        try makeConfiguration(
+            entityRuntimes: try schema.entities.map(schemaDrivenEntity),
             authorizationPolicies: authorizationPolicies,
             graphTableSourceExecutor: GraphTableReadExecutors.sourceExecutor,
             sparqlSourceExecutor: SPARQLReadExecutors.sourceExecutor(
@@ -96,7 +131,7 @@ public enum DatabaseFrameworkRuntime {
             including: additionalIndexes
         )
         try definition.register(
-            OWLClassRDFIndexMaintainerProvider<Model>()
+            OWLClassRDFIndexMaintainerProvider(entity: definition.entity)
         )
         return definition.registration()
     }
@@ -122,7 +157,7 @@ public enum DatabaseFrameworkRuntime {
     private static func definition<Model: Persistable>(
         _ model: Model.Type,
         including additionalIndexes: [IndexDescriptor]
-    ) throws -> EntityRuntimeDefinition<Model> {
+    ) throws -> EntityRuntimeDefinition {
         var definition = try EntityRuntimeDefinition(
             model,
             including: additionalIndexes
@@ -130,27 +165,83 @@ public enum DatabaseFrameworkRuntime {
 
         #if DATABASE_RUNTIME_VECTOR_INDEXES
         try VectorReadExecutors.register(with: &definition)
-        try definition.register(VectorIndexMaintainerProvider())
         #endif
         #if DATABASE_RUNTIME_FULL_TEXT_INDEXES
         try FullTextReadExecutors.register(with: &definition)
+        #endif
+        #if DATABASE_RUNTIME_RANK_INDEXES
+        try RankReadExecutors.register(with: &definition)
+        #endif
+        #if DATABASE_RUNTIME_BITMAP_INDEXES
+        try BitmapReadExecutors.register(with: &definition)
+        #endif
+        #if DATABASE_RUNTIME_VERSION_INDEXES
+        try VersionReadExecutors.register(with: &definition)
+        #endif
+        #if DATABASE_RUNTIME_PERMUTED_INDEXES
+        try PermutedReadExecutors.register(with: &definition)
+        #endif
+        try registerMaintainers(with: &definition)
+
+        return definition
+    }
+
+    private static func schemaDrivenEntity(
+        _ entity: Schema.Entity
+    ) throws -> EntityRuntimeRegistration {
+        var definition = EntityRuntimeDefinition(schemaDriven: entity)
+        #if DATABASE_RUNTIME_VECTOR_INDEXES
+        try VectorReadExecutors.register(with: &definition)
+        #endif
+        #if DATABASE_RUNTIME_FULL_TEXT_INDEXES
+        try FullTextReadExecutors.register(with: &definition)
+        #endif
+        #if DATABASE_RUNTIME_RANK_INDEXES
+        try RankReadExecutors.register(with: &definition)
+        #endif
+        #if DATABASE_RUNTIME_BITMAP_INDEXES
+        try BitmapReadExecutors.register(with: &definition)
+        #endif
+        #if DATABASE_RUNTIME_VERSION_INDEXES
+        try VersionReadExecutors.register(with: &definition)
+        #endif
+        #if DATABASE_RUNTIME_PERMUTED_INDEXES
+        try PermutedReadExecutors.register(with: &definition)
+        #endif
+        try registerMaintainers(with: &definition)
+        #if DATABASE_RUNTIME_GRAPH_INDEXES
+        if case .owlClass = entity.ontology,
+           entity.indexes.contains(where: {
+               $0.kindIdentifier == "owl_class_rdf"
+           }) {
+            try definition.register(
+                OWLClassRDFIndexMaintainerProvider(entity: entity)
+            )
+        }
+        #endif
+        return definition.registration()
+    }
+
+    private static func registerMaintainers(
+        with definition: inout EntityRuntimeDefinition
+    ) throws {
+        #if DATABASE_RUNTIME_VECTOR_INDEXES
+        try definition.register(VectorIndexMaintainerProvider())
+        #endif
+        #if DATABASE_RUNTIME_FULL_TEXT_INDEXES
         try definition.register(FullTextIndexMaintainerProvider())
         try definition.register(AutocompleteIndexMaintainerProvider())
         #endif
         #if DATABASE_RUNTIME_RANK_INDEXES
-        try RankReadExecutors.register(with: &definition)
         try definition.register(RankIndexMaintainerProvider())
         #endif
         #if DATABASE_RUNTIME_BITMAP_INDEXES
-        try BitmapReadExecutors.register(with: &definition)
         try definition.register(BitmapIndexMaintainerProvider())
         #endif
         #if DATABASE_RUNTIME_VERSION_INDEXES
-        try VersionReadExecutors.register(with: &definition)
         try definition.register(VersionIndexMaintainerProvider())
         #endif
         #if DATABASE_RUNTIME_PERMUTED_INDEXES
-        try PermutedReadExecutors.register(with: &definition)
         try definition.register(PermutedIndexMaintainerProvider())
         #endif
         #if DATABASE_RUNTIME_SCALAR_INDEXES
@@ -177,8 +268,6 @@ public enum DatabaseFrameworkRuntime {
         try definition.register(GraphIndexMaintainerProvider())
         try definition.register(RDFQuadIndexMaintainerProvider())
         #endif
-
-        return definition
     }
 
     private static func maintainerProviderDescriptors() -> [

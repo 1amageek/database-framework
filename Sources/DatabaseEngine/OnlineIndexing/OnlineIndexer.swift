@@ -44,7 +44,7 @@ import DatabaseKit
 ///    - Used when `indexMaintainer.customBuildStrategy` is provided
 ///    - Delegates entire build to custom strategy
 ///    - Example: HNSW bulk graph construction
-public final class OnlineIndexer<Item: Persistable>: Sendable {
+public final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     // MARK: - Properties
 
     /// Database container for transaction execution
@@ -64,6 +64,9 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
     /// Item type name (e.g., "User", "Product")
     private let itemType: String
+
+    /// Canonical decoder selected by the registration that owns `itemType`.
+    private let decodeItem: @Sendable (ByteString) throws -> Item
 
     /// Index definition
     private let index: Index
@@ -124,7 +127,8 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)? = nil,
         indexLifecycleStore: IndexLifecycleStore,
         batchSize: Int = 100,
-        throttleDelayMs: Int = 0
+        throttleDelayMs: Int = 0,
+        decodeItem: @escaping @Sendable (ByteString) throws -> Item
     ) throws(OnlineIndexBuildError) {
         guard batchSize > 0 else {
             throw .invalidBatchSize(batchSize)
@@ -144,6 +148,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         self.indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
         self.blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
         self.itemType = itemType
+        self.decodeItem = decodeItem
         self.index = index
         self.indexMaintainer = indexMaintainer
         self.uniquenessMaintainer = uniquenessMaintainer
@@ -329,7 +334,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     var iterator = scanSequence.makeAsyncIterator()
                     while let (key, data) = try await iterator.next() {
                         // Deserialize item from decompressed data
-                        let item: Item = try DataAccess.deserialize(data)
+                        let item = try self.decodeItem(data)
 
                         // Extract id
                         let id = try itemTypeSubspace.unpack(key)
@@ -730,7 +735,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 var iterator = scanSequence.makeAsyncIterator()
                 while let (key, data) = try await iterator.next() {
                     // Deserialize item from decompressed data
-                    let item: Item = try DataAccess.deserialize(data)
+                    let item = try self.decodeItem(data)
 
                     // Extract id
                     let id = try itemTypeSubspace.unpack(key)
@@ -792,6 +797,33 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         return itemsProcessed
     }
 
+}
+
+public extension OnlineIndexer where Item: Persistable {
+    convenience init(
+        container: DBContainer,
+        storeSubspace: Subspace,
+        itemType: String,
+        index: Index,
+        indexMaintainer: any IndexMaintainer<Item>,
+        uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)? = nil,
+        indexLifecycleStore: IndexLifecycleStore,
+        batchSize: Int = 100,
+        throttleDelayMs: Int = 0
+    ) throws(OnlineIndexBuildError) {
+        try self.init(
+            container: container,
+            storeSubspace: storeSubspace,
+            itemType: itemType,
+            index: index,
+            indexMaintainer: indexMaintainer,
+            uniquenessMaintainer: uniquenessMaintainer,
+            indexLifecycleStore: indexLifecycleStore,
+            batchSize: batchSize,
+            throttleDelayMs: throttleDelayMs,
+            decodeItem: { try DataAccess.deserialize($0) }
+        )
+    }
 }
 
 // MARK: - CustomStringConvertible

@@ -4,15 +4,15 @@ import DatabaseTypes
 import StorageKit
 
 /// Maintains the canonical RDF dataset projections for a Persistable entity.
-public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct RDFQuadIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
-    private let subjectField: FieldIdentity
-    private let predicateField: FieldIdentity
-    private let objectField: FieldIdentity
-    private let graphField: FieldIdentity?
+    private let subjectField: String
+    private let predicateField: String
+    private let objectField: String
+    private let graphField: String?
     private let physicalCodec: RDFQuadIndexPhysicalCodec
 
     package init(
@@ -27,12 +27,10 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
-        self.subjectField = try Self.requireField(named: subjectField)
-        self.predicateField = try Self.requireField(named: predicateField)
-        self.objectField = try Self.requireField(named: objectField)
-        self.graphField = try graphField.map {
-            try Self.requireField(named: $0)
-        }
+        self.subjectField = subjectField
+        self.predicateField = predicateField
+        self.objectField = objectField
+        self.graphField = graphField
         self.physicalCodec = RDFQuadIndexPhysicalCodec(baseSubspace: subspace)
     }
 
@@ -102,12 +100,12 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     private func requiredTerm(
         from item: Item,
-        field: FieldIdentity
+        field: String
     ) throws -> RDFTerm {
-        guard let value = try item.persistedFieldValue(for: field) else {
+        guard let value = try item.persistedValue(forFieldNamed: field) else {
             throw GraphIndexError.fieldNotFound(
-                fieldName: field.name,
-                itemType: Item.persistableType
+                fieldName: field,
+                itemType: item.persistedEntityName
             )
         }
         guard value != .null else {
@@ -115,7 +113,7 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
         guard case .rdfTerm(let term) = value else {
             throw GraphIndexError.invalidFieldType(
-                fieldName: field.name,
+                fieldName: field,
                 expectedType: "RDFTerm",
                 actualType: GraphValueSemanticName.field(value)
             )
@@ -125,16 +123,18 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     private func graphTerm(from item: Item) throws -> RDFTerm? {
         guard let graphField else { return nil }
-        guard let value = try item.persistedFieldValue(for: graphField) else {
+        guard let value = try item.persistedValue(
+            forFieldNamed: graphField
+        ) else {
             throw GraphIndexError.fieldNotFound(
-                fieldName: graphField.name,
-                itemType: Item.persistableType
+                fieldName: graphField,
+                itemType: item.persistedEntityName
             )
         }
         guard value != .null else { return nil }
         guard case .rdfTerm(let term) = value else {
             throw GraphIndexError.invalidFieldType(
-                fieldName: graphField.name,
+                fieldName: graphField,
                 expectedType: "RDFTerm?",
                 actualType: GraphValueSemanticName.field(value)
             )
@@ -142,15 +142,4 @@ public struct RDFQuadIndexMaintainer<Item: Persistable>: IndexMaintainer {
         return term
     }
 
-    private static func requireField(
-        named fieldName: String
-    ) throws -> FieldIdentity {
-        guard let fieldNumber = Item.fieldNumber(for: fieldName) else {
-            throw GraphIndexError.fieldNotFound(
-                fieldName: fieldName,
-                itemType: Item.persistableType
-            )
-        }
-        return FieldIdentity(name: fieldName, number: fieldNumber)
-    }
 }

@@ -50,7 +50,7 @@ import StorageKit
 /// )
 /// // ["laptop", "laptop bag", "lap desk"]
 /// ```
-public struct AutocompleteMaintainer<Item: Persistable>: IndexMaintainer {
+public struct AutocompleteMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression

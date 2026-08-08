@@ -22,18 +22,18 @@ public enum CoveringValueBuilder {
     /// Non-covering indexes without stored fields retain an empty value. A fully
     /// covering index always stores a DBIX frame, including key-only indexes, so
     /// decoding never has to infer entity values from tuple encodings.
-    public static func build<Item: Persistable>(
+    public static func build<Item: PersistedEntityValue>(
         for item: Item,
         index: Index
     ) throws -> ByteString {
-        let schemas = try validatedSchemas(for: Item.self)
-        let modelFields = Set(schemas.map { $0.name })
+        let encodedFields = try validatedFields(for: item)
+        let modelFields = Set(encodedFields.map(\.name))
         let requestedPaths = ["id"] + index.kind.fieldNames + index.storedFieldNames
         let projectedNames = orderedUnique(requestedPaths.map(rootFieldName))
 
         for field in projectedNames where !modelFields.contains(field) {
             throw CanonicalIndexProjectionError.unknownField(
-                entity: Item.persistableType,
+                entity: item.persistedEntityName,
                 index: index.name,
                 field: field
             )
@@ -44,14 +44,13 @@ public enum CoveringValueBuilder {
             return []
         }
 
-        let encodedFields = try PersistableFieldEncoder.encode(item)
         let fieldsByName = Dictionary(
             uniqueKeysWithValues: encodedFields.map { ($0.name, $0) }
         )
         let selectedFields = try projectedNames.map { fieldName in
             guard let field = fieldsByName[fieldName] else {
                 throw CanonicalIndexProjectionError.invalidSchema(
-                    entity: Item.persistableType,
+                    entity: item.persistedEntityName,
                     reason: "encoded field '\(fieldName)' is missing"
                 )
             }
@@ -61,7 +60,7 @@ public enum CoveringValueBuilder {
         let bytes = try PersistableFieldFrameCodec.encode(
             magic: magic,
             version: formatVersion,
-            entity: Item.persistableType,
+            entity: item.persistedEntityName,
             fields: selectedFields,
             limits: try storageLimits()
         )
@@ -118,38 +117,33 @@ public enum CoveringValueBuilder {
         ).fields
     }
 
-    private static func validatedSchemas<Item: Persistable>(
-        for type: Item.Type
-    ) throws -> [FieldSchema] {
-        guard !type.fieldSchemas.isEmpty else {
+    private static func validatedFields<Item: PersistedEntityValue>(
+        for item: Item
+    ) throws -> [PersistableField] {
+        let fields = try item.persistedFields()
+        guard !fields.isEmpty else {
             throw CanonicalIndexProjectionError.missingCompiledSchema(
-                entity: type.persistableType
+                entity: item.persistedEntityName
             )
         }
 
         var names = Set<String>()
-        var numbers = Set<Int>()
-        for schema in type.fieldSchemas {
-            guard schema.fieldNumber > 0 else {
+        var numbers = Set<UInt32>()
+        for field in fields {
+            guard names.insert(field.name).inserted else {
                 throw CanonicalIndexProjectionError.invalidSchema(
-                    entity: type.persistableType,
-                    reason: "field '\(schema.name)' has invalid number \(schema.fieldNumber)"
+                    entity: item.persistedEntityName,
+                    reason: "field name '\(field.name)' is duplicated"
                 )
             }
-            guard names.insert(schema.name).inserted else {
+            guard numbers.insert(field.number).inserted else {
                 throw CanonicalIndexProjectionError.invalidSchema(
-                    entity: type.persistableType,
-                    reason: "field name '\(schema.name)' is duplicated"
-                )
-            }
-            guard numbers.insert(schema.fieldNumber).inserted else {
-                throw CanonicalIndexProjectionError.invalidSchema(
-                    entity: type.persistableType,
-                    reason: "field number \(schema.fieldNumber) is duplicated"
+                    entity: item.persistedEntityName,
+                    reason: "field number \(field.number) is duplicated"
                 )
             }
         }
-        return type.fieldSchemas
+        return fields
     }
 
     private static func rootFieldName(_ path: String) -> String {

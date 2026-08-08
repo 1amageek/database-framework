@@ -48,7 +48,7 @@ private struct PercentileIndexReadGroup {
 /// Inserts are applied incrementally. Deletes and updates rebuild every affected
 /// summary from membership in the same transaction because a t-digest cannot
 /// subtract weight without losing its error guarantees.
-public struct PercentileIndexMaintainer<Item: Persistable>:
+public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
     SubspaceIndexMaintainer,
     GroupingKeySupport {
     public let index: Index

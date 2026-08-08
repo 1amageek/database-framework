@@ -67,7 +67,12 @@ struct DatabaseStatementAdmissionEndpointTests {
         )
         let response = try DatabaseWireDecoder().decodeResponse(
             DatabaseOperations.mutationExecute,
-            from: try await endpoint.execute(frame),
+            from: try await endpoint.execute(
+                frame,
+                context: DatabaseRequestExecutionContext(
+                    authorization: .anonymous
+                )
+            ),
             matching: 1
         )
 

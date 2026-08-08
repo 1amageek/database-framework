@@ -49,7 +49,7 @@ public struct DataAccess: Sendable {
     ///   - expression: The KeyExpression to evaluate
     /// - Returns: Array of tuple elements representing the extracted values
     /// - Throws: Error if field access fails
-    public static func evaluate<Item: Persistable>(
+    public static func evaluate<Item: PersistedEntityValue>(
         item: Item,
         expression: KeyExpression
     ) throws -> [any TupleElement] {
@@ -84,19 +84,18 @@ public struct DataAccess: Sendable {
     ///   - keyPath: The field name or dot-notation path (e.g., "email", "address.city")
     /// - Returns: Array of tuple elements (typically single element)
     /// - Throws: Error if field not found or type conversion fails
-    public static func extractField<Item: Persistable>(
+    public static func extractField<Item: PersistedEntityValue>(
         from item: Item,
         keyPath: String
     ) throws -> [any TupleElement] {
         let components = keyPath.split(separator: ".", omittingEmptySubsequences: false)
         guard let first = components.first,
               !first.isEmpty,
-              let fieldNumber = Item.fieldNumber(for: String(first)),
-              let firstValue = try item.persistedFieldValue(
-                for: FieldIdentity(name: String(first), number: fieldNumber)
+              let firstValue = try item.persistedValue(
+                forFieldNamed: String(first)
               ) else {
             throw DataAccessError.fieldNotFound(
-                itemType: Item.persistableType,
+                itemType: item.persistedEntityName,
                 keyPath: keyPath
             )
         }
@@ -106,7 +105,7 @@ public struct DataAccess: Sendable {
                   case .object(let object) = value,
                   let nested = object[String(component)] else {
                 throw DataAccessError.fieldNotFound(
-                    itemType: Item.persistableType,
+                    itemType: item.persistedEntityName,
                     keyPath: keyPath
                 )
             }
@@ -159,6 +158,29 @@ public struct DataAccess: Sendable {
     ///     pre-resolved canonical tuple supplied by the persistence path.
     /// - Returns: Tuple representing the id
     /// - Throws: Error if extraction fails
+    public static func extractId<Item: PersistedEntityValue>(
+        from item: Item,
+        using idExpression: KeyExpression
+    ) throws -> Tuple {
+        if let resolved = idExpression.resolvedTuple {
+            return resolved
+        }
+
+        if idExpression.fieldPath == "id",
+           let identifier = try item.persistedValue(forFieldNamed: "id") {
+            return try PersistableIdentifierKeyCodec.tuple(
+                forPersistedIdentifier: identifier
+            )
+        }
+
+        throw DataAccessError.invalidIdentifierExpression(
+            itemType: item.persistedEntityName,
+            actualType: "unsupported identifier expression"
+        )
+    }
+
+    /// Preserves the compiled model's identifier validation, including
+    /// polymorphic type codes, when the concrete model remains available.
     public static func extractId<Item: Persistable>(
         from item: Item,
         using idExpression: KeyExpression
@@ -197,6 +219,15 @@ public struct DataAccess: Sendable {
     /// - Throws: Error if serialization fails
     public static func serialize<Item: Persistable>(_ item: Item) throws -> ByteString {
         try PersistableStorageCodec.encode(item)
+    }
+
+    public static func serialize<Item: PersistedEntityValue>(
+        _ item: Item
+    ) throws -> ByteString {
+        try PersistableStorageCodec.encode(
+            entity: item.persistedEntityName,
+            fields: try item.persistedFields()
+        )
     }
 
     public static func serialize(_ model: PersistedModel) throws -> ByteString {

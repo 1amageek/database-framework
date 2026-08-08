@@ -19,7 +19,7 @@ import DatabaseKit
 ///
 /// **Usage Example**:
 /// ```swift
-/// struct ValueIndexMaintainer<Item: Persistable>: IndexMaintainer {
+/// struct ValueIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
 ///     func updateIndex(
 ///         oldItem: Item?,
 ///         newItem: Item?,
@@ -50,7 +50,7 @@ import DatabaseKit
 /// }
 /// ```
 public protocol IndexMaintainer<Item>: Sendable {
-    associatedtype Item: Persistable
+    associatedtype Item: PersistedEntityValue
 
     /// Update index entries when an item changes
     ///

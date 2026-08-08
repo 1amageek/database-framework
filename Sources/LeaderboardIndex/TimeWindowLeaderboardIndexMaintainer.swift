@@ -74,7 +74,7 @@ public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConver
 /// **Window IDs**:
 /// Windows are identified by `floor(timestamp / windowDuration)`.
 /// For daily windows, this gives sequential day numbers since epoch.
-public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMaintainer {
     private struct PositionEntry {
         let windowId: Int64
         let score: Int64

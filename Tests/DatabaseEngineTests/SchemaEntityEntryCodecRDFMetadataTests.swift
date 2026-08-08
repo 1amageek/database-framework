@@ -16,6 +16,9 @@ struct SchemaEntityEntryCodecRDFMetadataTests {
 
         #expect(decoded == entity)
         #expect(decoded.indexes[0].kind.metadata["graph"] == .rdfTerm(graph))
+        #expect(
+            decoded.ontology?.propertyDescriptors == entity.ontology?.propertyDescriptors
+        )
     }
 
     @Test("Invalid persisted RDF metadata is rejected during decoding")
@@ -59,6 +62,18 @@ struct SchemaEntityEntryCodecRDFMetadataTests {
                     fieldNumber: 1,
                     type: .string
                 ),
+                FieldSchema(
+                    name: "title",
+                    fieldNumber: 2,
+                    type: .string
+                ),
+                FieldSchema(
+                    name: "calendar",
+                    fieldNumber: 3,
+                    type: .reference,
+                    isOptional: true,
+                    referenceTargetEntity: "Calendar"
+                ),
             ],
             directoryComponents: [.staticPath("calendar")],
             indexes: [
@@ -75,7 +90,25 @@ struct SchemaEntityEntryCodecRDFMetadataTests {
                         ]
                     )
                 ),
-            ]
+            ],
+            ontology: .owlClass(
+                iri: "urn:calendar:Event",
+                properties: [
+                    OWLDataPropertyDescriptor(
+                        name: "CalendarEvent_title",
+                        fieldName: "title",
+                        iri: "urn:calendar:title",
+                        label: "Title"
+                    ),
+                    OWLDataPropertyDescriptor(
+                        name: "CalendarEvent_calendar",
+                        fieldName: "calendar",
+                        iri: "urn:calendar:calendar",
+                        targetTypeName: "Calendar",
+                        targetFieldName: "id"
+                    ),
+                ]
+            )
         )
     }
 

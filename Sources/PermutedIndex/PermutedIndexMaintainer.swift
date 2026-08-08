@@ -40,7 +40,7 @@ import StorageKit
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+public struct PermutedIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression

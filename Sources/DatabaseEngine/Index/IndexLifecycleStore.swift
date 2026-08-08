@@ -72,6 +72,19 @@ public final class IndexLifecycleStore: Sendable {
         ) ?? .disabled
     }
 
+    /// Reads the persisted lifecycle state without replacing absence with the
+    /// externally visible disabled state.
+    package func persistedState(
+        of indexName: String,
+        transaction: any TransactionAccess
+    ) async throws -> IndexState? {
+        try await storedState(
+            of: indexName,
+            transaction: transaction,
+            snapshot: false
+        )
+    }
+
     // MARK: - State Transitions
 
     /// Enable an index (transition to WRITE_ONLY state)
@@ -165,6 +178,25 @@ public final class IndexLifecycleStore: Sendable {
         entityRange: (begin: ByteString, end: ByteString),
         transaction: any TransactionAccess
     ) async throws {
+        try await ensureReadable(
+            indexNames,
+            entityRange: entityRange,
+            pendingBuildIndexes: [],
+            transaction: transaction
+        )
+    }
+
+    /// Validates declared index state while admitting persisted schema builds.
+    ///
+    /// Only indexes named in `pendingBuildIndexes` may remain `writeOnly` or
+    /// initialize as `writeOnly` for an existing source range. The durable
+    /// pending marker and lifecycle state are read in the same transaction.
+    package func ensureReadable(
+        _ indexNames: [String],
+        entityRange: (begin: ByteString, end: ByteString),
+        pendingBuildIndexes: Set<String>,
+        transaction: any TransactionAccess
+    ) async throws {
         var sourceIsEmpty: Bool?
         for indexName in indexNames {
             guard let currentState = try await storedState(
@@ -184,6 +216,13 @@ public final class IndexLifecycleStore: Sendable {
                     sourceIsEmpty = sourceRows.isEmpty
                 }
                 guard sourceIsEmpty == true else {
+                    if pendingBuildIndexes.contains(indexName) {
+                        try transaction.setValue(
+                            [IndexState.writeOnly.rawValue],
+                            for: makeStateKey(for: indexName)
+                        )
+                        continue
+                    }
                     throw IndexStateError.missingStateForNonEmptyStore(
                         index: indexName
                     )
@@ -197,6 +236,8 @@ public final class IndexLifecycleStore: Sendable {
             }
             switch currentState {
             case .readable:
+                break
+            case .writeOnly where pendingBuildIndexes.contains(indexName):
                 break
             case .disabled, .writeOnly:
                 throw IndexStateError.indexNotReady(
@@ -236,6 +277,23 @@ public final class IndexLifecycleStore: Sendable {
         entityRange: (begin: ByteString, end: ByteString),
         transaction: any TransactionAccess
     ) async throws {
+        try await initializeMissingStates(
+            indexNames,
+            entityRange: entityRange,
+            pendingBuildIndexes: [],
+            transaction: transaction
+        )
+    }
+
+    /// Initializes states during mutation admission for a published schema.
+    /// Missing indexes with durable build markers become `writeOnly` when the
+    /// source is non-empty, so new mutations maintain them before backfill.
+    package func initializeMissingStates(
+        _ indexNames: [String],
+        entityRange: (begin: ByteString, end: ByteString),
+        pendingBuildIndexes: Set<String>,
+        transaction: any TransactionAccess
+    ) async throws {
         var sourceIsEmpty: Bool?
         for indexName in indexNames {
             if try await storedState(
@@ -258,6 +316,16 @@ public final class IndexLifecycleStore: Sendable {
                 sourceIsEmpty = sourceRows.isEmpty
             }
             guard sourceIsEmpty == true else {
+                if pendingBuildIndexes.contains(indexName) {
+                    try transaction.setValue(
+                        [IndexState.writeOnly.rawValue],
+                        for: makeStateKey(for: indexName)
+                    )
+                    logger.info(
+                        "Initialized pending index '\(indexName)' as write-only"
+                    )
+                    continue
+                }
                 throw IndexStateError.missingStateForNonEmptyStore(
                     index: indexName
                 )
@@ -270,6 +338,47 @@ public final class IndexLifecycleStore: Sendable {
                 "Initialized index '\(indexName)' for an empty store"
             )
         }
+    }
+
+    /// Creates the lifecycle state for an index introduced by schema apply.
+    /// Returns `true` when existing source rows require a persistent backfill.
+    package func prepareSchemaBuild(
+        _ indexName: String,
+        entityRange: (begin: ByteString, end: ByteString),
+        transaction: any TransactionAccess
+    ) async throws -> Bool {
+        if let state = try await storedState(
+            of: indexName,
+            transaction: transaction,
+            snapshot: false
+        ) {
+            guard state == .readable else {
+                throw IndexStateError.indexNotReady(
+                    index: indexName,
+                    state: state
+                )
+            }
+            return false
+        }
+        let sourceRows = try await TransactionRangeCollection.collect(
+            using: transaction,
+            from: .firstGreaterOrEqual(entityRange.begin),
+            to: .firstGreaterOrEqual(entityRange.end),
+            limit: 1,
+            reverse: false,
+            snapshot: false,
+            streamingMode: .small
+        )
+        let requiresBuild = !sourceRows.isEmpty
+        try transaction.setValue(
+            [
+                requiresBuild
+                    ? IndexState.writeOnly.rawValue
+                    : IndexState.readable.rawValue,
+            ],
+            for: makeStateKey(for: indexName)
+        )
+        return requiresBuild
     }
 
     /// Validates index readability without creating or changing index state.

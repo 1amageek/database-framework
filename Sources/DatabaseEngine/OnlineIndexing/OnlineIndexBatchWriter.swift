@@ -3,7 +3,7 @@ import StorageKit
 
 /// Writes one online-build batch while preserving uniqueness semantics.
 enum OnlineIndexBatchWriter {
-    static func write<Item: Persistable>(
+    static func write<Item: PersistedEntityValue>(
         _ entries: [(item: Item, id: Tuple)],
         index: Index,
         maintainer: any IndexMaintainer<Item>,

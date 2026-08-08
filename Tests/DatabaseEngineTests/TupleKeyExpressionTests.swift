@@ -106,6 +106,72 @@ struct TupleKeyExpressionTests {
         #expect(extracted.pack() == canonical.pack())
     }
 
+    @Test("Type-independent field identifier uses the persistence key codec")
+    func persistedModelIdentifierUsesPersistenceKeyCodec() throws {
+        let entity = TupleKeyExpressionEntity(id: "entity-1", title: "Doc")
+        let persisted = try PersistedModel(entity)
+
+        let extracted = try DataAccess.extractId(
+            from: persisted,
+            using: FieldKeyExpression(fieldName: "id")
+        )
+        let canonical = try entity.persistableIdentifierTuple()
+
+        #expect(extracted == canonical)
+        #expect(extracted.pack() == canonical.pack())
+    }
+
+    @Test("Every persisted identifier shape preserves storage-key bytes")
+    func persistedIdentifierShapesPreserveStorageKeyBytes() throws {
+        let uuid = DatabaseTypes.UUID(high: 1, low: 2)
+        let bytes = ByteString([0x00, 0x7f, 0xff])
+        let cases: [(
+            field: FieldValue,
+            identifier: ReferenceIdentifier,
+            type: PersistableIdentifierType
+        )] = [
+            (.bool(true), .bool(true), .bool),
+            (.int8(-8), .int8(-8), .int8),
+            (.int16(-16), .int16(-16), .int16),
+            (.int32(-32), .int32(-32), .int32),
+            (.int64(-64), .int64(-64), .int64),
+            (.uint8(8), .uint8(8), .uint8),
+            (.uint16(16), .uint16(16), .uint16),
+            (.uint32(32), .uint32(32), .uint32),
+            (.uint64(64), .uint64(64), .uint64),
+            (.string("entity-1"), .string("entity-1"), .string),
+            (.bytes(bytes), .bytes(bytes), .bytes),
+            (.uuid(uuid), .uuid(uuid), .uuid),
+            (
+                .array([.string("tenant"), .uint64(42)]),
+                .composite([.string("tenant"), .uint64(42)]),
+                .composite([.string, .uint64])
+            ),
+        ]
+
+        for value in cases {
+            let typeIndependent = try PersistableIdentifierKeyCodec.tuple(
+                forPersistedIdentifier: value.field
+            )
+            let typed = try PersistableIdentifierKeyCodec.tuple(
+                for: value.identifier,
+                expectedType: value.type
+            )
+            #expect(typeIndependent.pack() == typed.pack())
+        }
+    }
+
+    @Test("Non-identifier persisted values are rejected")
+    func rejectsNonIdentifierPersistedValues() {
+        #expect(throws: PersistableIdentifierKeyError.self) {
+            _ = try PersistableIdentifierKeyCodec.tuple(
+                forPersistedIdentifier: .decimal(
+                    ExactDecimal(coefficient: 1, scale: 0)
+                )
+            )
+        }
+    }
+
     @Test("Non-identifier field cannot define persistence identity")
     func rejectsNonIdentifierField() {
         let entity = TupleKeyExpressionEntity(id: "entity-1", title: "Doc")
