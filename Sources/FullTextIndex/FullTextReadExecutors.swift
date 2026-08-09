@@ -231,7 +231,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 transaction: transaction,
                 limit: limit
             )
-            let identifiers = scored.map(\.id)
+            let identifiers = scored.map { $0.id }
             let models = try requireModels(
                 identifiers: identifiers,
                 fetched: try await context.fetchPersistedModelsPreservingOrder(

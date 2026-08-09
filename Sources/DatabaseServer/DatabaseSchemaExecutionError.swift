@@ -3,7 +3,7 @@
 public enum DatabaseSchemaExecutionError: Error, Sendable, Equatable,
     CustomStringConvertible {
     case migrationRequired([SchemaExecuteOperation.CompatibilityIssue])
-    case runtimeUnavailable(String)
+    case runtimeUnavailable
     case storageCapabilityUnavailable(
         indexName: String,
         kindIdentifier: String,
@@ -14,9 +14,9 @@ public enum DatabaseSchemaExecutionError: Error, Sendable, Equatable,
     public var description: String {
         switch self {
         case .migrationRequired(let issues):
-            return issues.map(\.message).joined(separator: " | ")
-        case .runtimeUnavailable(let reason):
-            return "Schema runtime is unavailable: \(reason)"
+            return issues.map { $0.message }.joined(separator: " | ")
+        case .runtimeUnavailable:
+            return "Schema runtime is unavailable"
         case .storageCapabilityUnavailable(
             let indexName,
             let kindIdentifier,

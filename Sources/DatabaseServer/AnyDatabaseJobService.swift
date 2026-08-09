@@ -29,7 +29,40 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
     ) async throws -> JobIdentity)?
     private let recoverJobSchedule: (@Sendable () async throws -> Void)?
 
-    public init<Service: DatabaseJobService>(_ service: Service) {
+    public convenience init<Service: DatabaseJobService>(_ service: Service) {
+        self.init(
+            service: service,
+            createJobInTransaction: nil,
+            recoverJobSchedule: nil
+        )
+    }
+
+    package convenience init<Service>(persistent service: Service)
+    where Service: DatabaseJobService & DatabasePersistentJobCreating {
+        self.init(
+            service: service,
+            createJobInTransaction: { request, context, transaction in
+                try await service.createPersistentJob(
+                    request,
+                    context: context,
+                    transaction: transaction
+                )
+            },
+            recoverJobSchedule: {
+                try await service.recoverPersistentJobSchedule()
+            }
+        )
+    }
+
+    private init<Service: DatabaseJobService>(
+        service: Service,
+        createJobInTransaction: (@Sendable (
+            JobStartOperation.Request,
+            DatabaseOperationContext,
+            DatabaseTransaction
+        ) async throws -> JobIdentity)?,
+        recoverJobSchedule: (@Sendable () async throws -> Void)?
+    ) {
         self.jobOperations = service.jobOperations
         self.startJob = { request, context in
             try await service.start(request, context: context)
@@ -46,21 +79,8 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
         self.performScheduledWork = {
             try await service.runScheduledWork()
         }
-        if let creator = service as? any DatabasePersistentJobCreating {
-            self.createJobInTransaction = { request, context, transaction in
-                try await creator.createPersistentJob(
-                    request,
-                    context: context,
-                    transaction: transaction
-                )
-            }
-            self.recoverJobSchedule = {
-                try await creator.recoverPersistentJobSchedule()
-            }
-        } else {
-            self.createJobInTransaction = nil
-            self.recoverJobSchedule = nil
-        }
+        self.createJobInTransaction = createJobInTransaction
+        self.recoverJobSchedule = recoverJobSchedule
     }
 
     public func start(

@@ -165,13 +165,9 @@ public actor DatabaseSchemaCoordinator {
                         capability: capabilityName
                     )
             }
-            throw DatabaseSchemaExecutionError.runtimeUnavailable(
-                String(describing: error)
-            )
+            throw DatabaseSchemaExecutionError.runtimeUnavailable
         } catch {
-            throw DatabaseSchemaExecutionError.runtimeUnavailable(
-                String(describing: error)
-            )
+            throw DatabaseSchemaExecutionError.runtimeUnavailable
         }
         return PreparedSchemaChange(
             plan: SchemaExecuteOperation.Plan(

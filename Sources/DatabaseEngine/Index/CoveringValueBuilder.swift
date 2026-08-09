@@ -27,7 +27,7 @@ public enum CoveringValueBuilder {
         index: Index
     ) throws -> ByteString {
         let encodedFields = try validatedFields(for: item)
-        let modelFields = Set(encodedFields.map(\.name))
+        let modelFields = Set(encodedFields.map { $0.name })
         let requestedPaths = ["id"] + index.kind.fieldNames + index.storedFieldNames
         let projectedNames = orderedUnique(requestedPaths.map(rootFieldName))
 

@@ -46,7 +46,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     private var havingPredicate: (@Sendable (AggregateResult<T>) -> Bool)?
 
     private var groupByFieldNames: [String] {
-        groupByFields.map(\.name)
+        groupByFields.map { $0.name }
     }
 
     /// Forced index name (set via AggregationEntryPoint.using(index:))

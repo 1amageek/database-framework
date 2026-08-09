@@ -1,5 +1,6 @@
 import DatabaseEngine
 import DatabaseTypes
+@_spi(DatabaseServer) import DatabaseWire
 
 public final class DatabaseServerRuntime: Sendable {
     public let endpoint: DatabaseEndpoint

@@ -215,7 +215,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         }
 
         // Normalize distance to score (closer = higher score)
-        guard let maxDist = itemsWithDistance.map(\.distance).max(), maxDist > 0 else {
+        guard let maxDist = itemsWithDistance.map({ $0.distance }).max(), maxDist > 0 else {
             return items.map { ScoredResult(item: $0, score: 1.0) }
         }
 

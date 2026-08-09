@@ -224,7 +224,7 @@ public struct FusionBuilder<T: Persistable>: Sendable {
                 )
             }
         case .weighted(let weights):
-            guard weights.allSatisfy(\.isFinite) else {
+            guard weights.allSatisfy({ $0.isFinite }) else {
                 throw FusionQueryError.invalidConfiguration(
                     "Fusion weights must be finite"
                 )

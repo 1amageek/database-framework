@@ -255,7 +255,7 @@ extension DBContainer {
                 container: self,
                 subspace: subspace
             ).ensureReadable(
-                entity.indexDescriptors.map(\.name),
+                entity.indexDescriptors.map { $0.name },
                 entityRange: subspace
                     .subspace(SubspaceKey.items)
                     .subspace(entity.name)
@@ -268,7 +268,7 @@ extension DBContainer {
             guard let previousEntity = previous.entity(named: targetEntity.name)
             else { continue }
             let previousIndexNames = Set(
-                previousEntity.indexDescriptors.map(\.name)
+                previousEntity.indexDescriptors.map { $0.name }
             )
             let addedIndexes = targetEntity.indexDescriptors.filter {
                 !previousIndexNames.contains($0.name)
@@ -333,7 +333,7 @@ extension DBContainer {
                 container: self,
                 subspace: subspace
             ).ensureReadable(
-                group.indexes.map(\.name),
+                group.indexes.map { $0.name },
                 entityRange: subspace.subspace(SubspaceKey.items).range(),
                 transaction: transaction
             )
@@ -385,7 +385,7 @@ extension DBContainer {
         for entity in schema.entities {
             let pending = try await pendingSchemaIndexBuilds(
                 entity: entity.name,
-                indexes: entity.indexDescriptors.map(\.name),
+                indexes: entity.indexDescriptors.map { $0.name },
                 transaction: transaction
             )
             if !pending.isEmpty {

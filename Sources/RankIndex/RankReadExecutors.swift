@@ -94,7 +94,7 @@ private struct RankReadExecutor: IndexReadExecutor {
             )
             let fetched = try await context.fetchPersistedModelsPreservingOrder(
                 entity: entity,
-                primaryKeys: rankedKeys.map(\.primaryKey),
+                primaryKeys: rankedKeys.map { $0.primaryKey },
                 partitions: partitions,
                 transaction: transaction
             )

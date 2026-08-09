@@ -197,7 +197,10 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         }
 
         // Fetch items by primary keys
-        var items = try await queryContext.fetchItems(ids: topKResults.map(\.pk), type: T.self)
+        var items = try await queryContext.fetchItems(
+            ids: topKResults.map { $0.pk },
+            type: T.self
+        )
 
         // Filter to candidates if provided
         if let candidateIDs = candidates {

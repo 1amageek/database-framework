@@ -85,6 +85,6 @@ public final class DatabasePersistentJobServiceFactory:
             storageLimits: storageLimits
         )
         try await runner.recoverSchedule()
-        return AnyDatabaseJobService(service)
+        return AnyDatabaseJobService(persistent: service)
     }
 }

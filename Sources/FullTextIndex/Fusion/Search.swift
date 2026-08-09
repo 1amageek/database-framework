@@ -199,7 +199,10 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         }
 
         // Fetch items by primary keys
-        var items = try await queryContext.fetchItems(ids: scoredIds.map(\.id), type: T.self)
+        var items = try await queryContext.fetchItems(
+            ids: scoredIds.map { $0.id },
+            type: T.self
+        )
 
         // Filter to candidates if provided
         if let candidateIDs = candidates {

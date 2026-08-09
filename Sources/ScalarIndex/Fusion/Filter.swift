@@ -115,7 +115,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
             fatalError("Filter must be used within context.fuse { } block")
         }
         self.field = field.identity
-        self.predicate = .in(values.map(\.fieldValue))
+        self.predicate = .in(values.map { $0.fieldValue })
         self.queryContext = context
     }
 
@@ -274,7 +274,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         context: IndexQueryContext
     ) {
         self.field = field.identity
-        self.predicate = .in(values.map(\.fieldValue))
+        self.predicate = .in(values.map { $0.fieldValue })
         self.queryContext = context
     }
 

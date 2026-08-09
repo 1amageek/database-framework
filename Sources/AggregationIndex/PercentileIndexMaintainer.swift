@@ -478,7 +478,7 @@ public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
             groups[identity] = group
         }
         guard results.count == groups.count,
-              groups.values.allSatisfy(\.summarySeen) else {
+              groups.values.allSatisfy({ $0.summarySeen }) else {
             throw PercentileIndexError.corruptedSummary
         }
         return results

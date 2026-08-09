@@ -277,8 +277,8 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     ) throws -> [ScoredResult<T>] {
         guard !results.isEmpty else { return [] }
 
-        let distances = results.map(\.distance)
-        guard distances.allSatisfy(\.isFinite) else {
+        let distances = results.map { $0.distance }
+        guard distances.allSatisfy({ $0.isFinite }) else {
             throw FusionQueryError.invalidConfiguration(
                 "Vector search produced a non-finite distance"
             )

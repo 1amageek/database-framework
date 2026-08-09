@@ -477,7 +477,7 @@ public struct DistinctIndexMaintainer<Item: PersistedEntityValue>:
             groups[identity] = group
         }
         guard results.count == groups.count,
-              groups.values.allSatisfy(\.summarySeen) else {
+              groups.values.allSatisfy({ $0.summarySeen }) else {
             throw DistinctIndexError.corruptedSummary
         }
         return results

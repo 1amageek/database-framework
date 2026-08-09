@@ -91,7 +91,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
             fatalError("Bitmap must be used within context.fuse { } block")
         }
         self.fieldName = field.name
-        self.predicate = .in(values.map(\.fieldValue))
+        self.predicate = .in(values.map { $0.fieldValue })
         self.queryContext = context
     }
 
@@ -128,7 +128,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
         context: IndexQueryContext
     ) {
         self.fieldName = field.name
-        self.predicate = .in(values.map(\.fieldValue))
+        self.predicate = .in(values.map { $0.fieldValue })
         self.queryContext = context
     }
 
