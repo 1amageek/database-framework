@@ -34,7 +34,15 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
             throw DatabaseGraphAlgorithmError.sourceIndexHasNoUniqueOwner(source.index)
         }
 
-        let queryContext = IndexQueryContext(context: container.newContext())
+        let baseID = try container.requireActiveBaseLease().baseID
+        let databaseContext = container.session(
+            authorization: RequestAuthorization.context
+        ).base(baseID).newContext()
+        try databaseContext.authorizeIndexFieldRead(
+            entity: owned.entity,
+            descriptor: owned.descriptor
+        )
+        let queryContext = IndexQueryContext(context: databaseContext)
         guard let readableIndex = try await queryContext.readableIndex(
             named: owned.descriptor.name,
             kindIdentifier: owned.descriptor.kindIdentifier,

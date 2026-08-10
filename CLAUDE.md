@@ -8,8 +8,10 @@ counts or historical module layouts.
 
 `database-framework` is the execution runtime for models and queries declared
 by `database-kit`. It owns schema registration, persistence, transactions,
-query planning, migrations, index maintenance, graph execution, and the
-canonical server endpoint. Storage is provided through `storage-kit`.
+query planning, migrations, index maintenance, graph execution, and canonical
+DatabaseWire operation execution. Native listener and process lifecycle belong
+to the independent `database-server` package. Storage is provided through
+`storage-kit`.
 
 ```text
 database-types
@@ -63,9 +65,8 @@ general-purpose database value type in this package.
 | `VersionIndex` | Model version history |
 | `LeaderboardIndex` | Time-window leaderboard indexes |
 | `QueryAST` | SQL and SPARQL parsing and syntax representation; semantic QueryIR remains in `database-kit` |
-| `DatabaseServer` | Bounded DatabaseWire decoding, typed operation dispatch, limits, jobs, idempotency, and typed response encoding |
+| `DatabaseServer` | Bounded DatabaseWire decoding, typed operation dispatch, limits, jobs, idempotency, and typed response encoding; it is not a network listener |
 | `Database` | Convenience facade that re-exports the selected runtime and storage adapter |
-| `DatabaseCLICore` / `DatabaseCLI` | Interactive administration and inspection |
 
 Index modules depend on `DatabaseEngine`, `database-kit`, `database-types`, and
 the backend-neutral `StorageKit` contract. They must not import a concrete
@@ -187,15 +188,16 @@ or error contracts.
 `database-kit`. It owns operation routing and execution, not transport framing
 outside DatabaseWire and not storage implementation.
 
-The registered operation families are:
+The 14 registered operations are grouped into these families:
 
 1. capabilities and schema description;
-2. query and mutation execution;
-3. graph algorithms;
-4. ontology and SHACL execution;
-5. application commands;
-6. maintenance operations;
-7. job start, status, result, and cancellation.
+2. schema plan and apply;
+3. query and mutation execution;
+4. graph algorithms;
+5. ontology and SHACL execution;
+6. application commands;
+7. maintenance operations;
+8. job start, status, result, and cancellation.
 
 Requests must pass bounded decoding, admission, authorization, deadline, and
 resource-limit checks before execution. Mutations use typed idempotency and
@@ -308,8 +310,8 @@ the same commit as `origin/main`.
 | Package | Minimum release |
 |---|---:|
 | `database-types` | `26.0730.0` |
-| `database-kit` | `26.0803.0` |
-| `storage-kit` | `26.0803.1` |
+| `database-kit` | `26.0809.4` |
+| `storage-kit` | `26.0807.0` |
 | `swift-hnsw` | `1.1.4` |
 
 Repository branches and local paths are development conveniences, not part of

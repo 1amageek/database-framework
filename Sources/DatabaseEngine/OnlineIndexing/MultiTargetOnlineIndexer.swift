@@ -39,7 +39,7 @@ import Synchronization
 ///
 /// try await indexer.buildIndexes(clearFirst: true)
 /// ```
-public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
+package final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Properties
 
     /// FDB Container for database access

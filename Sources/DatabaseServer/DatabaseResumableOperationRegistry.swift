@@ -35,4 +35,12 @@ public struct DatabaseResumableOperationRegistry: Sendable {
         }
         return operation
     }
+
+    package func including(
+        _ operation: AnyDatabaseResumableOperation
+    ) throws -> DatabaseResumableOperationRegistry {
+        try DatabaseResumableOperationRegistry(
+            operations: operations + [operation]
+        )
+    }
 }

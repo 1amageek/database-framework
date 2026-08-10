@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import Foundation
 import Testing
 import TestHeartbeat
@@ -58,17 +57,59 @@ private struct UnregisteredRecord {
     var title: String
 }
 
+@Persistable
+private struct FieldSecuredRecord: SecurityPolicy {
+    var id: String = UUID().uuidString
+    var title: String
+
+    @Restricted(read: .roles(["security"]), write: .roles(["security"]))
+    var secret: String = ""
+
+    static func permitsRead(
+        of resource: borrowing FieldSecuredRecord,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsQuery(
+        _ query: borrowing SecurityQuery,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsCreate(
+        _ newResource: borrowing FieldSecuredRecord,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsUpdate(
+        from resource: borrowing FieldSecuredRecord,
+        to newResource: borrowing FieldSecuredRecord,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsDelete(
+        _ resource: borrowing FieldSecuredRecord,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+}
+
 @Suite("Request authorization policy", .heartbeat)
 struct RequestAuthorizationPolicyTests {
-    private func delegate(
-        configuration: SecurityConfiguration = .enabled()
-    ) throws -> RequestSecurityPolicyDelegate {
+    private func delegate() throws -> RequestSecurityPolicyDelegate {
         let registry = try AuthorizationPolicyRegistry(
-            handlers: [AuthorizationPolicyHandler(SecuredRecord.self)]
+            handlers: [
+                AuthorizationPolicyHandler(SecuredRecord.self),
+                AuthorizationPolicyHandler(FieldSecuredRecord.self),
+            ]
         )
         return RequestSecurityPolicyDelegate(
-            configuration: configuration,
-            policies: registry
+            policies: registry,
+            schema: try Schema(
+                entities: [
+                    try Schema.Entity(from: SecuredRecord.self),
+                    try Schema.Entity(from: FieldSecuredRecord.self),
+                ],
+                version: Schema.Version(1, 0, 0)
+            )
         )
     }
 
@@ -197,39 +238,86 @@ struct RequestAuthorizationPolicyTests {
         }
     }
 
-    @Test("Administrator role bypasses entity policy")
-    func administratorBypassesPolicy() throws {
+    @Test("Administrator role does not bypass entity policy")
+    func administratorDoesNotBypassPolicy() throws {
         let security = try delegate()
         let foreign = SecuredRecord(ownerID: "bob", title: "Private")
 
-        try RequestAuthorization.$context.withValue(
-            principal("operator", roles: ["admin"])
-        ) {
-            try security.evaluateGet(try PersistedModel(foreign))
-            try security.requireAdmin(
-                operation: "rebuildIndex",
-                targetType: SecuredRecord.persistableType
-            )
+        #expect(throws: SecurityError.self) {
+            try RequestAuthorization.$context.withValue(
+                principal("operator", roles: ["admin"])
+            ) {
+                try security.evaluateGet(try PersistedModel(foreign))
+            }
         }
     }
 
-    @Test("Non-administrator cannot perform admin operation")
-    func nonAdministratorCannotPerformAdminOperation() throws {
+    @Test("Schema field rules distinguish projected and complete reads")
+    func schemaFieldRulesAuthorizeProjectedReads() throws {
         let security = try delegate()
+        var record = FieldSecuredRecord(title: "Visible")
+        record.secret = "classified"
+        let persisted = try PersistedModel(record)
 
-        #expect(throws: SecurityError.self) {
-            try RequestAuthorization.$context.withValue(principal("alice")) {
-                try security.requireAdmin(
-                    operation: "rebuildIndex",
-                    targetType: SecuredRecord.persistableType
+        try RequestAuthorization.$context.withValue(principal("employee")) {
+            try security.evaluateFieldRead(
+                entity: FieldSecuredRecord.persistableType,
+                fields: ["title"]
+            )
+            try security.evaluateGet(persisted, fields: ["title"])
+        }
+        #expect(throws: FieldSecurityError.self) {
+            try RequestAuthorization.$context.withValue(
+                principal("employee")
+            ) {
+                try security.evaluateGet(persisted)
+            }
+        }
+        try RequestAuthorization.$context.withValue(
+            principal("security", roles: ["security"])
+        ) {
+            try security.evaluateGet(persisted)
+        }
+    }
+
+    @Test("Schema field rules validate canonical creates and updates")
+    func schemaFieldRulesAuthorizeCanonicalWrites() throws {
+        let security = try delegate()
+        var original = FieldSecuredRecord(title: "Visible")
+        original.secret = "classified"
+        var renamed = original
+        renamed.title = "Renamed"
+        var changed = renamed
+        changed.secret = "changed"
+
+        try RequestAuthorization.$context.withValue(principal("employee")) {
+            try security.evaluateUpdate(
+                try PersistedModel(original),
+                newResource: try PersistedModel(renamed)
+            )
+        }
+        #expect(throws: FieldSecurityError.self) {
+            try RequestAuthorization.$context.withValue(
+                principal("employee")
+            ) {
+                try security.evaluateCreate(try PersistedModel(original))
+            }
+        }
+        #expect(throws: FieldSecurityError.self) {
+            try RequestAuthorization.$context.withValue(
+                principal("employee")
+            ) {
+                try security.evaluateUpdate(
+                    try PersistedModel(renamed),
+                    newResource: try PersistedModel(changed)
                 )
             }
         }
     }
 
-    @Test("Explicitly disabled security bypasses policy evaluation")
-    func disabledSecurityBypassesPolicies() throws {
-        let security = try delegate(configuration: .disabled)
+    @Test("Test-only delegate bypasses entity policy evaluation")
+    func testOnlyDelegateBypassesPolicies() throws {
+        let security = DisabledSecurityDelegate()
         let foreign = SecuredRecord(ownerID: "bob", title: "Private")
 
         try security.evaluateGet(try PersistedModel(foreign))
@@ -238,10 +326,6 @@ struct RequestAuthorizationPolicyTests {
             limit: nil,
             offset: nil,
             orderBy: nil
-        )
-        try security.requireAdmin(
-            operation: "rebuildIndex",
-            targetType: SecuredRecord.persistableType
         )
     }
 
@@ -258,5 +342,4 @@ struct RequestAuthorizationPolicyTests {
         }
     }
 }
-#endif
 #endif

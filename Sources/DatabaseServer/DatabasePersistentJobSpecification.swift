@@ -3,10 +3,11 @@ import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 
 struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashable {
-    private static let formatVersion: UInt8 = 2
+    private static let formatVersion: UInt8 = 3
 
     let jobID: DatabaseTypes.UUID
     let operation: JobOperationIdentifier
+    let target: DatabaseOperationTarget
     let requestDigest: ByteString
     let requestID: UInt64
     let traceID: String?
@@ -36,6 +37,7 @@ struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashabl
         writer.writeUInt8(Self.formatVersion)
         try jobID.encode(into: &writer)
         try operation.encode(into: &writer)
+        try target.encode(into: &writer)
         try writer.writeBytes(requestDigest)
         writer.writeUInt64(requestID)
         try writer.writeOptionalString(traceID)
@@ -59,6 +61,7 @@ struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashabl
         self.init(
             jobID: try DatabaseTypes.UUID(from: &reader),
             operation: try JobOperationIdentifier(from: &reader),
+            target: try DatabaseOperationTarget(from: &reader),
             requestDigest: try reader.readBytes(),
             requestID: try reader.readUInt64(),
             traceID: try reader.readOptionalString(),
@@ -78,6 +81,7 @@ struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashabl
     init(
         jobID: DatabaseTypes.UUID,
         operation: JobOperationIdentifier,
+        target: DatabaseOperationTarget,
         requestDigest: ByteString,
         requestID: UInt64,
         traceID: String?,
@@ -90,6 +94,7 @@ struct DatabasePersistentJobSpecification: ServerPayloadValue, Sendable, Hashabl
     ) {
         self.jobID = jobID
         self.operation = operation
+        self.target = target
         self.requestDigest = requestDigest
         self.requestID = requestID
         self.traceID = traceID

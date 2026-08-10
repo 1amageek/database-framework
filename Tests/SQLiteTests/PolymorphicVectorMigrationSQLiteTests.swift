@@ -259,10 +259,10 @@ struct PolymorphicVectorMigrationSQLiteTests {
             for: SQLitePolymorphicVectorSchemaV1.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV1.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
 
         var anchor = SQLitePolymorphicVectorPersonV1(
             name: "Alice",
@@ -289,7 +289,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         try initialContext.insert(organization)
 
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
         await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
@@ -299,14 +299,14 @@ struct PolymorphicVectorMigrationSQLiteTests {
             runtimeConfiguration: try Self.vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
         #expect(try await Self.countEntityVectorIndexEntries(container: migratedContainer) == 107)
 
-        let page = try await migratedContainer.newContext()
+        let page = try await migratedContainer.testBaseContext()
             .findPolymorphic(SQLitePolymorphicVectorPersonV2.self)
             .vector(SQLitePolymorphicVectorPersonV2.fields.embedding, dimensions: 3)
             .query([1, 0, 0], k: 2)
@@ -316,7 +316,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
         #expect(ids == Set([anchor.id, organization.id]))
 
-        let organizationStartedPage = try await migratedContainer.newContext()
+        let organizationStartedPage = try await migratedContainer.testBaseContext()
             .findPolymorphic(SQLitePolymorphicVectorOrganizationV2.self)
             .vector(
                 SQLitePolymorphicVectorOrganizationV2.fields.embedding,
@@ -338,10 +338,10 @@ struct PolymorphicVectorMigrationSQLiteTests {
             for: SQLitePolymorphicVectorSchemaV2.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let context = initialContainer.newContext()
+        let context = initialContainer.testBaseContext()
 
         var person = SQLitePolymorphicVectorPersonV2(
             name: "Alice",
@@ -358,7 +358,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         try context.upsert(person)
         try context.upsert(organization)
         try await context.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(2, 0, 0))
         try await Self.clearEntityVectorIndexEntries(container: initialContainer)
         #expect(try await Self.countEntityVectorIndexEntries(container: initialContainer) == 0)
         await initialContainer.shutdown()
@@ -370,12 +370,12 @@ struct PolymorphicVectorMigrationSQLiteTests {
             runtimeConfiguration: try Self.vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV3.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
-        let page = try await migratedContainer.newContext()
+        let page = try await migratedContainer.testBaseContext()
             .findPolymorphic(SQLitePolymorphicVectorPersonV3.self)
             .vector(SQLitePolymorphicVectorPersonV3.fields.embedding, dimensions: 3)
             .query([1, 0, 0], k: 2)
@@ -385,7 +385,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
         #expect(ids == Set([person.id, organization.id]))
 
-        let organizationStartedPage = try await migratedContainer.newContext()
+        let organizationStartedPage = try await migratedContainer.testBaseContext()
             .findPolymorphic(SQLitePolymorphicVectorOrganizationV3.self)
             .vector(
                 SQLitePolymorphicVectorOrganizationV3.fields.embedding,
@@ -434,6 +434,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
     }
 
     private static func countEntityVectorIndexEntries(container: DBContainer) async throws -> Int {
+        try await container.withTestBaseOperation {
         let indexSubspace = try await entityVectorIndexSubspace(container: container)
 
         return try await container.engine.withTransaction { transaction -> Int in
@@ -444,22 +445,27 @@ struct PolymorphicVectorMigrationSQLiteTests {
                 snapshot: true
             ).count
         }
+        }
     }
 
     private static func clearEntityVectorIndexEntries(container: DBContainer) async throws {
+        try await container.withTestBaseOperation {
         let indexSubspace = try await entityVectorIndexSubspace(container: container)
         let range = indexSubspace.range()
 
         try await container.engine.withTransaction { transaction in
             try transaction.clearRange(beginKey: range.begin, endKey: range.end)
         }
+        }
     }
 
     private static func entityVectorIndexState(container: DBContainer) async throws -> IndexState {
+        try await container.withTestBaseOperation {
         let group = try container.polymorphicGroup(identifier: SQLitePolymorphicVectorPersonV2.polymorphableType)
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
         let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
         return try await lifecycleStore.state(of: "Entity_vector_embedding")
+        }
     }
 
     private static func entityVectorIndexSubspace(container: DBContainer) async throws -> Subspace {

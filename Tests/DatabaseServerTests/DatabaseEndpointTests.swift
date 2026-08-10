@@ -260,6 +260,10 @@ struct DatabaseEndpointTests {
     @Test("capabilities and schema handlers describe the compiled runtime")
     func describesCapabilitiesAndSchema() async throws {
         let container = try await makeContainer()
+        try await container.grantTestDatabaseAccess(
+            to: .principal("test-runner"),
+            access: .read
+        )
         let identity = DatabaseRuntimeIdentity(version: "3.2.1")
         let registry = try DatabaseOperationRegistry(
             handlers: [
@@ -289,30 +293,46 @@ struct DatabaseEndpointTests {
         let capabilities: CapabilitiesDescribeOperation.Response = try await invoke(
             DatabaseOperations.capabilitiesDescribe,
             requestID: 100,
-            endpoint: endpoint
+            endpoint: endpoint,
+            authorization: TestBaseEnvironment.authorization
         )
         let schema: SchemaDescribeOperation.Response = try await invoke(
             DatabaseOperations.schemaDescribe,
             requestID: 101,
-            endpoint: endpoint
+            endpoint: endpoint,
+            authorization: TestBaseEnvironment.authorization
         )
 
         #expect(capabilities.runtimeVersion == "3.2.1")
         #expect(
             capabilities.features.map(\.identifier) == [
+                "base.execute",
                 "capabilities.describe",
-                "schema.describe",
-                "query.execute",
-                "mutation.execute",
-                "graph.algorithm",
-                "ontology.execute",
-                "shacl.execute",
                 "command.execute",
-                "maintenance.execute",
+                "composition.execute",
+                "composition.query.aggregate.avg",
+                "composition.query.aggregate.count",
+                "composition.query.aggregate.max",
+                "composition.query.aggregate.min",
+                "composition.query.aggregate.sum",
+                "composition.query.distinct-provenance",
+                "composition.query.global-order-window",
+                "composition.query.scan-filter-project",
+                "composition.query.sparql-ask",
+                "composition.query.sparql-select",
+                "composition.query.vector",
+                "grant.execute",
+                "graph.algorithm",
+                "job.cancel",
+                "job.result",
                 "job.start",
                 "job.status",
-                "job.result",
-                "job.cancel",
+                "maintenance.execute",
+                "mutation.execute",
+                "ontology.execute",
+                "query.execute",
+                "schema.describe",
+                "shacl.execute",
             ]
         )
         #expect(capabilities.features.allSatisfy { $0.version == 1 })
@@ -342,7 +362,7 @@ struct DatabaseEndpointTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -383,6 +403,7 @@ struct DatabaseEndpointTests {
         try DatabaseWireEncoder().encodeRequest(
             operation,
             requestID: requestID,
+            target: .database,
             metadata: metadata,
             request: payload
         )
@@ -391,7 +412,8 @@ struct DatabaseEndpointTests {
     private func invoke<Response>(
         _ operation: DatabaseOperation<EmptyOperationPayload, Response>,
         requestID: UInt64,
-        endpoint: DatabaseEndpoint
+        endpoint: DatabaseEndpoint,
+        authorization: AuthorizationContext = .anonymous
     ) async throws -> Response {
         let request = try makeRequest(
             operation: operation,
@@ -400,7 +422,9 @@ struct DatabaseEndpointTests {
         )
         let responseBytes = try await endpoint.execute(
             request,
-            context: DatabaseRequestExecutionContext(authorization: .anonymous)
+            context: DatabaseRequestExecutionContext(
+                authorization: authorization
+            )
         )
         let header = try DatabaseWireDecoder().decodeResponseHeader(
             responseBytes

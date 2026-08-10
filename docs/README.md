@@ -20,6 +20,12 @@ reports are intentionally not part of the public documentation tree.
 - [Architecture and Ownership](architecture.md) - package responsibility,
   runtime forms, value ownership, transactions, and synchronization.
 - [Security](security.md) - authentication context and model-level policies.
+- [Base and Composition](base-composition.md) - implemented Base data
+  boundaries, read-only Composition, unified Security Grants, physical
+  placement, and federated paging contract.
+- [Base and Composition Implementation](base-composition-implementation-design.md)
+  - responsibility boundaries, Wire targeting, runtime leases, storage layout,
+  implementation order, and production verification gates.
 - [Ontology and Graph](ontology.md) - GraphIndex, OWL metadata, and ontology
   persistence.
 - [Query and Fusion](query.md) - scalar, SQL/SPARQL, graph, and fusion query

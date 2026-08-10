@@ -43,7 +43,7 @@ import DatabaseKit
 /// - Progress is tracked via RangeSet
 /// - If interrupted, scrubbing resumes from last completed batch
 /// - Progress is stored in `[indexSubspace]/_scrub_progress/[indexName]`
-public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
+package final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     // MARK: - Properties
 
     /// FDB Container for database access

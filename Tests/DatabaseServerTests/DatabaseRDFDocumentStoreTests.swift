@@ -19,23 +19,23 @@ struct DatabaseRDFDocumentStoreTests {
         let later = try quad(subject: "urn:z")
         let earlier = try quad(subject: "urn:a")
 
-        let firstPage = try await StorageTransactionExecutor(engine: container.engine).withTransaction(
-            configuration: .batch,
-            clock: TestProcessMonotonicClock()
+        let context = container.testBaseContext()
+        let firstPage = try await context.withTransaction(
+            configuration: .batch
         ) { transaction in
             let revision = try await store.replace(
                 identifier: "urn:calendar",
                 auxiliaryIdentifiers: ["urn:z-import", "urn:a-import", "urn:z-import"],
                 quads: [later, earlier, later],
                 expectedRevision: 0,
-                transaction: transaction
+                transaction: transaction.storageAccess
             )
             #expect(revision == 1)
             return try await store.page(
                 identifier: "urn:calendar",
                 offset: 0,
                 limit: 1,
-                transaction: transaction
+                transaction: transaction.storageAccess
             )
         }
 
@@ -45,15 +45,15 @@ struct DatabaseRDFDocumentStoreTests {
         #expect(firstPage?.quads.count == 1)
         #expect(firstPage?.nextOffset == 1)
 
-        let secondPage = try await StorageTransactionExecutor(engine: container.engine).withTransaction(
-            configuration: .readOnly,
-            clock: TestProcessMonotonicClock()
+        let secondPage = try await context.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
         ) { transaction in
             try await store.page(
                 identifier: "urn:calendar",
                 offset: 1,
                 limit: 1,
-                transaction: transaction
+                transaction: transaction.storageAccess
             )
         }
         #expect(secondPage?.quads.count == 1)
@@ -68,69 +68,62 @@ struct DatabaseRDFDocumentStoreTests {
             container: container,
             namespace: "shacl"
         )
-        try await StorageTransactionExecutor(engine: container.engine).withTransaction(
-                configuration: .batch,
-                clock: TestProcessMonotonicClock()
-            ) { transaction in
+        let context = container.testBaseContext()
+        try await context.withTransaction(configuration: .batch) { transaction in
             _ = try await store.replace(
                 identifier: "urn:shapes",
                 auxiliaryIdentifiers: [],
                 quads: [try quad(subject: "urn:shape")],
                 expectedRevision: nil,
-                transaction: transaction
+                transaction: transaction.storageAccess
             )
         }
 
         await #expect(throws: DatabaseRDFDocumentStoreError.self) {
-            try await StorageTransactionExecutor(engine: container.engine).withTransaction(
-                configuration: .batch,
-                clock: TestProcessMonotonicClock()
-            ) { transaction in
+            try await context.withTransaction(configuration: .batch) { transaction in
                 _ = try await store.replace(
                     identifier: "urn:shapes",
                     auxiliaryIdentifiers: [],
                     quads: [],
                     expectedRevision: 9,
-                    transaction: transaction
+                    transaction: transaction.storageAccess
                 )
             }
         }
 
-        let deletedRevision = try await StorageTransactionExecutor(engine: container.engine).withTransaction(
-            configuration: .batch,
-            clock: TestProcessMonotonicClock()
+        let deletedRevision = try await context.withTransaction(
+            configuration: .batch
         ) { transaction in
             try await store.delete(
                 identifier: "urn:shapes",
                 expectedRevision: 1,
-                transaction: transaction
+                transaction: transaction.storageAccess
             )
         }
         #expect(deletedRevision == 2)
 
-        let page = try await StorageTransactionExecutor(engine: container.engine).withTransaction(
-            configuration: .readOnly,
-            clock: TestProcessMonotonicClock()
+        let page = try await context.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
         ) { transaction in
             try await store.page(
                 identifier: "urn:shapes",
                 offset: 0,
                 limit: 10,
-                transaction: transaction
+                transaction: transaction.storageAccess
             )
         }
         #expect(page == nil)
 
-        let recreatedRevision = try await StorageTransactionExecutor(engine: container.engine).withTransaction(
-            configuration: .batch,
-            clock: TestProcessMonotonicClock()
+        let recreatedRevision = try await context.withTransaction(
+            configuration: .batch
         ) { transaction in
             try await store.replace(
                 identifier: "urn:shapes",
                 auxiliaryIdentifiers: [],
                 quads: [try quad(subject: "urn:replacement")],
                 expectedRevision: 2,
-                transaction: transaction
+                transaction: transaction.storageAccess
             )
         }
         #expect(recreatedRevision == 3)
@@ -146,7 +139,7 @@ struct DatabaseRDFDocumentStoreTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 

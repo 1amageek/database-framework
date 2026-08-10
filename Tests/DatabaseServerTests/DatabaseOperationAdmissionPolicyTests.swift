@@ -37,6 +37,7 @@ struct DatabaseOperationAdmissionPolicyTests {
         let request = try DatabaseWireEncoder().encodeRequest(
             DatabaseOperations.capabilitiesDescribe,
             requestID: 700,
+            target: .database,
             metadata: OperationRequestMetadata(traceID: "admission-test"),
             request: EmptyOperationPayload()
         )
@@ -101,11 +102,13 @@ struct DatabaseOperationAdmissionPolicyTests {
         let aliceRequest = try encoder.encodeRequest(
             DatabaseOperations.capabilitiesDescribe,
             requestID: 701,
+            target: .database,
             request: EmptyOperationPayload()
         )
         let bobRequest = try encoder.encodeRequest(
             DatabaseOperations.capabilitiesDescribe,
             requestID: 702,
+            target: .database,
             request: EmptyOperationPayload()
         )
 
@@ -156,7 +159,7 @@ struct DatabaseOperationAdmissionPolicyTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 

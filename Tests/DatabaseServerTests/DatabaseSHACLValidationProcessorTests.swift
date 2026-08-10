@@ -238,7 +238,7 @@ struct DatabaseSHACLValidationProcessorTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         guard let descriptor = try DatabaseSHACLStatement.indexDescriptors.first(
             where: {
@@ -248,7 +248,7 @@ struct DatabaseSHACLValidationProcessorTests {
         ) else {
             throw SHACLValidationSetupError.missingRDFDatasetIndex
         }
-        let readableIndex = try await container.newContext()
+        let readableIndex = try await container.testBaseContext()
             .indexQueryContext.withReadableIndex(
                 named: descriptor.name,
                 kindIdentifier: descriptor.kind.identifier,
@@ -292,7 +292,7 @@ struct DatabaseSHACLValidationProcessorTests {
             documentStore: store,
             dataSourceResolver: resolver
         )
-        let stateStore = try await DatabaseMutationStateStore(
+        let stateStore = DatabaseMutationStateStore(
             container: container
         )
         let service = CanonicalDatabaseSHACLService(
@@ -311,7 +311,7 @@ struct DatabaseSHACLValidationProcessorTests {
     }
 
     private func insertMissingNamePeople(validationContext: SHACLValidationContext) async throws {
-        let context = validationContext.container.newContext()
+        let context = validationContext.container.testBaseContext()
         for (index, person) in ["urn:Dave", "urn:Eve"].enumerated() {
             let statement = DatabaseSHACLStatement(
                 id: "person-\(index)",
@@ -336,7 +336,7 @@ struct DatabaseSHACLValidationProcessorTests {
             ("bob-type", "urn:Bob", Self.rdfType, "urn:Employee"),
             ("bob-name", "urn:Bob", "urn:name", "Bob")
         ]
-        let context = validationContext.container.newContext()
+        let context = validationContext.container.testBaseContext()
         for (id, subject, predicate, object) in statements {
             let objectTerm: RDFTerm
             if predicate == "urn:name" {
@@ -361,7 +361,7 @@ struct DatabaseSHACLValidationProcessorTests {
         _ quads: [RDFQuad],
         validationContext: SHACLValidationContext
     ) async throws {
-        let context = validationContext.container.newContext()
+        let context = validationContext.container.testBaseContext()
         for (offset, quad) in quads.enumerated() {
             try context.insert(
                 DatabaseSHACLStatement(
@@ -388,19 +388,28 @@ struct DatabaseSHACLValidationProcessorTests {
                 expectedRevision: nil
             )
         )
-        _ = try await validationContext.service.execute(
-            request,
-            context: DatabaseOperationContext(
-                container: validationContext.container,
-                requestID: 1,
-                metadata: OperationRequestMetadata(idempotencyKey: key),
-                requestPayload: try DatabaseWireEncoder()
-                    .encodeRequestPayload(
-                        DatabaseOperations.shaclExecute,
-                        request: request
-                    )
+        let baseContext = validationContext.container.testBaseContext()
+        _ = try await baseContext.withBaseOperation {
+            try await validationContext.service.execute(
+                request,
+                context: DatabaseOperationContext(
+                    container: validationContext.container,
+                    target: .base(baseContext.baseID),
+                    baseContext: baseContext,
+                    composition: nil,
+                    requirement: .canonical(for: .shaclExecute),
+                    requestID: 1,
+                    metadata: OperationRequestMetadata(idempotencyKey: key),
+                    authorization: TestBaseEnvironment.authorization,
+                    requestPayload: try DatabaseWireEncoder()
+                        .encodeRequestPayload(
+                            DatabaseOperations.shaclExecute,
+                            request: request
+                        ),
+                    wireLimits: .default
+                )
             )
-        )
+        }
     }
 
     private func validate(
@@ -409,8 +418,7 @@ struct DatabaseSHACLValidationProcessorTests {
         entailment: SHACLExecuteOperation.Entailment = .none,
         validationContext: SHACLValidationContext
     ) async throws -> MaterializedValidationReport {
-        let response = try await validationContext.service.execute(
-            SHACLExecuteOperation.Request(
+        let request = SHACLExecuteOperation.Request(
                 invocation: .validate(
                     shapesGraph: Self.shapesGraph,
                     data: validationContext.data,
@@ -418,9 +426,14 @@ struct DatabaseSHACLValidationProcessorTests {
                     entailment: entailment
                 ),
                 page: page
-            ),
-            context: context(container: validationContext.container)
-        ).response
+            )
+        let response = try await validationContext.container.testBaseContext()
+            .withBaseOperation {
+                try await validationContext.service.execute(
+                    request,
+                    context: context(container: validationContext.container)
+                ).response
+            }
         guard case .validation(let report) = response else {
             throw SHACLValidationSetupError.unexpectedResponse
         }
@@ -622,11 +635,18 @@ struct DatabaseSHACLValidationProcessorTests {
     }
 
     private func context(container: DBContainer) -> DatabaseOperationContext {
-        DatabaseOperationContext(
+        let baseContext = container.testBaseContext()
+        return DatabaseOperationContext(
             container: container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: .canonical(for: .shaclExecute),
             requestID: 2,
             metadata: OperationRequestMetadata(),
-            requestPayload: []
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: [],
+            wireLimits: .default
         )
     }
 

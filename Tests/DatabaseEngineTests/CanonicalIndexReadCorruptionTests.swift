@@ -3,6 +3,7 @@ import DatabaseRuntime
 import DatabaseTypes
 import ScalarIndex
 import StorageKit
+import TestSupport
 import Testing
 @testable import DatabaseEngine
 
@@ -22,7 +23,7 @@ struct CanonicalIndexReadCorruptionTests {
     @Test("A structurally invalid index key fails the read")
     func corruptedIndexKeyFailsRead() async throws {
         let scenario = try await makeScenario()
-        let context = scenario.container.newContext()
+        let context = scenario.container.testBaseContext()
         let item = CorruptionProbeItem(id: "probe", category: "vv")
         try context.insert(item)
         try await context.save()
@@ -31,7 +32,7 @@ struct CanonicalIndexReadCorruptionTests {
             CorruptionProbeItem.fields.category > "a"
         )
         let baseline = try await QueryExecutor(
-            context: scenario.container.newContext(),
+            context: scenario.container.testBaseContext(),
             query: rangeQuery
         ).execute()
         #expect(baseline.map(\.id) == [item.id])
@@ -50,7 +51,7 @@ struct CanonicalIndexReadCorruptionTests {
 
         do {
             _ = try await QueryExecutor(
-                context: scenario.container.newContext(),
+                context: scenario.container.testBaseContext(),
                 query: rangeQuery
             ).execute()
             Issue.record("Expected CanonicalReadError.corruptedIndexEntry")
@@ -62,7 +63,7 @@ struct CanonicalIndexReadCorruptionTests {
     @Test("An index entry whose row is missing in the same transaction fails the read")
     func danglingIndexEntryFailsSameTransactionRead() async throws {
         let scenario = try await makeScenario()
-        let context = scenario.container.newContext()
+        let context = scenario.container.testBaseContext()
         let item = CorruptionProbeItem(id: "probe", category: "vv")
         try context.insert(item)
         try await context.save()
@@ -70,7 +71,7 @@ struct CanonicalIndexReadCorruptionTests {
         let equalityQuery = Query<CorruptionProbeItem>().where(
             CorruptionProbeItem.fields.category == "vv"
         )
-        let baseline = try await scenario.container.newContext()
+        let baseline = try await scenario.container.testBaseContext()
             .withFetchedModelsInTransaction(equalityQuery) { models, _ in
                 models.map(\.id)
             }
@@ -86,7 +87,7 @@ struct CanonicalIndexReadCorruptionTests {
         }
 
         do {
-            _ = try await scenario.container.newContext()
+            _ = try await scenario.container.testBaseContext()
                 .withFetchedModelsInTransaction(equalityQuery) { models, _ in
                     models.map(\.id)
                 }
@@ -123,9 +124,9 @@ struct CanonicalIndexReadCorruptionTests {
                     )
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let store = try await container.store(for: CorruptionProbeItem.self)
+        let store = try await container.testBaseStore(for: CorruptionProbeItem.self)
         return CorruptionProbeScenario(
             container: container,
             engine: engine,

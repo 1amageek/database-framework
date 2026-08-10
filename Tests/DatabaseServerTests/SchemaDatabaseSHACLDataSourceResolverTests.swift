@@ -22,7 +22,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
             object: try .iri(validating: "urn:object"),
             graph: try .iri(validating: "urn:data")
         )
-        let context = resolutionContext.container.newContext()
+        let context = resolutionContext.container.testBaseContext()
         try context.insert(statement)
         try await context.save()
 
@@ -30,11 +30,9 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
             entity: DatabaseSHACLStatement.persistableType,
             id: .string(statement.id)
         )
-        let resolved = try await StorageTransactionExecutor(
-            engine: resolutionContext.container.engine
-        ).withTransaction(
-            configuration: .readOnly,
-            clock: TestProcessMonotonicClock()
+        let resolved = try await context.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
         ) { transaction in
             try await resolutionContext.resolver.resolve(
                 data: resolutionContext.data,
@@ -44,7 +42,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                     budget: ExecutionBudget(maximumWorkUnits: 10),
                     monotonicClock: TestProcessMonotonicClock()
                 ),
-                transaction: transaction
+                transaction: transaction.storageAccess
             )
         }
 
@@ -64,11 +62,10 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
     @Test("an empty entity focus remains an empty selection")
     func preservesEmptyEntityFocus() async throws {
         let resolutionContext = try await makeSHACLDataSourceResolutionContext()
-        let resolved = try await StorageTransactionExecutor(
-            engine: resolutionContext.container.engine
-        ).withTransaction(
-            configuration: .readOnly,
-            clock: TestProcessMonotonicClock()
+        let context = resolutionContext.container.testBaseContext()
+        let resolved = try await context.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
         ) { transaction in
             try await resolutionContext.resolver.resolve(
                 data: resolutionContext.data,
@@ -78,7 +75,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                     budget: ExecutionBudget(maximumWorkUnits: 2),
                     monotonicClock: TestProcessMonotonicClock()
                 ),
-                transaction: transaction
+                transaction: transaction.storageAccess
             )
         }
 
@@ -89,12 +86,11 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
     func resolvesRDFSEntailment() async throws {
         let resolutionContext = try await makeSHACLDataSourceResolutionContext()
         try await insertRDFSData(resolutionContext)
+        let context = resolutionContext.container.testBaseContext()
 
-        let resolved = try await StorageTransactionExecutor(
-            engine: resolutionContext.container.engine
-        ).withTransaction(
-            configuration: .readOnly,
-            clock: TestProcessMonotonicClock()
+        let resolved = try await context.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
         ) { transaction in
                 try await resolutionContext.resolver.resolve(
                     data: resolutionContext.data,
@@ -104,7 +100,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                         budget: ExecutionBudget(maximumWorkUnits: 200),
                         monotonicClock: TestProcessMonotonicClock()
                     ),
-                    transaction: transaction
+                    transaction: transaction.storageAccess
                 )
             }
 
@@ -125,13 +121,12 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
     func boundsRDFSEntailmentWork() async throws {
         let resolutionContext = try await makeSHACLDataSourceResolutionContext()
         try await insertRDFSData(resolutionContext)
+        let context = resolutionContext.container.testBaseContext()
 
         await #expect(throws: DatabaseWorkLimitError.self) {
-            try await StorageTransactionExecutor(
-                engine: resolutionContext.container.engine
-            ).withTransaction(
-                configuration: .readOnly,
-                clock: TestProcessMonotonicClock()
+            try await context.withTransaction(
+                requiredAccess: .read,
+                configuration: .readOnly
             ) { transaction in
                 try await resolutionContext.resolver.resolve(
                     data: resolutionContext.data,
@@ -141,7 +136,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                         budget: ExecutionBudget(maximumWorkUnits: 1),
                         monotonicClock: TestProcessMonotonicClock()
                     ),
-                    transaction: transaction
+                    transaction: transaction.storageAccess
                 )
             }
         }
@@ -155,7 +150,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
             ("subproperty", "urn:test:manages", Self.rdfsSubPropertyOf, "urn:test:knows"),
             ("type", "urn:test:Alice", Self.rdfType, "urn:test:Employee")
         ]
-        let context = resolutionContext.container.newContext()
+        let context = resolutionContext.container.testBaseContext()
         for (id, subject, predicate, object) in triples {
             try context.insert(
                 DatabaseSHACLStatement(
@@ -188,20 +183,15 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
         ]
         let ontologyIdentifier = ontology.iri
         let storedOntology = ontology
-        try await resolutionContext.container.engine.withTransaction {
-            transaction in
-            try await resolutionContext.ontologyStore.loadOntology(
-                storedOntology,
-                at: Timestamp(secondsSinceUnixEpoch: 1_000),
-                transaction: transaction
-            )
-        }
+        let context = resolutionContext.container.testBaseContext()
+        try await context.ontology.load(
+            storedOntology,
+            at: Timestamp(secondsSinceUnixEpoch: 1_000)
+        )
 
-        let resolved = try await StorageTransactionExecutor(
-            engine: resolutionContext.container.engine
-        ).withTransaction(
-            configuration: .readOnly,
-            clock: TestProcessMonotonicClock()
+        let resolved = try await context.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
         ) { transaction in
                 try await resolutionContext.resolver.resolve(
                     data: resolutionContext.data,
@@ -211,7 +201,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                         budget: ExecutionBudget(maximumWorkUnits: 100),
                         monotonicClock: TestProcessMonotonicClock()
                     ),
-                    transaction: transaction
+                    transaction: transaction.storageAccess
                 )
             }
 
@@ -226,13 +216,12 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
     @Test("missing OWL ontology fails explicitly")
     func rejectsMissingOWLOntology() async throws {
         let resolutionContext = try await makeSHACLDataSourceResolutionContext()
+        let context = resolutionContext.container.testBaseContext()
 
         await #expect(throws: SHACLError.self) {
-            try await StorageTransactionExecutor(
-                engine: resolutionContext.container.engine
-            ).withTransaction(
-                configuration: .readOnly,
-                clock: TestProcessMonotonicClock()
+            try await context.withTransaction(
+                requiredAccess: .read,
+                configuration: .readOnly
             ) { transaction in
                 try await resolutionContext.resolver.resolve(
                     data: resolutionContext.data,
@@ -242,7 +231,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                         budget: ExecutionBudget(maximumWorkUnits: 10),
                         monotonicClock: TestProcessMonotonicClock()
                     ),
-                    transaction: transaction
+                    transaction: transaction.storageAccess
                 )
             }
         }
@@ -259,33 +248,21 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         guard let descriptor = try DatabaseSHACLStatement.indexDescriptors
             .first(where: { $0.kindIdentifier == "rdf_quad" }) else {
             throw SHACLDataSourceResolutionSetupError.missingRDFIndex
         }
-        let stateStore = try await DatabaseMutationStateStore(
+        let stateStore = DatabaseMutationStateStore(
             container: container
-        )
-        let ontologySubspace = try await container.engine.withTransaction {
-            transaction in
-            try await container.engine.namespaceResolver.resolveOrCreate(
-                path: ["database-framework", "ontology-index"],
-                transaction: transaction
-            )
-        }
-        let ontologyStore = OntologyStore(
-            subspace: OntologySubspace(base: ontologySubspace)
         )
         return SHACLDataSourceResolutionContext(
             container: container,
             resolver: SchemaDatabaseSHACLDataSourceResolver(
                 container: container,
-                stateStore: stateStore,
-                ontologyStore: ontologyStore
+                stateStore: stateStore
             ),
-            ontologyStore: ontologyStore,
             data: SHACLExecuteOperation.DataSource(
                 entity: DatabaseSHACLStatement.persistableType,
                 index: descriptor.name,
@@ -297,7 +274,6 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
     private struct SHACLDataSourceResolutionContext: Sendable {
         let container: DBContainer
         let resolver: SchemaDatabaseSHACLDataSourceResolver
-        let ontologyStore: OntologyStore
         let data: SHACLExecuteOperation.DataSource
     }
 

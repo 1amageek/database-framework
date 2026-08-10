@@ -13,9 +13,12 @@ public struct SchemaExecuteHandler: DatabaseOperationHandler {
         _ request: SchemaExecuteOperation.Request,
         context: DatabaseOperationContext
     ) async throws -> SchemaExecuteOperation.Response {
-        _ = context
         switch request.invocation {
         case .plan(let manifest, let expectedFingerprint):
+            try await context.requireControlExecutor().withTransaction(
+                requiredAccess: .administer,
+                configuration: .readOnly
+            ) { _ in () }
             return .plan(
                 try await coordinator.plan(
                     manifest: manifest,
@@ -27,7 +30,7 @@ public struct SchemaExecuteHandler: DatabaseOperationHandler {
             let expectedFingerprint,
             let idempotencyKey
         ):
-            return .applied(
+            return .accepted(
                 try await coordinator.apply(
                     manifest: manifest,
                     expectedFingerprint: expectedFingerprint,

@@ -62,7 +62,7 @@ struct PostgreSQLConcurrencyTests {
             await firstContainer.shutdown()
 
             let secondContainer = try await setupContainer()
-            let context = secondContainer.newContext()
+            let context = secondContainer.testBaseContext()
             var counter = PGCounter()
             counter.id = uniqueID("fresh-engine")
             counter.value = 42
@@ -89,7 +89,7 @@ struct PostgreSQLConcurrencyTests {
             // Write two items in parallel tasks
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
-                    let ctx = container.newContext()
+                    let ctx = container.testBaseContext()
                     var item = PGCounter()
                     item.id = id1
                     item.value = 100
@@ -97,7 +97,7 @@ struct PostgreSQLConcurrencyTests {
                     try await ctx.save()
                 }
                 group.addTask {
-                    let ctx = container.newContext()
+                    let ctx = container.testBaseContext()
                     var item = PGCounter()
                     item.id = id2
                     item.value = 200
@@ -108,7 +108,7 @@ struct PostgreSQLConcurrencyTests {
             }
 
             // Both should be persisted
-            let ctx = container.newContext()
+            let ctx = container.testBaseContext()
 
             let result1 = try await ctx.fetch(PGCounter.self)
                 .where(PGCounter.fields.id == id1)
@@ -128,7 +128,7 @@ struct PostgreSQLConcurrencyTests {
     func withTransactionRetries() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let itemId = uniqueID("retry")
 
@@ -141,7 +141,7 @@ struct PostgreSQLConcurrencyTests {
 
             // Sequential increments (each in its own transaction)
             for _ in 0..<5 {
-                let ctx = container.newContext()
+                let ctx = container.testBaseContext()
                 try await ctx.withTransaction { tx in
                     guard var existing = try await tx.fetch(PGCounter.self, identifiedBy: itemId) else {
                         Issue.record("Item not found")
@@ -307,7 +307,9 @@ struct PostgreSQLConcurrencyTests {
 
             // SchemaRegistry is automatically initialized by DBContainer.
             // Verify we can resolve the directory for PGCounter
-            let subspace = try await container.resolveDirectory(for: PGCounter.self)
+            let subspace = try await container.withTestBaseOperation {
+                try await container.resolveDirectory(for: PGCounter.self)
+            }
             #expect(subspace.prefix.count > 0)
         }
     }
@@ -318,7 +320,7 @@ struct PostgreSQLConcurrencyTests {
     func nestedTransactionReuse() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let itemId = uniqueID("nested")
 

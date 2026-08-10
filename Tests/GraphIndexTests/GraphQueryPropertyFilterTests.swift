@@ -65,14 +65,9 @@ struct GraphQueryPropertyFilterTests {
             ],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self)]), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self)]), security: .testingDisabled)
 
-
-        let path = ["test", "social_edges_query"]
-        if try await database.namespaceExists(path: path) {
-            try await database.removeNamespace(path: path)
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
 
         return container
     }
@@ -82,7 +77,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Type-safe property filter: equality")
     func testTypeSafeEqualityFilter() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -107,7 +102,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Type-safe property filter: range")
     func testTypeSafeRangeFilter() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -130,7 +125,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Multiple property filters (AND)")
     func testMultiplePropertyFilters() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -158,7 +153,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Type-erased property filter (whereRaw)")
     func testTypeErasedPropertyFilter() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -187,7 +182,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Property filter with nil values")
     func testPropertyFilterWithNilValues() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -214,7 +209,7 @@ struct GraphQueryPropertyFilterTests {
     @Test("Backward compatibility: no property filters")
     func testBackwardCompatibility() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")

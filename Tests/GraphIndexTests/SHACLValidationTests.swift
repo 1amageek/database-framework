@@ -60,16 +60,13 @@ struct SHACLValidationTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SHACLValidationStatement.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.namespaceExists(path: ["shacl_validation_tests", "statements"]) {
-            try await container.engine.removeNamespace(path: ["shacl_validation_tests", "statements"])
-        }
-        try await container.ensureIndexesReady()
-        try await container.newContext().shacl.deleteAllShapesGraphs()
+        try await container.resetTestBaseData()
+        try await container.testBaseContext().shacl.deleteAllShapesGraphs()
     }
 
     private func insertStatements(_ statements: [SHACLValidationStatement], context: DatabaseContext) async throws {
@@ -144,10 +141,11 @@ struct SHACLValidationTests {
     @Test("Load and get shapes graph")
     func testLoadAndGetShapesGraph() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let shapesGraph = try makePersonShapesGraph()
 
         // Load shapes graph
@@ -174,10 +172,11 @@ struct SHACLValidationTests {
     @Test("List shapes graphs")
     func testListShapesGraphs() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Load multiple shapes graphs
         let graph1 = SHACLShapesGraph(iri: "ex:Shapes1", shapes: [])
@@ -201,10 +200,11 @@ struct SHACLValidationTests {
     @Test("Delete shapes graph")
     func testDeleteShapesGraph() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Load a shapes graph
         let shapesGraph = try makePersonShapesGraph()
@@ -229,10 +229,11 @@ struct SHACLValidationTests {
     @Test("Conforming data graph produces no violations")
     func testConformingDataGraph() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: all Persons have at least one ex:name (RDFTerm-encoded literals)
         try await insertPersonData(context: context)
@@ -258,10 +259,11 @@ struct SHACLValidationTests {
     @Test("minCount violation when required property is missing")
     func testMinCountViolation() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Dave is a Person but has NO ex:name
         try await insertStatements([
@@ -292,10 +294,11 @@ struct SHACLValidationTests {
     @Test("maxCount violation when too many values")
     func testMaxCountViolation() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Eve is a Person with TWO names (RDFTerm-encoded literals)
         try await insertStatements([
@@ -343,10 +346,11 @@ struct SHACLValidationTests {
     @Test("sh:class constraint violation")
     func testClassConstraint() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data (rdf:type objects are IRIs — no RDFTerm encoding needed)
         try await insertStatements([
@@ -391,10 +395,11 @@ struct SHACLValidationTests {
     @Test("sh:nodeKind constraint violation: blank node where IRI expected")
     func testNodeKindConstraint() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice knows a blank node (stored with _: prefix)
         try await insertStatements([
@@ -442,10 +447,11 @@ struct SHACLValidationTests {
     @Test("sh:nodeKind distinguishes IRI from literal")
     func testNodeKindIRIvsLiteral() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has a name (literal) and knows Bob (IRI)
         try await insertStatements([
@@ -516,10 +522,11 @@ struct SHACLValidationTests {
     @Test("sh:datatype validates literal datatype")
     func testDatatypeConstraint() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has a string name and integer age
         try await insertStatements([
@@ -600,10 +607,11 @@ struct SHACLValidationTests {
     @Test("sh:datatype rejects IRI where literal expected")
     func testDatatypeRejectsIRI() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: ex:knows value is an IRI (not a literal)
         try await insertStatements([
@@ -650,10 +658,11 @@ struct SHACLValidationTests {
     @Test("sh:minLength violation with empty string literal")
     func testMinLengthViolation() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has an empty name (RDFTerm-encoded empty literal)
         try await insertStatements([
@@ -696,10 +705,11 @@ struct SHACLValidationTests {
     @Test("sh:pattern violation with non-matching email literal")
     func testPatternViolation() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has an invalid email (RDFTerm-encoded literal)
         try await insertStatements([
@@ -742,9 +752,10 @@ struct SHACLValidationTests {
     @Test("Invalid sh:pattern throws SHACLError")
     func testInvalidPatternThrows() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         try await insertStatements([
             try makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: try iri("ex:Person")),
@@ -789,10 +800,11 @@ struct SHACLValidationTests {
     @Test("sh:languageIn validates language tags on literals")
     func testLanguageInConstraint() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has labels in English (allowed) and Japanese (not allowed)
         try await insertStatements([
@@ -841,10 +853,11 @@ struct SHACLValidationTests {
     @Test("sh:minInclusive and sh:maxInclusive validate numeric range")
     func testValueRangeConstraint() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has age 30 (valid), Bob has age 200 (too high)
         try await insertStatements([
@@ -897,10 +910,11 @@ struct SHACLValidationTests {
     @Test("sh:closed violation with unexpected properties")
     func testClosedShapeViolation() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has name (declared) and age (unexpected)
         try await insertStatements([
@@ -955,10 +969,11 @@ struct SHACLValidationTests {
     @Test("sh:closed with ignoredProperties produces no violation")
     func testClosedShapeWithIgnored() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has name (declared), age (in ignoredProperties), and rdf:type (also ignored)
         try await insertStatements([
@@ -1004,10 +1019,11 @@ struct SHACLValidationTests {
     @Test("sh:hasValue violation when required value is absent")
     func testHasValueViolation() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has rdf:type ex:Person but NOT ex:Agent (both are IRIs)
         try await insertStatements([
@@ -1051,10 +1067,11 @@ struct SHACLValidationTests {
     @Test("sh:in constraint violation when value not in allowed list")
     func testInConstraintViolation() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has status "ex:draft" (IRI) which is not in the allowed list
         try await insertStatements([
@@ -1097,10 +1114,11 @@ struct SHACLValidationTests {
     @Test("sh:hasValue with literal value")
     func testHasValueWithLiteral() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has status literal "active"
         try await insertStatements([
@@ -1142,10 +1160,11 @@ struct SHACLValidationTests {
     @Test("sh:targetNode targets a specific node")
     func testTargetNode() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice and Bob both have names (RDFTerm-encoded literals)
         try await insertStatements([
@@ -1188,10 +1207,11 @@ struct SHACLValidationTests {
     @Test("sh:targetClass targets all instances of a class")
     func testTargetClass() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: two Persons, one Animal (RDFTerm-encoded literals)
         try await insertStatements([
@@ -1224,10 +1244,11 @@ struct SHACLValidationTests {
     @Test("sh:targetSubjectsOf targets subjects with given predicate")
     func testTargetSubjectsOf() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice and Bob have emails (RDFTerm-encoded literals), Carol does not
         try await insertStatements([
@@ -1279,10 +1300,11 @@ struct SHACLValidationTests {
     @Test("Deactivated shape produces no validation results")
     func testDeactivatedShapeSkipped() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Dave is a Person with no name (would normally violate)
         try await insertStatements([
@@ -1325,10 +1347,11 @@ struct SHACLValidationTests {
     @Test("sh:or constraint allows one of multiple shapes")
     func testOrConstraint() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has string name (valid), Bob has integer "name" (valid via or), Carol has no name
         try await insertStatements([
@@ -1403,10 +1426,11 @@ struct SHACLValidationTests {
     @Test("sh:not constraint rejects matching shape")
     func testNotConstraint() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has name "Alice" (string), Bob has name with integer datatype
         try await insertStatements([
@@ -1472,10 +1496,11 @@ struct SHACLValidationTests {
     @Test("sh:uniqueLang violation when duplicate language tags")
     func testUniqueLangConstraint() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data: Alice has two English labels (duplicate lang tag)
         try await insertStatements([
@@ -1526,10 +1551,11 @@ struct SHACLValidationTests {
     @Test("validateNode API validates a specific node against a shape")
     func testValidateNodeAgainstShape() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert data (RDFTerm-encoded literals)
         try await insertStatements([
@@ -1572,10 +1598,11 @@ struct SHACLValidationTests {
     @Test("Validate against nonexistent shapes graph throws error")
     func testValidateNonexistentShapesGraph() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
         try await cleanup(container: container)
 
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert some data (doesn't matter what)
         try await insertStatements([

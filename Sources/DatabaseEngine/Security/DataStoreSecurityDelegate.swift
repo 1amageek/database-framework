@@ -10,8 +10,14 @@ public protocol DataStoreSecurityDelegate: Sendable {
         orderBy: [String]?
     ) throws
 
+    func evaluateFieldRead(
+        entity: String,
+        fields: Set<String>
+    ) throws
+
     func evaluateGet(
-        _ resource: borrowing PersistedModel
+        _ resource: borrowing PersistedModel,
+        fields: Set<String>?
     ) throws
 
     func evaluateCreate(
@@ -27,7 +33,15 @@ public protocol DataStoreSecurityDelegate: Sendable {
         _ resource: borrowing PersistedModel
     ) throws
 
-    func requireAdmin(operation: String, targetType: String) throws
+}
+
+extension DataStoreSecurityDelegate {
+    /// A typed model read observes its complete canonical value.
+    public func evaluateGet(
+        _ resource: borrowing PersistedModel
+    ) throws {
+        try evaluateGet(resource, fields: nil)
+    }
 }
 
 /// Request-scoped authorization state supplied by the authenticated
@@ -41,15 +55,17 @@ public final class RequestSecurityPolicyDelegate:
     DataStoreSecurityDelegate,
     Sendable
 {
-    private let configuration: SecurityConfiguration
     private let policies: AuthorizationPolicyRegistry
+    private let entities: [String: Schema.Entity]
 
     public init(
-        configuration: SecurityConfiguration,
-        policies: AuthorizationPolicyRegistry
+        policies: AuthorizationPolicyRegistry,
+        schema: Schema
     ) {
-        self.configuration = configuration
         self.policies = policies
+        self.entities = Dictionary(
+            uniqueKeysWithValues: schema.entities.map { ($0.name, $0) }
+        )
     }
 
     private var context: AuthorizationContext {
@@ -60,28 +76,12 @@ public final class RequestSecurityPolicyDelegate:
         context.principal?.identifier
     }
 
-    private var isAdmin: Bool {
-        guard let principal = context.principal else {
-            return false
-        }
-        return !principal.roles.isDisjoint(
-            with: configuration.adminRoles
-        )
-    }
-
-    private var shouldEvaluate: Bool {
-        configuration.isEnabled && !isAdmin
-    }
-
     public func evaluateList(
         entity: String,
         limit: Int?,
         offset: Int?,
         orderBy: [String]?
     ) throws {
-        guard shouldEvaluate else {
-            return
-        }
         guard limit.map({ $0 >= 0 }) ?? true,
               offset.map({ $0 >= 0 }) ?? true else {
             throw denial(
@@ -108,12 +108,28 @@ public final class RequestSecurityPolicyDelegate:
         }
     }
 
-    public func evaluateGet(
-        _ resource: borrowing PersistedModel
+    public func evaluateFieldRead(
+        entity: String,
+        fields: Set<String>
     ) throws {
-        guard shouldEvaluate else {
-            return
+        guard let schemaEntity = entities[entity] else {
+            throw denial(
+                operation: .get,
+                entity: entity,
+                reason: "The entity is not present in the active schema"
+            )
         }
+        try FieldSecurityEvaluator.validateRead(
+            entity: schemaEntity,
+            fields: fields,
+            context: context
+        )
+    }
+
+    public func evaluateGet(
+        _ resource: borrowing PersistedModel,
+        fields: Set<String>?
+    ) throws {
         let entity = resource.entity
         let handler = try registeredHandler(
             operation: .get,
@@ -129,14 +145,24 @@ public final class RequestSecurityPolicyDelegate:
                 resource: decision.resource
             )
         }
+        guard let entity = entities[resource.entity] else {
+            throw denial(
+                operation: .get,
+                entity: resource.entity,
+                reason: "The entity is not present in the active schema"
+            )
+        }
+        try FieldSecurityEvaluator.validateRead(
+            entity: entity,
+            fields: fields
+                ?? RequestFieldAuthorization.fieldsByEntity?[resource.entity],
+            context: context
+        )
     }
 
     public func evaluateCreate(
         _ resource: borrowing PersistedModel
     ) throws {
-        guard shouldEvaluate else {
-            return
-        }
         let entity = resource.entity
         let handler = try registeredHandler(
             operation: .create,
@@ -152,15 +178,24 @@ public final class RequestSecurityPolicyDelegate:
                 resource: decision.resource
             )
         }
+        guard let entity = entities[resource.entity] else {
+            throw denial(
+                operation: .create,
+                entity: resource.entity,
+                reason: "The entity is not present in the active schema"
+            )
+        }
+        try FieldSecurityEvaluator.validateInsert(
+            entity: entity,
+            updated: resource,
+            context: context
+        )
     }
 
     public func evaluateUpdate(
         _ resource: borrowing PersistedModel,
         newResource: borrowing PersistedModel
     ) throws {
-        guard shouldEvaluate else {
-            return
-        }
         let entity = newResource.entity
         let handler = try registeredHandler(
             operation: .update,
@@ -180,14 +215,24 @@ public final class RequestSecurityPolicyDelegate:
                 resource: decision.resource
             )
         }
+        guard let entity = entities[newResource.entity] else {
+            throw denial(
+                operation: .update,
+                entity: newResource.entity,
+                reason: "The entity is not present in the active schema"
+            )
+        }
+        try FieldSecurityEvaluator.validateUpdate(
+            entity: entity,
+            original: resource,
+            updated: newResource,
+            context: context
+        )
     }
 
     public func evaluateDelete(
         _ resource: borrowing PersistedModel
     ) throws {
-        guard shouldEvaluate else {
-            return
-        }
         let entity = resource.entity
         let handler = try registeredHandler(
             operation: .delete,
@@ -201,19 +246,6 @@ public final class RequestSecurityPolicyDelegate:
                 entity: entity,
                 reason: "The registered policy denied the delete",
                 resource: decision.resource
-            )
-        }
-    }
-
-    public func requireAdmin(
-        operation: String,
-        targetType: String
-    ) throws {
-        guard !configuration.isEnabled || isAdmin else {
-            throw denial(
-                operation: .admin,
-                entity: targetType,
-                reason: "\(operation) requires an administrator role"
             )
         }
     }
@@ -264,8 +296,14 @@ public final class DisabledSecurityDelegate:
         orderBy: [String]?
     ) throws {}
 
+    public func evaluateFieldRead(
+        entity: String,
+        fields: Set<String>
+    ) throws {}
+
     public func evaluateGet(
-        _ resource: borrowing PersistedModel
+        _ resource: borrowing PersistedModel,
+        fields: Set<String>?
     ) throws {}
 
     public func evaluateCreate(
@@ -281,8 +319,4 @@ public final class DisabledSecurityDelegate:
         _ resource: borrowing PersistedModel
     ) throws {}
 
-    public func requireAdmin(
-        operation: String,
-        targetType: String
-    ) throws {}
 }

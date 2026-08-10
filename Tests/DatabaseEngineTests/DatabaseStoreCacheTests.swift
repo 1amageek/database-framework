@@ -7,14 +7,17 @@ struct DatabaseStoreCacheTests {
     @Test("lookup remains correct across sorted insertion and replacement")
     func insertionAndReplacement() throws {
         let alpha = DatabaseStoreCacheKey(
+            basePlacementGeneration: 1,
             entity: "Document",
             components: ["alpha"]
         )
         let nested = DatabaseStoreCacheKey(
+            basePlacementGeneration: 1,
             entity: "Document",
             components: ["alpha", "nested"]
         )
         let omega = DatabaseStoreCacheKey(
+            basePlacementGeneration: 1,
             entity: "Document",
             components: ["omega"]
         )
@@ -32,6 +35,7 @@ struct DatabaseStoreCacheTests {
         #expect(
             cache.value(
                 for: DatabaseStoreCacheKey(
+                    basePlacementGeneration: 1,
                     entity: "Missing",
                     components: []
                 )

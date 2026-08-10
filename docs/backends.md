@@ -1,9 +1,11 @@
 # Backend Guide
 
 database-framework executes against StorageKit protocols. `DatabaseEngine`
-never imports or selects a concrete backend. Its only storage construction
-contract is an initialized `StorageEngine` passed to
-`DBConfiguration(storageEngine:)`.
+never creates or selects a concrete backend. Its storage construction contract
+is a validated `DatabaseStorageTopology` containing a control domain, one or
+more data domains, and named Base placements. Backend facades build a
+one-domain topology from one initialized `StorageEngine`; they do not create an
+implicit Base.
 
 ## Backend Matrix
 
@@ -17,12 +19,19 @@ contract is an initialized `StorageEngine` passed to
 All application data access passes through the same conceptual path:
 
 ~~~text
-DBContainer -> DatabaseContext -> StorageEngine -> Transaction
+DBContainer
+    -> DatabaseSession
+        -> BaseDataSource or CompositionDataSource
+            -> target-bound executor
+                -> resolved storage domain
+                    -> Transaction
 ~~~
 
-DatabaseContext is backend-neutral. Backend traits only decide which facade
-adapters are available to the consuming package. The injected engine decides
-which backend one container uses.
+`DatabaseContext` is Base-bound and backend-neutral. A Composition is read-only
+and uses its planner-backed executor instead of a mutation context. Backend
+traits only decide which facade adapters are available to the consuming
+package. The topology decides which backend owns each Base placement without
+exposing backend credentials through the semantic API.
 
 ## SwiftPM Traits
 
@@ -32,7 +41,7 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3910 \
+    --expected-count 3964 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -48,7 +57,7 @@ index implementations. `Relationships` remains independent.
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0807.0",
+    from: "26.0809.2",
     traits: ["SQLite", "GraphIndexes"]
 )
 ~~~
@@ -60,7 +69,7 @@ composition is the union requested by the complete consuming graph.
 scripts/xcode-test-harness \
   --traits SQLite,AllRuntimeFeatures \
   --only-testing SQLiteTests \
-  --expected-count 101 \
+  --expected-count 119 \
   --require-zero-skips \
   --require-zero-expected-failures \
   --require-zero-runtime-warnings
@@ -77,7 +86,7 @@ POSTGRES_TEST_DB=database_framework_test \
 scripts/xcode-test-harness \
   --traits PostgreSQL,AllRuntimeFeatures \
   --only-testing PostgreSQLTests \
-  --expected-count 71 \
+  --expected-count 72 \
   --require-zero-skips \
   --require-zero-expected-failures \
   --require-zero-runtime-warnings
@@ -197,19 +206,20 @@ must fail explicitly; they must not silently fall back to another backend.
 
 ## Storage Engine Lifecycle
 
-Passing an engine to `DBConfiguration(storageEngine:)` transfers its lifecycle
-to a shared configuration/container owner. Do not use or shut down the engine
-through another owner afterward.
+Passing a topology to `DBConfiguration(storageTopology:)` transfers every
+engine lifecycle to one shared configuration/container owner. Backend facades
+that construct a one-domain topology have the same transfer contract. Do not
+use or shut down any transferred engine through another owner afterward.
 
 ~~~text
-StorageEngine
+StorageEngine(s)
     |
-    | transfer ownership
+    | validate topology and transfer ownership
     v
-DBConfiguration -> DBContainer.open
-                      |-- open failure -> shutdown exactly once
-                      |-- shutdown() --> shutdown exactly once
-                      `-- deinit ------> shutdown exactly once
+DatabaseStorageTopology -> DBConfiguration -> DBContainer.open
+                                                |-- open failure -> all engines shut down exactly once
+                                                |-- shutdown() --> all engines shut down exactly once
+                                                `-- deinit ------> all engines shut down exactly once
 ~~~
 
 `DBContainer.shutdown()` is synchronous, thread-safe, and idempotent. It is the

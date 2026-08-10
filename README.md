@@ -41,8 +41,8 @@ The package separates application behavior from storage deployment:
 Application model, query, and index declarations stay the same when the
 backend changes. A consuming package uses SwiftPM traits to include concrete
 backend adapters and optional runtime capabilities. At runtime,
-`DBConfiguration(storageEngine:)` injects the initialized engine that one
-container owns.
+`DBConfiguration(storageEngine:monotonicClock:wallClock:)` injects the
+initialized engine and clocks that one container owns.
 
 ### Responsibilities
 
@@ -98,7 +98,7 @@ documented semantic mapping.
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0809.0"
+            from: "26.0809.2"
         )
     ]
 
@@ -112,7 +112,7 @@ The package that consumes database-framework selects that composition:
 
     .package(
         url: "https://github.com/1amageek/database-framework.git",
-        from: "26.0809.0",
+        from: "26.0809.2",
         traits: ["GraphIndexes"]
     )
 
@@ -174,7 +174,8 @@ The model and application code are backend-neutral:
         runtimeConfiguration: runtime
     )
 
-    let context = container.newContext()
+    let session = container.session(authorization: authorization)
+    let context = session.base(baseID).newContext()
     try context.insert(
         User(id: "alice", email: "alice@example.com", name: "Alice")
     )
@@ -215,7 +216,7 @@ or WASI.
         --traits FoundationDB,AllRuntimeFeatures \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3910 \
+        --expected-count 3964 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
@@ -247,7 +248,7 @@ For local testing, the repository includes an isolated cluster wrapper:
         --traits FoundationDB,AllRuntimeFeatures \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3910 \
+        --expected-count 3964 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
@@ -260,7 +261,7 @@ not require a FoundationDB process.
     scripts/xcode-test-harness \
       --traits SQLite,AllRuntimeFeatures \
       --only-testing SQLiteTests \
-      --expected-count 101 \
+      --expected-count 119 \
       --require-zero-skips \
       --require-zero-expected-failures \
       --require-zero-runtime-warnings
@@ -303,7 +304,7 @@ Cloud SQL socket mounted into Cloud Run.
     scripts/xcode-test-harness \
       --traits PostgreSQL,AllRuntimeFeatures \
       --only-testing PostgreSQLTests \
-      --expected-count 71 \
+      --expected-count 72 \
       --require-zero-skips \
       --require-zero-expected-failures \
       --require-zero-runtime-warnings
@@ -388,29 +389,34 @@ The same injection path is used for a custom remote or host-provided engine:
 
 ## Transaction and Context Model
 
-DBContainer is a resource manager. It does not create application
-transactions. A context owns unit-of-work state and uses the selected engine
-for transactions.
+DBContainer owns the control domain and the configured data domains. It does
+not create an unscoped application transaction. A session binds the authenticated
+principal, a Base selector binds the data and Grant boundary, and a context
+owns unit-of-work state within that one Base.
 
     DBContainer
-      owns: Schema, StorageEngine, directory and index state
+      owns: control domain, data domains, schema and target catalogs
            |
-           +--> newContext()
+           +--> session(authorization:)
                     |
-                    v
-                DatabaseContext
-                  owns: pending changes, read-version/cache state,
-                        transaction orchestration
+                    +--> base(Base.ID)
+                              |
+                              v
+                         DatabaseContext
+                           owns: one Base, pending changes,
+                                 read-version/cache state and transaction orchestration
 
-Creating `DBConfiguration(storageEngine:)` transfers the engine lifecycle to a
-shared owner carried by that configuration. `DBContainer.open` retains that
-owner. If opening fails, the engine is shut down before the error is returned.
-For an opened container, `shutdown()` is the public terminal operation and
-deinitialization invokes it as a safety net. Repeated shutdown paths release the
-engine exactly once. The caller must not reuse or shut down the engine
-independently after transferring it.
+Creating `DBConfiguration(storageTopology:)` transfers every domain engine
+lifecycle to a shared owner carried by that configuration. Backend-specific
+facades construct a one-domain topology with the same ownership contract.
+`DBContainer.open` retains that owner. If opening fails, all engines are shut
+down before the error is returned. For an opened container, `shutdown()` is
+the public terminal operation and deinitialization invokes the same path as a
+safety net. Repeated shutdown paths release every engine exactly once. The
+caller must not reuse or shut down a transferred engine independently.
 
-    let context = container.newContext()
+    let session = container.session(authorization: authorization)
+    let context = session.base(baseID).newContext()
 
     try context.insert(user)
     try context.insert(order)
@@ -629,7 +635,7 @@ logical key/value model in their own tables and indexes.
 | DatabaseRuntime | runtime assembly for index maintainers |
 | ScalarIndex, VectorIndex, FullTextIndex, ... | individual index modules |
 | QueryAST | SQL/SPARQL parsing and serialization |
-| DatabaseServer | DatabaseWire/WebSocket server endpoint |
+| DatabaseServer | DatabaseWire operation runtime; native listeners are owned by `database-server` |
 
 Import Database for the standard application path, or import individual
 products when compile time and dependency size matter.
@@ -707,10 +713,13 @@ direction. The database core stays independent from web hosts and UI tools.
 
 | Repository | Role | Relationship |
 |---|---|---|
+| [database-types](https://github.com/1amageek/database-types) | Primitive field values and bounded byte ownership | Transitive foundation through database-kit and storage-kit |
 | [database-kit](https://github.com/1amageek/database-kit) | Models, schema metadata, IndexKind, QueryIR, and DatabaseWire | Direct dependency |
 | [storage-kit](https://github.com/1amageek/storage-kit) | StorageEngine, Transaction, Tuple, directory abstraction, and backend engines | Direct dependency |
 | [swift-hnsw](https://github.com/1amageek/swift-hnsw) | Swift HNSW graph index used by VectorIndex | Direct dependency |
 | [database-client](https://github.com/1amageek/database-client) | Native client SDK, typed queries, and transport layer | Client of the server layer |
+| [database-server](https://github.com/1amageek/database-server) | Native HTTP, WebSocket, and stdio host lifecycle | Hosts DatabaseServerRuntime |
+| [database-cli](https://github.com/1amageek/database-cli) | Authenticated operator commands and standalone UX | Uses database-client; does not link a backend |
 
 ### Deployment And Web Integration
 

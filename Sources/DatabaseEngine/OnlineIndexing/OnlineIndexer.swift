@@ -44,7 +44,7 @@ import DatabaseKit
 ///    - Used when `indexMaintainer.customBuildStrategy` is provided
 ///    - Delegates entire build to custom strategy
 ///    - Example: HNSW bulk graph construction
-public final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
+package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     // MARK: - Properties
 
     /// Database container for transaction execution
@@ -799,7 +799,7 @@ public final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
 
 }
 
-public extension OnlineIndexer where Item: Persistable {
+package extension OnlineIndexer where Item: Persistable {
     convenience init(
         container: DBContainer,
         storeSubspace: Subspace,

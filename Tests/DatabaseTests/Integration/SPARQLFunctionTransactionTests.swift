@@ -77,7 +77,7 @@ struct SPARQLFunctionTransactionTests {
     @Test("SPARQL rewrite and parent SQL read share one transaction")
     func sharesOneTransaction() async throws {
         let scenario = try await makeScenario()
-        let context = scenario.container.newContext()
+        let context = scenario.container.testBaseContext()
 
         let userIRI = try RDFIRI("urn:user:alice")
         var user = SPARQLTransactionUser()
@@ -120,7 +120,7 @@ struct SPARQLFunctionTransactionTests {
     @Test("SPARQL RDF terms are not silently coerced to SQL strings")
     func preservesRDFTermIdentity() async throws {
         let scenario = try await makeScenario()
-        let context = scenario.container.newContext()
+        let context = scenario.container.testBaseContext()
 
         let userIRI = try RDFIRI("urn:user:alice")
         var user = SPARQLTransactionUser()
@@ -179,7 +179,7 @@ struct SPARQLFunctionTransactionTests {
                     ),
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         return (container, engine)
     }

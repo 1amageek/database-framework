@@ -4,6 +4,86 @@ import DatabaseTypes
 /// Evaluates compiled field authorization rules without reconstructing or
 /// mutating model values.
 public enum FieldSecurityEvaluator {
+    /// Validates the schema-declared fields that a read will observe.
+    public static func validateRead(
+        entity: Schema.Entity,
+        fields: Set<String>?,
+        context: borrowing AuthorizationContext
+    ) throws(FieldSecurityError) {
+        let violations: [String] = entity.fieldAccessRules.compactMap { rule in
+            guard fields == nil || fields?.contains(rule.field.name) == true
+            else { return nil }
+            return rule.read.allows(context) ? nil : rule.field.name
+        }
+        guard violations.isEmpty else {
+            throw .readNotAllowed(
+                type: entity.name,
+                fields: violations.sorted()
+            )
+        }
+    }
+
+    /// Validates every schema-declared field written by a canonical insert.
+    public static func validateInsert(
+        entity: Schema.Entity,
+        updated: borrowing PersistedModel,
+        context: borrowing AuthorizationContext
+    ) throws(FieldSecurityError) {
+        guard updated.entity == entity.name else {
+            throw .unsupportedFieldValue(
+                type: entity.name,
+                field: "<entity>",
+                reason: "the canonical model belongs to a different entity"
+            )
+        }
+        let violations: [String] = entity.fieldAccessRules.compactMap { rule in
+            rule.write.allows(context) ? nil : rule.field.name
+        }
+        guard violations.isEmpty else {
+            throw .writeNotAllowed(
+                type: entity.name,
+                fields: violations.sorted()
+            )
+        }
+    }
+
+    /// Validates only schema-declared fields changed by a canonical update.
+    public static func validateUpdate(
+        entity: Schema.Entity,
+        original: borrowing PersistedModel,
+        updated: borrowing PersistedModel,
+        context: borrowing AuthorizationContext
+    ) throws(FieldSecurityError) {
+        guard original.entity == entity.name, updated.entity == entity.name else {
+            throw .unsupportedFieldValue(
+                type: entity.name,
+                field: "<entity>",
+                reason: "the canonical model belongs to a different entity"
+            )
+        }
+        var violations: [String] = []
+        violations.reserveCapacity(entity.fieldAccessRules.count)
+        for rule in entity.fieldAccessRules where !rule.write.allows(context) {
+            let oldValue = try canonicalValue(
+                for: rule.field,
+                in: original,
+                entity: entity.name
+            )
+            let newValue = try canonicalValue(
+                for: rule.field,
+                in: updated,
+                entity: entity.name
+            )
+            if oldValue != newValue { violations.append(rule.field.name) }
+        }
+        guard violations.isEmpty else {
+            throw .writeNotAllowed(
+                type: entity.name,
+                fields: violations.sorted()
+            )
+        }
+    }
+
     /// Returns whether the request may read one exact compiled field.
     public static func canRead<Model: Persistable, Value>(
         _ field: Field<Model, Value>,
@@ -100,6 +180,21 @@ public enum FieldSecurityEvaluator {
                 type: Model.persistableType,
                 field: field.name,
                 reason: "the compiled model adapter did not emit the field"
+            )
+        }
+        return value
+    }
+
+    private static func canonicalValue(
+        for field: FieldIdentity,
+        in model: borrowing PersistedModel,
+        entity: String
+    ) throws(FieldSecurityError) -> FieldValue {
+        guard let value = model.value(for: field) else {
+            throw .unsupportedFieldValue(
+                type: entity,
+                field: field.name,
+                reason: "the canonical model did not contain the schema field"
             )
         }
         return value

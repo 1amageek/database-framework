@@ -63,12 +63,12 @@ struct UniquenessEnforcementTests {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(UniquenessConstrainedUser.self), try DatabaseFrameworkRuntime.entity(UnconstrainedProduct.self)]),
-            security: .disabled
+            security: .testingDisabled
             )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        let context = container.newContext()
+        let context = container.testBaseContext()
         try await context.deleteAll(UniquenessConstrainedUser.self)
         try await context.deleteAll(UnconstrainedProduct.self)
         try await context.save()
@@ -296,7 +296,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
+            let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
             let indexName = "test_violation_idx"
@@ -330,7 +330,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
+            let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
             let indexName = "test_has_violations_idx"
@@ -367,7 +367,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
+            let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
             let indexName = "test_count_idx"
@@ -401,7 +401,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
+            let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
             let indexName = "test_clear_idx"
@@ -439,7 +439,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let databaseStore = try await container.store(
+            let databaseStore = try await container.testBaseStore(
                 for: UniquenessConstrainedUser.self
             )
             let tracker = databaseStore.violationTracker
@@ -512,7 +512,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
+            let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
             let indexName = "test_summary_idx"
@@ -561,11 +561,11 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let indexName = "test_context_scan_idx"
 
             // Add a violation directly to tracker
-            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
+            let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             try await container.engine.withTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
@@ -600,7 +600,7 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let indexName = "test_context_has_idx"
 
             // Check no violations initially
@@ -611,7 +611,7 @@ struct UniquenessEnforcementTests {
             #expect(hasBefore == false)
 
             // Add a violation
-            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
+            let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             try await container.engine.withTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
@@ -646,11 +646,11 @@ struct UniquenessEnforcementTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let indexName = "test_context_summary_idx"
 
             // Add violations
-            let databaseStore = try await container.store(for: UniquenessConstrainedUser.self)
+            let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             try await container.engine.withTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
@@ -677,6 +677,40 @@ struct UniquenessEnforcementTests {
                 for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
+        }
+    }
+
+    @Test("Uniqueness violation inspection requires Base administration")
+    func contextViolationInspectionRequiresAdministration() async throws {
+        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            let readerID = "uniqueness-reader"
+            try await container.grantTestBaseAccess(
+                to: .principal(readerID),
+                access: .read
+            )
+            let authorization = AuthorizationContext.authenticated(
+                Principal(identifier: readerID)
+            )
+            let baseID = try TestBaseEnvironment.id()
+            let context = container.session(authorization: authorization)
+                .base(baseID)
+                .newContext()
+
+            do {
+                _ = try await context.scanUniquenessViolations(
+                    for: UniquenessConstrainedUser.self,
+                    indexName: "UniqueTestUser_email"
+                )
+                Issue.record("Expected Base administration authorization")
+            } catch let error as DatabaseGrantAuthorizationError {
+                #expect(
+                    error == .denied(
+                        resource: .base(baseID),
+                        required: .administer
+                    )
+                )
+            }
         }
     }
 

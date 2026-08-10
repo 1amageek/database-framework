@@ -31,7 +31,7 @@ struct DatabaseTransactionLifecycleTests {
     )
     func scanContinuationSurvivesNestedByteFraming() async throws {
         let container = try await makeContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         for identifier in ["a", "b", "c"] {
             try await context.withTransaction { transaction in
                 try await transaction.save(
@@ -92,7 +92,7 @@ struct DatabaseTransactionLifecycleTests {
                 suspension: suspension
             )
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let model = TransactionLifecycleParent(
             id: "overlap-parent",
             value: "pending"
@@ -131,7 +131,7 @@ struct DatabaseTransactionLifecycleTests {
             )
         }
 
-        let verification = container.newContext()
+        let verification = container.testBaseContext()
         #expect(
             try await verification.model(
                 for: model.id,
@@ -153,7 +153,7 @@ struct DatabaseTransactionLifecycleTests {
                 suspension: suspension
             )
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let model = TransactionLifecycleParent(
             id: "admitted-child",
             value: "committed"
@@ -204,7 +204,7 @@ struct DatabaseTransactionLifecycleTests {
         try await transactionAttempt.value
 
         #expect(
-            try await container.newContext().model(
+            try await container.testBaseContext().model(
                 for: model.id,
                 as: TransactionLifecycleParent.self
             ) == model
@@ -220,7 +220,7 @@ struct DatabaseTransactionLifecycleTests {
         let container = try await makeContainer(
             maintainer: DerivedChildMaintainer()
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let attempts = Mutex(0)
         let parent = TransactionLifecycleParent(
             id: "retry-parent",
@@ -267,7 +267,7 @@ struct DatabaseTransactionLifecycleTests {
             }
         }
 
-        let verification = container.newContext()
+        let verification = container.testBaseContext()
         #expect(
             try await verification.model(
                 for: parent.id,
@@ -296,7 +296,7 @@ struct DatabaseTransactionLifecycleTests {
                 suspension: suspension
             )
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let initial = TransactionLifecycleParent(
             id: "followup-parent",
             value: "initial"
@@ -343,7 +343,7 @@ struct DatabaseTransactionLifecycleTests {
         )
 
         try await context.save()
-        let verification = container.newContext()
+        let verification = container.testBaseContext()
         #expect(
             try await verification.model(
                 for: latest.id,
@@ -355,7 +355,7 @@ struct DatabaseTransactionLifecycleTests {
     @Test("Deleting a missing identity is a typed failure")
     func deletingMissingIdentityFails() async throws {
         let container = try await makeContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let identity = try EntityReference(
             entity: TransactionLifecycleParent.persistableType,
             id: .string("missing-parent")
@@ -378,7 +378,7 @@ struct DatabaseTransactionLifecycleTests {
     func commitUnknownPoisonsContext() async throws {
         let engine = CommitOutcomeUnknownEngine()
         let container = try await makeContainer(engine: engine)
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let committedModel = TransactionLifecycleParent(
             id: "ambiguous-commit",
             value: "possibly-committed"
@@ -414,7 +414,7 @@ struct DatabaseTransactionLifecycleTests {
         }
 
         #expect(
-            try await container.newContext().model(
+            try await container.testBaseContext().model(
                 for: committedModel.id,
                 as: TransactionLifecycleParent.self
             ) == committedModel
@@ -468,7 +468,7 @@ struct DatabaseTransactionLifecycleTests {
                 persistableMutationMaintainers: maintainers,
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(TransactionLifecycleParent.self), try DatabaseFrameworkRuntime.entity(TransactionLifecycleChild.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 }

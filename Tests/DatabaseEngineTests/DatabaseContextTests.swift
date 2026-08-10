@@ -55,7 +55,7 @@ struct DatabaseContextFoundationDBTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(ContextUser.self), try DatabaseFrameworkRuntime.entity(ContextProduct.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
@@ -75,14 +75,14 @@ struct DatabaseContextFoundationDBTests {
     @Test("Autosave disabled by default")
     func autosaveDisabledByDefault() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         #expect(context.autosaveEnabled == false)
     }
 
     @Test("Autosave can be enabled")
     func autosaveCanBeEnabled() async throws {
         let container = try await setupContainer()
-        let context = container.newContext(autosaveEnabled: false)
+        let context = container.testBaseContext(autosaveEnabled: false)
         #expect(context.autosaveEnabled == false)
 
         context.autosaveEnabled = true
@@ -97,7 +97,7 @@ struct DatabaseContextFoundationDBTests {
         // Clean up at START of test
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         #expect(context.hasChanges == false)
 
@@ -118,7 +118,7 @@ struct DatabaseContextFoundationDBTests {
     @Test("Strict create + delete cancel each other for unsaved models")
     func createAndDeleteCancel() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = ContextUser(name: "Bob", email: "bob@example.com", age: 25)
 
@@ -132,7 +132,7 @@ struct DatabaseContextFoundationDBTests {
     @Test("Upsert + delete keeps the delete staged (may target stored row)")
     func upsertAndDeleteKeepsDeletion() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = ContextUser(name: "Bob", email: "bob@example.com", age: 25)
 
@@ -146,7 +146,7 @@ struct DatabaseContextFoundationDBTests {
     @Test("Save with no changes does nothing")
     func saveWithNoChanges() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         try await context.save()
         #expect(context.hasChanges == false)
@@ -155,7 +155,7 @@ struct DatabaseContextFoundationDBTests {
     @Test("Rollback clears changes")
     func rollbackClearsChanges() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = ContextUser(name: "Charlie", email: "charlie@example.com", age: 35)
         try context.insert(user)
@@ -175,7 +175,7 @@ struct DatabaseContextFoundationDBTests {
         // Clean up at START of test
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = ContextUser(name: "David", email: "david@example.com", age: 40)
         try context.insert(user)
@@ -192,7 +192,7 @@ struct DatabaseContextFoundationDBTests {
     @Test("Fetch returns nil for missing model")
     func fetchReturnsNilForMissingModel() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let fetchedUser = try await context.model(for: "nonexistent-id", as: ContextUser.self)
         #expect(fetchedUser == nil)
@@ -204,7 +204,7 @@ struct DatabaseContextFoundationDBTests {
         // Clean up at START of test
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let users = [
             ContextUser(name: "User1", email: "user1@example.com", age: 20),
@@ -231,7 +231,7 @@ struct DatabaseContextFoundationDBTests {
         // Clean up at START of test
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = ContextUser(name: "Eve", email: "eve@example.com", age: 28)
         try context.insert(user)
@@ -255,7 +255,7 @@ struct DatabaseContextFoundationDBTests {
         // Clean up at START of test
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = ContextUser(name: "Frank", email: "frank@example.com", age: 33)
         let product = ContextProduct(name: "Widget", price: 9.99)
@@ -282,7 +282,7 @@ struct DatabaseContextFoundationDBTests {
         // Clean up at START of test
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         for i in 1...5 {
             let user = ContextUser(
@@ -306,7 +306,7 @@ struct DatabaseContextFoundationDBTests {
         // Clean up at START of test
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         for i in 1...3 {
             let user = ContextUser(
@@ -327,7 +327,7 @@ struct DatabaseContextFoundationDBTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         for index in 1...5 {
             try context.insert(
                 ContextUser(
@@ -392,7 +392,7 @@ struct DatabaseContextFoundationDBTests {
         // Clean up at START of test
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let user = ContextUser(name: "Grace", email: "grace@example.com", age: 27)
 
         try await context.performAndSave {
@@ -414,7 +414,7 @@ struct DatabaseContextFoundationDBTests {
         // Clean up at START of test
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         for i in 1...10 {
             let user = ContextUser(
@@ -470,7 +470,7 @@ struct DatabaseContextFoundationDBTests {
         // Clean up at START of test
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let users = [
             ContextUser(name: "User1", email: "user1@example.com", age: 20),

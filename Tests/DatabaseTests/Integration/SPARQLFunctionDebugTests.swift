@@ -56,10 +56,6 @@ struct SPARQLFunctionDebugTests {
 
     private func makeContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        if try await database.namespaceExists(path: ["sparql_debug_functions"]) {
-            try await database.removeNamespace(path: ["sparql_debug_functions"])
-        }
-
         let schema = try Schema(
             entities: [
                 try SPARQLDebugUser.schemaEntity,
@@ -71,16 +67,16 @@ struct SPARQLFunctionDebugTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLDebugUser.self), try DatabaseFrameworkRuntime.entity(SPARQLDebugTriple.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
         return container
     }
 
     @Test("Debug: Check data insertion and graph index")
     func testDataInsertionAndIndex() async throws {
         let container = try await makeContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert user
         var alice = SPARQLDebugUser(name: "Alice")
@@ -145,7 +141,7 @@ struct SPARQLFunctionDebugTests {
     @Test("Debug: Check executeSPARQL string method")
     func testExecuteSPARQLString() async throws {
         let container = try await makeContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert triple
         var triple = try SPARQLDebugTriple(

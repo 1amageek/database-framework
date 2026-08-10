@@ -7,6 +7,9 @@ enum DatabaseRuntimeCapabilityCatalog {
         var operations: [DatabaseOperationIdentifier] = [
             .capabilitiesDescribe,
             .schemaDescribe,
+            .baseExecute,
+            .compositionExecute,
+            .grantExecute,
             .queryExecute,
             .mutationExecute,
             .commandExecute,
@@ -30,14 +33,88 @@ enum DatabaseRuntimeCapabilityCatalog {
     }
 
     static func features(
-        includesSchemaExecution: Bool
+        includesSchemaExecution: Bool,
+        includesDurableCompositionPaging: Bool = false
     ) -> [CapabilitiesDescribeOperation.Feature] {
-        operations(includesSchemaExecution: includesSchemaExecution).map {
-        CapabilitiesDescribeOperation.Feature(
-            identifier: identifier(for: $0),
-            version: 1
-        )
+        var features = operations(
+            includesSchemaExecution: includesSchemaExecution
+        ).map {
+            CapabilitiesDescribeOperation.Feature(
+                identifier: identifier(for: $0),
+                version: 1
+            )
         }
+        features.append(contentsOf: [
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.scan-filter-project",
+                version: 1
+            ),
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.global-order-window",
+                version: 1
+            ),
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.distinct-provenance",
+                version: 1
+            ),
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.aggregate.count",
+                version: 1
+            ),
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.aggregate.sum",
+                version: 1
+            ),
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.aggregate.min",
+                version: 1
+            ),
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.aggregate.max",
+                version: 1
+            ),
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.aggregate.avg",
+                version: 1
+            ),
+        ])
+        #if DATABASE_SERVER_VECTOR_INDEXES
+        features.append(
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.vector",
+                version: 1
+            )
+        )
+        #endif
+        #if DATABASE_SERVER_GRAPH_INDEXES
+        features.append(contentsOf: [
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.sparql-select",
+                version: 1
+            ),
+            CapabilitiesDescribeOperation.Feature(
+                identifier: "composition.query.sparql-ask",
+                version: 1
+            ),
+        ])
+        #endif
+        if includesDurableCompositionPaging {
+            features.append(
+                CapabilitiesDescribeOperation.Feature(
+                    identifier: "composition.query.durable-paging",
+                    version: 1
+                )
+            )
+            #if DATABASE_SERVER_GRAPH_INDEXES
+            features.append(
+                CapabilitiesDescribeOperation.Feature(
+                    identifier: "composition.query.sparql-rdf-union",
+                    version: 1
+                )
+            )
+            #endif
+        }
+        return features.sorted { $0.identifier < $1.identifier }
     }
 
     private static func identifier(
@@ -50,6 +127,12 @@ enum DatabaseRuntimeCapabilityCatalog {
             "schema.describe"
         case .schemaExecute:
             "schema.execute"
+        case .baseExecute:
+            "base.execute"
+        case .compositionExecute:
+            "composition.execute"
+        case .grantExecute:
+            "grant.execute"
         case .queryExecute:
             "query.execute"
         case .mutationExecute:

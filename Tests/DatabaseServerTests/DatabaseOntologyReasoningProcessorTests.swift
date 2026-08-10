@@ -385,28 +385,19 @@ struct DatabaseOntologyReasoningProcessorTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         let documentStore = try await DatabaseRDFDocumentStore(
             container: container,
             namespace: "ontology"
         )
-        let ontologySubspace = try await container.engine.withTransaction {
-            transaction in
-            try await container.engine.namespaceResolver.resolveOrCreate(
-                path: ["database-framework", "ontology-index"],
-                transaction: transaction
-            )
-        }
         let processor = DatabaseOntologyReasoningProcessor(
             documentStore: documentStore,
-            ontologyStore: OntologyStore(
-                subspace: OntologySubspace(base: ontologySubspace)
-            ),
+            container: container,
             clock: AnyDatabaseWallClock(RealtimeDatabaseWallClock()),
             monotonicClock: TestProcessMonotonicClock()
         )
-        let stateStore = try await DatabaseMutationStateStore(
+        let stateStore = DatabaseMutationStateStore(
             container: container
         )
         let service = CanonicalDatabaseOntologyService(
@@ -442,18 +433,32 @@ struct DatabaseOntologyReasoningProcessorTests {
         key: String?,
         reasoningContext: OntologyReasoningContext
     ) async throws -> OntologyExecuteOperation.Response {
-        try await reasoningContext.service.execute(
-            request,
-            context: DatabaseOperationContext(
-                container: reasoningContext.container,
-                requestID: 1,
-                metadata: OperationRequestMetadata(idempotencyKey: key),
-                requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
-                    DatabaseOperations.ontologyExecute,
-                    request: request
+        try await reasoningContext.container.testBaseContext()
+            .withBaseOperation {
+                try await reasoningContext.service.execute(
+                    request,
+                    context: DatabaseOperationContext(
+                        container: reasoningContext.container,
+                        target: .base(try TestBaseEnvironment.id()),
+                        baseContext: reasoningContext.container.testBaseContext(),
+                        composition: nil,
+                        requirement: DatabaseOperationRequirement(
+                            acceptedTargets: .base,
+                            access: .write,
+                            transaction: .write
+                        ),
+                        requestID: 1,
+                        metadata: OperationRequestMetadata(idempotencyKey: key),
+                        authorization: TestBaseEnvironment.authorization,
+                        requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
+                            DatabaseOperations.ontologyExecute,
+                            request: request
+                        ),
+                        wireLimits: .default
+                    )
                 )
-            )
-        ).response
+                .response
+            }
     }
 
     private func ontologyDeclaration(_ ontology: String) throws -> RDFQuad {

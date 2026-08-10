@@ -59,7 +59,7 @@ struct SPARQLAdvancedAggregationTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationEdge.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
@@ -134,7 +134,7 @@ struct SPARQLAdvancedAggregationTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred1 = uniqueID("category")
         let pred2 = uniqueID("status")
@@ -192,7 +192,7 @@ struct SPARQLAdvancedAggregationTests {
     func testGroupByTwoVariables() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predDept = uniqueID("department")
         let predRole = uniqueID("role")
@@ -252,7 +252,7 @@ struct SPARQLAdvancedAggregationTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predAuthor = uniqueID("author")
         let predPages = uniqueID("pages")
@@ -305,7 +305,7 @@ struct SPARQLAdvancedAggregationTests {
     func testHavingEquality() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("hasItem")
 
@@ -350,7 +350,7 @@ struct SPARQLAdvancedAggregationTests {
     func testHavingLessThan() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("hasChild")
 
@@ -400,7 +400,7 @@ struct SPARQLAdvancedAggregationTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("worksIn")
 
@@ -446,7 +446,7 @@ struct SPARQLAdvancedAggregationTests {
     func testAllAggregatesCombined() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predScore = uniqueID("hasScore")
         let team = uniqueID("Team")
@@ -500,7 +500,7 @@ struct SPARQLAdvancedAggregationTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("inDept")
 
@@ -559,7 +559,7 @@ struct SPARQLAdvancedAggregationTests {
     func testGroupByNoMatches() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Query with no matching data
         let result = try await context.sparql(AggregationEdge.self)
@@ -576,7 +576,7 @@ struct SPARQLAdvancedAggregationTests {
     func testGroupBySingleGroup() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("type")
         let group = "SingleGroup"
@@ -606,7 +606,7 @@ struct SPARQLAdvancedAggregationTests {
     func testGroupByManyGroups() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("belongsTo")
         let basePrefix = uniqueID("G")
@@ -640,7 +640,7 @@ struct SPARQLAdvancedAggregationTests {
     func testGroupByWithOrderBy() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("hasMember")
 
@@ -680,7 +680,7 @@ struct SPARQLAdvancedAggregationTests {
     func testGroupByWithLimitOffset() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("inCategory")
 
@@ -710,7 +710,7 @@ struct SPARQLAdvancedAggregationTests {
     func testHavingFiltersAll() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("hasItem")
 
@@ -741,7 +741,7 @@ struct SPARQLAdvancedAggregationTests {
     func testHavingKeepsAll() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("hasValue")
 
@@ -774,7 +774,7 @@ struct SPARQLAdvancedAggregationTests {
     func testSumEmptyStrings() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("hasAmount")
 
@@ -804,7 +804,7 @@ struct SPARQLAdvancedAggregationTests {
     func testAvgSingleValue() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("hasScore")
 

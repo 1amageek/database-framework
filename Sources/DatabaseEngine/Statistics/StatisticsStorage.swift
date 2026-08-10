@@ -28,7 +28,7 @@ import Synchronization
 /// // Load table statistics
 /// let stats = try await storage.loadTableStatistics(typeName: "User")
 /// ```
-public final class StatisticsStorage: Sendable {
+package final class StatisticsStorage: Sendable {
 
     /// FDB Container for transaction execution
     private let container: DBContainer

@@ -87,13 +87,10 @@ struct GraphPropertyScannerTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
 
-        if try await database.namespaceExists(path: ["graph_property_scanner_social_edges"]) {
-            try await database.removeNamespace(path: ["graph_property_scanner_social_edges"])
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
 
         return container
     }
@@ -103,7 +100,7 @@ struct GraphPropertyScannerTests {
         indexName: String,
         strategy: GraphIndexStrategy
     ) async throws -> GraphPropertyScanner {
-        let subspace = try await container.resolveDirectory(for: SocialEdge.self)
+        let subspace = try await container.testBaseDirectory(for: SocialEdge.self)
         return GraphPropertyScanner(
             indexSubspace: subspace.subspace("I").subspace(indexName),
             strategy: strategy,
@@ -116,7 +113,7 @@ struct GraphPropertyScannerTests {
     @Test("Scan edges with properties (no filter)")
     func testScanWithPropertiesNoFilter() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -165,7 +162,7 @@ struct GraphPropertyScannerTests {
     @Test("Property filter: equality")
     func testPropertyFilterEquality() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -200,7 +197,7 @@ struct GraphPropertyScannerTests {
     @Test("Property filter: range")
     func testPropertyFilterRange() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -242,7 +239,7 @@ struct GraphPropertyScannerTests {
     @Test("Bug Fix 1: nil vs empty string distinction")
     func testNilPropertyFiltering() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -307,7 +304,7 @@ struct GraphPropertyScannerTests {
     @Test("Bug Fix 2 & 3: adjacency strategy with Named Graph support")
     func testAdjacencyWithNamedGraph() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")

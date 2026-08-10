@@ -5,16 +5,11 @@ import StorageKit
 
 public struct DatabaseMutationStateStore: Sendable {
     private let container: DBContainer
-    private let logicalVersionKey: ByteString
-    private let idempotencySubspace: Subspace
 
-    public init(container: DBContainer) async throws {
-        let root = try await container.engine.resolveOrCreateNamespace(
-            path: ["database-framework", "wire-runtime"]
-        )
+    package var boundContainer: DBContainer { container }
+
+    public init(container: DBContainer) {
         self.container = container
-        self.logicalVersionKey = root.pack(Tuple("logical-commit-version"))
-        self.idempotencySubspace = root.subspace("idempotency")
     }
 
     func validate(container: DBContainer) throws {
@@ -24,9 +19,11 @@ public struct DatabaseMutationStateStore: Sendable {
     }
 
     func nextLogicalVersion(
+        for target: DatabaseOperationTarget,
         transaction: any TransactionAccess
     ) async throws -> UInt64 {
         let current = try await logicalVersion(
+            for: target,
             transaction: transaction,
             snapshot: false
         )
@@ -34,22 +31,31 @@ public struct DatabaseMutationStateStore: Sendable {
             throw DatabaseMutationError.logicalVersionOverflow
         }
         let next = current + 1
-        try transaction.setValue(Self.bigEndianBytes(next), for: logicalVersionKey)
+        try transaction.setValue(
+            Self.bigEndianBytes(next),
+            for: try logicalVersionKey(for: target)
+        )
         return next
     }
 
     func currentLogicalVersion(
+        for target: DatabaseOperationTarget,
         transaction: any TransactionAccess
     ) async throws -> UInt64 {
-        try await logicalVersion(transaction: transaction, snapshot: true)
+        try await logicalVersion(
+            for: target,
+            transaction: transaction,
+            snapshot: true
+        )
     }
 
     private func logicalVersion(
+        for target: DatabaseOperationTarget,
         transaction: any TransactionAccess,
         snapshot: Bool
     ) async throws -> UInt64 {
         guard let bytes = try await transaction.getValue(
-            for: logicalVersionKey,
+            for: try logicalVersionKey(for: target),
             snapshot: snapshot
         ) else {
             return 0
@@ -71,10 +77,11 @@ public struct DatabaseMutationStateStore: Sendable {
 
     func idempotencyEntry(
         for key: String,
+        target: DatabaseOperationTarget,
         transaction: any TransactionAccess,
         limits: DatabaseWireLimits
     ) async throws -> DatabaseIdempotencyEntry? {
-        let entry = idempotencySubspace.subspace(key)
+        let entry = try idempotencySubspace(for: target).subspace(key)
         let metadata = try await transaction.getValue(
             for: entry.pack(Tuple("metadata")),
             snapshot: false
@@ -184,10 +191,11 @@ public struct DatabaseMutationStateStore: Sendable {
     func store(
         _ entry: DatabaseIdempotencyEntry,
         for key: String,
+        target: DatabaseOperationTarget,
         transaction: any TransactionAccess,
         limits: DatabaseWireLimits
     ) throws {
-        let storage = idempotencySubspace.subspace(key)
+        let storage = try idempotencySubspace(for: target).subspace(key)
         let chunks = storage.subspace("chunks")
         let manifest = try entry.manifest(limits: limits)
         let metadata = try manifest.encode(limits: limits)
@@ -232,6 +240,20 @@ public struct DatabaseMutationStateStore: Sendable {
         index: UInt32
     ) -> ByteString {
         chunks.pack(Tuple(UInt64(index)))
+    }
+
+    private func logicalVersionKey(
+        for target: DatabaseOperationTarget
+    ) throws -> ByteString {
+        try container.operationStateRoot(for: target).pack(
+            Tuple("logical-commit-version")
+        )
+    }
+
+    private func idempotencySubspace(
+        for target: DatabaseOperationTarget
+    ) throws -> Subspace {
+        try container.operationStateRoot(for: target).subspace("idempotency")
     }
 
     private static func bigEndianBytes(_ value: UInt64) -> ByteString {

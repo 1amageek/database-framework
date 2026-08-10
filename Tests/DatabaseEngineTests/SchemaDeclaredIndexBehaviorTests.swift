@@ -12,7 +12,7 @@ struct SchemaDeclaredIndexBehaviorTests {
     @Test("Application-composed index follows every mutation")
     func applicationComposedIndexFollowsMutations() async throws {
         let scenario = try await makeScenario()
-        let context = scenario.container.newContext()
+        let context = scenario.container.testBaseContext()
         let first = CatalogItem(
             id: "first",
             category: "books",
@@ -58,7 +58,7 @@ struct SchemaDeclaredIndexBehaviorTests {
     @Test("Every read path uses the application-composed index")
     func everyReadPathUsesApplicationComposedIndex() async throws {
         let scenario = try await makeScenario()
-        let context = scenario.container.newContext()
+        let context = scenario.container.testBaseContext()
         let first = CatalogItem(
             id: "first",
             category: "books",
@@ -83,7 +83,7 @@ struct SchemaDeclaredIndexBehaviorTests {
 
         let automaticQuery = scenario.categoryQuery("books")
         let plan = try await QueryExecutor(
-            context: scenario.container.newContext(),
+            context: scenario.container.testBaseContext(),
             query: automaticQuery
         ).executionPlan()
         guard case .scalarIndex(
@@ -99,7 +99,7 @@ struct SchemaDeclaredIndexBehaviorTests {
         #expect(indexedFields == ["category"])
 
         let automaticResults = try await QueryExecutor(
-            context: scenario.container.newContext(),
+            context: scenario.container.testBaseContext(),
             query: automaticQuery
         ).execute()
         #expect(Set(automaticResults.map(\.id)) == Set([first.id, second.id]))
@@ -107,13 +107,13 @@ struct SchemaDeclaredIndexBehaviorTests {
         var forcedQuery = scenario.categoryQuery("books")
         forcedQuery.forcedIndex = IndexHint(indexName: scenario.indexName)
         let forcedResults = try await QueryExecutor(
-            context: scenario.container.newContext(),
+            context: scenario.container.testBaseContext(),
             query: forcedQuery
         ).execute()
         #expect(Set(forcedResults.map(\.id)) == Set([first.id, second.id]))
 
         let canonicalResponse = try await scenario.container
-            .newContext()
+            .testBaseContext()
             .query(
                 SelectQuery(
                     projection: .all,
@@ -143,7 +143,7 @@ struct SchemaDeclaredIndexBehaviorTests {
             unrelated.id,
         ])
         let count = try await QueryExecutor(
-            context: scenario.container.newContext(),
+            context: scenario.container.testBaseContext(),
             query: forcedQuery
         ).count()
         #expect(count == 2)
@@ -176,9 +176,9 @@ struct SchemaDeclaredIndexBehaviorTests {
                     )
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let store = try await container.store(for: CatalogItem.self)
+        let store = try await container.testBaseStore(for: CatalogItem.self)
         return CatalogIndexScenario(
             container: container,
             engine: engine,

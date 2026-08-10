@@ -58,11 +58,10 @@ Set authorization information around each request:
 let authorization = AuthorizationContext.authenticated(
     Principal(identifier: authenticatedUserID, roles: authenticatedRoles)
 )
-try await RequestAuthorization.$context.withValue(authorization) {
-    let context = container.newContext()
-    let posts = try await context.fetch(Post.self).execute()
-    _ = posts
-}
+let session = container.session(authorization: authorization)
+let context = session.base(baseID).newContext()
+let posts = try await context.fetch(Post.self).execute()
+_ = posts
 ~~~
 
 DBContainer installs the security delegate when security is enabled:
@@ -81,22 +80,29 @@ let container = try await DBContainer.open(
 The delegate evaluates reads and writes immediately before the operation is
 accepted. Failed checks throw a typed security error.
 
-## Tenant Isolation
+## Base Isolation
 
 Tenant isolation has two independent parts:
 
 | Concern | Mechanism |
 |---|---|
-| Physical/logical partition | dynamic directory and partition binding |
-| Authorization | SecurityPolicy and request AuthorizationContext |
+| Physical/logical boundary | explicit Base target and retained Base root |
+| Resource authorization | persisted direct and role Grants |
+| Entity and field authorization | SecurityPolicy and `@Restricted` |
 
-Every dynamic-directory read, delete, or enumeration must provide all required
-partition fields. Authorization still applies after the partition is resolved.
-A partition value is not an authorization credential.
+Every data operation names a Base or a read-only Composition. `#Directory` and
+dynamic partitions are relative paths inside that Base and are not credentials.
+The runtime opens the selected Base transaction, unions matching direct and
+role Grants, requires the exact access bits, and only then executes entity and
+field policy. A Composition read requires `.read` on every retained member and
+fails as a whole when any member is unavailable or unauthorized.
 
 ## Production Rules
 
-- Establish AuthorizationContext at the request boundary.
+- Establish `AuthorizationContext` at the request boundary and bind it to a
+  `DatabaseSession`.
+- Require an explicit Base or Composition target for every data operation.
+- Manage access through persisted Grants; role names are claims, not bypasses.
 - Register each AuthorizationPolicyHandler in DatabaseRuntimeConfiguration.
 - Keep the security configuration enabled in production.
 - Never use client-side filtering as the authorization mechanism.

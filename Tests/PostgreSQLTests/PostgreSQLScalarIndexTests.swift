@@ -69,7 +69,7 @@ struct PostgreSQLScalarIndexTests {
     func insertAndFetchByIndex() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let email = "user-\(UUID().uuidString.prefix(8))@test.com"
 
@@ -96,7 +96,7 @@ struct PostgreSQLScalarIndexTests {
     func updateIndexedField() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let originalEmail = "orig-\(UUID().uuidString.prefix(8))@test.com"
             let updatedEmail = "upd-\(UUID().uuidString.prefix(8))@test.com"
@@ -135,7 +135,7 @@ struct PostgreSQLScalarIndexTests {
     func deleteRemovesIndex() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let email = "del-\(UUID().uuidString.prefix(8))@test.com"
 
@@ -171,7 +171,7 @@ struct PostgreSQLScalarIndexTests {
     func uniqueIndexPreventsDuplicates() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let email = "unique-\(UUID().uuidString.prefix(8))@test.com"
 
@@ -202,7 +202,7 @@ struct PostgreSQLScalarIndexTests {
     func fetchByRange() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let prefix = UUID().uuidString.prefix(6)
 
@@ -233,7 +233,7 @@ struct PostgreSQLScalarIndexTests {
     func compositeIndex() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupProductContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let category = "electronics-\(UUID().uuidString.prefix(6))"
 
@@ -247,7 +247,7 @@ struct PostgreSQLScalarIndexTests {
             try await context.save()
 
             // Verify data exists by reading back individual items
-            let ctx2 = container.newContext()
+            let ctx2 = container.testBaseContext()
             let fetchedP1 = try await ctx2.fetch(PGProduct.self)
                 .where(PGProduct.fields.id == p1.id)
                 .first()
@@ -267,7 +267,7 @@ struct PostgreSQLScalarIndexTests {
     func nonUniqueIndexMultipleEntries() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupUserContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let prefix = UUID().uuidString.prefix(6)
             let age: Int64 = 42

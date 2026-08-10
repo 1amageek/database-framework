@@ -128,39 +128,286 @@ extension DatabaseContext {
         execution: ReadExecutionContext,
         graphPartitions: FieldObject = FieldObject()
     ) async throws -> QueryResponse {
-        try await queryCanonical(
-            selectQuery,
-            options: execution,
-            partitionValues: graphPartitions,
-            partitionMode: .strict
-        )
+        try await withBaseOperation { [self] in
+            try await withFieldReadAuthorization(for: selectQuery) {
+                if let binding = ActiveDatabaseTransactionContext.binding {
+                    guard binding.baseID == self.baseID,
+                          binding.authorization == self.authorization,
+                          binding.grantedAccess.contains(.read) else {
+                        throw DatabaseGrantAuthorizationError.denied(
+                            resource: .base(self.baseID),
+                            required: .read
+                        )
+                    }
+                    return try await query(
+                        selectQuery,
+                        execution: execution,
+                        graphPartitions: graphPartitions,
+                        transaction: binding.transaction
+                    )
+                }
+                return try await queryCanonical(
+                    selectQuery,
+                    options: execution,
+                    partitionValues: graphPartitions,
+                    partitionMode: .strict
+                )
+            }
+        }
     }
 
-    /// Execute the single-table canonical read through a caller-owned storage
-    /// transaction. This overload is intentionally narrow: composed logical
-    /// sources and explicit index executors must expose their own transaction-
-    /// injected contracts before they can participate in this path.
+    /// Executes a Base-local read through a caller-owned storage transaction.
+    /// Relational sources and admitted index readers reuse exactly that
+    /// transaction so callers cannot accidentally create a mixed snapshot.
     package func query(
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject(),
         transaction: any TransactionAccess
     ) async throws -> QueryResponse {
-        guard selectQuery.accessPath == nil,
-              selectQuery.subqueries == nil,
-              selectQuery.groupBy == nil,
-              selectQuery.having == nil,
-              selectQuery.dataset == .implicit,
-              selectQuery.reduced == false,
-              case .table = selectQuery.source else {
-            throw CanonicalReadError.unsupportedSelectQuery(
-                "A transaction-bound canonical read currently requires one table source without an explicit access path, grouping, or dataset clause"
-            )
+        try await withBaseOperation { [self] in
+            try await withFieldReadAuthorization(for: selectQuery) {
+                _ = try requireOperationBaseLease()
+                return try await ActiveDatabaseTransactionContext.$binding
+                    .withValue(
+                        DatabaseTransactionExecutionBinding(
+                            transaction: transaction,
+                            baseID: self.baseID,
+                            authorization: self.authorization,
+                            grantedAccess: .read,
+                            databaseTransaction: nil
+                        )
+                    ) {
+                        if isSPARQLSource(selectQuery.source) {
+                            guard let executor = container.runtimeConfiguration
+                                .logicalSourceExecutors.sparqlExecutor else {
+                                throw CanonicalReadError.unsupportedSource(
+                                    "SPARQL source executor is not registered"
+                                )
+                            }
+                            return try await executor.executeInTransaction(
+                                context: self,
+                                selectQuery: selectQuery,
+                                options: execution,
+                                partitions: graphPartitions,
+                                transaction: transaction
+                            )
+                        }
+                        if let accessPath = selectQuery.accessPath {
+                            guard selectQuery.subqueries == nil,
+                                  selectQuery.groupBy == nil,
+                                  selectQuery.having == nil,
+                                  selectQuery.dataset == .implicit,
+                                  selectQuery.reduced == false else {
+                                throw CanonicalReadError.unsupportedSelectQuery(
+                                    "A transaction-bound index read does not support grouping, subqueries, or dataset clauses"
+                                )
+                            }
+                            return try await executeAccessPathRows(
+                                selectQuery,
+                                accessPath: accessPath,
+                                options: execution,
+                                partitionValues: nil,
+                                partitionMode: .strict
+                            )
+                        }
+                        guard selectQuery.subqueries == nil,
+                              selectQuery.groupBy == nil,
+                              selectQuery.having == nil,
+                              selectQuery.dataset == .implicit,
+                              selectQuery.reduced == false,
+                              isTransactionBoundRelationalSource(selectQuery.source)
+                        else {
+                            throw CanonicalReadError.unsupportedSelectQuery(
+                                "A transaction-bound relational read requires a Base-local table or join tree without grouping or dataset clauses"
+                            )
+                        }
+                        if case .table = selectQuery.source {
+                            return try await executeSingleTableRows(
+                                selectQuery,
+                                options: execution,
+                                transaction: transaction
+                            )
+                        }
+                        return try await executeTransactionBoundRelationalRows(
+                            selectQuery,
+                            options: execution,
+                            transaction: transaction
+                        )
+                    }
+            }
         }
-        return try await executeSingleTableRows(
-            selectQuery,
-            options: execution,
+    }
+
+    private func withFieldReadAuthorization<Result: Sendable>(
+        for selectQuery: SelectQuery,
+        _ operation: @Sendable () async throws -> Result
+    ) async throws -> Result {
+        let plan = DatabaseFieldReadAuthorizationPlan.make(
+            query: selectQuery,
+            schema: container.schema
+        )
+        try authorizeFieldReads(plan)
+        return try await RequestFieldAuthorization.$fieldsByEntity.withValue(
+            plan.fieldsByEntity
+        ) {
+            try await operation()
+        }
+    }
+
+    private func executeTransactionBoundRelationalRows(
+        _ selectQuery: SelectQuery,
+        options: ReadExecutionContext,
+        transaction: any TransactionAccess
+    ) async throws -> QueryResponse {
+        let sourceRows = try await materializeTransactionBoundRows(
+            for: selectQuery.source,
+            options: options,
             transaction: transaction
         )
+        let filteredRows = try applyFilter(
+            selectQuery.filter,
+            to: sourceRows,
+            workMeter: options.workMeter
+        )
+        if let countResponse = try makeCountProjectionResponse(
+            selectQuery,
+            rows: filteredRows,
+            workMeter: options.workMeter
+        ) {
+            return countResponse
+        }
+        let orderedRows = try applyOrder(
+            selectQuery.orderBy,
+            to: filteredRows,
+            workMeter: options.workMeter
+        )
+        var projectedRows = try projectRows(
+            orderedRows,
+            projection: selectQuery.projection,
+            workMeter: options.workMeter
+        )
+        if selectQuery.distinct {
+            projectedRows = try canonicalUniqueRows(
+                projectedRows,
+                workMeter: options.workMeter
+            )
+        }
+        let page = try CanonicalQueryPagination.window(
+            rows: consume projectedRows,
+            selectQuery: selectQuery,
+            options: options
+        )
+        return QueryResponse(
+            rows: page.items,
+            continuation: page.continuation
+        )
+    }
+
+    private func materializeTransactionBoundRows(
+        for source: DataSource,
+        options: ReadExecutionContext,
+        transaction: any TransactionAccess
+    ) async throws -> [CanonicalSourceRow] {
+        switch source {
+        case .table(let tableRef):
+            let entity = try resolveEntity(named: tableRef.table)
+            guard let runtime = container.runtimeConfiguration
+                .entityRuntimes.registration(named: entity.name) else {
+                throw CanonicalReadError.unsupportedSelectQuery(
+                    "Entity '\(tableRef.table)' has no registered runtime type"
+                )
+            }
+            let sourceName = tableRef.alias ?? tableRef.effectiveName
+            let select = SelectQuery(
+                projection: .all,
+                source: .table(tableRef)
+            )
+            let rows = try await fetchTableSourceRows(
+                runtime: runtime,
+                sourceName: sourceName,
+                selectQuery: select,
+                options: options,
+                transaction: transaction
+            )
+            guard rows.residualFilter == nil,
+                  rows.residualOrderBy == nil,
+                  !rows.limitPushed,
+                  !rows.offsetPushed else {
+                throw CanonicalReadError.unsupportedSelectQuery(
+                    "A transaction-bound join source unexpectedly applied query pushdown"
+                )
+            }
+            return rows.rows
+
+        case .join(let clause):
+            switch clause.type {
+            case .lateral, .leftLateral:
+                throw CanonicalReadError.unsupportedSelectQuery(
+                    "LATERAL joins are not supported by transaction-bound reads"
+                )
+            case .natural, .naturalLeft, .naturalRight, .naturalFull:
+                let leftRows = try await materializeTransactionBoundRows(
+                    for: clause.left,
+                    options: options,
+                    transaction: transaction
+                )
+                let rightRows = try await materializeTransactionBoundRows(
+                    for: clause.right,
+                    options: options,
+                    transaction: transaction
+                )
+                return try performJoin(
+                    leftRows: leftRows,
+                    rightRows: rightRows,
+                    type: naturalJoinBaseType(clause.type),
+                    condition: .using(
+                        inferNaturalJoinColumns(
+                            leftRows: leftRows,
+                            rightRows: rightRows
+                        )
+                    ),
+                    workMeter: options.workMeter
+                )
+            default:
+                let leftRows = try await materializeTransactionBoundRows(
+                    for: clause.left,
+                    options: options,
+                    transaction: transaction
+                )
+                let rightRows = try await materializeTransactionBoundRows(
+                    for: clause.right,
+                    options: options,
+                    transaction: transaction
+                )
+                return try performJoin(
+                    leftRows: leftRows,
+                    rightRows: rightRows,
+                    type: clause.type,
+                    condition: clause.condition,
+                    workMeter: options.workMeter
+                )
+            }
+
+        default:
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "The source cannot be executed inside one caller-owned transaction"
+            )
+        }
+    }
+
+    private func isTransactionBoundRelationalSource(
+        _ source: DataSource
+    ) -> Bool {
+        switch source {
+        case .table:
+            return true
+        case .join(let clause):
+            return isTransactionBoundRelationalSource(clause.left)
+                && isTransactionBoundRelationalSource(clause.right)
+        default:
+            return false
+        }
     }
 
     private func queryCanonical(

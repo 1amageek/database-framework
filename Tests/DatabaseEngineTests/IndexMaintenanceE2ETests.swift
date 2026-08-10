@@ -103,18 +103,13 @@ struct IndexMaintenanceE2ETests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(E2EFullTextArticle.self), try DatabaseFrameworkRuntime.entity(E2EGraphEdge.self), try DatabaseFrameworkRuntime.entity(E2EScalarUser.self), try DatabaseFrameworkRuntime.entity(E2ECountItem.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
     private func cleanup(container: DBContainer, paths: [[String]]) async throws {
-        for path in paths {
-            if try await container.engine.namespaceExists(path: path) {
-                try await container.engine.removeNamespace(path: path)
-            }
-        }
-        // Re-initialize indexes after directory removal
-        try await container.ensureIndexesReady()
+        _ = paths
+        try await container.resetTestBaseData()
     }
 
     /// Helper to count entries in a subspace
@@ -155,7 +150,7 @@ struct IndexMaintenanceE2ETests {
         let container = try await setupContainer([E2EScalarUser.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_scalar_users"]])
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create and save user
         var user = E2EScalarUser()
@@ -170,7 +165,7 @@ struct IndexMaintenanceE2ETests {
         #expect(fetched != nil, "User should be saved")
 
         // Get the index subspace and count entries
-        let typeSubspace = try await container.resolveDirectory(for: E2EScalarUser.self)
+        let typeSubspace = try await container.testBaseDirectory(for: E2EScalarUser.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
         let scalarIndexName = try E2EScalarUser.indexDescriptors.first { descriptor in
@@ -200,7 +195,7 @@ struct IndexMaintenanceE2ETests {
         let container = try await setupContainer([E2ECountItem.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_count_items"]])
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create and save items in same category
         var item1 = E2ECountItem()
@@ -221,7 +216,7 @@ struct IndexMaintenanceE2ETests {
         try await context.save()
 
         // Get the index subspace
-        let typeSubspace = try await container.resolveDirectory(for: E2ECountItem.self)
+        let typeSubspace = try await container.testBaseDirectory(for: E2ECountItem.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
         let countIndexName = try E2ECountItem.indexDescriptors.first { descriptor in
@@ -253,7 +248,7 @@ struct IndexMaintenanceE2ETests {
         let container = try await setupContainer([E2EFullTextArticle.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_fulltext_articles"]])
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create and save article
         var article = E2EFullTextArticle()
@@ -268,7 +263,7 @@ struct IndexMaintenanceE2ETests {
         #expect(fetched != nil, "Article should be saved")
 
         // Get the index subspace and count entries
-        let typeSubspace = try await container.resolveDirectory(for: E2EFullTextArticle.self)
+        let typeSubspace = try await container.testBaseDirectory(for: E2EFullTextArticle.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
         let fullTextIndexName = try E2EFullTextArticle.indexDescriptors.first { descriptor in
@@ -312,7 +307,7 @@ struct IndexMaintenanceE2ETests {
         let container = try await setupContainer([E2EGraphEdge.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create and save edge
         var edge = E2EGraphEdge()
@@ -328,7 +323,7 @@ struct IndexMaintenanceE2ETests {
         #expect(fetched != nil, "Edge should be saved")
 
         // Get the index subspace and count entries
-        let typeSubspace = try await container.resolveDirectory(for: E2EGraphEdge.self)
+        let typeSubspace = try await container.testBaseDirectory(for: E2EGraphEdge.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
         let graphIndexName = try E2EGraphEdge.indexDescriptors.first { descriptor in
@@ -370,7 +365,7 @@ struct IndexMaintenanceE2ETests {
         let container = try await setupContainer([E2EGraphEdge.self])
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create and save edge
         var edge = E2EGraphEdge()
@@ -382,7 +377,7 @@ struct IndexMaintenanceE2ETests {
         try await context.save()
 
         // Get index count before delete
-        let typeSubspace = try await container.resolveDirectory(for: E2EGraphEdge.self)
+        let typeSubspace = try await container.testBaseDirectory(for: E2EGraphEdge.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
         let graphIndexName = try E2EGraphEdge.indexDescriptors.first { descriptor in
             descriptor.kindIdentifier == "graph"
@@ -430,7 +425,7 @@ struct IndexMaintenanceE2ETests {
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
 
         // Part 1: Direct IndexMaintainer usage (should work)
-        let typeSubspace = try await container.resolveDirectory(for: E2EGraphEdge.self)
+        let typeSubspace = try await container.testBaseDirectory(for: E2EGraphEdge.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
 
         guard let graphIndexDescriptor = try E2EGraphEdge.indexDescriptors.first(where: { descriptor in
@@ -494,7 +489,7 @@ struct IndexMaintenanceE2ETests {
         }
 
         // Part 2: DatabaseContext.save()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var contextEdge = E2EGraphEdge()
         contextEdge.source = "ContextAlice"

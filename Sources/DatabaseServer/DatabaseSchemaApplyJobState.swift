@@ -5,9 +5,19 @@ public struct DatabaseSchemaApplyJobState:
     Sendable,
     Hashable
 {
-    private static let formatVersion: UInt8 = 1
+    enum Phase: UInt8, Sendable, Hashable {
+        case staging
+        case publishing
+        case installing
+        case building
+        case finishing
+    }
 
-    let targetOffset: UInt64
+    private static let formatVersion: UInt8 = 3
+
+    let phase: Phase
+    let baseOffset: UInt64
+    let indexOffset: UInt64
     let nextPartitionContinuation: ByteString?
     let activePartitions: FieldObject?
     let activePartitionIsLast: Bool
@@ -18,7 +28,9 @@ public struct DatabaseSchemaApplyJobState:
         do {
             return .object(try FieldObject([
                 (key: "version", value: .uint8(Self.formatVersion)),
-                (key: "targetOffset", value: .uint64(targetOffset)),
+                (key: "phase", value: .uint8(phase.rawValue)),
+                (key: "baseOffset", value: .uint64(baseOffset)),
+                (key: "indexOffset", value: .uint64(indexOffset)),
                 (
                     key: "nextPartitionContinuation",
                     value: nextPartitionContinuation.map(FieldValue.bytes)
@@ -46,9 +58,12 @@ public struct DatabaseSchemaApplyJobState:
         persistentJobValue: FieldValue
     ) throws(PersistentJobPayloadError) {
         guard let fields = persistentJobValue.objectValue,
-              fields.count == 6,
+              fields.count == 8,
               fields["version"]?.uint8Value == Self.formatVersion,
-              let targetOffset = fields["targetOffset"]?.uint64Value,
+              let rawPhase = fields["phase"]?.uint8Value,
+              let phase = Phase(rawValue: rawPhase),
+              let baseOffset = fields["baseOffset"]?.uint64Value,
+              let indexOffset = fields["indexOffset"]?.uint64Value,
               let nextValue = fields["nextPartitionContinuation"],
               let activeValue = fields["activePartitions"],
               let activePartitionIsLast =
@@ -73,10 +88,18 @@ public struct DatabaseSchemaApplyJobState:
         } else {
             throw .invalidValue("Invalid active schema build partition")
         }
-        guard activePartitions != nil || !activeBuildStarted else {
-            throw .invalidValue("Started schema build has no active partition")
+        guard activePartitions != nil || !activeBuildStarted,
+              phase == .building
+                || (indexOffset == 0
+                    && nextPartitionContinuation == nil
+                    && activePartitions == nil
+                    && !activePartitionIsLast
+                    && !activeBuildStarted) else {
+            throw .invalidValue("Schema apply phase contains build state")
         }
-        self.targetOffset = targetOffset
+        self.phase = phase
+        self.baseOffset = baseOffset
+        self.indexOffset = indexOffset
         self.nextPartitionContinuation = nextPartitionContinuation
         self.activePartitions = activePartitions
         self.activePartitionIsLast = activePartitionIsLast
@@ -84,13 +107,17 @@ public struct DatabaseSchemaApplyJobState:
     }
 
     init(
-        targetOffset: UInt64 = 0,
+        phase: Phase = .staging,
+        baseOffset: UInt64 = 0,
+        indexOffset: UInt64 = 0,
         nextPartitionContinuation: ByteString? = nil,
         activePartitions: FieldObject? = nil,
         activePartitionIsLast: Bool = false,
         activeBuildStarted: Bool = false
     ) {
-        self.targetOffset = targetOffset
+        self.phase = phase
+        self.baseOffset = baseOffset
+        self.indexOffset = indexOffset
         self.nextPartitionContinuation = nextPartitionContinuation
         self.activePartitions = activePartitions
         self.activePartitionIsLast = activePartitionIsLast

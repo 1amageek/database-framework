@@ -12,7 +12,7 @@ import StorageKit
 ///
 /// **State Persistence**: Index states are stored under:
 /// `[subspace]["state"][indexName] = IndexState.rawValue`
-public final class IndexLifecycleStore: Sendable {
+package final class IndexLifecycleStore: Sendable {
     // MARK: - Properties
 
     /// Container used for transaction execution.

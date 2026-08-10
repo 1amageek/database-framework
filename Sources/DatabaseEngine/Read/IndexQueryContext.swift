@@ -146,6 +146,7 @@ public struct IndexQueryContext: Sendable {
         for type: T.Type,
         transaction: any TransactionAccess
     ) async throws -> ReadableIndex? {
+        _ = try context.requireOperationBaseLease()
         let descriptor = try indexDescriptor(
             named: indexName,
             kindIdentifier: kindIdentifier,
@@ -181,6 +182,7 @@ public struct IndexQueryContext: Sendable {
         partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> ReadableIndex? {
+        _ = try context.requireOperationBaseLease()
         let descriptor = try indexDescriptor(
             named: indexName,
             kindIdentifier: kindIdentifier,
@@ -262,22 +264,6 @@ public struct IndexQueryContext: Sendable {
         TransactionStorageReader(transaction: transaction)
     }
 
-    /// Get the item subspace for a type (for transaction-scoped operations)
-    ///
-    /// For types with dynamic directories, uses the partition binding if set.
-    ///
-    /// - Parameter type: The persistable type
-    /// - Returns: Subspace for items of this type
-    public func itemSubspace<T: Persistable>(for type: T.Type) async throws -> Subspace {
-        let store: DatabaseDataStore
-        if let binding = try partitionBinding(for: type) {
-            store = try await context.container.store(for: type, path: binding)
-        } else {
-            store = try await context.container.store(for: type)
-        }
-        return store.itemSubspace
-    }
-
     /// Execute a closure within a transaction
     ///
     /// Uses `context.withStorageAccess()` internally to benefit from
@@ -289,7 +275,10 @@ public struct IndexQueryContext: Sendable {
         configuration: TransactionConfiguration = .default,
         _ body: @Sendable @escaping (any TransactionAccess) async throws -> R
     ) async throws -> R {
-        return try await context.withStorageAccess(configuration: configuration) { transaction in
+        return try await context.withStorageAccess(
+            requiredAccess: .read,
+            configuration: configuration
+        ) { transaction in
             try await body(transaction)
         }
     }
@@ -512,6 +501,7 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         transaction: any TransactionAccess
     ) async throws -> T? {
+        _ = try context.requireOperationBaseLease()
         let store: DatabaseDataStore
         if let binding = try partitionBinding(for: type) {
             store = try await context.container.store(for: type, path: binding)
@@ -537,13 +527,11 @@ public struct IndexQueryContext: Sendable {
     /// - Parameter type: The persistable type
     /// - Returns: Array of all items
     public func fetchAllItems<T: Persistable>(type: T.Type) async throws -> [T] {
-        let store: DatabaseDataStore
+        var query = Query<T>()
         if let binding = try partitionBinding(for: type) {
-            store = try await context.container.store(for: type, path: binding)
-        } else {
-            store = try await context.container.store(for: type)
+            query.partitionBinding = binding
         }
-        return try await store.fetchAll(type)
+        return try await context.fetch(query)
     }
 
     /// Batch fetch items by their IDs using optimized BatchFetcher
@@ -561,6 +549,8 @@ public struct IndexQueryContext: Sendable {
         configuration: BatchFetchConfiguration = .default
     ) async throws -> [T] {
         guard !ids.isEmpty else { return [] }
+
+        return try await context.withBaseOperation { [self] in
 
         // Security: Evaluate LIST before fetching
         try context.container.securityDelegate?.evaluateList(
@@ -584,7 +574,10 @@ public struct IndexQueryContext: Sendable {
             configuration: configuration
         )
 
-        let items = try await context.withStorageAccess(configuration: .default) { transaction in
+        let items = try await context.withStorageAccess(
+            requiredAccess: .read,
+            configuration: .default
+        ) { transaction in
             try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
         }
 
@@ -596,6 +589,7 @@ public struct IndexQueryContext: Sendable {
         }
 
         return items
+        }
     }
 
     // MARK: - Schema Access

@@ -50,20 +50,24 @@ provides native facade overloads only when their package traits are selected.
 
 ~~~text
 composition layer
-  constructs StorageEngine
+  constructs one or more StorageEngine values
           |
-          | DBConfiguration(storageEngine:)
+          | DatabaseStorageTopology
+          | DBConfiguration(storageTopology:)
           | ownership transfer
           v
      DBContainer
-       |-- open failure -> engine shutdown
-       |-- shutdown() --> engine shutdown
-       `-- deinit ------> engine shutdown
+       |-- control domain + named data placements
+       |-- open failure -> all engines shut down
+       |-- shutdown() --> all engines shut down
+       `-- deinit ------> all engines shut down
                            (exactly once across all paths)
 ~~~
 
-The configuration and container share one lifecycle owner. Once injected, an
-engine must not be reused or shut down by its former caller.
+The configuration and container share one topology lifecycle owner. Backend
+facades create the same topology contract for one-engine deployments without
+creating an implicit Base. Once injected, an engine must not be reused or shut
+down by its former caller.
 
 ## Runtime Forms
 
@@ -297,7 +301,8 @@ selects the graph or graph set consumed by one operation, an
 `GraphResultNodeNamespace` provides domain separation for result identities.
 `SPARQLVariableScope` retains the standards-defined lexical binding meaning of
 scope; these execution values do not represent an authorization or knowledge
-boundary.
+boundary. The approved [Base and Composition](base-composition.md) contract
+owns that boundary and its cross-Base read composition.
 
 An RDF named-graph union is an RDF merge, not a concatenation of stored quads.
 `RDFNamedGraphSet` canonicalizes the selected graph set, and the scanner

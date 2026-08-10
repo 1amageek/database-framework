@@ -105,7 +105,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0809.4"
+            from: "26.0809.8"
         ),
         .package(
             url: "https://github.com/1amageek/swift-hnsw.git",
@@ -570,6 +570,10 @@ let package = Package(
                     "DATABASE_SERVER_RELATIONSHIPS",
                     .when(traits: ["Relationships"])
                 ),
+                .define(
+                    "DATABASE_SERVER_VECTOR_INDEXES",
+                    .when(traits: ["VectorIndexes"])
+                ),
             ]
         ),
         .target(
@@ -873,6 +877,16 @@ let package = Package(
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 "TestSupport",
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_TEST_GRAPH_INDEXES",
+                    .when(traits: ["GraphIndexes"])
+                ),
+                .define(
+                    "DATABASE_SERVER_TEST_VECTOR_INDEXES",
+                    .when(traits: ["VectorIndexes"])
+                ),
             ],
             linkerSettings: foundationDBClientLinkerSettings
         ),

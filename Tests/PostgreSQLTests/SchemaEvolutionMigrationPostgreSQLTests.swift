@@ -159,13 +159,13 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
                 schema: PGSchemaEvolutionSchemaV1.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGSchemaEvolutionUserV1.self)]
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var user = PGSchemaEvolutionUserV1(name: "Alice", email: "alice@example.com")
             user.id = "pg-lightweight-user"
             try initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: PGSchemaEvolutionSchemaV2.self,
@@ -173,13 +173,13 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGSchemaEvolutionUserV2.self)])
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGSchemaEvolutionSchemaV2.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGSchemaEvolutionUserV2.self)]
             )
-            let migratedContext = verificationContainer.newContext()
+            let migratedContext = verificationContainer.testBaseContext()
             let migratedUsers = try await migratedContext
                 .fetch(PGSchemaEvolutionUserV2.self)
                 .execute()
@@ -198,6 +198,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let registry = SchemaRegistry(
                 database: engine,
+                root: Subspace(),
                 clock: TestProcessMonotonicClock()
             )
 
@@ -217,6 +218,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             let engine = try await PostgreSQLScenarioCoordinator.shared.engine
             let registry = SchemaRegistry(
                 database: engine,
+                root: Subspace(),
                 clock: TestProcessMonotonicClock()
             )
             let typeName = PGSchemaEvolutionUserV1.persistableType
@@ -256,12 +258,12 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
                 schema: PGMigrationSchemaV1.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV1.self)]
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
             var seededUser = PGMigratedUserV1(name: "Charlie", email: "charlie@example.com")
             seededUser.id = seededID
             try initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: PGMigrationSchemaV2.self,
@@ -269,14 +271,12 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV2.self)])
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
-            let registry = SchemaRegistry(
-                database: migratedContainer.engine,
-                clock: TestProcessMonotonicClock()
-            )
-            let entity = try await registry.load(typeName: PGMigratedUserV1.persistableType)
-            let version = try await migratedContainer.getCurrentSchemaVersion()
+            let entity = try await migratedContainer
+                .testBaseSchemaDefinition()?
+                .entity(named: PGMigratedUserV1.persistableType)
+            let version = try await migratedContainer.testBaseCurrentSchemaVersion()
 
             #expect(version == Schema.Version(2, 0, 0))
             #expect(entity?.fieldMapByName["fullName"]?.fieldNumber == 2)
@@ -287,7 +287,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
                 schema: PGMigrationSchemaV2.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV2.self)]
             )
-            let migratedUsers = try await verificationContainer.newContext()
+            let migratedUsers = try await verificationContainer.testBaseContext()
                 .fetch(PGMigratedUserV2.self)
                 .execute()
             let migratedUser = migratedUsers.first { $0.id == seededID }
@@ -307,7 +307,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
                 schema: PGMigrationSchemaV1.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV1.self)]
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var firstUser = PGMigratedUserV1(name: "Alice", email: "alice@example.com")
             firstUser.id = "pg-migrated-user-1"
@@ -318,7 +318,7 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
             try initialContext.insert(secondUser)
 
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: PGMigrationSchemaV2.self,
@@ -326,13 +326,13 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV2.self)])
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGMigrationSchemaV2.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV2.self)]
             )
-            let migratedContext = verificationContainer.newContext()
+            let migratedContext = verificationContainer.testBaseContext()
             let migratedUsers = try await migratedContext
                 .fetch(PGMigratedUserV2.self)
                 .orderBy(PGMigratedUserV2.fields.fullName)

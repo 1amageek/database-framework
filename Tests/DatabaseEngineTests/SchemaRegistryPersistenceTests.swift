@@ -18,6 +18,7 @@ struct SchemaRegistryPersistenceTests {
         let engine = InMemoryEngine()
         let registry = SchemaRegistry(
             database: engine,
+            root: Subspace(),
             clock: TestProcessMonotonicClock()
         )
         let schema = try Schema(

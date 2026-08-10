@@ -116,7 +116,7 @@ private struct IndexedBenchmarkContext: Sendable {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PlainBenchmarkEntity.self), try DatabaseFrameworkRuntime.entity(SingleIndexBenchmarkEntity.self), try DatabaseFrameworkRuntime.entity(TripleIndexBenchmarkEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         try await cleanup()
     }
@@ -199,7 +199,7 @@ private struct IndexedBenchmarkContext: Sendable {
     }
 
     func indexedLookup(category: String) async throws -> [SingleIndexBenchmarkEntity] {
-        try await DatabaseContext(container: container)
+        try await container.testBaseContext()
             .fetch(SingleIndexBenchmarkEntity.self)
             .where(SingleIndexBenchmarkEntity.fields.runID == singleRunID)
             .where(SingleIndexBenchmarkEntity.fields.category == category)
@@ -207,7 +207,7 @@ private struct IndexedBenchmarkContext: Sendable {
     }
 
     func scannedLookup(category: String) async throws -> [PlainBenchmarkEntity] {
-        let all = try await DatabaseContext(container: container)
+        let all = try await container.testBaseContext()
             .fetch(PlainBenchmarkEntity.self)
             .execute()
         return all.filter { $0.runID == plainRunID && $0.category == category }

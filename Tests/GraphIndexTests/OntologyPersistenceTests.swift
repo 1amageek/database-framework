@@ -62,9 +62,9 @@ struct OntologyPersistenceTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntologyPersistenceEntity.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
-        return container.newContext()
+        return container.testBaseContext()
     }
 
     private func cleanup(context: DatabaseContext) async throws {

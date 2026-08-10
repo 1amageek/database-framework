@@ -56,7 +56,7 @@ struct AdminContextTests {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AdminIndexedEntity.self), try DatabaseFrameworkRuntime.entity(AdminUnindexedEntity.self)]),
-            security: .disabled
+            security: .testingDisabled
             )
     }
 
@@ -91,7 +91,7 @@ struct AdminContextTests {
 
             // Get index statistics via AdminContext
             // If wrong directory path was used, this would throw because index wouldn't be found
-            let admin = container.newAdminContext()
+            let admin = container.testBaseAdmin()
             let stats = try await admin.indexStatistics(indexName)
 
             // Verify we got valid statistics (index was found at correct path)
@@ -105,7 +105,7 @@ struct AdminContextTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Insert test data
             for i in 0..<10 {
@@ -123,7 +123,7 @@ struct AdminContextTests {
             // If wrong directory path was used, this would fail because:
             // 1. The index wouldn't be found
             // 2. The data wouldn't be found for rebuilding
-            let admin = container.newAdminContext()
+            let admin = container.testBaseAdmin()
             try await admin.rebuildIndex(indexName, progress: nil)
 
             // Verify rebuild completed (index state is readable)
@@ -138,7 +138,7 @@ struct AdminContextTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Insert test data
             for i in 0..<5 {
@@ -148,7 +148,7 @@ struct AdminContextTests {
             try await context.save()
 
             // Get collection statistics via AdminContext
-            let admin = container.newAdminContext()
+            let admin = container.testBaseAdmin()
             let stats = try await admin.collectionStatistics(AdminIndexedEntity.self)
 
             // If correct path is used, documentCount should be 5
@@ -162,7 +162,7 @@ struct AdminContextTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Insert test data
             for i in 0..<3 {
@@ -172,7 +172,7 @@ struct AdminContextTests {
             try await context.save()
 
             // Update statistics via AdminContext
-            let admin = container.newAdminContext()
+            let admin = container.testBaseAdmin()
 
             // If this completes without error, correct path is being used
             try await admin.updateStatistics()
@@ -192,7 +192,7 @@ struct AdminContextTests {
 
             // Get all index statistics via AdminContext
             // If wrong directory path was used, the index wouldn't be found
-            let admin = container.newAdminContext()
+            let admin = container.testBaseAdmin()
             let allStats = try await admin.allIndexStatistics()
 
             // Should include our test index (found at correct path)
@@ -211,16 +211,16 @@ struct AdminContextTests {
             try await cleanup(container: container)
 
             // Resolve directory via DBContainer
-            let containerSubspace = try await container.resolveDirectory(for: AdminIndexedEntity.self)
+            let containerSubspace = try await container.testBaseDirectory(for: AdminIndexedEntity.self)
 
             // Insert data and verify it's accessible
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let entity = AdminIndexedEntity(value: "consistency-test")
             try context.insert(entity)
             try await context.save()
 
             // AdminContext operations should work on the same data
-            let admin = container.newAdminContext()
+            let admin = container.testBaseAdmin()
             let stats = try await admin.collectionStatistics(AdminIndexedEntity.self)
 
             // If paths match, documentCount should be 1

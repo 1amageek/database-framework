@@ -16,6 +16,17 @@ struct DatabaseEntityMutationExecutor: Sendable {
         self.runtimeLimits = runtimeLimits
     }
 
+    func resolveReference(
+        _ identity: EntityReference,
+        model: PersistedModel? = nil
+    ) throws -> ResolvedEntityReference {
+        try ResolvedEntityReference.resolve(
+            identity,
+            container: container,
+            model: model
+        )
+    }
+
     func prepare(
         _ changes: [MutationExecuteOperation.Change],
         preconditions: [MutationExecuteOperation.Precondition],

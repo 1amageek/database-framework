@@ -17,6 +17,9 @@ ONLY_TESTING=()
 SKIP_TESTING=()
 ADDITIONAL_XCODEBUILD_ARGUMENTS=()
 XCODE_HARNESS_WORK_ROOT=""
+PRESERVE_WORK_ROOT=false
+REUSE_WORK_ROOT=""
+REUSE_BUILT_TESTS=false
 
 usage() {
   cat <<'EOF'
@@ -41,6 +44,10 @@ Options:
   --test-timeout <seconds>     test-without-building timeout. Default: 1200
   --resolve-timeout <seconds>  SwiftPM resolution timeout. Default: 600
   --result-directory <path>    Persistent result directory outside the temporary copy.
+  --preserve-work-root         Keep the isolated source and DerivedData for focused reruns.
+  --reuse-work-root <path>     Reuse a previously preserved harness work root.
+  --reuse-built-tests          Skip build-for-testing only when the preserved
+                               build input fingerprint matches exactly.
   --                           Pass remaining arguments to both xcodebuild invocations.
 
 Recognized test environment variables are copied into every generated test
@@ -121,6 +128,20 @@ while [[ $# -gt 0 ]]; do
       RESULT_DIRECTORY="$2"
       shift 2
       ;;
+    --preserve-work-root)
+      PRESERVE_WORK_ROOT=true
+      shift
+      ;;
+    --reuse-work-root)
+      require_value "$1" "${2:-}"
+      REUSE_WORK_ROOT="$2"
+      PRESERVE_WORK_ROOT=true
+      shift 2
+      ;;
+    --reuse-built-tests)
+      REUSE_BUILT_TESTS=true
+      shift
+      ;;
     --)
       shift
       ADDITIONAL_XCODEBUILD_ARGUMENTS=("$@")
@@ -140,6 +161,10 @@ done
 
 if [[ -z "$TRAITS" ]]; then
   echo "error: --traits is required" >&2
+  exit 2
+fi
+if [[ "$REUSE_BUILT_TESTS" == true && -z "$REUSE_WORK_ROOT" ]]; then
+  echo "error: --reuse-built-tests requires --reuse-work-root" >&2
   exit 2
 fi
 if ! [[ "$EXPECTED_TEST_COUNT" =~ ^[0-9]*$ ]]; then
@@ -169,7 +194,13 @@ cleanup() {
   if [[ -z "$XCODE_HARNESS_WORK_ROOT" || ! -d "$XCODE_HARNESS_WORK_ROOT" ]]; then
     return
   fi
-  local expected_prefix="${TMPDIR:-/tmp}/database-framework-xcode-test."
+  if [[ "$PRESERVE_WORK_ROOT" == true ]]; then
+    echo "Preserved harness work root: $XCODE_HARNESS_WORK_ROOT" >&2
+    return
+  fi
+  local temporary_root="${TMPDIR:-/tmp}"
+  temporary_root="${temporary_root%/}"
+  local expected_prefix="$temporary_root/database-framework-xcode-test."
   if [[ "$XCODE_HARNESS_WORK_ROOT" != "$expected_prefix"* ]]; then
     echo "error: refusing to remove unexpected harness path: $XCODE_HARNESS_WORK_ROOT" >&2
     return
@@ -350,7 +381,7 @@ extract_summary_number() {
   printf '%s' "$summary" | plutil -extract "$key" raw -
 }
 
-for command in jq swift xcodebuild xcrun plutil perl rg rsync tee; do
+for command in cmp jq shasum swift xcodebuild xcrun plutil perl rg rsync tee; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "error: required command not found: $command" >&2
     exit 1
@@ -358,21 +389,70 @@ for command in jq swift xcodebuild xcrun plutil perl rg rsync tee; do
 done
 
 traits_literal="$(trait_literal "$TRAITS")"
-XCODE_HARNESS_WORK_ROOT="$(
-  mktemp -d "${TMPDIR:-/tmp}/database-framework-xcode-test.XXXXXX"
-)"
+if [[ -n "$REUSE_WORK_ROOT" ]]; then
+  temporary_root="${TMPDIR:-/tmp}"
+  temporary_root="${temporary_root%/}"
+  expected_prefix="$temporary_root/database-framework-xcode-test."
+  if [[ "$REUSE_WORK_ROOT" != "$expected_prefix"* \
+      || ! -d "$REUSE_WORK_ROOT/source" \
+      || ! -d "$REUSE_WORK_ROOT/DerivedData" ]]; then
+    echo "error: invalid reusable harness work root: $REUSE_WORK_ROOT" >&2
+    exit 2
+  fi
+  XCODE_HARNESS_WORK_ROOT="$REUSE_WORK_ROOT"
+else
+  temporary_root="${TMPDIR:-/tmp}"
+  temporary_root="${temporary_root%/}"
+  XCODE_HARNESS_WORK_ROOT="$(
+    mktemp -d "$temporary_root/database-framework-xcode-test.XXXXXX"
+  )"
+fi
 source_copy="$XCODE_HARNESS_WORK_ROOT/source"
 derived_data="$XCODE_HARNESS_WORK_ROOT/DerivedData"
 mkdir -p "$source_copy" "$derived_data" "$RESULT_DIRECTORY"
 
-rsync -a \
-  --exclude '.git' \
-  --exclude '.build' \
-  --exclude '.swiftpm' \
-  --exclude '.fdb-test' \
-  --exclude '.test-results' \
-  --exclude '*.xcresult' \
-  "$ROOT_DIR/" "$source_copy/"
+normalized_package="$(mktemp "$XCODE_HARNESS_WORK_ROOT/Package.swift.XXXXXX")"
+cp "$ROOT_DIR/Package.swift" "$normalized_package"
+TRAIT_LITERAL="$traits_literal" perl -0pi -e '
+  my $count = s/\.default\(enabledTraits:\s*\[[^\]]*\]\)/.default(enabledTraits: $ENV{TRAIT_LITERAL})/s;
+  die "expected exactly one default trait declaration\n" unless $count == 1;
+' "$normalized_package"
+
+rsync_arguments=(
+  -a
+  --delete
+  --exclude '.git'
+  --exclude '.build'
+  --exclude '.swiftpm'
+  --exclude '.fdb-test'
+  --exclude '.test-results'
+  --exclude '*.xcresult'
+)
+manifest_reused=false
+resolved_file_reused=false
+if [[ -n "$REUSE_WORK_ROOT" && -f "$source_copy/Package.swift" ]]; then
+  if cmp -s "$normalized_package" "$source_copy/Package.swift"; then
+    # Keep the already-normalized manifest timestamp so an unchanged trait
+    # graph does not invalidate every SwiftPM target on each focused rerun.
+    rsync_arguments+=(--exclude '/Package.swift')
+    manifest_reused=true
+  fi
+  if [[ -f "$ROOT_DIR/Package.resolved" \
+      && -f "$source_copy/Package.resolved" ]] \
+      && cmp -s "$ROOT_DIR/Package.resolved" "$source_copy/Package.resolved"; then
+    # A resolve with an unchanged manifest and lock file can still rewrite
+    # SwiftPM workspace state and reorder trait conditions, invalidating the
+    # complete Xcode build graph. Preserve the already-validated lock file for
+    # focused reruns and reuse the resolved graph below.
+    rsync_arguments+=(--exclude '/Package.resolved')
+    resolved_file_reused=true
+  fi
+fi
+rsync "${rsync_arguments[@]}" "$ROOT_DIR/" "$source_copy/"
+if ! cmp -s "$normalized_package" "$source_copy/Package.swift"; then
+  rsync -a "$normalized_package" "$source_copy/Package.swift"
+fi
+rm -f -- "$normalized_package"
 
 locked_pins="$XCODE_HARNESS_WORK_ROOT/locked-pins.json"
 resolved_pins="$XCODE_HARNESS_WORK_ROOT/resolved-pins.json"
@@ -381,15 +461,14 @@ if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
     "$ROOT_DIR/Package.resolved" > "$locked_pins"
 fi
 
-TRAIT_LITERAL="$traits_literal" perl -0pi -e '
-  my $count = s/\.default\(enabledTraits:\s*\[[^\]]*\]\)/.default(enabledTraits: $ENV{TRAIT_LITERAL})/s;
-  die "expected exactly one default trait declaration\n" unless $count == 1;
-' "$source_copy/Package.swift"
-
-(
-  cd "$source_copy"
-  timeout_command "$RESOLVE_TIMEOUT_SECONDS" swift package resolve
-)
+if [[ "$manifest_reused" == true && "$resolved_file_reused" == true ]]; then
+  echo "Reusing unchanged SwiftPM dependency graph."
+else
+  (
+    cd "$source_copy"
+    timeout_command "$RESOLVE_TIMEOUT_SECONDS" swift package resolve
+  )
+fi
 jq -S '[.pins[] | {identity, kind, location, state}] | sort_by(.identity)' \
   "$source_copy/Package.resolved" > "$resolved_pins"
 if [[ -f "$locked_pins" ]] && ! jq -e -n \
@@ -408,6 +487,52 @@ fi
 echo "Resolved dependency pins:"
 jq -r '.[] | "  \(.identity) \(.state.version // .state.revision) \(.state.revision)"' \
   "$resolved_pins"
+
+build_fingerprint="$({
+  printf 'traits=%s\n' "$TRAITS"
+  printf 'scheme=%s\n' "$SCHEME"
+  printf 'destination=%s\n' "$DESTINATION"
+  printf 'toolchains=%s\n' "${TOOLCHAINS:-}"
+  xcodebuild -version
+  if [[ -n "${TOOLCHAINS:-}" ]]; then
+    xcrun --toolchain "$TOOLCHAINS" swiftc -version
+  else
+    xcrun swiftc -version
+  fi
+  printf 'fdb-include=%s\n' "${FDB_CLIENT_INCLUDE_DIRECTORY:-}"
+  printf 'fdb-library=%s\n' "${FDB_CLIENT_LIBRARY_DIRECTORY:-}"
+  printf 'additional-build-argument=%s\n' \
+    "${ADDITIONAL_XCODEBUILD_ARGUMENTS[@]:-}"
+  while IFS= read -r -d '' input_path; do
+    relative_path="${input_path#"$source_copy/"}"
+    printf 'file=%s\n' "$relative_path"
+    shasum -a 256 "$input_path"
+  done < <(
+    find \
+      "$source_copy/Sources" \
+      "$source_copy/Tests" \
+      "$source_copy/Benchmarks" \
+      "$source_copy/Package.swift" \
+      "$source_copy/Package.resolved" \
+      -type f -print0 2>/dev/null | sort -z
+  )
+} | shasum -a 256 | awk '{print $1}')"
+build_fingerprint_path="$XCODE_HARNESS_WORK_ROOT/build-input.sha256"
+reuse_compiled_tests=false
+if [[ "$REUSE_BUILT_TESTS" == true ]]; then
+  if [[ ! -f "$build_fingerprint_path" ]]; then
+    echo "error: preserved work root has no successful build fingerprint" >&2
+    exit 2
+  fi
+  recorded_fingerprint="$(<"$build_fingerprint_path")"
+  if [[ "$recorded_fingerprint" != "$build_fingerprint" ]]; then
+    echo "error: preserved build inputs changed; build-for-testing is required" >&2
+    echo "recorded: $recorded_fingerprint" >&2
+    echo "current:  $build_fingerprint" >&2
+    exit 2
+  fi
+  reuse_compiled_tests=true
+fi
 
 run_identifier="$(date +%Y%m%d-%H%M%S)-$$"
 build_result="$RESULT_DIRECTORY/Build-$run_identifier.xcresult"
@@ -452,41 +577,36 @@ if [[ -n "${FDB_CLUSTER_FILE:-}" ]]; then
     "LIBRARY_SEARCH_PATHS=\$(inherited) $fdb_library_directory"
   )
 fi
-if (( ${#ONLY_TESTING[@]} > 0 )); then
-  for identifier in "${ONLY_TESTING[@]}"; do
-    build_arguments+=("-only-testing:$identifier")
-  done
-fi
-if (( ${#SKIP_TESTING[@]} > 0 )); then
-  for identifier in "${SKIP_TESTING[@]}"; do
-    build_arguments+=("-skip-testing:$identifier")
-  done
-fi
 if (( ${#ADDITIONAL_XCODEBUILD_ARGUMENTS[@]} > 0 )); then
   build_arguments+=("${ADDITIONAL_XCODEBUILD_ARGUMENTS[@]}")
 fi
 
 echo "Traits: $TRAITS"
 echo "Temporary source: $source_copy"
-echo "Build result: $build_result"
-echo "Build log: $build_log"
-set +e
-(
-  cd "$source_copy"
-  timeout_command "$BUILD_TIMEOUT_SECONDS" xcodebuild "${build_arguments[@]}" \
-    2>&1 | tee "$build_log"
-)
-build_status=$?
-set -e
-reject_internal_tool_errors "$build_log"
-if (( build_status != 0 )); then
-  echo "error: xcodebuild build-for-testing exited with status $build_status" >&2
-  exit "$build_status"
+if [[ "$reuse_compiled_tests" == true ]]; then
+  echo "Reusing compiled tests with matching input fingerprint: $build_fingerprint"
+else
+  echo "Build result: $build_result"
+  echo "Build log: $build_log"
+  set +e
+  (
+    cd "$source_copy"
+    timeout_command "$BUILD_TIMEOUT_SECONDS" xcodebuild "${build_arguments[@]}" \
+      2>&1 | tee "$build_log"
+  )
+  build_status=$?
+  set -e
+  reject_internal_tool_errors "$build_log"
+  if (( build_status != 0 )); then
+    echo "error: xcodebuild build-for-testing exited with status $build_status" >&2
+    exit "$build_status"
+  fi
+  printf '%s\n' "$build_fingerprint" > "$build_fingerprint_path"
 fi
 
 xctestrun_paths="$(
   find "$derived_data/Build/Products" -maxdepth 1 \
-    -type f -name '*.xctestrun' -print
+    -type f -name '*.xctestrun' ! -name '.environment-*' -print
 )"
 xctestrun_count="$(printf '%s\n' "$xctestrun_paths" | sed '/^$/d' | wc -l | tr -d ' ')"
 if [[ "$xctestrun_count" != "1" ]]; then

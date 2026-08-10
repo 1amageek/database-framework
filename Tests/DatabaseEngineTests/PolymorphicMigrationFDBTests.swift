@@ -270,9 +270,9 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV1.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var article = FDBPolymorphicMigrationArticleV1(title: "Legacy Needle Article", body: "Body")
             article.id = "fdb-polymorphic-migration-article"
@@ -282,24 +282,24 @@ struct PolymorphicMigrationFDBTests {
             try initialContext.insert(article)
             try initialContext.insert(report)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.self,
                 migrationPlan: FDBPolymorphicMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let verificationContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let verificationContext = verificationContainer.newContext()
+            let verificationContext = verificationContainer.testBaseContext()
             let migratedResults = try await verificationContext
                 .findPolymorphic(FDBPolymorphicMigrationArticleV2.self)
                 .fullText(FDBPolymorphicMigrationArticleV2.fields.title)
@@ -351,9 +351,9 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var article = FDBPolymorphicMigrationArticleV2(title: "Removal Needle Article", body: "Body")
             article.id = "fdb-polymorphic-removal-article"
@@ -363,7 +363,7 @@ struct PolymorphicMigrationFDBTests {
             try initialContext.upsert(article)
             try initialContext.upsert(report)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             #expect(try await Self.countPolymorphicIndexEntries(
                 container: initialContainer,
@@ -375,9 +375,9 @@ struct PolymorphicMigrationFDBTests {
                 migrationPlan: FDBPolymorphicRemovalMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV3.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV3.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             #expect(try await Self.countPolymorphicIndexEntries(
                 container: migratedContainer,
@@ -388,7 +388,7 @@ struct PolymorphicMigrationFDBTests {
                 indexName: "FDBPolymorphicMigrationDocument_title"
             ) == .disabled)
 
-            let postRemovalContext = migratedContainer.newContext()
+            let postRemovalContext = migratedContainer.testBaseContext()
             var postRemovalArticle = FDBPolymorphicMigrationArticleV3(
                 title: "Removal Needle After",
                 body: "Body"
@@ -418,9 +418,9 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var article = FDBPolymorphicMigrationArticleV2(title: "Rebuild Needle Article", body: "Body")
             article.id = "fdb-polymorphic-rebuild-article"
@@ -430,7 +430,7 @@ struct PolymorphicMigrationFDBTests {
             try initialContext.upsert(article)
             try initialContext.upsert(report)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             try await Self.clearPolymorphicIndexEntries(
                 container: initialContainer,
@@ -450,11 +450,11 @@ struct PolymorphicMigrationFDBTests {
                 migrationPlan: FDBPolymorphicRebuildMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV4.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV4.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
-            let verificationContext = migratedContainer.newContext()
+            let verificationContext = migratedContainer.testBaseContext()
             let rebuiltResults = try await verificationContext
                 .findPolymorphic(FDBPolymorphicMigrationArticleV4.self)
                 .fullText(FDBPolymorphicMigrationArticleV4.fields.title)
@@ -530,7 +530,7 @@ struct PolymorphicMigrationFDBTests {
         let group = try container.polymorphicGroup(
             identifier: FDBPolymorphicMigrationArticleV2.polymorphableType
         )
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
         let indexSubspace = groupSubspace
             .subspace(SubspaceKey.indexes)
             .subspace(indexName)
@@ -552,7 +552,7 @@ struct PolymorphicMigrationFDBTests {
         let group = try container.polymorphicGroup(
             identifier: FDBPolymorphicMigrationArticleV2.polymorphableType
         )
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
         let indexSubspace = groupSubspace
             .subspace(SubspaceKey.indexes)
             .subspace(indexName)
@@ -570,7 +570,7 @@ struct PolymorphicMigrationFDBTests {
         let group = try container.polymorphicGroup(
             identifier: FDBPolymorphicMigrationArticleV2.polymorphableType
         )
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
         let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
         return try await lifecycleStore.state(of: indexName)
     }

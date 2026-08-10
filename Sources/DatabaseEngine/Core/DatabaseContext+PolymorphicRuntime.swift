@@ -31,6 +31,7 @@ extension DatabaseContext {
         _ operation: @Sendable @escaping (any TransactionAccess) async throws -> T
     ) async throws -> T {
         try await withStorageAccess(
+            requiredAccess: .read,
             configuration: configuration,
             operation
         )
@@ -52,7 +53,10 @@ extension DatabaseContext {
             orderBy: orderBy
         )
 
-        return try await withStorageAccess(configuration: configuration) { transaction in
+        return try await withStorageAccess(
+            requiredAccess: .read,
+            configuration: configuration
+        ) { transaction in
             guard let subspace = try await self.container
                 .openPolymorphicDirectory(
                     for: group.identifier,
@@ -88,7 +92,10 @@ extension DatabaseContext {
                     expectedEntity: runtime.entity.name
                 )
                 let item = try runtime.canonicalized(persistedModel)
-                try self.container.securityDelegate?.evaluateGet(persistedModel)
+                try self.container.securityDelegate?.evaluateGet(
+                    persistedModel,
+                    fields: nil
+                )
                 entities.append(
                     PolymorphicEntity(
                         item: item,
@@ -107,7 +114,10 @@ extension DatabaseContext {
         ids: [Tuple],
         configuration: TransactionConfiguration = .default
     ) async throws -> [PolymorphicEntity] {
-        try await withStorageAccess(configuration: configuration) { transaction in
+        try await withStorageAccess(
+            requiredAccess: .read,
+            configuration: configuration
+        ) { transaction in
             try await self.fetchPolymorphicItems(
                 group: group,
                 ids: ids,
@@ -173,7 +183,10 @@ extension DatabaseContext {
                 expectedEntity: runtime.entity.name
             )
             let item = try runtime.canonicalized(persistedModel)
-            try container.securityDelegate?.evaluateGet(persistedModel)
+            try container.securityDelegate?.evaluateGet(
+                persistedModel,
+                fields: nil
+            )
             items.append(
                 PolymorphicEntity(
                     item: item,

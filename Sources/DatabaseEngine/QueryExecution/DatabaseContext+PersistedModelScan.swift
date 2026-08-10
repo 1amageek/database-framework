@@ -15,6 +15,7 @@ extension DatabaseContext {
             partitions: partitions
         )
         if let transaction {
+            _ = try requireOperationBaseLease()
             let databaseTransaction = DatabaseTransaction(
                 storageAccess: transaction,
                 container: container
@@ -25,7 +26,10 @@ extension DatabaseContext {
                 limit: limit
             )
         }
-        return try await withTransaction(configuration: configuration) {
+        return try await withTransaction(
+            requiredAccess: .read,
+            configuration: configuration
+        ) {
             transaction in
             try await transaction.scanPersistedModels(
                 entity: entity.name,
@@ -44,6 +48,7 @@ extension DatabaseContext {
         partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> [PersistedModel?] {
+        _ = try requireOperationBaseLease()
         let partition = try CanonicalPartitionBinding.makeAnyBinding(
             for: entity,
             partitions: partitions

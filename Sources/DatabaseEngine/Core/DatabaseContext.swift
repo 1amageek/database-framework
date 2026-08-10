@@ -23,7 +23,8 @@ import Synchronization
 ///
 /// **Usage**:
 /// ```swift
-/// let context = container.newContext()
+/// let session = container.session(authorization: authorization)
+/// let context = session.base(baseID).newContext()
 ///
 /// // Insert models (type-independent)
 /// try context.insert(user)      // User: Persistable
@@ -58,7 +59,12 @@ public final class DatabaseContext: Sendable {
     // MARK: - Properties
 
     /// The container that owns this context
-    public let container: DBContainer
+    package let container: DBContainer
+
+    /// Base identity selected for every operation executed by this context.
+    public let baseID: Base.ID
+
+    package let authorization: AuthorizationContext
 
     /// Read version cache for CachePolicy
     ///
@@ -112,7 +118,7 @@ public final class DatabaseContext: Sendable {
     ///
     /// **Usage**:
     /// ```swift
-    /// let context = container.newContext(autosaveEnabled: true)
+    /// let context = session.base(baseID).newContext(autosaveEnabled: true)
     /// context.autosaveErrorHandler = { error in
     ///     print("Autosave failed: \(error)")
     ///     // Show user notification, retry, etc.
@@ -130,8 +136,15 @@ public final class DatabaseContext: Sendable {
     /// - Parameters:
     ///   - container: The DBContainer to use for storage
     ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
-    public init(container: DBContainer, autosaveEnabled: Bool = false) {
+    package init(
+        container: DBContainer,
+        baseID: Base.ID,
+        authorization: AuthorizationContext,
+        autosaveEnabled: Bool = false
+    ) {
         self.container = container
+        self.baseID = baseID
+        self.authorization = authorization
         self.readVersionCache = ReadVersionCache(
             monotonicClock: container.monotonicClock
         )
@@ -229,7 +242,9 @@ public final class DatabaseContext: Sendable {
     private func cachedStore<T: Persistable>(
         for type: T.Type
     ) async throws -> DatabaseDataStore {
+        let lease = try requireOperationBaseLease()
         let storeKey = DatabaseStoreCacheKey(
+            basePlacementGeneration: lease.generation.record.placementGeneration,
             entity: T.persistableType,
             components: []
         )
@@ -251,15 +266,18 @@ public final class DatabaseContext: Sendable {
     private func pointReadStore<T: Persistable>(
         for type: T.Type
     ) async throws -> DatabaseDataStore {
-        try await container.store(for: type)
+        _ = try requireOperationBaseLease()
+        return try await container.store(for: type)
     }
 
     private func cachedStore<T: Persistable>(
         for type: T.Type,
         path: DirectoryPath<T>
     ) async throws -> DatabaseDataStore {
+        let lease = try requireOperationBaseLease()
         let resolvedPath = try AnyDirectoryPath(path).resolve()
         let storeKey = DatabaseStoreCacheKey(
+            basePlacementGeneration: lease.generation.record.placementGeneration,
             entity: T.persistableType,
             components: resolvedPath
         )
@@ -278,7 +296,8 @@ public final class DatabaseContext: Sendable {
         for type: T.Type,
         path: DirectoryPath<T>
     ) async throws -> DatabaseDataStore {
-        try await container.store(for: type, path: path)
+        _ = try requireOperationBaseLease()
+        return try await container.store(for: type, path: path)
     }
 
     private func ensureUsable() throws {
@@ -607,6 +626,7 @@ public final class DatabaseContext: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [T] {
         try ensureUsable()
+        _ = try requireOperationBaseLease()
 
         let path: AnyDirectoryPath?
         if T.hasDynamicDirectory {
@@ -636,10 +656,50 @@ public final class DatabaseContext: Sendable {
         )
     }
 
+    /// Counts persisted models through a caller-owned storage transaction.
+    ///
+    /// Composition execution uses this entry point so every partial count is
+    /// evaluated at the same per-domain snapshot as member authorization.
+    package func fetchCount<T: Persistable>(
+        _ query: Query<T>,
+        transaction: any TransactionAccess
+    ) async throws -> Int {
+        try ensureUsable()
+        _ = try requireOperationBaseLease()
+
+        let path: AnyDirectoryPath?
+        if T.hasDynamicDirectory {
+            guard let binding = query.partitionBinding else {
+                throw DirectoryPathError.dynamicFieldsRequired(
+                    typeName: T.persistableType,
+                    fields: T.directoryFieldNames
+                )
+            }
+            try binding.validate()
+            path = try AnyDirectoryPath(binding)
+        } else {
+            path = nil
+        }
+
+        guard let entity = container.schema.entity(named: T.persistableType) else {
+            throw ContainerSchemaError.entityNotFound(T.persistableType)
+        }
+        let store = try await container.store(
+            for: entity,
+            path: path,
+            transaction: transaction
+        )
+        return try await store.fetchCountInTransaction(
+            query,
+            transaction: transaction
+        )
+    }
+
     /// Resolve the storage access path that the current runtime would use.
     internal func executionPlan<T: Persistable>(
         for query: Query<T>
     ) async throws -> QueryAccessPlan {
+        try await withBaseOperation { [self] in
         if T.hasDynamicDirectory {
             guard let binding = query.partitionBinding else {
                 throw DirectoryPathError.dynamicFieldsRequired(
@@ -656,7 +716,14 @@ public final class DatabaseContext: Sendable {
         } else {
             store = try await cachedStore(for: T.self)
         }
-        return try await store.executionPlan(for: query)
+        return try await withStorageAccess(requiredAccess: .read) {
+            transaction in
+            try await store.executionPlan(
+                for: query,
+                transaction: transaction
+            )
+        }
+        }
     }
 
     /// Executes a model query and dependent reads at one transaction read version.
@@ -667,6 +734,7 @@ public final class DatabaseContext: Sendable {
             DatabaseTransaction
         ) async throws -> Result
     ) async throws -> Result {
+        return try await withBaseOperation { [self] in
         // Check if type requires partition and validate
         if T.hasDynamicDirectory {
             guard let binding = query.partitionBinding else {
@@ -690,12 +758,16 @@ public final class DatabaseContext: Sendable {
         let config = TransactionConfiguration(cachePolicy: query.cachePolicy)
 
         // Execute fetch within transaction (uses ReadVersionCache)
-        return try await self.withTransaction(configuration: config) { transaction in
+        return try await self.withTransaction(
+            requiredAccess: .read,
+            configuration: config
+        ) { transaction in
             let models = try await store.fetchInTransaction(
                 query,
                 transaction: transaction.storageAccess
             )
             return try await operation(models, transaction)
+        }
         }
     }
 
@@ -710,6 +782,7 @@ public final class DatabaseContext: Sendable {
     /// - `.cached`: Use cached read version if available (no time limit)
     /// - `.stale(N)`: Use cache only if younger than N seconds
     internal func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
+        return try await withBaseOperation { [self] in
         // Check if type requires partition and validate
         if T.hasDynamicDirectory {
             guard let binding = query.partitionBinding else {
@@ -733,11 +806,15 @@ public final class DatabaseContext: Sendable {
         let config = TransactionConfiguration(cachePolicy: query.cachePolicy)
 
         // Execute count within transaction (uses ReadVersionCache)
-        return try await self.withStorageAccess(configuration: config) { transaction in
+        return try await self.withStorageAccess(
+            requiredAccess: .read,
+            configuration: config
+        ) { transaction in
             try await store.fetchCountInTransaction(
                 query,
                 transaction: transaction
             )
+        }
         }
     }
 
@@ -771,6 +848,20 @@ public final class DatabaseContext: Sendable {
         as type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
+        try await withBaseOperation { [self] in
+            try await modelInActiveBase(
+                for: id,
+                as: type,
+                cachePolicy: cachePolicy
+            )
+        }
+    }
+
+    private func modelInActiveBase<T: Persistable>(
+        for id: T.ID,
+        as type: T.Type,
+        cachePolicy: CachePolicy
+    ) async throws -> T? {
         try ensureUsable()
 
         // A dynamic type has no unambiguous in-memory identity without its partition.
@@ -788,6 +879,7 @@ public final class DatabaseContext: Sendable {
         )
 
         if let inserted = pendingResult.inserted {
+            try await requireAccess(.read)
             // Evaluate GET security for pending insert (not via DataStore)
             try container.securityDelegate?.evaluateGet(
                 try PersistedModel(inserted)
@@ -796,6 +888,7 @@ public final class DatabaseContext: Sendable {
         }
 
         if pendingResult.isDeleted {
+            try await requireAccess(.read)
             return nil
         }
 
@@ -803,13 +896,18 @@ public final class DatabaseContext: Sendable {
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type)
-            return try await container.transactionExecutor.withTransaction { transaction in
+            return try await withStorageAccess(
+                requiredAccess: .read
+            ) { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
             let store = try await cachedStore(for: type)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
-            return try await self.withStorageAccess(configuration: config) { transaction in
+            return try await self.withStorageAccess(
+                requiredAccess: .read,
+                configuration: config
+            ) { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         }
@@ -825,6 +923,20 @@ public final class DatabaseContext: Sendable {
         forIdentifierTuple identifierTuple: Tuple,
         as type: T.Type,
         cachePolicy: CachePolicy = .server
+    ) async throws -> T? {
+        try await withBaseOperation { [self] in
+            try await modelInActiveBase(
+                forIdentifierTuple: identifierTuple,
+                as: type,
+                cachePolicy: cachePolicy
+            )
+        }
+    }
+
+    private func modelInActiveBase<T: Persistable>(
+        forIdentifierTuple identifierTuple: Tuple,
+        as type: T.Type,
+        cachePolicy: CachePolicy
     ) async throws -> T? {
         try ensureUsable()
 
@@ -846,18 +958,22 @@ public final class DatabaseContext: Sendable {
         )
 
         if let inserted = pendingResult.inserted {
+            try await requireAccess(.read)
             try container.securityDelegate?.evaluateGet(
                 try PersistedModel(inserted)
             )
             return inserted
         }
         if pendingResult.isDeleted {
+            try await requireAccess(.read)
             return nil
         }
 
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type)
-            return try await container.transactionExecutor.withTransaction { transaction in
+            return try await withStorageAccess(
+                requiredAccess: .read
+            ) { transaction in
                 try await store.fetchByIdentifierTupleInTransaction(
                     type,
                     identifier: identifierTuple,
@@ -868,7 +984,10 @@ public final class DatabaseContext: Sendable {
 
         let store = try await cachedStore(for: type)
         let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
-        return try await withStorageAccess(configuration: configuration) { transaction in
+        return try await withStorageAccess(
+            requiredAccess: .read,
+            configuration: configuration
+        ) { transaction in
             try await store.fetchByIdentifierTupleInTransaction(
                 type,
                 identifier: identifierTuple,
@@ -887,6 +1006,7 @@ public final class DatabaseContext: Sendable {
         transaction: any TransactionAccess
     ) async throws -> T? {
         try ensureUsable()
+        _ = try requireOperationBaseLease()
 
         let identifier = try PersistableIdentifierKeyCodec.value(
             from: identifierTuple,
@@ -953,6 +1073,22 @@ public final class DatabaseContext: Sendable {
         partition path: DirectoryPath<T>,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
+        try await withBaseOperation { [self] in
+            try await modelInActiveBase(
+                for: id,
+                as: type,
+                partition: path,
+                cachePolicy: cachePolicy
+            )
+        }
+    }
+
+    private func modelInActiveBase<T: Persistable>(
+        for id: T.ID,
+        as type: T.Type,
+        partition path: DirectoryPath<T>,
+        cachePolicy: CachePolicy
+    ) async throws -> T? {
         try ensureUsable()
 
         let pendingResult = try pendingModelLookup(
@@ -962,6 +1098,7 @@ public final class DatabaseContext: Sendable {
         )
 
         if let inserted = pendingResult.inserted {
+            try await requireAccess(.read)
             // Evaluate GET security for pending insert (not via DataStore)
             try container.securityDelegate?.evaluateGet(
                 try PersistedModel(inserted)
@@ -970,6 +1107,7 @@ public final class DatabaseContext: Sendable {
         }
 
         if pendingResult.isDeleted {
+            try await requireAccess(.read)
             return nil
         }
 
@@ -977,13 +1115,18 @@ public final class DatabaseContext: Sendable {
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type, path: path)
-            return try await container.transactionExecutor.withTransaction { transaction in
+            return try await withStorageAccess(
+                requiredAccess: .read
+            ) { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
             let store = try await cachedStore(for: type, path: path)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
-            return try await self.withStorageAccess(configuration: config) { transaction in
+            return try await self.withStorageAccess(
+                requiredAccess: .read,
+                configuration: config
+            ) { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         }
@@ -995,6 +1138,22 @@ public final class DatabaseContext: Sendable {
         as type: T.Type,
         partition path: DirectoryPath<T>,
         cachePolicy: CachePolicy = .server
+    ) async throws -> T? {
+        try await withBaseOperation { [self] in
+            try await modelInActiveBase(
+                forIdentifierTuple: identifierTuple,
+                as: type,
+                partition: path,
+                cachePolicy: cachePolicy
+            )
+        }
+    }
+
+    private func modelInActiveBase<T: Persistable>(
+        forIdentifierTuple identifierTuple: Tuple,
+        as type: T.Type,
+        partition path: DirectoryPath<T>,
+        cachePolicy: CachePolicy
     ) async throws -> T? {
         try ensureUsable()
 
@@ -1010,18 +1169,22 @@ public final class DatabaseContext: Sendable {
         )
 
         if let inserted = pendingResult.inserted {
+            try await requireAccess(.read)
             try container.securityDelegate?.evaluateGet(
                 try PersistedModel(inserted)
             )
             return inserted
         }
         if pendingResult.isDeleted {
+            try await requireAccess(.read)
             return nil
         }
 
         if case .server = cachePolicy {
             let store = try await pointReadStore(for: type, path: path)
-            return try await container.transactionExecutor.withTransaction { transaction in
+            return try await withStorageAccess(
+                requiredAccess: .read
+            ) { transaction in
                 try await store.fetchByIdentifierTupleInTransaction(
                     type,
                     identifier: identifierTuple,
@@ -1032,7 +1195,10 @@ public final class DatabaseContext: Sendable {
 
         let store = try await cachedStore(for: type, path: path)
         let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
-        return try await withStorageAccess(configuration: configuration) { transaction in
+        return try await withStorageAccess(
+            requiredAccess: .read,
+            configuration: configuration
+        ) { transaction in
             try await store.fetchByIdentifierTupleInTransaction(
                 type,
                 identifier: identifierTuple,
@@ -1273,8 +1439,7 @@ public final class DatabaseContext: Sendable {
                 fields: T.directoryFieldNames
             )
         }
-        let store = try await cachedStore(for: type)
-        let models = try await store.fetchAll(type)
+        let models = try await fetch(Query<T>())
         for model in models {
             try block(model)
         }
@@ -1298,10 +1463,7 @@ public final class DatabaseContext: Sendable {
     ) async throws {
         try ensureUsable()
 
-        var binding = DirectoryPath<T>()
-        binding.set(field, to: value)
-        let store = try await cachedStore(for: type, path: binding)
-        let models = try await store.fetchAll(type)
+        let models = try await fetch(Query<T>().partition(field, equals: value))
         for model in models {
             try block(model)
         }
@@ -1407,36 +1569,108 @@ extension DatabaseContext {
             DatabaseTransaction
         ) async throws -> T
     ) async throws -> T {
-        try ensureUsable()
-
-        // Use TransactionRunner with context's own ReadVersionCache
-        let runner = TransactionRunner(
-            transactionExecutor: container.transactionExecutor,
-            clock: container.monotonicClock,
-            logging: container.configuration.logging,
-            metrics: container.configuration.metrics
-        )
-        return try await runner.run(
+        try await withTransaction(
+            requiredAccess: .write,
             configuration: configuration,
             executionDeadline: executionDeadline,
-            readVersionCache: readVersionCache,
-            operationDescription: "DatabaseContext.withTransaction",
-            onCommitOutcomeUnknown: { [self] in
-                stateLock.withLock { $0.commitOutcomeUnknown = true }
+            operation
+        )
+    }
+
+    package func withTransaction<T: Sendable>(
+        requiredAccess: Security.Access,
+        configuration: TransactionConfiguration = .default,
+        executionDeadline: TransactionExecutionDeadline? = nil,
+        _ operation: @Sendable @escaping (
+            DatabaseTransaction
+        ) async throws -> T
+    ) async throws -> T {
+        try ensureUsable()
+        return try await withBaseOperation {
+            if let binding = ActiveDatabaseTransactionContext.binding {
+                guard binding.baseID == self.baseID,
+                      binding.authorization == self.authorization,
+                      binding.grantedAccess.isSuperset(of: requiredAccess)
+                else {
+                    throw DatabaseGrantAuthorizationError.denied(
+                        resource: .base(self.baseID),
+                        required: requiredAccess
+                    )
+                }
+                if let databaseTransaction = binding.databaseTransaction {
+                    return try await operation(databaseTransaction)
+                }
+                let databaseTransaction = DatabaseTransaction(
+                    storageAccess: binding.transaction,
+                    container: self.container
+                )
+                return try await ActiveDatabaseTransactionContext.$binding
+                    .withValue(
+                        DatabaseTransactionExecutionBinding(
+                            transaction: binding.transaction,
+                            baseID: binding.baseID,
+                            authorization: binding.authorization,
+                            grantedAccess: binding.grantedAccess,
+                            databaseTransaction: databaseTransaction
+                        )
+                    ) {
+                        do {
+                            let result = try await operation(
+                                databaseTransaction
+                            )
+                            try await databaseTransaction.prepareForCommit()
+                            return result
+                        } catch {
+                            await databaseTransaction.invalidate()
+                            throw error
+                        }
+                    }
             }
-        ) { transaction in
-            let transaction = DatabaseTransaction(
-                storageAccess: transaction,
-                container: self.container
+            let lease = try self.requireOperationBaseLease()
+            let runner = TransactionRunner(
+                transactionExecutor: lease.transactionExecutor,
+                clock: self.container.monotonicClock,
+                logging: self.container.configuration.logging,
+                metrics: self.container.configuration.metrics
             )
-            do {
-                let result = try await operation(transaction)
-                try await transaction.prepareForCommit()
-                return result
-            } catch {
-                await transaction.invalidate()
-                throw error
-            }
+            return try await runner.run(
+                configuration: configuration,
+                executionDeadline: executionDeadline,
+                readVersionCache: self.readVersionCache,
+                operationDescription: "DatabaseContext.withTransaction",
+                onCommitOutcomeUnknown: { [self] in
+                    stateLock.withLock { $0.commitOutcomeUnknown = true }
+                }
+            ) { storageAccess in
+                try await self.requireGrant(
+                    requiredAccess,
+                    lease: lease,
+                    transaction: storageAccess
+                )
+                let transaction = DatabaseTransaction(
+                    storageAccess: storageAccess,
+                    container: self.container
+                )
+                return try await ActiveDatabaseTransactionContext.$binding
+                    .withValue(
+                        DatabaseTransactionExecutionBinding(
+                            transaction: storageAccess,
+                            baseID: self.baseID,
+                            authorization: self.authorization,
+                            grantedAccess: requiredAccess,
+                            databaseTransaction: transaction
+                        )
+                    ) {
+                        do {
+                            let result = try await operation(transaction)
+                            try await transaction.prepareForCommit()
+                            return result
+                        } catch {
+                            await transaction.invalidate()
+                            throw error
+                        }
+                    }
+                }
         }
     }
 
@@ -1459,27 +1693,115 @@ extension DatabaseContext {
     /// - Returns: The result of the operation
     /// - Throws: Error if the transaction cannot be committed after retries
     internal func withStorageAccess<T: Sendable>(
+        requiredAccess: Security.Access,
         configuration: TransactionConfiguration = .default,
         executionDeadline: TransactionExecutionDeadline? = nil,
         _ operation: @Sendable @escaping (any TransactionAccess) async throws -> T
     ) async throws -> T {
         try ensureUsable()
 
-        let runner = TransactionRunner(
-            transactionExecutor: container.transactionExecutor,
-            clock: container.monotonicClock,
-            logging: container.configuration.logging,
-            metrics: container.configuration.metrics
-        )
-        return try await runner.run(
-            configuration: configuration,
-            executionDeadline: executionDeadline,
-            readVersionCache: readVersionCache,
-            operationDescription: "DatabaseContext.withStorageAccess",
-            onCommitOutcomeUnknown: { [self] in
-                stateLock.withLock { $0.commitOutcomeUnknown = true }
-            },
-            operation: operation
+        return try await withBaseOperation {
+            if let binding = ActiveDatabaseTransactionContext.binding {
+                guard binding.baseID == self.baseID,
+                      binding.authorization == self.authorization,
+                      binding.grantedAccess.isSuperset(of: requiredAccess)
+                else {
+                    throw DatabaseGrantAuthorizationError.denied(
+                        resource: .base(self.baseID),
+                        required: requiredAccess
+                    )
+                }
+                return try await operation(binding.transaction)
+            }
+            let lease = try self.requireOperationBaseLease()
+            let runner = TransactionRunner(
+                transactionExecutor: lease.transactionExecutor,
+                clock: self.container.monotonicClock,
+                logging: self.container.configuration.logging,
+                metrics: self.container.configuration.metrics
+            )
+            return try await runner.run(
+                configuration: configuration,
+                executionDeadline: executionDeadline,
+                readVersionCache: self.readVersionCache,
+                operationDescription: "DatabaseContext.withStorageAccess",
+                onCommitOutcomeUnknown: { [self] in
+                    stateLock.withLock { $0.commitOutcomeUnknown = true }
+                }
+            ) { transaction in
+                try await self.requireGrant(
+                    requiredAccess,
+                    lease: lease,
+                    transaction: transaction
+                )
+                return try await ActiveDatabaseTransactionContext.$binding
+                    .withValue(
+                        DatabaseTransactionExecutionBinding(
+                            transaction: transaction,
+                            baseID: self.baseID,
+                            authorization: self.authorization,
+                            grantedAccess: requiredAccess,
+                            databaseTransaction: nil
+                        )
+                    ) {
+                        try await operation(transaction)
+                    }
+            }
+        }
+    }
+
+    private func requireAccess(
+        _ access: Security.Access
+    ) async throws {
+        try await withStorageAccess(requiredAccess: access) { _ in () }
+    }
+
+    package func withBaseOperation<Result: Sendable>(
+        _ operation: @Sendable () async throws -> Result
+    ) async throws -> Result {
+        try await container.withOperationSchemaLease { _ in
+            if let current = ActiveDatabaseBaseContext.lease {
+                guard current.baseID == baseID else {
+                    throw DatabaseBaseExecutionError.baseTargetRequired
+                }
+                return try await RequestAuthorization.$context.withValue(
+                    authorization
+                ) {
+                    try await operation()
+                }
+            }
+            let lease = try container.acquireBaseLease(baseID)
+            return try await container.withBaseLease(lease) {
+                try await RequestAuthorization.$context.withValue(
+                    self.authorization
+                ) {
+                    try await operation()
+                }
+            }
+        }
+    }
+
+    package func requireOperationBaseLease() throws -> DatabaseBaseLease {
+        guard let lease = ActiveDatabaseBaseContext.lease,
+              lease.baseID == baseID,
+              lease.permitsDataOperations else {
+            throw DatabaseBaseExecutionError.baseTargetRequired
+        }
+        return lease
+    }
+
+    private func requireGrant(
+        _ access: Security.Access,
+        lease: DatabaseBaseLease,
+        transaction: any TransactionAccess
+    ) async throws {
+        try await DatabaseGrantStore(
+            resource: .base(baseID),
+            root: lease.root
+        ).require(
+            access,
+            authorization: authorization,
+            transaction: transaction
         )
     }
 

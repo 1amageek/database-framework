@@ -59,7 +59,7 @@ struct ComplexFilterTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FilterEdge.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
@@ -128,7 +128,7 @@ struct ComplexFilterTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let item = uniqueID("Item")
         let predA = uniqueID("valueA")
@@ -163,7 +163,7 @@ struct ComplexFilterTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let item1 = uniqueID("I1")
         let item2 = uniqueID("I2")
@@ -194,7 +194,7 @@ struct ComplexFilterTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("score")
 
@@ -229,7 +229,7 @@ struct ComplexFilterTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predValue = uniqueID("value")
 
@@ -261,7 +261,7 @@ struct ComplexFilterTests {
     func testThreeNumericFilters() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("num")
 
@@ -301,7 +301,7 @@ struct ComplexFilterTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predPrice = uniqueID("price")
         let predStatus = uniqueID("status")
@@ -335,7 +335,7 @@ struct ComplexFilterTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("name")
 
@@ -368,7 +368,7 @@ struct ComplexFilterTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("status")
 
@@ -403,7 +403,7 @@ struct ComplexFilterTests {
     func testFilterInSingleValue() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("type")
 
@@ -432,7 +432,7 @@ struct ComplexFilterTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("category")
 
@@ -468,7 +468,7 @@ struct ComplexFilterTests {
     func testFilterEquality() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("color")
 
@@ -494,7 +494,7 @@ struct ComplexFilterTests {
     func testFilterInequality() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("status")
 
@@ -521,7 +521,7 @@ struct ComplexFilterTests {
     func testFilterStartsWith() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("name")
 
@@ -549,7 +549,7 @@ struct ComplexFilterTests {
     func testFilterEndsWith() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("email")
 
@@ -576,7 +576,7 @@ struct ComplexFilterTests {
     func testFilterRegexBasic() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("code")
 
@@ -604,7 +604,7 @@ struct ComplexFilterTests {
     func testFilterRegexCaseInsensitive() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("label")
 
@@ -633,7 +633,7 @@ struct ComplexFilterTests {
     func testFilterBound() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predName = uniqueID("name")
         let predEmail = uniqueID("email")
@@ -663,7 +663,7 @@ struct ComplexFilterTests {
     func testFilterEmptyString() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("note")
 
@@ -689,7 +689,7 @@ struct ComplexFilterTests {
     func testFilterNumericStringEdgeCases() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("value")
 
@@ -718,7 +718,7 @@ struct ComplexFilterTests {
     func testFilterMatchesNothing() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("score")
 
@@ -743,7 +743,7 @@ struct ComplexFilterTests {
     func testFilterMatchesEverything() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred = uniqueID("value")
 

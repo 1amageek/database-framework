@@ -135,7 +135,7 @@ enum FDBStageBoundaryMigrationPlan: SchemaMigrationPlan {
     }
 
     static func migrateUsers(context: MigrationContext) async throws {
-        let currentVersion = try await context.container.getCurrentSchemaVersion()
+        let currentVersion = try await context.container.testBaseCurrentSchemaVersion()
         await fdbMigrationEventRecorder.record("will:\(fdbVersionLabel(currentVersion))")
 
         var migratedUsers: [FDBStageBoundaryUserV3] = []
@@ -157,7 +157,7 @@ enum FDBStageBoundaryMigrationPlan: SchemaMigrationPlan {
     }
 
     static func auditStage(context: MigrationContext) async throws {
-        let currentVersion = try await context.container.getCurrentSchemaVersion()
+        let currentVersion = try await context.container.testBaseCurrentSchemaVersion()
         await fdbMigrationEventRecorder.record("did:\(fdbVersionLabel(currentVersion))")
     }
 }
@@ -287,7 +287,7 @@ enum FDBStageFailureMigrationPlan: SchemaMigrationPlan {
     }
 
     static func failStage(context: MigrationContext) async throws {
-        let currentVersion = try await context.container.getCurrentSchemaVersion()
+        let currentVersion = try await context.container.testBaseCurrentSchemaVersion()
         await fdbMigrationEventRecorder.record("fail:\(fdbVersionLabel(currentVersion))")
         throw FDBMigrationExecutionError.expectedFailure
     }
@@ -301,67 +301,54 @@ struct MigrationExecutionFDBTests {
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
 
-    private func clearState(
-        in database: any StorageEngine,
-        typeNames: [String]
-    ) async throws {
-        do {
-            try await database.removeNamespace(path: ["test", "migration"])
-        } catch {
-        }
-
-        do {
-            try await database.removeNamespace(path: ["_metadata"])
-        } catch {
-        }
-
-        try await database.withTransaction { transaction in
-            for typeName in typeNames {
-                try transaction.clear(key: Tuple(["_schema", typeName]).pack())
-            }
-        }
-    }
-
     @Test("Multi-stage migration executes in order and persists stage boundaries on FDB")
     func multiStageMigrationExecutesInOrderAndPersistsBetweenStages() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await makeSystemPriorityEngine()
+            let databaseIdentifier = "migration-execution-stage-boundaries"
             await fdbMigrationEventRecorder.reset()
-
-            try await clearState(in: engine, typeNames: [FDBStageBoundaryUserV1.persistableType])
 
             let initialContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV1.makeSchema(),
-                configuration: .testing(storageEngine: engine),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: engine
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV1.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var user = FDBStageBoundaryUserV1(name: "Alice", email: "alice@example.com")
             user.id = "fdb-stage-boundary-user"
             try initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV3.self,
                 migrationPlan: FDBStageBoundaryMigrationPlan.self,
-                configuration: .testing(storageEngine: engine),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: engine
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let events = await fdbMigrationEventRecorder.snapshot()
-            let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
+            let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
 
             let verificationContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV3.makeSchema(),
-                configuration: .testing(storageEngine: engine),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: engine
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let migratedUsers = try await verificationContainer.newContext()
+            let migratedUsers = try await verificationContainer.testBaseContext()
                 .fetch(FDBStageBoundaryUserV3.self)
                 .execute()
             let migratedUser = migratedUsers.first { $0.id == "fdb-stage-boundary-user" }
@@ -378,15 +365,17 @@ struct MigrationExecutionFDBTests {
     func lightweightMigrationAddsAndRemovesIndexesEndToEnd() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await makeSystemPriorityEngine()
-            try await clearState(in: engine, typeNames: [FDBIndexLifecycleUserV2.persistableType])
-
+            let databaseIdentifier = "migration-execution-index-lifecycle"
             let initialContainer = try await DBContainer.open(
                 for: FDBIndexLifecycleSchemaV2.makeSchema(),
-                configuration: .testing(storageEngine: engine),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: engine
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV2.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let subspace = try await initialContainer.resolveDirectory(for: FDBIndexLifecycleUserV2.self)
+            let subspace = try await initialContainer.testBaseDirectory(for: FDBIndexLifecycleUserV2.self)
             let ageIndexSubspace = subspace
                 .subspace(SubspaceKey.indexes)
                 .subspace("FDBIndexLifecycleUser_age")
@@ -394,26 +383,30 @@ struct MigrationExecutionFDBTests {
                 .subspace(SubspaceKey.indexes)
                 .subspace("FDBIndexLifecycleUser_createdAt")
 
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
             var user = FDBIndexLifecycleUserV2(name: "Alice", email: "alice@example.com", age: 42)
             user.id = "fdb-index-lifecycle-user"
             try initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             #expect(try await countKeys(in: ageIndexSubspace, engine: engine) > 0)
 
             let migratedContainer = try await DBContainer.open(
                 for: FDBIndexLifecycleSchemaV3.self,
                 migrationPlan: FDBIndexLifecycleMigrationPlan.self,
-                configuration: .testing(storageEngine: engine),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: engine
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV3.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
-            let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
-            let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
-            let entity = try await registry.load(typeName: FDBIndexLifecycleUserV2.persistableType)
+            let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
+            let entity = try await migratedContainer
+                .testPersistedControlSchemaEntities()
+                .first { $0.name == FDBIndexLifecycleUserV2.persistableType }
             let formerIndexKey = subspace
                 .subspace("storeInfo")
                 .subspace("formerIndexes")
@@ -424,11 +417,14 @@ struct MigrationExecutionFDBTests {
 
             let verificationContainer = try await DBContainer.open(
                 for: FDBIndexLifecycleSchemaV3.makeSchema(),
-                configuration: .testing(storageEngine: engine),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: engine
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV3.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let migratedUsers = try await verificationContainer.newContext()
+            let migratedUsers = try await verificationContainer.testBaseContext()
                 .fetch(FDBIndexLifecycleUserV3.self)
                 .execute()
             let migratedUser = migratedUsers.first { $0.id == "fdb-index-lifecycle-user" }
@@ -449,50 +445,59 @@ struct MigrationExecutionFDBTests {
     func failedLaterStageKeepsEarlierStageCommitted() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await makeSystemPriorityEngine()
+            let databaseIdentifier = "migration-execution-stage-failure"
             await fdbMigrationEventRecorder.reset()
-
-            try await clearState(in: engine, typeNames: [FDBStageFailureUserV1.persistableType])
 
             let initialContainer = try await DBContainer.open(
                 for: FDBStageFailureSchemaV1.makeSchema(),
-                configuration: .testing(storageEngine: engine),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: engine
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV1.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var user = FDBStageFailureUserV1(name: "Alice", email: "alice@example.com")
             user.id = "fdb-stage-failure-user"
             try initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: FDBStageFailureSchemaV3.self,
                 migrationPlan: FDBStageFailureMigrationPlan.self,
-                configuration: .testing(storageEngine: engine),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: engine
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV3.self)]),
             )
 
             do {
-                try await migratedContainer.migrateIfNeeded()
+                try await migratedContainer.testBaseAdmin().migrateIfNeeded()
                 Issue.record("Expected migration failure")
             } catch let error as FDBMigrationExecutionError {
                 #expect(error == .expectedFailure)
             }
 
             let events = await fdbMigrationEventRecorder.snapshot()
-            let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
-            let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
-            let entity = try await registry.load(typeName: FDBStageFailureUserV1.persistableType)
+            let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
+            let entity = try await migratedContainer
+                .testPersistedControlSchemaEntities()
+                .first { $0.name == FDBStageFailureUserV1.persistableType }
 
             let verificationContainer = try await DBContainer.open(
                 for: FDBStageFailureSchemaV2.makeSchema(),
-                configuration: .testing(storageEngine: engine),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: engine
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV2.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let migratedUsers = try await verificationContainer.newContext()
+            let migratedUsers = try await verificationContainer.testBaseContext()
                 .fetch(FDBStageFailureUserV2.self)
                 .execute()
             let migratedUser = migratedUsers.first { $0.id == "fdb-stage-failure-user" }
@@ -510,22 +515,25 @@ struct MigrationExecutionFDBTests {
     func emptyDatabaseBootstrapsWithoutExecutingStages() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await makeSystemPriorityEngine()
+            let databaseIdentifier = "migration-execution-empty-bootstrap"
             await fdbMigrationEventRecorder.reset()
-
-            try await clearState(in: engine, typeNames: [FDBStageBoundaryUserV1.persistableType])
 
             let migratedContainer = try await DBContainer.open(
                 for: FDBStageBoundarySchemaV3.self,
                 migrationPlan: FDBStageBoundaryMigrationPlan.self,
-                configuration: .testing(storageEngine: engine),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: engine
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let events = await fdbMigrationEventRecorder.snapshot()
-            let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
-            let registry = SchemaRegistry(database: engine, clock: TestProcessMonotonicClock())
-            let entity = try await registry.load(typeName: FDBStageBoundaryUserV1.persistableType)
+            let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
+            let entity = try await migratedContainer
+                .testPersistedControlSchemaEntities()
+                .first { $0.name == FDBStageBoundaryUserV1.persistableType }
 
             #expect(events.isEmpty)
             #expect(currentVersion == Schema.Version(3, 0, 0))

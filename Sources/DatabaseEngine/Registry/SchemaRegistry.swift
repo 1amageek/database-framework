@@ -13,18 +13,20 @@ public struct SchemaRegistry: Sendable {
     private let transactionExecutor: StorageTransactionExecutor
     private let clock: any StorageMonotonicClock
 
-    /// Schema key prefix
-    private static let catalogPrefix = "_schema"
+    /// Schema catalog inside the control-domain root.
+    private let catalog: Subspace
 
     /// In-memory cache for entities (reduces CLI latency by 10-100x)
     private let cache: SchemaCatalogCache
 
     public init(
         database: any StorageEngine,
+        root: Subspace,
         clock: any StorageMonotonicClock,
         cacheTTLSeconds: Int = 300
     ) {
         self.transactionExecutor = StorageTransactionExecutor(engine: database)
+        self.catalog = root.subspace("_schema")
         self.clock = clock
         self.cache = SchemaCatalogCache(
             timeToLive: .seconds(Int64(cacheTTLSeconds)),
@@ -70,8 +72,7 @@ public struct SchemaRegistry: Sendable {
         )
 
         let targetNames = Set(entities.map { $0.name })
-        let catalogRange = Subspace(prefix: Tuple([Self.catalogPrefix]).pack())
-            .range()
+        let catalogRange = catalog.range()
         let existingRows = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(catalogRange.begin),
             to: .firstGreaterOrEqual(catalogRange.end),
@@ -82,11 +83,11 @@ public struct SchemaRegistry: Sendable {
         )
         var existingValuesByName: [String: ByteString] = [:]
         existingValuesByName.reserveCapacity(existingRows.count)
-        for (key, value) in existingRows {
+        for (storedKey, value) in existingRows {
             let existing = try SchemaEntityEntryCodec.decode(value)
-            let expectedKey = Self.key(for: existing.name)
-            if !targetNames.contains(existing.name) || key != expectedKey {
-                try transaction.clear(key: key)
+            let expectedKey = key(for: existing.name)
+            if !targetNames.contains(existing.name) || storedKey != expectedKey {
+                try transaction.clear(key: storedKey)
                 continue
             }
             existingValuesByName[existing.name] = value
@@ -96,7 +97,7 @@ public struct SchemaRegistry: Sendable {
             if existingValuesByName[entity.name] != encodedEntity {
                 try transaction.setValue(
                     encodedEntity,
-                    for: Self.key(for: entity.name)
+                    for: key(for: entity.name)
                 )
             }
         }
@@ -112,8 +113,7 @@ public struct SchemaRegistry: Sendable {
         transaction: any TransactionAccess
     ) async throws {
         let targetNames = Set(schema.entities.map { $0.name })
-        let catalogRange = Subspace(prefix: Tuple([Self.catalogPrefix]).pack())
-            .range()
+        let catalogRange = catalog.range()
         let existingRows = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(catalogRange.begin),
             to: .firstGreaterOrEqual(catalogRange.end),
@@ -131,7 +131,7 @@ public struct SchemaRegistry: Sendable {
         for entity in schema.entities {
             try transaction.setValue(
                 try SchemaEntityEntryCodec.encode(entity),
-                for: Self.key(for: entity.name)
+                for: key(for: entity.name)
             )
         }
         cache.clear()
@@ -162,8 +162,7 @@ public struct SchemaRegistry: Sendable {
     package func loadAll(
         transaction: any TransactionAccess
     ) async throws -> [Schema.Entity] {
-        let prefix = Tuple([Self.catalogPrefix]).pack()
-        let range = Subspace(prefix: prefix).range()
+        let range = catalog.range()
         let rows = try await TransactionRangeCollection.collect(
             using: transaction,
             from: .firstGreaterOrEqual(range.begin),
@@ -183,7 +182,7 @@ public struct SchemaRegistry: Sendable {
 
     /// Load a single Schema.Entity by name
     public func load(typeName: String) async throws -> Schema.Entity? {
-        let key = Self.key(for: typeName)
+        let key = key(for: typeName)
 
         return try await transactionExecutor.withTransaction(configuration: .default, clock: clock) { transaction in
             guard let value = try await transaction.getValue(for: key, snapshot: true) else {
@@ -206,7 +205,7 @@ public struct SchemaRegistry: Sendable {
         try await validateCompatibility(of: [entity], mode: mode)
 
         try await transactionExecutor.withTransaction(configuration: .default, clock: clock) { transaction in
-            let key = Self.key(for: entity.name)
+            let key = key(for: entity.name)
             let value = try SchemaEntityEntryCodec.encode(entity)
             try transaction.setValue(value, for: key)
         }
@@ -220,7 +219,7 @@ public struct SchemaRegistry: Sendable {
     /// Used by CLI to drop schema definitions.
     /// No-op if entry doesn't exist.
     public func delete(typeName: String) async throws {
-        let key = Self.key(for: typeName)
+        let key = key(for: typeName)
         try await transactionExecutor.withTransaction(configuration: .default, clock: clock) { transaction in
             try transaction.clear(key: key)
         }
@@ -232,14 +231,12 @@ public struct SchemaRegistry: Sendable {
     // MARK: - Key Construction
 
     /// Build FDB key for a schema entry: (_schema, typeName) as Tuple
-    private static func key(for typeName: String) -> ByteString {
-        Tuple([catalogPrefix, typeName]).pack()
+    private func key(for typeName: String) -> ByteString {
+        catalog.pack(Tuple(typeName))
     }
 
     private func loadAllFromStorage() async throws -> [Schema.Entity] {
-        let prefix = Tuple([Self.catalogPrefix]).pack()
-        let subspace = Subspace(prefix: prefix)
-        let (begin, end) = subspace.range()
+        let (begin, end) = catalog.range()
 
         return try await transactionExecutor.withTransaction(configuration: .default, clock: clock) { transaction in
             var entities: [Schema.Entity] = []
@@ -282,7 +279,7 @@ public struct SchemaRegistry: Sendable {
         var existingByName: [String: Schema.Entity] = [:]
         existingByName.reserveCapacity(names.count)
         for name in names {
-            let key = Self.key(for: name)
+            let key = key(for: name)
             guard let value = try await transaction.getValue(
                 for: key,
                 snapshot: false

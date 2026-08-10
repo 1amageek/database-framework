@@ -22,7 +22,7 @@ struct DatabaseStatementAdmissionEndpointTests {
             )
         )
         let handler = MutationExecuteHandler(
-            stateStore: try await DatabaseMutationStateStore(
+            stateStore: DatabaseMutationStateStore(
                 container: container
             ),
             statementExecutor: AnyDatabaseStatementMutationExecutor(
@@ -60,6 +60,7 @@ struct DatabaseStatementAdmissionEndpointTests {
         let frame = try DatabaseWireEncoder().encodeRequest(
             DatabaseOperations.mutationExecute,
             requestID: 1,
+            target: .base(try TestBaseEnvironment.id()),
             metadata: OperationRequestMetadata(
                 idempotencyKey: "statement-admission"
             ),
@@ -70,7 +71,7 @@ struct DatabaseStatementAdmissionEndpointTests {
             from: try await endpoint.execute(
                 frame,
                 context: DatabaseRequestExecutionContext(
-                    authorization: .anonymous
+                    authorization: TestBaseEnvironment.authorization
                 )
             ),
             matching: 1
@@ -96,7 +97,7 @@ struct DatabaseStatementAdmissionEndpointTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 }

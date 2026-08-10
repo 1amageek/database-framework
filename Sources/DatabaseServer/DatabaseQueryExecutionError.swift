@@ -2,6 +2,14 @@ public enum DatabaseQueryExecutionError: Error, Sendable, CustomStringConvertibl
     case pageLimitMustBePositive
     case solutionModifierMustBeNonNegative(name: String, value: Int)
     case continuationNotSupported(String)
+    case invalidContinuation
+    case compositionPlanUnsupported(String)
+    case compositionAggregateFailure(String)
+    case compositionSnapshotUnavailable(String)
+    case compositionSnapshotStale
+    case compositionSnapshotExpired
+    case compositionSnapshotCorrupted
+    case compositionSnapshotLimitExceeded(maximum: UInt8)
     case mutationRequiresMutationOperation
     case featureUnavailable(String)
     #if DATABASE_SERVER_GRAPH_INDEXES
@@ -24,6 +32,22 @@ public enum DatabaseQueryExecutionError: Error, Sendable, CustomStringConvertibl
             return "Query solution modifier \(name) must be non-negative, got \(value)"
         case .continuationNotSupported(let statement):
             return "\(statement) does not accept a continuation"
+        case .invalidContinuation:
+            return "Query continuation is invalid or no longer readable"
+        case .compositionPlanUnsupported(let reason):
+            return "Composition query plan is unsupported: \(reason)"
+        case .compositionAggregateFailure(let reason):
+            return "Composition aggregate failed: \(reason)"
+        case .compositionSnapshotUnavailable(let reason):
+            return "Composition snapshot is unavailable: \(reason)"
+        case .compositionSnapshotStale:
+            return "Composition snapshot no longer matches the active schema or Composition generation"
+        case .compositionSnapshotExpired:
+            return "Composition snapshot has expired"
+        case .compositionSnapshotCorrupted:
+            return "Composition snapshot storage is corrupted"
+        case .compositionSnapshotLimitExceeded(let maximum):
+            return "Principal already owns the maximum of \(maximum) active Composition snapshots"
         case .mutationRequiresMutationOperation:
             return "Mutation statements must be sent through mutation.execute"
         case .featureUnavailable(let reason):

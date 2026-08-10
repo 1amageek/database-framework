@@ -251,19 +251,14 @@ struct IndexMaintenanceMatrixE2ETests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(MatrixScalarUser.self), try DatabaseFrameworkRuntime.entity(MatrixVectorDocument.self), try DatabaseFrameworkRuntime.entity(MatrixFullTextArticle.self), try DatabaseFrameworkRuntime.entity(MatrixGraphEdge.self), try DatabaseFrameworkRuntime.entity(MatrixSpatialPlace.self), try DatabaseFrameworkRuntime.entity(MatrixRankPlayer.self), try DatabaseFrameworkRuntime.entity(MatrixAggregationOrder.self), try DatabaseFrameworkRuntime.entity(MatrixVersionDocument.self), try DatabaseFrameworkRuntime.entity(MatrixBitmapItem.self), try DatabaseFrameworkRuntime.entity(MatrixLeaderboardScore.self), try DatabaseFrameworkRuntime.entity(MatrixPermutedLocation.self), try DatabaseFrameworkRuntime.entity(MatrixRelationshipCustomer.self), try DatabaseFrameworkRuntime.entity(MatrixRelationshipOrder.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         try await cleanup(container: container)
         return container
     }
 
     private func cleanup(container: DBContainer) async throws {
-        for path in paths {
-            if try await container.engine.namespaceExists(path: path) {
-                try await container.engine.removeNamespace(path: path)
-            }
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
     }
 
     private func descriptor<T: Persistable>(
@@ -283,7 +278,7 @@ struct IndexMaintenanceMatrixE2ETests {
         type: T.Type,
         indexName: String
     ) async throws -> Int {
-        let typeSubspace = try await container.resolveDirectory(for: type)
+        let typeSubspace = try await container.testBaseDirectory(for: type)
         let subspace = typeSubspace
             .subspace(SubspaceKey.indexes)
             .subspace(indexName)
@@ -457,7 +452,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func scalarIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixScalarUser.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let user = MatrixScalarUser(email: "matrix@example.com", city: "Tokyo")
             try context.insert(user)
@@ -481,7 +476,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func vectorIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixVectorDocument.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let close = MatrixVectorDocument(
                 title: "close",
@@ -511,7 +506,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func fullTextIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixFullTextArticle.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let article = MatrixFullTextArticle(title: "Matrix", body: "swift database indexing matrix")
             try context.insert(article)
@@ -533,7 +528,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func graphIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixGraphEdge.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let edge = MatrixGraphEdge(source: "alice", relation: "knows", target: "bob")
             try context.insert(edge)
@@ -549,7 +544,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func spatialIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixSpatialPlace.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let station = MatrixSpatialPlace(
                 name: "Tokyo Station",
@@ -584,7 +579,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func rankIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixRankPlayer.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try context.insert(MatrixRankPlayer(name: "Alice", score: 100))
             try context.insert(MatrixRankPlayer(name: "Bob", score: 50))
@@ -600,7 +595,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func aggregationIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixAggregationOrder.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try context.insert(MatrixAggregationOrder(region: "apac", category: "software", amount: 100, latencyMs: 12.5, customerID: "c1", note: "paid"))
             try context.insert(MatrixAggregationOrder(region: "apac", category: "hardware", amount: 250, latencyMs: 40.0, customerID: "c2", note: nil))
@@ -629,7 +624,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func versionIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixVersionDocument.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             var document = MatrixVersionDocument(title: "draft", revision: 1)
             try context.insert(document)
@@ -655,7 +650,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func bitmapIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixBitmapItem.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try context.insert(MatrixBitmapItem(status: "active", category: "a"))
             try context.insert(MatrixBitmapItem(status: "inactive", category: "b"))
@@ -671,7 +666,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func leaderboardIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixLeaderboardScore.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let high = MatrixLeaderboardScore(player: "Alice", region: "apac", score: 900)
             let low = MatrixLeaderboardScore(player: "Bob", region: "apac", score: 100)
@@ -696,7 +691,7 @@ struct IndexMaintenanceMatrixE2ETests {
     func permutedIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer([try MatrixPermutedLocation.schemaEntity])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try context.insert(MatrixPermutedLocation(country: "JP", city: "Tokyo", name: "Station"))
             try context.insert(MatrixPermutedLocation(country: "US", city: "New York", name: "Terminal"))
@@ -715,7 +710,7 @@ struct IndexMaintenanceMatrixE2ETests {
                 try MatrixRelationshipCustomer.schemaEntity,
                 try MatrixRelationshipOrder.schemaEntity,
             ])
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let customer = MatrixRelationshipCustomer(name: "Alice", tier: "gold")
             try context.insert(customer)

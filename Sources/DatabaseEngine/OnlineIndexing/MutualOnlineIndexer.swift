@@ -39,7 +39,7 @@ import Synchronization
 ///
 /// try await indexer.buildIndexes(clearFirst: true)
 /// ```
-public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
+package final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Properties
 
     /// FDB Container for database access
@@ -572,7 +572,7 @@ public struct MutualIndexConfiguration: Sendable {
 /// **Note**: For efficient querying of symmetric relationships, consider
 /// using a secondary index or maintaining both directions. The current
 /// implementation requires a full scan for reverse lookups.
-public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
+package final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
     /// FDB Container for database access
     private let container: DBContainer
 

@@ -51,7 +51,7 @@ private struct CRUDBenchmarkContext: Sendable {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(CRUDBenchmarkEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -146,13 +146,13 @@ private struct CRUDBenchmarkContext: Sendable {
     }
 
     func frameworkWrite(_ entity: CRUDBenchmarkEntity) async throws {
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
         try context.insert(entity)
         try await context.save()
     }
 
     func frameworkRead(id: String) async throws -> CRUDBenchmarkEntity? {
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
         return try await context.model(for: id, as: CRUDBenchmarkEntity.self, partition: path)
     }
 }

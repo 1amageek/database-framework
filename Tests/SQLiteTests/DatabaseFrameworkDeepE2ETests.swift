@@ -3,6 +3,7 @@ import Foundation
 import Testing
 import Database
 import DatabaseRuntime
+import TestSupport
 import TestHeartbeat
 
 @Persistable
@@ -131,7 +132,7 @@ private func deepE2ETemporarySQLiteContainer(
     for schema: Schema,
     entityRuntimes: [EntityRuntimeRegistration],
     authorizationPolicies: [AuthorizationPolicyHandler] = [],
-    security: SecurityConfiguration = .disabled
+    security: SecurityConfiguration = .testingDisabled
 ) async throws -> (DBContainer, URL) {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("database-framework-deep-e2e-\(UUID().uuidString)", isDirectory: true)
@@ -232,7 +233,7 @@ struct DatabaseFrameworkDeepE2ETests {
             deepE2ERemoveTemporaryDirectory(directory)
         }
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let first = deepE2ETicket(
             id: "deep-ticket-1",
             tenantID: "tenant-a",
@@ -355,7 +356,7 @@ struct DatabaseFrameworkDeepE2ETests {
             deepE2ERemoveTemporaryDirectory(directory)
         }
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         for priority in Int64(1)...6 {
             try context.insert(
                 deepE2ETicket(
@@ -389,7 +390,7 @@ struct DatabaseFrameworkDeepE2ETests {
             description: "cursor page 6"
         )
         futureRow.description = "cursor page 6 changed"
-        let mutationContext = container.newContext()
+        let mutationContext = container.testBaseContext()
         try mutationContext.upsert(futureRow)
         try mutationContext.insert(
             deepE2ETicket(
@@ -434,7 +435,7 @@ struct DatabaseFrameworkDeepE2ETests {
         alice.id = "deep-customer-alice"
         var bob = DeepE2ECustomer(name: "Bob")
         bob.id = "deep-customer-bob"
-        let context = container.newContext()
+        let context = container.testBaseContext()
         var order = DeepE2ERelationshipOrder(
             total: 125,
             customer: try context.reference(to: alice)
@@ -507,6 +508,20 @@ struct DatabaseFrameworkDeepE2ETests {
             await container.shutdown()
             deepE2ERemoveTemporaryDirectory(directory)
         }
+        try await container.grantTestBaseAccess(
+            to: .principal("alice"),
+            access: [.read, .write]
+        )
+        try await container.grantTestBaseAccess(
+            to: .principal("bob"),
+            access: [.read, .write]
+        )
+        let aliceAuthorization = AuthorizationContext.authenticated(
+            Principal(identifier: "alice")
+        )
+        let bobAuthorization = AuthorizationContext.authenticated(
+            Principal(identifier: "bob")
+        )
 
         var original = DeepE2ESecureTenantDocument()
         original.id = "deep-secure-document"
@@ -515,31 +530,31 @@ struct DatabaseFrameworkDeepE2ETests {
         original.title = "Original"
         original.body = "body"
 
-        try await RequestAuthorization.$context.withValue(.authenticated(Principal(identifier: "alice"))) {
-            let createContext = container.newContext()
-            try createContext.insert(original)
-            try await createContext.save()
-        }
+        let createContext = container.testBaseContext(
+            authorization: aliceAuthorization
+        )
+        try createContext.insert(original)
+        try await createContext.save()
 
         var moved = original
         moved.tenantID = "tenant-secure-b"
         moved.ownerID = "bob"
         moved.title = "Moved"
-        try await RequestAuthorization.$context.withValue(.authenticated(Principal(identifier: "alice"))) {
-            let updateContext = container.newContext()
-            try updateContext.delete(original, precondition: .exists)
-            try updateContext.insert(moved, precondition: .notExists)
-            try await updateContext.save()
-        }
+        let updateContext = container.testBaseContext(
+            authorization: aliceAuthorization
+        )
+        try updateContext.delete(original, precondition: .exists)
+        try updateContext.insert(moved, precondition: .notExists)
+        try await updateContext.save()
 
         do {
-            try await RequestAuthorization.$context.withValue(.authenticated(Principal(identifier: "alice"))) {
-                var denied = moved
-                denied.title = "Denied"
-                let deniedContext = container.newContext()
-                try deniedContext.update(denied)
-                try await deniedContext.save()
-            }
+            var denied = moved
+            denied.title = "Denied"
+            let deniedContext = container.testBaseContext(
+                authorization: aliceAuthorization
+            )
+            try deniedContext.update(denied)
+            try await deniedContext.save()
             Issue.record("Expected stale-owner update to be denied")
         } catch let error as SecurityError {
             #expect(error.operation == .update)
@@ -547,11 +562,11 @@ struct DatabaseFrameworkDeepE2ETests {
         }
 
         do {
-            try await RequestAuthorization.$context.withValue(.authenticated(Principal(identifier: "alice"))) {
-                let deniedContext = container.newContext()
-                try deniedContext.delete(moved)
-                try await deniedContext.save()
-            }
+            let deniedContext = container.testBaseContext(
+                authorization: aliceAuthorization
+            )
+            try deniedContext.delete(moved)
+            try await deniedContext.save()
             Issue.record("Expected stale-owner delete to be denied")
         } catch let error as SecurityError {
             #expect(error.operation == .delete)
@@ -565,18 +580,18 @@ struct DatabaseFrameworkDeepE2ETests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2ESecureTenantDocument.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let oldPartition = try await verificationContainer.newContext()
+        let oldPartition = try await verificationContainer.testBaseContext()
             .fetch(DeepE2ESecureTenantDocument.self)
             .partition(DeepE2ESecureTenantDocument.fields.tenantID, equals: "tenant-secure-a")
             .execute()
-        let newPartition = try await verificationContainer.newContext()
+        let newPartition = try await verificationContainer.testBaseContext()
             .fetch(DeepE2ESecureTenantDocument.self)
             .partition(DeepE2ESecureTenantDocument.fields.tenantID, equals: "tenant-secure-b")
             .where(DeepE2ESecureTenantDocument.fields.title == "Moved")
             .execute()
-        let deniedTitle = try await verificationContainer.newContext()
+        let deniedTitle = try await verificationContainer.testBaseContext()
             .fetch(DeepE2ESecureTenantDocument.self)
             .partition(DeepE2ESecureTenantDocument.fields.tenantID, equals: "tenant-secure-b")
             .where(DeepE2ESecureTenantDocument.fields.title == "Denied")
@@ -587,13 +602,13 @@ struct DatabaseFrameworkDeepE2ETests {
         #expect(newPartition.first?.ownerID == "bob")
         #expect(deniedTitle.isEmpty)
 
-        try await RequestAuthorization.$context.withValue(.authenticated(Principal(identifier: "bob"))) {
-            let deleteContext = container.newContext()
-            try deleteContext.delete(moved)
-            try await deleteContext.save()
-        }
+        let deleteContext = container.testBaseContext(
+            authorization: bobAuthorization
+        )
+        try deleteContext.delete(moved)
+        try await deleteContext.save()
 
-        let afterBobDelete = try await verificationContainer.newContext()
+        let afterBobDelete = try await verificationContainer.testBaseContext()
             .fetch(DeepE2ESecureTenantDocument.self)
             .partition(DeepE2ESecureTenantDocument.fields.tenantID, equals: "tenant-secure-b")
             .where(DeepE2ESecureTenantDocument.fields.title == "Moved")
@@ -613,7 +628,7 @@ struct DatabaseFrameworkDeepE2ETests {
             deepE2ERemoveTemporaryDirectory(directory)
         }
 
-        let contextInsert = container.newContext()
+        let contextInsert = container.testBaseContext()
         try contextInsert.insert(
             deepE2ETicket(
                 id: "api-ticket-insert",
@@ -626,7 +641,7 @@ struct DatabaseFrameworkDeepE2ETests {
         )
         try await contextInsert.save()
 
-        try await container.newContext().withTransaction { transaction in
+        try await container.testBaseContext().withTransaction { transaction in
             try await transaction.save(
                 deepE2ETicket(
                     id: "api-ticket-transaction",
@@ -640,7 +655,7 @@ struct DatabaseFrameworkDeepE2ETests {
             )
         }
 
-        let contextCreate = container.newContext()
+        let contextCreate = container.testBaseContext()
         try contextCreate.insert(
             deepE2ETicket(
                 id: "api-ticket-create",
@@ -653,13 +668,13 @@ struct DatabaseFrameworkDeepE2ETests {
         )
         try await contextCreate.save()
 
-        let openBeforeDelete = try await container.newContext()
+        let openBeforeDelete = try await container.testBaseContext()
             .fetch(DeepE2EIndexedTicket.self)
             .where(DeepE2EIndexedTicket.fields.status == "open")
             .orderBy(DeepE2EIndexedTicket.fields.priority)
             .execute()
         let aggregatesBeforeDelete = try await deepE2EAggregates(
-            in: container.newContext(),
+            in: container.testBaseContext(),
             tenantID: "tenant-api"
         )
 
@@ -671,25 +686,25 @@ struct DatabaseFrameworkDeepE2ETests {
         #expect(aggregatesBeforeDelete.count == 3)
         #expect(aggregatesBeforeDelete.sum == 60)
 
-        let deleteByContext = container.newContext()
+        let deleteByContext = container.testBaseContext()
         try deleteByContext.delete(openBeforeDelete[0])
         try await deleteByContext.save()
 
         let transactionDeleteModel = openBeforeDelete[1]
-        try await container.newContext().withTransaction { transaction in
+        try await container.testBaseContext().withTransaction { transaction in
             try await transaction.delete(transactionDeleteModel)
         }
 
-        let deleteByID = container.newContext()
+        let deleteByID = container.testBaseContext()
         try await deleteByID.delete(DeepE2EIndexedTicket.self, where: DeepE2EIndexedTicket.fields.id == openBeforeDelete[2].id)
         try await deleteByID.save()
 
-        let openAfterDelete = try await container.newContext()
+        let openAfterDelete = try await container.testBaseContext()
             .fetch(DeepE2EIndexedTicket.self)
             .where(DeepE2EIndexedTicket.fields.status == "open")
             .execute()
         let aggregatesAfterDelete = try await deepE2EAggregates(
-            in: container.newContext(),
+            in: container.testBaseContext(),
             tenantID: "tenant-api"
         )
 
@@ -710,7 +725,7 @@ struct DatabaseFrameworkDeepE2ETests {
             deepE2ERemoveTemporaryDirectory(directory)
         }
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let tickets = [
             deepE2ETicket(id: "query-1", tenantID: "tenant-query", status: "open", priority: 1, amountCents: 25, description: "query low"),
             deepE2ETicket(id: "query-2", tenantID: "tenant-query", status: "open", priority: 2, amountCents: 200, description: "query high"),

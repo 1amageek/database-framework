@@ -4,7 +4,14 @@ import DatabaseTypes
 import StorageKit
 
 public struct DatabaseTransactionalOperationCoordinator: Sendable {
+    private enum TransactionScope: Sendable, Equatable {
+        case requestTarget
+        case controlMetadata
+        case authorizedControlMetadata
+    }
+
     private let stateStore: DatabaseMutationStateStore
+    private let controlContainer: DBContainer
     private let runtimeLimits: DatabaseRuntimeLimits
     private let wireLimits: DatabaseWireLimits
 
@@ -14,6 +21,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         wireLimits: DatabaseWireLimits = .default
     ) {
         self.stateStore = stateStore
+        self.controlContainer = stateStore.boundContainer
         self.runtimeLimits = runtimeLimits
         self.wireLimits = wireLimits
     }
@@ -31,17 +39,80 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
     ) async throws -> DatabaseCoordinatedOperationResponse {
         let deadline = DatabaseExecutionDeadline(
             timeoutMilliseconds: timeoutMilliseconds,
-            clock: context.container.monotonicClock
+            clock: context.executor.monotonicClock
         )
         return try await executeAtomically(
             operation: operation,
             requestPayload: requestPayload,
             context: context,
+            transactionScope: .requestTarget,
+            stateTarget: context.target,
             deadline: deadline,
             body: body,
             makeResponse: { value, logicalVersion in
                 try makeResponse(value, logicalVersion)
             }
+        )
+    }
+
+    /// Executes a control-catalog mutation while retaining the request target
+    /// in its request digest. The database Grant is evaluated in the same
+    /// control-domain transaction as the catalog and idempotency writes.
+    public func executeControlMetadata<Value: Sendable>(
+        operation: DatabaseOperationIdentifier,
+        requestPayload: ByteString,
+        context: DatabaseOperationContext,
+        timeoutMilliseconds: UInt32,
+        body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
+        makeResponse: @Sendable @escaping (
+            Value,
+            UInt64
+        ) throws -> DatabaseOperationResponseEncoder
+    ) async throws -> DatabaseCoordinatedOperationResponse {
+        let deadline = DatabaseExecutionDeadline(
+            timeoutMilliseconds: timeoutMilliseconds,
+            clock: context.executor.monotonicClock
+        )
+        return try await executeAtomically(
+            operation: operation,
+            requestPayload: requestPayload,
+            context: context,
+            transactionScope: .controlMetadata,
+            stateTarget: .database,
+            deadline: deadline,
+            body: body,
+            makeResponse: makeResponse
+        )
+    }
+
+    /// Persists control metadata after the caller has authorized a non-control
+    /// target in its own transaction domain. This is the explicit federated
+    /// boundary used for Base-scoped job creation; it never substitutes a
+    /// database Grant for the already-evaluated Base Grant.
+    public func executeControlMetadataAfterTargetAuthorization<Value: Sendable>(
+        operation: DatabaseOperationIdentifier,
+        requestPayload: ByteString,
+        context: DatabaseOperationContext,
+        timeoutMilliseconds: UInt32,
+        body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
+        makeResponse: @Sendable @escaping (
+            Value,
+            UInt64
+        ) throws -> DatabaseOperationResponseEncoder
+    ) async throws -> DatabaseCoordinatedOperationResponse {
+        let deadline = DatabaseExecutionDeadline(
+            timeoutMilliseconds: timeoutMilliseconds,
+            clock: context.executor.monotonicClock
+        )
+        return try await executeAtomically(
+            operation: operation,
+            requestPayload: requestPayload,
+            context: context,
+            transactionScope: .authorizedControlMetadata,
+            stateTarget: .database,
+            deadline: deadline,
+            body: body,
+            makeResponse: makeResponse
         )
     }
 
@@ -63,16 +134,86 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
             UInt64
         ) throws -> DatabaseOperationResponseEncoder
     ) async throws -> DatabaseCoordinatedOperationResponse {
+        try await executeStaged(
+            operation: operation,
+            requestPayload: requestPayload,
+            context: context,
+            transactionScope: .requestTarget,
+            stateTarget: context.target,
+            timeoutMilliseconds: timeoutMilliseconds,
+            prepare: prepare,
+            body: body,
+            makeResponse: makeResponse
+        )
+    }
+
+    /// Performs idempotency preflight in the control domain, prepares a
+    /// target-authorized value without any control transaction being active,
+    /// and then persists the control metadata. This is the federated creation
+    /// boundary for Base-scoped jobs: Base validation and control persistence
+    /// never overlap as an implicit cross-domain transaction.
+    public func executeControlMetadataAfterTargetAuthorizationStaged<
+        Preparation: Sendable,
+        Value: Sendable
+    >(
+        operation: DatabaseOperationIdentifier,
+        requestPayload: ByteString,
+        context: DatabaseOperationContext,
+        timeoutMilliseconds: UInt32,
+        prepare: @Sendable @escaping () async throws -> Preparation,
+        body: @Sendable @escaping (
+            Preparation,
+            DatabaseTransaction
+        ) async throws -> Value,
+        makeResponse: @Sendable @escaping (
+            Value,
+            UInt64
+        ) throws -> DatabaseOperationResponseEncoder
+    ) async throws -> DatabaseCoordinatedOperationResponse {
+        try await executeStaged(
+            operation: operation,
+            requestPayload: requestPayload,
+            context: context,
+            transactionScope: .authorizedControlMetadata,
+            stateTarget: .database,
+            timeoutMilliseconds: timeoutMilliseconds,
+            prepare: prepare,
+            body: body,
+            makeResponse: makeResponse
+        )
+    }
+
+    private func executeStaged<Preparation: Sendable, Value: Sendable>(
+        operation: DatabaseOperationIdentifier,
+        requestPayload: ByteString,
+        context: DatabaseOperationContext,
+        transactionScope: TransactionScope,
+        stateTarget: DatabaseOperationTarget,
+        timeoutMilliseconds: UInt32,
+        prepare: @Sendable @escaping () async throws -> Preparation,
+        body: @Sendable @escaping (
+            Preparation,
+            DatabaseTransaction
+        ) async throws -> Value,
+        makeResponse: @Sendable @escaping (
+            Value,
+            UInt64
+        ) throws -> DatabaseOperationResponseEncoder
+    ) async throws -> DatabaseCoordinatedOperationResponse {
         let deadline = DatabaseExecutionDeadline(
             timeoutMilliseconds: timeoutMilliseconds,
-            clock: context.container.monotonicClock
+            clock: context.executor.monotonicClock
         )
-        try stateStore.validate(container: context.container)
+        try context.executor.validateMutationStateStore(
+            stateStore,
+            target: context.target
+        )
         let idempotencyKey = try validatedIdempotencyKey(
             context.metadata.idempotencyKey
         )
-        let requestDigest = DatabaseRequestDigest.compute(
+        let requestDigest = DatabaseRequestDigest.computeRequest(
             operation: operation,
+            target: context.target,
             payload: requestPayload
         )
 
@@ -81,6 +222,8 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
             idempotencyKey: idempotencyKey,
             requestDigest: requestDigest,
             context: context,
+            transactionScope: transactionScope,
+            stateTarget: stateTarget,
             deadline: deadline
         ) {
             return replay
@@ -91,6 +234,8 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
             operation: operation,
             requestPayload: requestPayload,
             context: context,
+            transactionScope: transactionScope,
+            stateTarget: stateTarget,
             deadline: deadline,
             body: { transactionContext in
                 try await body(preparation, transactionContext)
@@ -105,6 +250,8 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         operation: DatabaseOperationIdentifier,
         requestPayload: ByteString,
         context: DatabaseOperationContext,
+        transactionScope: TransactionScope,
+        stateTarget: DatabaseOperationTarget,
         deadline: DatabaseExecutionDeadline,
         body: @Sendable @escaping (DatabaseTransaction) async throws -> Value,
         makeResponse: @Sendable @escaping (
@@ -112,29 +259,35 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
             UInt64
         ) throws -> DatabaseOperationResponseEncoder
     ) async throws -> DatabaseCoordinatedOperationResponse {
-        try stateStore.validate(container: context.container)
+        try context.executor.validateMutationStateStore(
+            stateStore,
+            target: context.target
+        )
         let idempotencyKey = try validatedIdempotencyKey(
             context.metadata.idempotencyKey
         )
-        let requestDigest = DatabaseRequestDigest.compute(
+        let requestDigest = DatabaseRequestDigest.computeRequest(
             operation: operation,
+            target: context.target,
             payload: requestPayload
         )
 
-        let databaseContext = context.container.newContext()
         let configuration = TransactionConfiguration.batch
             .replacing(timeout: nil)
             .limitingMutationAggregateBytes(
                 to: runtimeLimits.maximumMutationAggregateBytes
             )
         do {
-            return try await databaseContext.withTransaction(
+            return try await withTransaction(
+                context: context,
+                scope: transactionScope,
                 configuration: configuration,
                 executionDeadline: deadline.transactionExecutionDeadline
             ) { transactionContext in
                 let transaction = transactionContext.storageAccess
                 if let stored = try await stateStore.idempotencyEntry(
                     for: idempotencyKey,
+                    target: stateTarget,
                     transaction: transaction,
                     limits: wireLimits
                 ) {
@@ -170,6 +323,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
 
                 let value = try await body(transactionContext)
                 let logicalVersion = try await stateStore.nextLogicalVersion(
+                    for: stateTarget,
                     transaction: transaction
                 )
                 let encoder = try makeResponse(
@@ -214,6 +368,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                         responsePayload: payload.bytes
                     ),
                     for: idempotencyKey,
+                    target: stateTarget,
                     transaction: transaction,
                     limits: wireLimits
                 )
@@ -258,17 +413,21 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         idempotencyKey: String,
         requestDigest: ByteString,
         context: DatabaseOperationContext,
+        transactionScope: TransactionScope,
+        stateTarget: DatabaseOperationTarget,
         deadline: DatabaseExecutionDeadline
     ) async throws -> DatabaseCoordinatedOperationResponse? {
-        let databaseContext = context.container.newContext()
         do {
-            return try await databaseContext.withTransaction(
+            return try await withTransaction(
+                context: context,
+                scope: transactionScope,
                 configuration: .readOnly.replacing(timeout: nil),
                 executionDeadline: deadline.transactionExecutionDeadline
             ) { transactionContext in
                 let transaction = transactionContext.storageAccess
                 guard let stored = try await stateStore.idempotencyEntry(
                     for: idempotencyKey,
+                    target: stateTarget,
                     transaction: transaction,
                     limits: wireLimits
                 ) else {
@@ -313,6 +472,60 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
             throw DatabaseRuntimeLimitError.executionTimedOut(
                 timeoutMilliseconds
             )
+        }
+    }
+
+    private func withTransaction<Result: Sendable>(
+        context: DatabaseOperationContext,
+        scope: TransactionScope,
+        configuration: TransactionConfiguration,
+        executionDeadline: TransactionExecutionDeadline?,
+        _ operation: @Sendable @escaping (
+            DatabaseTransaction
+        ) async throws -> Result
+    ) async throws -> Result {
+        if scope == .controlMetadata {
+            return try await context.requireControlExecutor().withTransaction(
+                requiredAccess: .administer,
+                configuration: configuration,
+                executionDeadline: executionDeadline,
+                operation
+            )
+        }
+        if scope == .authorizedControlMetadata {
+            return try await controlContainer.withControlMetadataTransaction(
+                configuration: configuration,
+                executionDeadline: executionDeadline,
+                operation
+            )
+        }
+        switch context.target {
+        case .database:
+            return try await context.requireControlExecutor().withTransaction(
+                requiredAccess: context.requirement.access,
+                configuration: configuration,
+                executionDeadline: executionDeadline,
+                operation
+            )
+        case .base:
+            if context.requirement.baseAdmission == .administration
+                || context.requirement.baseAdmission == .lifecycleJob {
+                return try await context.requireBaseExecutor()
+                    .withAdministrationTransaction(
+                        requiredAccess: context.requirement.access,
+                        configuration: configuration,
+                        executionDeadline: executionDeadline,
+                        operation
+                    )
+            }
+            return try await context.requireBaseContext().withTransaction(
+                requiredAccess: context.requirement.access,
+                configuration: configuration,
+                executionDeadline: executionDeadline,
+                operation
+            )
+        case .composition:
+            throw DatabaseEndpointError.targetKindNotAccepted(context.target)
         }
     }
 }

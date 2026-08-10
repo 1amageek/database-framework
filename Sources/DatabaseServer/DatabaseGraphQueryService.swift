@@ -23,7 +23,8 @@ struct DatabaseGraphQueryService: Sendable {
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFGraphPage {
-        try await execute(
+        let databaseContext = try context.requireBaseContext()
+        return try await execute(
             kind: .construct,
             statement: .construct(query),
             request: request,
@@ -32,7 +33,7 @@ struct DatabaseGraphQueryService: Sendable {
         ) { transaction, requestFingerprint in
             let executor = try sparqlExecutor(context: context)
             return try await executor.executeConstructInTransaction(
-                context: context.container.newContext(),
+                context: databaseContext,
                 constructQuery: query,
                 nodeNamespace: try GraphResultNodeNamespace(
                     requestFingerprint
@@ -54,7 +55,8 @@ struct DatabaseGraphQueryService: Sendable {
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFGraphPage {
-        try await execute(
+        let databaseContext = try context.requireBaseContext()
+        return try await execute(
             kind: .describe,
             statement: .describe(query),
             request: request,
@@ -63,7 +65,7 @@ struct DatabaseGraphQueryService: Sendable {
         ) { transaction, _ in
             let executor = try sparqlExecutor(context: context)
             return try await executor.executeDescribeInTransaction(
-                context: context.container.newContext(),
+                context: databaseContext,
                 describeQuery: query,
                 options: readExecution(
                     for: request,
@@ -100,6 +102,8 @@ struct DatabaseGraphQueryService: Sendable {
         let cursor = try request.page.continuation.map {
             try DatabaseGraphQueryPageCursor.decode($0, limits: wireLimits)
         }
+        let databaseContext = try context.requireBaseContext()
+        let lease = try databaseContext.requireOperationBaseLease()
         guard cursor?.kind == nil || cursor?.kind == kind else {
             throw DatabaseGraphQueryError.invalidContinuation
         }
@@ -107,15 +111,25 @@ struct DatabaseGraphQueryService: Sendable {
                 || cursor?.requestFingerprint == requestFingerprint else {
             throw DatabaseGraphQueryError.continuationDoesNotMatchRequest
         }
+        guard cursor?.baseID == nil || cursor?.baseID == lease.baseID,
+              cursor?.placementGeneration == nil
+                || cursor?.placementGeneration == lease.placementGeneration
+        else {
+            throw DatabaseGraphQueryError.invalidContinuation
+        }
 
         do {
-            return try await context.container.transactionExecutor.withTransaction(
-                configuration: .default,
-                clock: context.container.monotonicClock
-            ) { transaction in
+            return try await databaseContext.executeCanonicalRead {
+                transaction in
                 if let cursor {
                     do {
-                        try transaction.setReadVersion(cursor.snapshotVersion)
+                        guard try DatabaseTransactionReadPoint.restore(
+                            cursor.readPosition,
+                            transaction: transaction
+                        ) else {
+                            throw DatabaseGraphQueryError
+                                .continuationSnapshotChanged
+                        }
                     } catch let error as StorageError
                             where error.code == .unsupportedOperation
                                 && !transaction.capabilities
@@ -124,10 +138,14 @@ struct DatabaseGraphQueryService: Sendable {
                             .continuationSnapshotChanged
                     }
                 }
-                let readVersion = try await transaction.getReadVersion()
-                guard cursor?.snapshotVersion == nil
-                        || cursor?.snapshotVersion == readVersion else {
-                    throw DatabaseGraphQueryError.continuationSnapshotChanged
+                let readPoint = try await DatabaseTransactionReadPoint.capture(
+                    domainID: lease.domainID,
+                    transaction: transaction
+                )
+                if case .version(let expectedVersion)? = cursor?.readPosition {
+                    guard readPoint.position == .version(expectedVersion) else {
+                        throw DatabaseGraphQueryError.continuationSnapshotChanged
+                    }
                 }
 
                 var graph = try await materialize(
@@ -179,8 +197,10 @@ struct DatabaseGraphQueryService: Sendable {
                 if end < graph.count {
                     continuation = try DatabaseGraphQueryPageCursor(
                         kind: kind,
+                        baseID: lease.baseID,
+                        placementGeneration: lease.placementGeneration,
                         requestFingerprint: requestFingerprint,
-                        snapshotVersion: readVersion,
+                        readPosition: readPoint.position,
                         resultFingerprint: resultFingerprint,
                         tripleOffset: UInt64(end)
                     ).encode(limits: wireLimits)
@@ -188,10 +208,11 @@ struct DatabaseGraphQueryService: Sendable {
                     continuation = nil
                 }
                 let page = graph.promotePage(offset..<end)
-                return RDFGraphPage(
+                return try RDFGraphPage(
                     quads: consume page,
                     continuation: continuation,
-                    snapshotVersion: readVersion
+                    provenance: nil,
+                    consistency: .transactional(readPoint)
                 )
             }
         } catch let error as DatabaseGraphQueryError {
@@ -275,7 +296,7 @@ struct DatabaseGraphQueryService: Sendable {
     ) -> ReadExecutionContext {
         ReadExecutionContext(
             options: ReadExecutionOptions(budget: request.budget),
-            monotonicClock: context.container.monotonicClock,
+            monotonicClock: context.executor.monotonicClock,
             workMeter: workMeter,
             queryStructuralLimits: queryStructuralLimits
         )
@@ -284,7 +305,7 @@ struct DatabaseGraphQueryService: Sendable {
     private func sparqlExecutor(
         context: DatabaseOperationContext
     ) throws -> any SPARQLSourceExecutor {
-        guard let executor = context.container.runtimeConfiguration
+        guard let executor = context.executor.runtimeConfiguration
             .logicalSourceExecutors.sparqlExecutor else {
             throw CanonicalReadError.unsupportedSource(
                 "SPARQL source executor is not registered"

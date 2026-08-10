@@ -58,10 +58,10 @@ struct MinMaxBatchBenchmark {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(Sale.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         try await container.ensureIndexesReady()
-        return DatabaseContext(container: container)
+        return container.testBaseContext()
     }
 
     @Test("MIN/MAX Index vs Full Scan")

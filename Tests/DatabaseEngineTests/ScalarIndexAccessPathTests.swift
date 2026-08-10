@@ -91,16 +91,12 @@ struct ScalarIndexAccessPathTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(ScalarAccessPathEntity.self), try DatabaseFrameworkRuntime.entity(AggregationOnlyAccessPathEntity.self), try DatabaseFrameworkRuntime.entity(CompoundOnlyAccessPathEntity.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
     private func resetStorage(in container: DBContainer) async throws {
-        let path = ["test", "scalar_access_path"]
-        if try await container.engine.namespaceExists(path: path) {
-            try await container.engine.removeNamespace(path: path)
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
     }
 
     @Test("Planning is storage-neutral and preserves descriptor identity")
@@ -139,7 +135,7 @@ struct ScalarIndexAccessPathTests {
     func compoundSelectionPreservesDescriptor() async throws {
         let container = try await setupContainer()
         try await resetStorage(in: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let expected = ScalarAccessPathEntity(group: "alpha", rank: 2)
         try context.insert(ScalarAccessPathEntity(group: "alpha", rank: 1))
@@ -164,7 +160,7 @@ struct ScalarIndexAccessPathTests {
     func executionPlanReportsSelectedAccessPath() async throws {
         let container = try await setupContainer()
         try await resetStorage(in: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let plan = try await context.fetch(ScalarAccessPathEntity.self)
             .where(ScalarAccessPathEntity.fields.group == "alpha")
@@ -190,14 +186,14 @@ struct ScalarIndexAccessPathTests {
     func administrativeAnalysisReportsExecution() async throws {
         let container = try await setupContainer()
         try await resetStorage(in: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
         try context.insert(ScalarAccessPathEntity(group: "alpha", rank: 2))
         try await context.save()
 
         let query = Query<ScalarAccessPathEntity>()
             .where(ScalarAccessPathEntity.fields.group == "alpha")
             .where(ScalarAccessPathEntity.fields.rank == Int64(2))
-        let admin = container.newAdminContext()
+        let admin = container.testBaseAdmin()
         let plan = try await admin.explain(query)
 
         #expect(plan.kind == .indexScan)
@@ -216,7 +212,7 @@ struct ScalarIndexAccessPathTests {
     func partialCompoundPrefixPreservesEntityIdentity() async throws {
         let container = try await setupContainer()
         try await resetStorage(in: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let first = CompoundOnlyAccessPathEntity(group: "alpha", rank: 1)
         let second = CompoundOnlyAccessPathEntity(group: "alpha", rank: 2)
@@ -242,7 +238,7 @@ struct ScalarIndexAccessPathTests {
     func aggregationIndexIsNotScalarAccessPath() async throws {
         let container = try await setupContainer()
         try await resetStorage(in: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let expected = AggregationOnlyAccessPathEntity(group: "alpha")
         try context.insert(expected)

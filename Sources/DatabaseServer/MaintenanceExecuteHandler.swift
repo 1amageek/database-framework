@@ -24,7 +24,7 @@ public struct MaintenanceExecuteHandler: DatabaseOperationEndpointHandler {
         try runtimeLimits.validate(request.budget)
         return try await DatabaseExecutionTimeout.run(
             milliseconds: request.budget.timeoutMilliseconds,
-            clock: context.container.monotonicClock
+            clock: context.executor.monotonicClock
         ) {
             try await service.execute(request, context: context)
                 .operationResult

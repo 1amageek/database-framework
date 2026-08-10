@@ -36,10 +36,7 @@ struct DatabaseQueryWorkBudgetTests {
         )
 
         do {
-            _ = try await handler.handle(
-                request,
-                context: try operationContext(container: container, request: request)
-            )
+            _ = try await handle(request, using: handler, container: container)
             Issue.record("Expected the QueryIR collection limit to reject the query")
         } catch QueryParameterBindingError.invalidStructure(let error) {
             #expect(
@@ -90,10 +87,7 @@ struct DatabaseQueryWorkBudgetTests {
         )
 
         do {
-            _ = try await handler.handle(
-                request,
-                context: try operationContext(container: container, request: request)
-            )
+            _ = try await handle(request, using: handler, container: container)
             Issue.record("Expected parameter preflight to reject recursive binding")
         } catch QueryParameterBindingError.invalidStructure(let error) {
             #expect(
@@ -130,10 +124,7 @@ struct DatabaseQueryWorkBudgetTests {
         )
 
         do {
-            _ = try await handler.handle(
-                request,
-                context: try operationContext(container: container, request: request)
-            )
+            _ = try await handle(request, using: handler, container: container)
             Issue.record("Expected the parser collection limit to reject the query")
         } catch let error as QueryStructuralValidationError {
             #expect(
@@ -179,21 +170,18 @@ struct DatabaseQueryWorkBudgetTests {
             input: .ir(.select(query)),
             page: QueryExecuteOperation.Page(limit: 1)
         )
-        let response = try await QueryExecuteHandler(
+        let handler = QueryExecuteHandler(
             runtimeLimits: try DatabaseRuntimeLimits(
                 maximumRows: 10_000,
                 maximumWorkUnits: 1_000_000,
                 maximumTimeoutMilliseconds: 30_000,
                 queryStructuralLimits: structuralLimits
             )
-        ).handle(
+        )
+        let response = try await handle(
             request,
-            context: DatabaseOperationContext(
-                container: container,
-                requestID: 1,
-                metadata: OperationRequestMetadata(),
-                requestPayload: []
-            )
+            using: handler,
+            container: container
         )
 
         guard case .rows(let page) = response else {
@@ -228,18 +216,10 @@ struct DatabaseQueryWorkBudgetTests {
         )
 
         do {
-            _ = try await QueryExecuteHandler().handle(
+            _ = try await handle(
                 request,
-                context: DatabaseOperationContext(
-                    container: container,
-                    requestID: 1,
-                    metadata: OperationRequestMetadata(),
-                    requestPayload: try DatabaseWireEncoder()
-                        .encodeRequestPayload(
-                            DatabaseOperations.queryExecute,
-                            request: request
-                        )
-                )
+                using: QueryExecuteHandler(),
+                container: container
             )
             Issue.record("Expected semantic validation to reject the query")
         } catch let error as SPARQLSemanticValidationError {
@@ -303,9 +283,9 @@ struct DatabaseQueryWorkBudgetTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         for index in 0..<3 {
             var entity = DatabaseEndpointEntity()
             entity.id = "entity-\(index)"
@@ -338,24 +318,54 @@ struct DatabaseQueryWorkBudgetTests {
             page: QueryExecuteOperation.Page(limit: pageLimit),
             budget: budget
         )
-        return try await QueryExecuteHandler().handle(
-            request,
-            context: try operationContext(container: container, request: request)
-        )
+        let baseContext = container.testBaseContext()
+        return try await baseContext.withBaseOperation {
+            try await QueryExecuteHandler().handle(
+                request,
+                context: try operationContext(
+                    container: container,
+                    request: request,
+                    baseContext: baseContext
+                )
+            )
+        }
+    }
+
+    private func handle(
+        _ request: QueryExecuteOperation.Request,
+        using handler: QueryExecuteHandler,
+        container: DBContainer
+    ) async throws -> QueryExecuteOperation.Response {
+        let baseContext = container.testBaseContext()
+        return try await baseContext.withBaseOperation {
+            try await handler.handle(
+                request,
+                context: try operationContext(
+                    container: container,
+                    request: request,
+                    baseContext: baseContext
+                )
+            )
+        }
     }
 
     private func operationContext(
         container: DBContainer,
-        request: QueryExecuteOperation.Request
+        request: QueryExecuteOperation.Request,
+        baseContext: DatabaseContext? = nil
     ) throws -> DatabaseOperationContext {
-        DatabaseOperationContext(
+        let baseContext = baseContext ?? container.testBaseContext()
+        return DatabaseOperationContext(
             container: container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: .canonical(for: .queryExecute),
             requestID: 1,
             metadata: OperationRequestMetadata(),
-            requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
-                DatabaseOperations.queryExecute,
-                request: request
-            )
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: [],
+            wireLimits: .default
         )
     }
 }

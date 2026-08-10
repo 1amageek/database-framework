@@ -68,9 +68,20 @@ public struct SHACLContextAPI: Sendable {
 
     // MARK: - Store Access
 
-    private func store() -> SHACLShapesStore {
-        let baseSubspace = Subspace(prefix: Self.shaclPrefix)
-        return SHACLShapesStore(subspace: baseSubspace)
+    private func withStore<Result: Sendable>(
+        _ operation: @Sendable @escaping (
+            SHACLShapesStore
+        ) async throws -> Result
+    ) async throws -> Result {
+        let context = self.context
+        return try await context.withBaseOperation {
+            let baseSubspace = try context.requireOperationBaseLease().root
+                .subspace("data")
+                .subspace(Self.shaclPrefix)
+            return try await operation(
+                SHACLShapesStore(subspace: baseSubspace)
+            )
+        }
     }
 
     // MARK: - Load Operations
@@ -91,12 +102,14 @@ public struct SHACLContextAPI: Sendable {
     /// try await context.shacl.loadShapes(shapesGraph)
     /// ```
     public func loadShapes(_ graph: SHACLShapesGraph) async throws {
-        let store = store()
-        try await context.indexQueryContext.withTransaction { transaction in
-            // Delete existing if present
-            try store.delete(iri: graph.iri, transaction: transaction)
-            // Save new shapes graph
-            try store.save(graph, transaction: transaction)
+        try await withStore { store in
+            try await self.context.indexQueryContext.withTransaction {
+                transaction in
+                // Delete existing if present
+                try store.delete(iri: graph.iri, transaction: transaction)
+                // Save new shapes graph
+                try store.save(graph, transaction: transaction)
+            }
         }
     }
 
@@ -290,9 +303,11 @@ public struct SHACLContextAPI: Sendable {
     ///
     /// - Returns: Array of shapes graph IRIs
     public func listShapesGraphs() async throws -> [String] {
-        let store = store()
-        return try await context.indexQueryContext.withTransaction { transaction in
-            try await store.listGraphIRIs(transaction: transaction)
+        try await withStore { store in
+            try await self.context.indexQueryContext.withTransaction {
+                transaction in
+                try await store.listGraphIRIs(transaction: transaction)
+            }
         }
     }
 
@@ -301,9 +316,11 @@ public struct SHACLContextAPI: Sendable {
     /// - Parameter iri: The shapes graph IRI
     /// - Returns: The shapes graph, or nil if not found
     public func getShapesGraph(iri: String) async throws -> SHACLShapesGraph? {
-        let store = store()
-        return try await context.indexQueryContext.withTransaction { transaction in
-            try await store.get(iri: iri, transaction: transaction)
+        try await withStore { store in
+            try await self.context.indexQueryContext.withTransaction {
+                transaction in
+                try await store.get(iri: iri, transaction: transaction)
+            }
         }
     }
 
@@ -311,17 +328,21 @@ public struct SHACLContextAPI: Sendable {
     ///
     /// - Parameter iri: The shapes graph IRI to delete
     public func deleteShapesGraph(iri: String) async throws {
-        let store = store()
-        try await context.indexQueryContext.withTransaction { transaction in
-            try store.delete(iri: iri, transaction: transaction)
+        try await withStore { store in
+            try await self.context.indexQueryContext.withTransaction {
+                transaction in
+                try store.delete(iri: iri, transaction: transaction)
+            }
         }
     }
 
     /// Delete all shapes graphs
     public func deleteAllShapesGraphs() async throws {
-        let store = store()
-        try await context.indexQueryContext.withTransaction { transaction in
-            try store.deleteAll(transaction: transaction)
+        try await withStore { store in
+            try await self.context.indexQueryContext.withTransaction {
+                transaction in
+                try store.deleteAll(transaction: transaction)
+            }
         }
     }
 

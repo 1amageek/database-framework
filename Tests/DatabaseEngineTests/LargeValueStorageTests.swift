@@ -34,7 +34,7 @@ struct LargeValueStorageTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try LargeDataModel.schemaEntity])
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(LargeDataModel.self)]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(LargeDataModel.self)]), security: .testingDisabled)
     }
 
     private func uniqueID(_ prefix: String) -> String {
@@ -44,7 +44,7 @@ struct LargeValueStorageTests {
     @Test("Save and retrieve data >90KB")
     func testLargeValueRoundTrip() async throws {
         let container = try await createContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create 95KB of data (will trigger splitting)
         let largeData = Data(repeating: 0x42, count: 95_000)
@@ -70,7 +70,7 @@ struct LargeValueStorageTests {
     @Test("Update from large to small value")
     func testShrinkFromLargeToSmall() async throws {
         let container = try await createContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let modelId = uniqueID("shrink")
 
@@ -106,7 +106,7 @@ struct LargeValueStorageTests {
     @Test("Update from small to large value")
     func testGrowFromSmallToLarge() async throws {
         let container = try await createContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let modelId = uniqueID("grow")
 
@@ -138,7 +138,7 @@ struct LargeValueStorageTests {
     @Test("Delete large value cleans up all parts")
     func testDeleteLargeValueCleansUp() async throws {
         let container = try await createContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let modelId = uniqueID("delete-large")
 
@@ -166,7 +166,7 @@ struct LargeValueStorageTests {
     @Test("Multiple large values can coexist")
     func testMultipleLargeValues() async throws {
         let container = try await createContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create multiple large models
         var models: [LargeDataModel] = []
@@ -192,7 +192,7 @@ struct LargeValueStorageTests {
     @Test("DatabaseTransaction handles large values")
     func databaseTransactionHandlesLargeValue() async throws {
         let container = try await createContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let modelId = uniqueID("tx-large")
         let largeData = Data(repeating: 0xFF, count: 95_000)
@@ -222,7 +222,7 @@ struct LargeValueStorageTests {
     @Test("Exactly 90KB does not trigger splitting")
     func testBoundaryNoSplit() async throws {
         let container = try await createContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // 90KB is the threshold - should NOT split
         let boundaryData = Data(repeating: 0x11, count: 90_000)
@@ -242,7 +242,7 @@ struct LargeValueStorageTests {
     @Test("Just over 90KB triggers splitting")
     func testBoundarySplit() async throws {
         let container = try await createContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // 90,001 bytes should trigger split
         let overBoundaryData = Data(repeating: 0x22, count: 90_001)
@@ -450,7 +450,7 @@ struct LargeValueStorageTests {
     func testScanEmptyRange() async throws {
         let container = try await createContainer()
         let database = container.engine
-        let subspace = try await container.resolveDirectory(for: LargeDataModel.self)
+        let subspace = try await container.testBaseDirectory(for: LargeDataModel.self)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         // Create a subspace that won't have any items

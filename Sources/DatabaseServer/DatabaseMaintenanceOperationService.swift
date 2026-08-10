@@ -4,14 +4,18 @@ import DatabaseTypes
 import StorageKit
 
 public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
-    private let context: DatabaseServerServiceContext
+    private let coordinator: DatabaseTransactionalOperationCoordinator
+    private let runtimeLimits: DatabaseRuntimeLimits
+    private let wireLimits: DatabaseWireLimits
     private let identifierGenerator: AnyDatabaseUUIDGenerator
 
     init<IdentifierGenerator: DatabaseUUIDGenerator>(
         context: DatabaseServerServiceContext,
         identifierGenerator: IdentifierGenerator
     ) {
-        self.context = context
+        self.coordinator = context.coordinator
+        self.runtimeLimits = context.runtimeLimits
+        self.wireLimits = context.wireLimits
         self.identifierGenerator = AnyDatabaseUUIDGenerator(identifierGenerator)
     }
 
@@ -19,10 +23,11 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
         _ request: MaintenanceExecuteOperation.Request,
         context operationContext: DatabaseOperationContext
     ) async throws -> MaintenanceExecutionResult {
-        try context.runtimeLimits.validate(request.budget)
+        try runtimeLimits.validate(request.budget)
+        let executor = try operationContext.requireBaseExecutor()
         switch request.invocation {
         case .migrationStatus:
-            let status = try await context.container.migrationStatus()
+            let status = try await executor.migrationStatus()
             return .encoding(
                 .migrationStatus(
                     MaintenanceExecuteOperation.MigrationStatus(
@@ -35,7 +40,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
             )
         case .runMigrations(let requestedTarget):
             let targetVersion = requestedTarget
-                ?? context.container.schema.version
+                ?? executor.schema.version
             let requestFingerprint = try maintenanceRequestFingerprint(request)
             let completedBefore: UInt64
             if let continuation = request.continuation {
@@ -44,7 +49,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                     decoded = try ServerPayloadDecoder.decode(
                         DatabaseMigrationContinuation.self,
                         from: continuation,
-                        limits: context.wireLimits
+                        limits: wireLimits
                     )
                 } catch {
                     throw DatabaseMaintenanceRuntimeError.invalidContinuation
@@ -57,7 +62,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
             } else {
                 completedBefore = 0
             }
-            let result = try await context.container.runMigrations(
+            let result = try await executor.runMigrations(
                 targetVersion: targetVersion,
                 maximumStageCount: request.budget.maximumWorkUnits
             )
@@ -77,7 +82,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                         requestFingerprint: requestFingerprint,
                         completedWorkUnits: completed.partialValue
                     ),
-                    limits: context.wireLimits
+                    limits: wireLimits
                 )
             return .encoding(
                 .execution(
@@ -90,21 +95,19 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                 )
             )
         case .indexStatus(let entity, let index, let partitions):
-            let targetPage = try await DatabaseIndexStatusPager(
-                container: context.container,
-                wireLimits: context.wireLimits
-            ).page(
-                entity: entity,
-                index: index,
-                partitions: partitions,
-                continuation: request.continuation,
-                budget: request.budget
-            )
-            let runtime = DatabaseIndexMaintenanceRuntime(
-                container: context.container
-            )
-            let statuses = try await context.container.newContext().withTransaction {
-                transaction in
+            let runtime = executor.makeIndexMaintenanceRuntime()
+            let (targetPage, statuses) = try await executor
+                .withStorageTransaction(requiredAccess: .administer) {
+                    transaction in
+                let targetPage = try await executor.indexStatusPage(
+                    entity: entity,
+                    index: index,
+                    partitions: partitions,
+                    continuation: request.continuation,
+                    budget: request.budget,
+                    wireLimits: wireLimits,
+                    transaction: transaction
+                )
                 var values: [DatabaseIndexMaintenanceStatus] = []
                 values.reserveCapacity(targetPage.targets.count)
                 for target in targetPage.targets {
@@ -113,11 +116,11 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                             entity: target.entity,
                             index: target.index,
                             partitions: target.partitions,
-                            transaction: transaction.storageAccess
+                            transaction: transaction
                         )
                     )
                 }
-                return values
+                return (targetPage, values)
             }
             return .encoding(
                 .indexStatus(
@@ -144,7 +147,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                     let decoded = try ServerPayloadDecoder.decode(
                         DatabaseIndexRebuildContinuation.self,
                         from: continuation,
-                        limits: context.wireLimits
+                        limits: wireLimits
                     )
                     guard decoded.requestFingerprint == requestFingerprint else {
                         throw DatabaseMaintenanceRuntimeError.invalidContinuation
@@ -160,10 +163,8 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                 generation = identifierGenerator.generate()
                 mode = .start
             }
-            let runtime = DatabaseIndexMaintenanceRuntime(
-                container: context.container
-            )
-            let coordinated = try await context.coordinator.execute(
+            let runtime = executor.makeIndexMaintenanceRuntime()
+            let coordinated = try await coordinator.execute(
                 operation: MaintenanceExecuteOperation.identifier,
                 requestPayload: operationContext.requestPayload,
                 context: operationContext,
@@ -202,7 +203,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                             generation: generation,
                             requestFingerprint: requestFingerprint
                         ),
-                        limits: context.wireLimits
+                            limits: wireLimits
                     )
                 return DatabaseOperationResponseEncoder(
                     MaintenanceExecuteOperation.self,
@@ -218,7 +219,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
             }
             return try MaintenanceExecutionResult(
                 coordinated: coordinated,
-                limits: context.wireLimits
+                limits: wireLimits
             )
         case .compact:
             throw DatabaseMaintenanceRuntimeError.compactionRequiresJob
@@ -236,7 +237,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
         return DatabaseRequestDigest.compute(
             operation: .maintenanceExecute,
             payload: try DatabaseWireEncoder(
-                limits: context.wireLimits
+                limits: wireLimits
             ).encodeRequestPayload(
                 DatabaseOperations.maintenanceExecute,
                 request: canonical

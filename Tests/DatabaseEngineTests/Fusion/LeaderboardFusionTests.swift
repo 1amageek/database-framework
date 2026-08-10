@@ -214,7 +214,7 @@ struct LeaderboardIntegrationTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try LeaderboardFusionScore.schemaEntity])
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(LeaderboardFusionScore.self)]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(LeaderboardFusionScore.self)]), security: .testingDisabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
@@ -228,7 +228,7 @@ struct LeaderboardIntegrationTests {
     func testInsertAndRetrieve() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let score = LeaderboardFusionScore(
             playerId: "player1",
@@ -254,7 +254,7 @@ struct LeaderboardIntegrationTests {
     func testMultipleScoresIndexed() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let scores = [
             LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 1000),
@@ -280,7 +280,7 @@ struct LeaderboardIntegrationTests {
     func testScoresWithDifferentRegions() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let asiaScore = LeaderboardFusionScore(
             playerId: "p1",
@@ -316,7 +316,7 @@ struct LeaderboardIntegrationTests {
     func testUpdateScore() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var score = LeaderboardFusionScore(
             playerId: "p1",
@@ -343,7 +343,7 @@ struct LeaderboardIntegrationTests {
     func testDeleteScore() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let score = LeaderboardFusionScore(
             playerId: "p1",

@@ -215,7 +215,7 @@ public actor PostgreSQLScenarioCoordinator {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: entityRuntimes
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 

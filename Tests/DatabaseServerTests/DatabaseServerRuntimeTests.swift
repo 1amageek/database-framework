@@ -17,13 +17,14 @@ struct DatabaseServerRuntimeTests {
         let runtime = try await makeRuntime(container: container)
 
         #expect(
-            try await container.getCurrentSchemaVersion()
+            try await container.testBaseCurrentSchemaVersion()
                 == container.schema.version
         )
         let response = try await invoke(
             DatabaseOperations.capabilitiesDescribe,
             request: EmptyOperationPayload(),
             requestID: 1,
+            target: .database,
             runtime: runtime
         )
 
@@ -63,6 +64,7 @@ struct DatabaseServerRuntimeTests {
             DatabaseOperations.commandExecute,
             request: request,
             requestID: 2,
+            target: .base(try TestBaseEnvironment.id()),
             metadata: metadata,
             runtime: runtime
         )
@@ -70,10 +72,11 @@ struct DatabaseServerRuntimeTests {
             DatabaseOperations.commandExecute,
             request: request,
             requestID: 3,
+            target: .base(try TestBaseEnvironment.id()),
             metadata: metadata,
             runtime: runtime
         )
-        let storedCount = try await container.newContext().model(
+        let storedCount = try await container.testBaseContext().model(
             for: command.stateID,
             as: DatabaseEndpointEntity.self
         )
@@ -112,6 +115,7 @@ struct DatabaseServerRuntimeTests {
         let first = try makeRequest(
             operation: DatabaseOperations.commandExecute,
             requestID: 3,
+            target: .base(try TestBaseEnvironment.id()),
             metadata: metadata,
             request: commandRequest(
                 declaration: command.declaration,
@@ -121,6 +125,7 @@ struct DatabaseServerRuntimeTests {
         let conflicting = try makeRequest(
             operation: DatabaseOperations.commandExecute,
             requestID: 4,
+            target: .base(try TestBaseEnvironment.id()),
             metadata: metadata,
             request: commandRequest(
                 declaration: command.declaration,
@@ -129,7 +134,7 @@ struct DatabaseServerRuntimeTests {
         )
 
         let executionContext = DatabaseRequestExecutionContext(
-            authorization: .anonymous
+            authorization: TestBaseEnvironment.authorization
         )
         _ = try await runtime.execute(first, context: executionContext)
         let responseBytes = try await runtime.execute(
@@ -172,6 +177,7 @@ struct DatabaseServerRuntimeTests {
         let request = try makeRequest(
             operation: DatabaseOperations.commandExecute,
             requestID: 5,
+            target: .base(try TestBaseEnvironment.id()),
             metadata: OperationRequestMetadata(
                 idempotencyKey: "oversized-response"
             ),
@@ -184,7 +190,7 @@ struct DatabaseServerRuntimeTests {
             from: try await runtime.execute(
                 request,
                 context: DatabaseRequestExecutionContext(
-                    authorization: .anonymous
+                    authorization: TestBaseEnvironment.authorization
                 )
             ),
             matching: 5
@@ -196,26 +202,27 @@ struct DatabaseServerRuntimeTests {
         #expect(error.category == .resourceLimit)
         #expect(error.code == "RESPONSE_RESOURCE_LIMIT")
 
-        let stateStore = try await DatabaseMutationStateStore(
+        let stateStore = DatabaseMutationStateStore(
             container: container
         )
-        let commandState = try await container.newContext().model(
+        let commandState = try await container.testBaseContext().model(
             for: command.stateID,
             as: DatabaseEndpointEntity.self
         )
-        let mutationState = try await StorageTransactionExecutor(
-            engine: container.engine
-        ).withTransaction(
-            configuration: .readOnly,
-            clock: TestProcessMonotonicClock()
+        let baseContext = container.testBaseContext()
+        let mutationState = try await baseContext.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
         ) { transaction in
             (
                 try await stateStore.currentLogicalVersion(
-                    transaction: transaction
+                    for: .base(baseContext.baseID),
+                    transaction: transaction.storageAccess
                 ),
                 try await stateStore.idempotencyEntry(
                     for: "oversized-response",
-                    transaction: transaction,
+                    target: .base(baseContext.baseID),
+                    transaction: transaction.storageAccess,
                     limits: limits
                 )
             )
@@ -239,7 +246,7 @@ struct DatabaseServerRuntimeTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -271,6 +278,7 @@ struct DatabaseServerRuntimeTests {
     private func makeRequest<Request, Response>(
         operation: DatabaseOperation<Request, Response>,
         requestID: UInt64,
+        target: DatabaseOperationTarget,
         metadata: OperationRequestMetadata = OperationRequestMetadata(),
         request: Request,
         limits: DatabaseWireLimits = .default
@@ -278,6 +286,7 @@ struct DatabaseServerRuntimeTests {
         try DatabaseWireEncoder(limits: limits).encodeRequest(
             operation,
             requestID: requestID,
+            target: target,
             metadata: metadata,
             request: request
         )
@@ -287,12 +296,14 @@ struct DatabaseServerRuntimeTests {
         _ operation: DatabaseOperation<Request, Response>,
         request: Request,
         requestID: UInt64,
+        target: DatabaseOperationTarget,
         metadata: OperationRequestMetadata = OperationRequestMetadata(),
         runtime: DatabaseServerRuntime
     ) async throws -> Response {
         let requestBytes = try makeRequest(
             operation: operation,
             requestID: requestID,
+            target: target,
             metadata: metadata,
             request: request
         )
@@ -301,7 +312,7 @@ struct DatabaseServerRuntimeTests {
             from: try await runtime.execute(
                 requestBytes,
                 context: DatabaseRequestExecutionContext(
-                    authorization: .anonymous
+                    authorization: TestBaseEnvironment.authorization
                 )
             ),
             matching: requestID
@@ -465,6 +476,13 @@ struct DatabaseServerRuntimeTests {
                     kind: "database.test.runtime-job"
                 ),
             ]
+        }
+
+        func baseAdmission(
+            for operation: JobOperationIdentifier
+        ) throws -> DatabaseBaseAdmissionKind {
+            _ = operation
+            throw UnavailableError()
         }
 
         func execute(

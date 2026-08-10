@@ -74,7 +74,12 @@ private func benchmark<T>(
 
 // MARK: - Performance Tests
 
-@Suite("Relationship Index Performance Tests", .serialized, .heartbeat)
+@Suite(
+    "Relationship Index Performance Tests",
+    .foundationDBScenario,
+    .serialized,
+    .heartbeat
+)
 struct RelationshipIndexPerformanceTests {
 
     private func setupContainer() async throws -> DBContainer {
@@ -93,7 +98,7 @@ struct RelationshipIndexPerformanceTests {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PerfCustomer.self), try DatabaseFrameworkRuntime.entity(PerfOrder.self)]),
-            security: .disabled
+            security: .testingDisabled
             )
 
         return container
@@ -108,7 +113,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("To-One relationship insert performance")
     func testToOneInsertPerformance() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let customerId = uniqueID("C-perf")
 
@@ -141,7 +146,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("To-Many relationship insert performance")
     func testToManyInsertPerformance() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let count = 50
         let ordersPerCustomer = 5
@@ -182,7 +187,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("related() To-One lookup performance")
     func testRelatedToOneLookupPerformance() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let customerId = uniqueID("C-lookup")
 
@@ -224,7 +229,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("related() To-Many lookup performance")
     func testRelatedToManyLookupPerformance() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let ordersPerCustomer = 10
         let customerCount = 20
@@ -269,7 +274,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("joining() eager loading performance")
     func testJoiningEagerLoadingPerformance() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let customerId = uniqueID("C-join")
         let orderCount = 100
@@ -311,7 +316,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("get() with joining performance")
     func testGetWithJoiningPerformance() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let customerCount = 50
         let ordersPerCustomer = 5
@@ -357,7 +362,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("Typed reference update performance")
     func testReferenceUpdatePerformance() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let customer1Id = uniqueID("C-upd1")
         let customer2Id = uniqueID("C-upd2")
@@ -401,7 +406,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("To-Many reference array update performance")
     func testToManyReferenceArrayUpdatePerformance() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let customerId = uniqueID("C-tmupd")
         let orderCount = 100
@@ -449,7 +454,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("Delete with relationship catalog cleanup performance")
     func testDeleteWithRelationshipCatalogCleanupPerformance() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let customerId = uniqueID("C-del")
         let orderCount = 50
@@ -491,7 +496,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("Large To-Many array handling")
     func testLargeToManyArrayHandling() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let customerId = uniqueID("C-large")
         let orderCount = 200
@@ -535,7 +540,7 @@ struct RelationshipIndexPerformanceTests {
     @Test("Many relationships traversal")
     func testManyRelationshipsTraversal() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let customerCount = 20
         let ordersPerCustomer = 10

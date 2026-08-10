@@ -67,7 +67,7 @@ import Synchronization
 /// // Make index readable (after building)
 /// try await registeredIndexes.makeReadable("user_by_email")
 /// ```
-public final class DatabaseIndexRegistry: Sendable {
+package final class DatabaseIndexRegistry: Sendable {
     // MARK: - Properties
 
     /// Container used for transaction execution.

@@ -27,9 +27,8 @@ struct DatabasePersistentJobStore: Sendable {
         storageLimits: DatabasePersistentJobStorageLimits
     ) async throws {
         try storageLimits.validate(wireLimits: wireLimits)
-        let root = try await container.engine.resolveOrCreateNamespace(
-            path: ["database-framework", "persistent-jobs"]
-        )
+        let root = container.storageTopology.controlDomain.root
+            .subspace("persistent-jobs")
         self.container = container
         self.specifications = root.subspace("specifications")
         self.plans = root.subspace("plans")
@@ -191,7 +190,7 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     func load(_ jobID: DatabaseTypes.UUID) async throws -> DatabasePersistentJobSnapshot? {
-        try await container.transactionExecutor.withTransaction(
+        try await container.controlTransactionExecutor.withTransaction(
             configuration: .readOnly,
             clock: container.monotonicClock
         ) {
@@ -276,6 +275,7 @@ struct DatabasePersistentJobStore: Sendable {
         }
         let responseDigest = DatabasePersistentJobDigest.result(
             operation: snapshot.specification.operation,
+            target: snapshot.specification.target,
             payload: responsePayload
         )
         var chunkDigests: [ByteString] = []
@@ -332,7 +332,7 @@ struct DatabasePersistentJobStore: Sendable {
     func loadResultManifest(
         for snapshot: DatabasePersistentJobSnapshot
     ) async throws -> DatabasePersistentJobResultManifest {
-        try await container.transactionExecutor.withTransaction(
+        try await container.controlTransactionExecutor.withTransaction(
             configuration: .readOnly,
             clock: container.monotonicClock
         ) {
@@ -379,7 +379,7 @@ struct DatabasePersistentJobStore: Sendable {
               Int(index) < manifest.chunkDigests.count else {
             throw DatabaseJobRuntimeError.invalidResultContinuation
         }
-        return try await container.transactionExecutor.withTransaction(
+        return try await container.controlTransactionExecutor.withTransaction(
             configuration: .readOnly,
             clock: container.monotonicClock
         ) { transaction in
@@ -414,7 +414,7 @@ struct DatabasePersistentJobStore: Sendable {
         limit: Int
     ) async throws -> [DatabasePersistentJobDueEntry] {
         guard limit > 0 else { return [] }
-        return try await container.transactionExecutor.withTransaction(
+        return try await container.controlTransactionExecutor.withTransaction(
             configuration: .readOnly,
             clock: container.monotonicClock
         ) { transaction in
@@ -440,7 +440,7 @@ struct DatabasePersistentJobStore: Sendable {
     }
 
     func earliestScheduledAt() async throws -> Timestamp? {
-        try await container.transactionExecutor.withTransaction(
+        try await container.controlTransactionExecutor.withTransaction(
             configuration: .readOnly,
             clock: container.monotonicClock
         ) {

@@ -46,7 +46,7 @@ import DatabaseKit
 /// ```
 ///
 /// **Reference**: FDB Record Layer tracks violations during index merging
-public final class UniquenessViolationTracker: Sendable {
+package final class UniquenessViolationTracker: Sendable {
     // MARK: - Constants
 
     /// Subspace key for violations storage
@@ -569,7 +569,26 @@ public struct ViolationSummary: Sendable {
 extension UniquenessViolationTracker {
     /// Get summary of violations for an index
     public func violationSummary(indexName: String) async throws -> ViolationSummary {
-        let violations = try await scanViolations(indexName: indexName)
+        try await container.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock
+        ) { transaction in
+            try await self.violationSummary(
+                indexName: indexName,
+                transaction: transaction
+            )
+        }
+    }
+
+    /// Get a violation summary within the caller's authorized transaction.
+    public func violationSummary(
+        indexName: String,
+        transaction: any TransactionAccess
+    ) async throws -> ViolationSummary {
+        let violations = try await scanViolations(
+            indexName: indexName,
+            transaction: transaction
+        )
 
         let totalEntities = violations.reduce(0) { $0 + $1.primaryKeys.count }
 

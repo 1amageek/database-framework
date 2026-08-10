@@ -50,7 +50,7 @@ struct PostgreSQLSPARQLTests {
 
     private func makeScenario() async throws -> (DBContainer, DatabaseContext) {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         return (container, context)
     }
 

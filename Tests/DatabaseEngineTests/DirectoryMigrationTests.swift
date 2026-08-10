@@ -363,17 +363,17 @@ struct DirectoryMigrationTests {
                 testing: DirectoryMigrationSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV1.self)]),
-                security: .disabled,
+                security: .testingDisabled,
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
             var seededUser = DirectoryMigrationUserV1(name: "Alice", email: "alice@example.com")
             seededUser.id = seededID
             try initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             // Sanity check: data is physically under the V1 directory.
-            let legacySubspace = try await initialContainer.resolveDirectory(for: DirectoryMigrationUserV1.self)
+            let legacySubspace = try await initialContainer.testBaseDirectory(for: DirectoryMigrationUserV1.self)
             let legacyItemsPrefix = legacySubspace.subspace(SubspaceKey.items).subspace(DirectoryMigrationUserV1.persistableType)
             let (legacyBegin, legacyEnd) = legacyItemsPrefix.range()
             let legacyCountBefore = try await engine.withTransaction { transaction in
@@ -395,16 +395,16 @@ struct DirectoryMigrationTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             // 3. Data must be readable via the V2 schema (new directory).
             let verificationContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
-                security: .disabled,
+                security: .testingDisabled,
             )
-            let verificationContext = verificationContainer.newContext()
+            let verificationContext = verificationContainer.testBaseContext()
             let migratedUsers = try await verificationContext
                 .fetch(DirectoryMigrationUserV2.self)
                 .execute()
@@ -428,7 +428,7 @@ struct DirectoryMigrationTests {
             #expect(legacyCountAfter == 0)
 
             // 5. New directory physically holds the row.
-            let targetSubspace = try await verificationContainer.resolveDirectory(for: DirectoryMigrationUserV2.self)
+            let targetSubspace = try await verificationContainer.testBaseDirectory(for: DirectoryMigrationUserV2.self)
             let targetItemsPrefix = targetSubspace.subspace(SubspaceKey.items).subspace(DirectoryMigrationUserV2.persistableType)
             let (targetBegin, targetEnd) = targetItemsPrefix.range()
             let targetCount = try await engine.withTransaction { transaction in
@@ -460,14 +460,14 @@ struct DirectoryMigrationTests {
                 testing: DirectoryMigrationSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV1.self)]),
-                security: .disabled,
+                security: .testingDisabled,
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
             var seededUser = DirectoryMigrationUserV1(name: "Bob", email: "bob@example.com")
             seededUser.id = seededID
             try initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             // First run: migrates.
             let migratedContainer = try await DBContainer.open(
@@ -476,18 +476,18 @@ struct DirectoryMigrationTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             // Second run: already at V2, should be a no-op.
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let verificationContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
-                security: .disabled,
+                security: .testingDisabled,
             )
-            let rows = try await verificationContainer.newContext()
+            let rows = try await verificationContainer.testBaseContext()
                 .fetch(DirectoryMigrationUserV2.self)
                 .execute()
 
@@ -516,17 +516,17 @@ struct DirectoryMigrationTests {
                 testing: DirectoryIndexedSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryIndexedUserV1.self)]),
-                security: .disabled,
+                security: .testingDisabled,
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
             var seededUser = DirectoryIndexedUserV1(name: "Alice", email: "alice@example.com")
             seededUser.id = seededID
             try initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             // Sanity: V1 index subspace must hold one entry before migration.
-            let legacySubspace = try await initialContainer.resolveDirectory(for: DirectoryIndexedUserV1.self)
+            let legacySubspace = try await initialContainer.testBaseDirectory(for: DirectoryIndexedUserV1.self)
             let legacyIndexPrefix = legacySubspace.subspace(SubspaceKey.indexes).subspace("DirectoryIndexedUser_email")
             let (legacyIndexBegin, legacyIndexEnd) = legacyIndexPrefix.range()
             let legacyIndexBefore = try await engine.withTransaction { transaction in
@@ -547,7 +547,7 @@ struct DirectoryMigrationTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryIndexedUserV2.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             // V1 index subspace must be empty after purgeSourceSchemaStorage.
             let legacyIndexAfter = try await engine.withTransaction { transaction in
@@ -563,7 +563,7 @@ struct DirectoryMigrationTests {
             #expect(legacyIndexAfter == 0)
 
             // V2 index subspace must be populated by the copy.
-            let targetSubspace = try await migratedContainer.resolveDirectory(for: DirectoryIndexedUserV2.self)
+            let targetSubspace = try await migratedContainer.testBaseDirectory(for: DirectoryIndexedUserV2.self)
             let targetIndexPrefix = targetSubspace.subspace(SubspaceKey.indexes).subspace("DirectoryIndexedUser_email")
             let (targetIndexBegin, targetIndexEnd) = targetIndexPrefix.range()
             let targetIndexCount = try await engine.withTransaction { transaction in
@@ -603,14 +603,14 @@ struct DirectoryMigrationTests {
                 testing: DirectoryAddIdxSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryAddIdxUserV1.self)]),
-                security: .disabled,
+                security: .testingDisabled,
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
             var seededUser = DirectoryAddIdxUserV1(name: "Alice", score: 42)
             seededUser.id = seededID
             try initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: DirectoryAddIdxSchemaV2.self,
@@ -618,12 +618,12 @@ struct DirectoryMigrationTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryAddIdxUserV2.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             // Framework should have called addIndex for the new score index,
             // which builds it in the *target* (V2) directory against the rows
             // that willMigrate just copied there.
-            let targetSubspace = try await migratedContainer.resolveDirectory(for: DirectoryAddIdxUserV2.self)
+            let targetSubspace = try await migratedContainer.testBaseDirectory(for: DirectoryAddIdxUserV2.self)
             let targetIndexPrefix = targetSubspace.subspace(SubspaceKey.indexes).subspace("DirectoryAddIdxUser_score")
             let (targetIndexBegin, targetIndexEnd) = targetIndexPrefix.range()
             let targetIndexCount = try await engine.withTransaction { transaction in
@@ -663,17 +663,17 @@ struct DirectoryMigrationTests {
                 testing: DirectoryRemIdxSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV1.self)]),
-                security: .disabled,
+                security: .testingDisabled,
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
             var seededUser = DirectoryRemIdxUserV1(name: "Alice", tag: "hot")
             seededUser.id = seededID
             try initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             // Sanity: source-schema index subspace holds one entry before migration.
-            let legacySubspace = try await initialContainer.resolveDirectory(for: DirectoryRemIdxUserV1.self)
+            let legacySubspace = try await initialContainer.testBaseDirectory(for: DirectoryRemIdxUserV1.self)
             let legacyIndexPrefix = legacySubspace.subspace(SubspaceKey.indexes).subspace("DirectoryRemIdxUser_tag")
             let (legacyIndexBegin, legacyIndexEnd) = legacyIndexPrefix.range()
             let legacyIndexBefore = try await engine.withTransaction { transaction in
@@ -694,7 +694,7 @@ struct DirectoryMigrationTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV2.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             // removeIndex targets the *source* registry (the source-schema directory).
             // Combined with didMigrate purgeSourceSchemaStorage, the source-schema index
@@ -716,9 +716,9 @@ struct DirectoryMigrationTests {
                 testing: DirectoryRemIdxSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV2.self)]),
-                security: .disabled,
+                security: .testingDisabled,
             )
-            let rows = try await verificationContainer.newContext()
+            let rows = try await verificationContainer.testBaseContext()
                 .fetch(DirectoryRemIdxUserV2.self)
                 .execute()
             #expect(rows.count == 1)
@@ -746,9 +746,9 @@ struct DirectoryMigrationTests {
                 testing: DirectoryLightweightSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryLightweightUserV1.self)]),
-                security: .disabled,
+                security: .testingDisabled,
             )
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: DirectoryLightweightSchemaV2.self,
@@ -758,7 +758,7 @@ struct DirectoryMigrationTests {
             )
 
             await #expect(throws: MigrationPlanError.self) {
-                try await migratedContainer.migrateIfNeeded()
+                try await migratedContainer.testBaseAdmin().migrateIfNeeded()
             }
 
             for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"]] {

@@ -89,15 +89,15 @@ struct DirectoryMigrationSQLiteTests {
             for: SQLiteDirectoryMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV1.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
         var seededUser = SQLiteDirectoryMigrationUserV1(name: "Alice", email: "alice@example.com")
         seededUser.id = seededID
         try initialContext.insert(seededUser)
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
         await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
@@ -105,20 +105,20 @@ struct DirectoryMigrationSQLiteTests {
             migrationPlan: SQLiteDirectoryMigrationCopyPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
         await migratedContainer.shutdown()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
-        let rows = try await verificationContainer.newContext()
+        let rows = try await verificationContainer.testBaseContext()
             .fetch(SQLiteDirectoryMigrationUserV2.self)
             .execute()
 

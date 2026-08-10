@@ -37,7 +37,7 @@ struct PostgreSQLTransactionTests {
     func transactionCommit() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let itemId = uniqueID("tx-commit")
 
@@ -62,7 +62,7 @@ struct PostgreSQLTransactionTests {
     func atomicMultipleWrites() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let ids = (0..<5).map { _ in uniqueID("tx-atomic") }
 
@@ -93,7 +93,7 @@ struct PostgreSQLTransactionTests {
     func readYourWrites() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let itemId = uniqueID("tx-ryw")
 
@@ -116,7 +116,7 @@ struct PostgreSQLTransactionTests {
     func updateWithinTransaction() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let itemId = uniqueID("tx-upd")
 
@@ -149,7 +149,7 @@ struct PostgreSQLTransactionTests {
     func deleteWithinTransaction() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let itemId = uniqueID("tx-del")
 
@@ -181,7 +181,7 @@ struct PostgreSQLTransactionTests {
             let itemId = uniqueID("tx-iso")
 
             // Context 1: write and commit
-            let ctx1 = container.newContext()
+            let ctx1 = container.testBaseContext()
             try await ctx1.withTransaction { tx in
                 var item = PGTxItem()
                 item.id = itemId
@@ -190,7 +190,7 @@ struct PostgreSQLTransactionTests {
             }
 
             // Context 2: should see committed data
-            let ctx2 = container.newContext()
+            let ctx2 = container.testBaseContext()
             try await ctx2.withTransaction { tx in
                 let fetched = try await tx.fetch(PGTxItem.self, identifiedBy: itemId)
                 #expect(fetched != nil)
@@ -205,7 +205,7 @@ struct PostgreSQLTransactionTests {
     func changeTrackingSave() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let ids = (0..<3).map { _ in uniqueID("ct") }
 
@@ -234,7 +234,7 @@ struct PostgreSQLTransactionTests {
     func rollbackDiscards() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             var item = PGTxItem()
             item.id = uniqueID("rollback")

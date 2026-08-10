@@ -8,20 +8,20 @@ import StorageKit
 
 public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     private let documentStore: DatabaseRDFDocumentStore
-    private let ontologyStore: OntologyStore
+    private let container: DBContainer
     private let wireLimits: DatabaseWireLimits
     private let clock: AnyDatabaseWallClock
     private let monotonicClock: any StorageMonotonicClock
 
     public init(
         documentStore: DatabaseRDFDocumentStore,
-        ontologyStore: OntologyStore,
+        container: DBContainer,
         clock: AnyDatabaseWallClock,
         monotonicClock: any StorageMonotonicClock,
         wireLimits: DatabaseWireLimits = .default
     ) {
         self.documentStore = documentStore
-        self.ontologyStore = ontologyStore
+        self.container = container
         self.clock = clock
         self.monotonicClock = monotonicClock
         self.wireLimits = wireLimits
@@ -51,7 +51,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             work: &work
         )
 
-        let identifiers = try await ontologyStore.listOntologies(
+        let identifiers = try await ontologyStore().listOntologies(
             transaction: transaction
         ).sorted()
         for identifier in identifiers where identifier != document.ontology {
@@ -78,13 +78,13 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
         transaction: any TransactionAccess
     ) async throws {
         var work = WorkBudget(maximum: budget.maximumWorkUnits)
-        let identifiers = try await ontologyStore.listOntologies(
+        let identifiers = try await ontologyStore().listOntologies(
             transaction: transaction
         ).sorted()
         for identifier in identifiers where identifier != ontology {
             try ensureDatabaseTaskIsActive()
             try work.consume()
-            guard let metadata = try await ontologyStore.getMetadata(
+            guard let metadata = try await ontologyStore().getMetadata(
                 ontologyIRI: identifier,
                 transaction: transaction
             ) else {
@@ -97,7 +97,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
                 )
             }
         }
-        try ontologyStore.deleteOntology(
+        try ontologyStore().deleteOntology(
             ontology,
             transaction: transaction
         )
@@ -124,7 +124,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             kind: kind
         )
         let materializer = OWL2RLMaterializer(
-            ontologyStore: ontologyStore,
+            ontologyStore: try ontologyStore(),
             clock: monotonicClock
         )
         var explicit = Set<ReasoningTriple>()
@@ -220,7 +220,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             fingerprint: entailmentClosure.fingerprint,
             kind: kind
         )
-        guard let ontologyModel = try await ontologyStore.reconstruct(
+        guard let ontologyModel = try await ontologyStore().reconstruct(
             iri: ontology,
             transaction: transaction
         ) else {
@@ -306,7 +306,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             fingerprint: entailmentClosure.fingerprint,
             kind: kind
         )
-        guard let ontologyModel = try await ontologyStore.reconstruct(
+        guard let ontologyModel = try await ontologyStore().reconstruct(
             iri: ontology,
             transaction: transaction
         ) else {
@@ -383,7 +383,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             work: &work
         )
         let merged = try mergedOntology(from: entailmentClosure.documents, root: ontology)
-        try await ontologyStore.loadOntology(
+        try await ontologyStore().loadOntology(
             merged,
             at: timestamp,
             transaction: transaction
@@ -445,7 +445,7 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     ) async throws -> Bool {
         guard ontology != dependency else { return true }
         guard !visited.contains(ontology) else { return false }
-        guard let metadata = try await ontologyStore.getMetadata(
+        guard let metadata = try await ontologyStore().getMetadata(
             ontologyIRI: ontology,
             transaction: transaction
         ) else {
@@ -777,6 +777,16 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
             enableIncrementalReasoning: true,
             cacheClassification: true,
             timeout: .milliseconds(Int64(clamping: budget.timeoutMilliseconds))
+        )
+    }
+
+    private func ontologyStore() throws -> OntologyStore {
+        let root = try container.requireActiveBaseLease().root
+            .subspace("data")
+            .subspace("database-framework")
+            .subspace("ontology-index")
+        return OntologyStore(
+            subspace: OntologySubspace(base: root)
         )
     }
 

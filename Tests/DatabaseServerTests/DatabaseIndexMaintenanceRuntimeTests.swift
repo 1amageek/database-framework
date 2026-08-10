@@ -22,7 +22,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
             CatalogPartitionedEntity.fields.tenantID,
             to: "tenant-a"
         )
-        let entitySubspace = try await firstContainer.resolveDirectory(
+        let entitySubspace = try await firstContainer.testBaseDirectory(
             for: CatalogPartitionedEntity.self,
             path: directoryPath
         )
@@ -30,22 +30,24 @@ struct DatabaseIndexMaintenanceRuntimeTests {
             container: firstContainer,
             subspace: entitySubspace
         )
-        let initiallyReadable = try await StorageTransactionExecutor(
-            engine: firstContainer.engine
-        ).withTransaction(
-            configuration: .readOnly,
-            clock: TestProcessMonotonicClock()
-        ) { transaction in
-                try await longLivedStateReader.state(
-                    of: "catalog_value",
-                    transaction: transaction
-                )
+        let initiallyReadable = try await firstContainer.withTestBaseOperation {
+            try await StorageTransactionExecutor(
+                engine: firstContainer.engine
+            ).withTransaction(
+                configuration: .readOnly,
+                clock: TestProcessMonotonicClock()
+            ) { transaction in
+                    try await longLivedStateReader.state(
+                        of: "catalog_value",
+                        transaction: transaction
+                    )
             }
+        }
         #expect(initiallyReadable == .readable)
         let firstRuntime = DatabaseIndexMaintenanceRuntime(
             container: firstContainer
         )
-        let preparedPartitions = try await firstContainer.newContext()
+        let preparedPartitions = try await firstContainer.testBaseContext()
             .withTransaction { transaction in
             try await firstRuntime.prepareResources(
                 entity: CatalogPartitionedEntity.persistableType,
@@ -56,7 +58,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         }
         #expect(preparedPartitions == partitions)
 
-        let firstSlice = try await firstContainer.newContext().withTransaction {
+        let firstSlice = try await firstContainer.testBaseContext().withTransaction {
             transaction in
             try await firstRuntime.runRebuildSlice(
                 entity: CatalogPartitionedEntity.persistableType,
@@ -70,16 +72,19 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         }
         #expect(firstSlice.completedWorkUnits == 1)
         #expect(!firstSlice.isComplete)
-        let stateObservedByLongLivedReader = try await StorageTransactionExecutor(
-            engine: firstContainer.engine
-        ).withTransaction(
-            configuration: .readOnly,
-            clock: TestProcessMonotonicClock()
-        ) { transaction in
-                try await longLivedStateReader.state(
-                    of: "catalog_value",
-                    transaction: transaction
-                )
+        let stateObservedByLongLivedReader = try await firstContainer
+            .withTestBaseOperation {
+                try await StorageTransactionExecutor(
+                    engine: firstContainer.engine
+                ).withTransaction(
+                    configuration: .readOnly,
+                    clock: TestProcessMonotonicClock()
+                ) { transaction in
+                        try await longLivedStateReader.state(
+                            of: "catalog_value",
+                            transaction: transaction
+                        )
+                }
             }
         #expect(stateObservedByLongLivedReader == .writeOnly)
 
@@ -95,7 +100,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         let recreatedRuntime = DatabaseIndexMaintenanceRuntime(
             container: recreatedContainer
         )
-        let finalSlice = try await recreatedContainer.newContext().withTransaction {
+        let finalSlice = try await recreatedContainer.testBaseContext().withTransaction {
             transaction in
             try await recreatedRuntime.runRebuildSlice(
                 entity: CatalogPartitionedEntity.persistableType,
@@ -127,7 +132,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         try await insertEntities(into: container)
         let partitions = try tenantPartition("tenant-a")
         let runtime = DatabaseIndexMaintenanceRuntime(container: container)
-        let preparedPartitions = try await container.newContext()
+        let preparedPartitions = try await container.testBaseContext()
             .withTransaction { transaction in
             try await runtime.prepareResources(
                 entity: CatalogPartitionedEntity.persistableType,
@@ -141,7 +146,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
             bytes: Array(repeating: 1, count: 16)
         )
         let firstGeneration = try #require(decodedFirstGeneration)
-        _ = try await container.newContext().withTransaction { transaction in
+        _ = try await container.testBaseContext().withTransaction { transaction in
             try await runtime.runRebuildSlice(
                 entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
@@ -163,7 +168,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 generation: firstGeneration
             )
         ) {
-            try await container.newContext().withTransaction { transaction in
+            try await container.testBaseContext().withTransaction { transaction in
                 try await runtime.runRebuildSlice(
                     entity: CatalogPartitionedEntity.persistableType,
                     index: "catalog_value",
@@ -183,7 +188,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         try await insertEntities(into: container)
         let partitions = try tenantPartition("tenant-a")
         let runtime = DatabaseIndexMaintenanceRuntime(container: container)
-        _ = try await container.newContext().withTransaction { transaction in
+        _ = try await container.testBaseContext().withTransaction { transaction in
             try await runtime.prepareResources(
                 entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
@@ -194,7 +199,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         let generation = DatabaseTypes.UUID(high: 3, low: 1)
 
         await #expect(throws: DatabaseIndexRebuildError.corruptedRebuildState) {
-            try await container.newContext().withTransaction { transaction in
+            try await container.testBaseContext().withTransaction { transaction in
                 try await runtime.runRebuildSlice(
                     entity: CatalogPartitionedEntity.persistableType,
                     index: "catalog_value",
@@ -213,7 +218,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
         container: DBContainer,
         partitions: FieldObject
     ) async throws -> DatabaseIndexMaintenanceStatus {
-        try await container.newContext().withTransaction { transaction in
+        try await container.testBaseContext().withTransaction { transaction in
             try await runtime.status(
                 entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
@@ -224,7 +229,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
     }
 
     private func insertEntities(into container: DBContainer) async throws {
-        let context = container.newContext()
+        let context = container.testBaseContext()
         var first = CatalogPartitionedEntity()
         first.id = "first"
         first.tenantID = "tenant-a"
@@ -254,7 +259,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 }

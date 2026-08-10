@@ -38,8 +38,11 @@
   only inside one test process, so separate bundles must not concurrently
   share the same disposable service. Target compilation and Swift Testing
   inside each bundle retain their normal parallelism.
-- The strict backend contracts are 3,926 FoundationDB tests, 111 SQLite tests,
-  and 71 PostgreSQL tests. PostgreSQL tests require an isolated real server.
+- The strict backend contracts are 3,964 FoundationDB tests, 119 SQLite tests,
+  and 72 PostgreSQL tests. PostgreSQL tests require an isolated real server.
+- `POSTGRES_TEST_UNIX_SOCKET` is the complete PostgreSQL socket file path, such
+  as `<socket-directory>/.s.PGSQL.<port>`, not the containing directory. The
+  `psql -h` readiness probe still receives the containing directory.
 - FoundationDB verification requires the C SDK header and client library under
   `/usr/local/include` and `/usr/local/lib`, or explicit
   `FDB_CLIENT_INCLUDE_DIRECTORY` and `FDB_CLIENT_LIBRARY_DIRECTORY` values.

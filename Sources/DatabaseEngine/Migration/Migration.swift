@@ -71,17 +71,17 @@ public struct Migration: Sendable {
 ///
 /// This is a lightweight struct that holds only the subspace information
 /// needed during migrations, without requiring a model persistence service.
-public struct MigrationStoreInfo: Sendable {
+package struct MigrationStoreInfo: Sendable {
     /// Root subspace for the store
-    public let subspace: Subspace
+    package let subspace: Subspace
 
     /// Index subspace for the store
-    public let indexSubspace: Subspace
+    package let indexSubspace: Subspace
 
     /// Blobs subspace for the store (large value chunks)
-    public let blobsSubspace: Subspace
+    package let blobsSubspace: Subspace
 
-    public init(subspace: Subspace, indexSubspace: Subspace, blobsSubspace: Subspace) {
+    package init(subspace: Subspace, indexSubspace: Subspace, blobsSubspace: Subspace) {
         self.subspace = subspace
         self.indexSubspace = indexSubspace
         self.blobsSubspace = blobsSubspace
@@ -97,7 +97,7 @@ public struct MigrationContext: Sendable {
     // MARK: - Properties
 
     /// FDB Container for transaction execution
-    public let container: DBContainer
+    package let container: DBContainer
 
     /// Schema being migrated to
     public let schema: Schema
@@ -106,7 +106,7 @@ public struct MigrationContext: Sendable {
     public let sourceSchema: Schema
 
     /// Metadata subspace for storing migration progress
-    public let metadataSubspace: Subspace
+    package let metadataSubspace: Subspace
 
     /// Source-schema store info registry (read from this side).
     ///
@@ -177,7 +177,7 @@ public struct MigrationContext: Sendable {
     ///   - source: When `true`, looks up the source-schema registry. Defaults to target.
     /// - Returns: MigrationStoreInfo
     /// - Throws: Error if store not found
-    public func storeInfo(for itemType: String, source: Bool = false) throws -> MigrationStoreInfo {
+    package func storeInfo(for itemType: String, source: Bool = false) throws -> MigrationStoreInfo {
         let registry = source ? sourceStoreRegistry : targetStoreRegistry
         guard let info = registry[itemType] else {
             throw DatabaseRuntimeError.invalidArgument(
@@ -345,7 +345,7 @@ public struct MigrationContext: Sendable {
 
         let indexRange = info.indexSubspace.subspace(indexName).range()
 
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await withAuthorizedTransaction(configuration: .batch) { transaction in
             // Write FormerIndex entry
             let timestamp = container.wallClock.now
             try transaction.setValue(
@@ -425,7 +425,7 @@ public struct MigrationContext: Sendable {
         // This ensures the index is in a consistent state before building
         let indexRange = info.indexSubspace.subspace(indexName).range()
 
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await withAuthorizedTransaction(configuration: .batch) { transaction in
             // Disable index (from any state)
             try await indexRegistry.lifecycleStore.disable(indexName, transaction: transaction)
 
@@ -506,7 +506,7 @@ public struct MigrationContext: Sendable {
             .subspace(indexName)
             .range()
 
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await withAuthorizedTransaction(configuration: .batch) { transaction in
             let timestamp = container.wallClock.now
             try transaction.setValue(
                 Tuple(
@@ -539,7 +539,7 @@ public struct MigrationContext: Sendable {
             .subspace(indexName)
             .range()
 
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await withAuthorizedTransaction(configuration: .batch) { transaction in
             try await lifecycleStore.disable(indexName, transaction: transaction)
             try transaction.clearRange(
                 beginKey: indexRange.begin,
@@ -623,9 +623,8 @@ public struct MigrationContext: Sendable {
 
             while true {
                 let batchBegin = begin
-                let (itemsInBatch, lastProcessedKey) = try await container.transactionExecutor.withTransaction(
-                    configuration: .batch,
-                    clock: container.monotonicClock
+                let (itemsInBatch, lastProcessedKey) = try await withAuthorizedTransaction(
+                    configuration: .batch
                 ) { transaction -> (Int, ByteString?) in
                     let storage = self.container.itemStorageFactory.make(
                         transaction: transaction,
@@ -683,9 +682,8 @@ public struct MigrationContext: Sendable {
                 "Polymorphic index '\(indexName)' has no registered member runtime"
             )
         }
-        try await container.transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: container.monotonicClock
+        try await withAuthorizedTransaction(
+            configuration: .batch
         ) { transaction in
             try await finalization.runtime.finalizeIndex(
                 container: self.container,
@@ -710,7 +708,25 @@ public struct MigrationContext: Sendable {
     public func executeOperation<T: Sendable>(
         _ operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
-        return try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
+        try await withAuthorizedTransaction(
+            configuration: .default,
+            operation
+        )
+    }
+
+    /// Runs one migration transaction only after re-evaluating the Base Grant
+    /// in that same transaction. Migration stages intentionally span multiple
+    /// transactions, so authorization cannot be inherited from stage start.
+    private func withAuthorizedTransaction<Result: Sendable>(
+        configuration: TransactionConfiguration,
+        _ operation: @escaping @Sendable (
+            any TransactionAccess
+        ) async throws -> Result
+    ) async throws -> Result {
+        try await container.withActiveBaseTransaction(
+            requiredAccess: .administer,
+            configuration: configuration
+        ) { transaction in
             try await operation(transaction)
         }
     }
@@ -795,7 +811,7 @@ public struct MigrationContext: Sendable {
         let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(identifier)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
-        try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
+        try await withAuthorizedTransaction(configuration: .default) { transaction in
             let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -819,7 +835,7 @@ public struct MigrationContext: Sendable {
         let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(identifier)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
-        try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
+        try await withAuthorizedTransaction(configuration: .default) { transaction in
             let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -848,7 +864,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = Array(items[batchStart..<batchEnd])
 
-            try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+            try await withAuthorizedTransaction(configuration: .batch) { transaction in
                 let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
@@ -884,7 +900,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = items[batchStart..<batchEnd]
 
-            try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+            try await withAuthorizedTransaction(configuration: .batch) { transaction in
                 let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
@@ -920,7 +936,7 @@ public struct MigrationContext: Sendable {
 
         // Use approximate count for large datasets
         if approximate {
-            let sizeBytes = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+            let sizeBytes = try await withAuthorizedTransaction(configuration: .batch) { transaction in
                 try await transaction.getEstimatedRangeSizeBytes(
                     beginKey: beginKey,
                     endKey: endKey
@@ -937,7 +953,7 @@ public struct MigrationContext: Sendable {
 
         while true {
             let currentLastKey = lastKey
-            let (batchCount, newLastKey): (Int, ByteString?) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+            let (batchCount, newLastKey): (Int, ByteString?) = try await withAuthorizedTransaction(configuration: .batch) { transaction in
                 let rangeBegin = currentLastKey.map { $0.appending(0x00) } ?? beginKey
 
                 var count = 0
@@ -996,7 +1012,7 @@ public struct MigrationContext: Sendable {
         let subspace = try await container.resolveDirectory(for: T.self)
         let (beginKey, endKey) = subspace.range()
 
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await withAuthorizedTransaction(configuration: .batch) { transaction in
             try transaction.clearRange(beginKey: beginKey, endKey: endKey)
         }
     }
@@ -1183,7 +1199,10 @@ public enum DatabaseRuntimeError: Error, CustomStringConvertible {
                         let currentLastKey = lastKey
 
 	                        // Each batch is a separate transaction
-	                        let batch: [(key: ByteString, value: ByteString)] = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+	                        let batch: [(key: ByteString, value: ByteString)] = try await container.withActiveBaseTransaction(
+	                            requiredAccess: .administer,
+	                            configuration: .batch
+	                        ) { transaction in
 	                            let rangeBegin = currentLastKey.map { $0.appending(0x00) } ?? beginKey
 
 	                            let storage = self.container.itemStorageFactory.make(

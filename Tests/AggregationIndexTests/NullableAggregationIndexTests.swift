@@ -20,9 +20,9 @@ struct NullableAggregationIndexTests {
             ),
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(NullableUnsignedAggregationEntity.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         try context.insert(NullableUnsignedAggregationEntity(
             group: nil,
             value: 1,

@@ -59,9 +59,10 @@ struct SPARQLRuntimeDependencyInjectionTests {
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(Statement.self)],
                 sparqlFunctionRegistry: functionRegistry
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = container.newContext()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
         let subject = try RDFTerm.iri(validating: "did:example:subject")
         let predicate = try RDFTerm.iri(
             validating: "did:example:predicate"
@@ -105,10 +106,10 @@ struct SPARQLRuntimeDependencyInjectionTests {
             container.runtimeConfiguration.logicalSourceExecutors
                 .sparqlExecutor
         )
-        let transactional = try await container.engine.withTransaction {
+        let transactional = try await container.withTestBaseTransaction {
             transaction in
             try await executor.executeInTransaction(
-                context: container.newContext(),
+                context: context,
                 selectQuery: query,
                 options: ReadExecutionContext(
                     monotonicClock: TestProcessMonotonicClock()

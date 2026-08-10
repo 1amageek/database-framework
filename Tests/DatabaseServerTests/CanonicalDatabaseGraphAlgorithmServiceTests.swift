@@ -26,6 +26,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
     private struct PropertyGraphAlgorithmContext {
         let engine: CountingEngine
         let container: DBContainer
+        let databaseContext: DatabaseContext
         let service: CanonicalDatabaseGraphAlgorithmService
         let maintainer: GraphIndexMaintainer<CanonicalPropertyGraphEdge>
     }
@@ -388,11 +389,14 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self), try DatabaseFrameworkRuntime.entity(CanonicalPropertyGraphEdge.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let indexSubspace = Subspace(
-            prefix: Tuple("canonical-graph-service").pack()
-        )
+        let databaseContext = container.testBaseContext()
+        let indexSubspace = try await databaseContext.withBaseOperation {
+            try databaseContext.requireOperationBaseLease().root
+                .subspace("test-indexes")
+                .subspace("canonical-graph-service")
+        }
         let kind = IndexKindMetadata(
             identifier: "graph",
             subspaceStructure: .hierarchical,
@@ -447,6 +451,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
         let graphContext = PropertyGraphAlgorithmContext(
             engine: engine,
             container: container,
+            databaseContext: databaseContext,
             service: CanonicalDatabaseGraphAlgorithmService(
                 sourceResolver: FixedSourceResolver(source: resolvedSource)
             ),
@@ -484,17 +489,19 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
         _ edge: CanonicalPropertyGraphEdge,
         graphContext: PropertyGraphAlgorithmContext
     ) async throws {
-        try await StorageTransactionExecutor(
-            engine: graphContext.container.engine
-        ).withTransaction(
-            configuration: .batch,
-            clock: TestProcessMonotonicClock()
-        ) { transaction in
-            try await graphContext.maintainer.updateIndex(
-                oldItem: nil,
-                newItem: edge,
-                transaction: transaction
-            )
+        return try await graphContext.databaseContext.withBaseOperation {
+            try await StorageTransactionExecutor(
+                engine: graphContext.container.engine
+            ).withTransaction(
+                configuration: .batch,
+                clock: TestProcessMonotonicClock()
+            ) { transaction in
+                try await graphContext.maintainer.updateIndex(
+                    oldItem: nil,
+                    newItem: edge,
+                    transaction: transaction
+                )
+            }
         }
     }
 
@@ -502,17 +509,25 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
         _ request: GraphAlgorithmOperation.Request,
         graphContext: PropertyGraphAlgorithmContext
     ) async throws -> GraphAlgorithmOperation.Response {
-        try await graphContext.service.execute(
-            request,
-            context: DatabaseOperationContext(
-                container: graphContext.container,
-                requestID: 1,
-                metadata: OperationRequestMetadata(),
-                requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
-                    DatabaseOperations.graphAlgorithm,
-                    request: request
+        try await graphContext.databaseContext.withBaseOperation {
+            try await graphContext.service.execute(
+                request,
+                context: DatabaseOperationContext(
+                    container: graphContext.container,
+                    target: .base(graphContext.databaseContext.baseID),
+                    baseContext: graphContext.databaseContext,
+                    composition: nil,
+                    requirement: .canonical(for: .graphAlgorithm),
+                    requestID: 1,
+                    metadata: OperationRequestMetadata(),
+                    authorization: TestBaseEnvironment.authorization,
+                    requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
+                        DatabaseOperations.graphAlgorithm,
+                        request: request
+                    ),
+                    wireLimits: .default
                 )
             )
-        )
+        }
     }
 }

@@ -99,14 +99,20 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
             #expect(bodies.value == 0)
         }
 
-        let state = try await mutationContext.container.transactionExecutor.withTransaction { transaction in
+        let databaseContext = mutationContext.container.testBaseContext()
+        let state = try await databaseContext.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
+        ) { transaction in
             (
                 try await mutationContext.stateStore.currentLogicalVersion(
-                    transaction: transaction
+                    for: .base(databaseContext.baseID),
+                    transaction: transaction.storageAccess
                 ),
                 try await mutationContext.stateStore.idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
-                    transaction: transaction,
+                    target: .base(databaseContext.baseID),
+                    transaction: transaction.storageAccess,
                     limits: .default
                 )
             )
@@ -145,15 +151,21 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
             #expect(maximum == 64)
         }
 
-        let state = try await mutationContext.container.transactionExecutor.withTransaction { transaction in
+        let databaseContext = mutationContext.container.testBaseContext()
+        let state = try await databaseContext.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
+        ) { transaction in
             (
-                try await transaction.getValue(for: key),
+                try await transaction.storageAccess.getValue(for: key),
                 try await mutationContext.stateStore.currentLogicalVersion(
-                    transaction: transaction
+                    for: .base(databaseContext.baseID),
+                    transaction: transaction.storageAccess
                 ),
                 try await mutationContext.stateStore.idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
-                    transaction: transaction,
+                    target: .base(databaseContext.baseID),
+                    transaction: transaction.storageAccess,
                     limits: .default
                 )
             )
@@ -189,15 +201,21 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
             #expect(timeoutMilliseconds == 1)
         }
 
-        let state = try await mutationContext.container.transactionExecutor.withTransaction { transaction in
+        let databaseContext = mutationContext.container.testBaseContext()
+        let state = try await databaseContext.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
+        ) { transaction in
             (
-                try await transaction.getValue(for: [0xF1]),
+                try await transaction.storageAccess.getValue(for: [0xF1]),
                 try await mutationContext.stateStore.currentLogicalVersion(
-                    transaction: transaction
+                    for: .base(databaseContext.baseID),
+                    transaction: transaction.storageAccess
                 ),
                 try await mutationContext.stateStore.idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
-                    transaction: transaction,
+                    target: .base(databaseContext.baseID),
+                    transaction: transaction.storageAccess,
                     limits: .default
                 )
             )
@@ -241,14 +259,20 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
         await commitGate.release()
         _ = try await operation.value
 
-        let committedState = try await mutationContext.container.transactionExecutor.withTransaction { transaction in
+        let databaseContext = mutationContext.container.testBaseContext()
+        let committedState = try await databaseContext.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
+        ) { transaction in
             (
                 try await mutationContext.stateStore.currentLogicalVersion(
-                    transaction: transaction
+                    for: .base(databaseContext.baseID),
+                    transaction: transaction.storageAccess
                 ),
                 try await mutationContext.stateStore.idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
-                    transaction: transaction,
+                    target: .base(databaseContext.baseID),
+                    transaction: transaction.storageAccess,
                     limits: .default
                 )
             )
@@ -312,9 +336,9 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
                 ),
-                security: .disabled
+                security: .testingDisabled
             )
-            let stateStore = try await DatabaseMutationStateStore(
+            let stateStore = DatabaseMutationStateStore(
                 container: container
             )
             self.container = container
@@ -340,16 +364,27 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
                 DatabaseTransaction
             ) async throws -> Int
         ) async throws -> DatabaseCoordinatedOperationResponse {
-            try await coordinator.executeStaged(
+            let baseContext = container.testBaseContext()
+            return try await coordinator.executeStaged(
                 operation: .mutationExecute,
                 requestPayload: payload,
                 context: DatabaseOperationContext(
                     container: container,
+                    target: .base(baseContext.baseID),
+                    baseContext: baseContext,
+                    composition: nil,
+                    requirement: DatabaseOperationRequirement(
+                        acceptedTargets: .base,
+                        access: .write,
+                        transaction: .write
+                    ),
                     requestID: requestID,
                     metadata: OperationRequestMetadata(
                         idempotencyKey: Self.idempotencyKey
                     ),
-                    requestPayload: payload
+                    authorization: TestBaseEnvironment.authorization,
+                    requestPayload: payload,
+                    wireLimits: .default
                 ),
                 timeoutMilliseconds: timeoutMilliseconds,
                 prepare: prepare,

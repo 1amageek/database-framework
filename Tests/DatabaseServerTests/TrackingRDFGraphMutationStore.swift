@@ -22,7 +22,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     private let state = Mutex(State())
 
     init(
-        base: CanonicalRDFGraphStore = CanonicalRDFGraphStore(),
+        base: CanonicalRDFGraphStore,
         clearBehavior: ClearBehavior = .delegate
     ) {
         self.base = base

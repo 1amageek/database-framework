@@ -1104,7 +1104,7 @@ public struct SearchStatisticsCollector: Sendable {
 ///     chunkSize: 10_000_000  // 10MB chunks
 /// )
 /// ```
-public final class DatabaseLiveStatisticsProvider: LiveStatisticsProvider, Sendable {
+package final class DatabaseLiveStatisticsProvider: LiveStatisticsProvider, Sendable {
 
     /// FDB Container for transaction execution
     private let container: DBContainer

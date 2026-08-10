@@ -29,6 +29,24 @@ extension SchemaExecuteOperation: ServerOperationDeclaration {
     }
 }
 
+extension BaseExecuteOperation: ServerOperationDeclaration {
+    public static var operation: DatabaseOperation<Request, Response> {
+        DatabaseOperations.baseExecute
+    }
+}
+
+extension CompositionExecuteOperation: ServerOperationDeclaration {
+    public static var operation: DatabaseOperation<Request, Response> {
+        DatabaseOperations.compositionExecute
+    }
+}
+
+extension GrantExecuteOperation: ServerOperationDeclaration {
+    public static var operation: DatabaseOperation<Request, Response> {
+        DatabaseOperations.grantExecute
+    }
+}
+
 extension QueryExecuteOperation: ServerOperationDeclaration {
     public static var operation: DatabaseOperation<Request, Response> {
         DatabaseOperations.queryExecute

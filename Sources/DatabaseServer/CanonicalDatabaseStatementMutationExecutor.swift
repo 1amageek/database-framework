@@ -10,7 +10,7 @@ import StorageKit
 public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutationExecutor {
     private let runtimeLimits: DatabaseRuntimeLimits
     #if DATABASE_SERVER_GRAPH_INDEXES
-    private let graphStore: any RDFGraphMutationStore
+    private let graphStoreOverride: (any RDFGraphMutationStore)?
     private let loadSource: AnySPARQLLoadSource
     private let functionRegistry: SPARQLFunctionRegistry
     private let graphOperationLimits: GraphOperationLimits
@@ -19,7 +19,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
     public init(runtimeLimits: DatabaseRuntimeLimits = .default) {
         self.runtimeLimits = runtimeLimits
         #if DATABASE_SERVER_GRAPH_INDEXES
-        self.graphStore = CanonicalRDFGraphStore()
+        self.graphStoreOverride = nil
         self.loadSource = .unconfigured
         self.functionRegistry = .empty
         self.graphOperationLimits = .default
@@ -34,7 +34,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         graphOperationLimits: GraphOperationLimits = .default
     ) {
         self.runtimeLimits = runtimeLimits
-        self.graphStore = CanonicalRDFGraphStore()
+        self.graphStoreOverride = nil
         self.loadSource = loadSource
         self.functionRegistry = functionRegistry
         self.graphOperationLimits = graphOperationLimits
@@ -48,7 +48,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         graphOperationLimits: GraphOperationLimits = .default
     ) {
         self.runtimeLimits = runtimeLimits
-        self.graphStore = graphStore
+        self.graphStoreOverride = graphStore
         self.loadSource = loadSource
         self.functionRegistry = functionRegistry
         self.graphOperationLimits = graphOperationLimits
@@ -63,7 +63,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         let statement = validatedStatement.statement
         let workMeter = DatabaseWorkMeter(
             budget: budget,
-            monotonicClock: context.container.monotonicClock
+            monotonicClock: context.executor.monotonicClock
         )
         guard case .sparqlUpdate(let request) = statement else {
             return CanonicalPreparedStatementMutation(
@@ -163,8 +163,8 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction
     ) async throws -> MutationExecuteOperation.Result {
-        let entities = DatabaseEntityMutationExecutor(
-            container: context.container,
+        let entities = try context.requireBaseExecutor()
+            .makeEntityMutationExecutor(
             runtimeLimits: runtimeLimits
         )
         let workMeter = prepared.workMeter
@@ -173,6 +173,7 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         #if DATABASE_SERVER_GRAPH_INDEXES
         case .sparql(let request):
             try requireNoRDFGraphPartitions(graphPartitions)
+            let graphStore = try graphStore(for: context)
             return .rdf(
                 try await SPARQLUpdateExecutor(
                     graphStore: graphStore,
@@ -201,6 +202,22 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
             )
         }
     }
+
+    #if DATABASE_SERVER_GRAPH_INDEXES
+    private func graphStore(
+        for context: DatabaseOperationContext
+    ) throws -> any RDFGraphMutationStore {
+        if let graphStoreOverride {
+            return graphStoreOverride
+        }
+        return CanonicalRDFGraphStore(
+            rootSubspace: CanonicalRDFGraphStore.rootSubspace(
+                forBaseRoot: try context.requireBaseContext()
+                    .requireOperationBaseLease().root
+            )
+        )
+    }
+    #endif
 
     private func execute(
         _ statement: QueryStatement,
@@ -417,7 +434,11 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 "INSERT RETURNING is not representable by mutation effects"
             )
         }
-        let entity = try resolve(query.target, container: context.container)
+        let entity = try resolve(
+            query.target,
+            schema: context.executor.schema,
+            runtimeConfiguration: context.executor.runtimeConfiguration
+        )
         let columns = try insertColumns(query.columns, entity: entity)
         let rows: [[Expression]]
         switch query.source {
@@ -482,9 +503,8 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 id: candidateIdentity.id,
                 partitions: query.target.partitions
             )
-            let resolved = try ResolvedEntityReference.resolve(
+            let resolved = try entities.resolveReference(
                 targetIdentity,
-                container: context.container,
                 model: candidate
             )
             let existing = try await transaction.loadPersistedModel(
@@ -574,7 +594,11 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
         guard !query.assignments.isEmpty else {
             throw DatabaseMutationError.unsupportedStatement("UPDATE has no assignments")
         }
-        let entity = try resolve(query.target, container: context.container)
+        let entity = try resolve(
+            query.target,
+            schema: context.executor.schema,
+            runtimeConfiguration: context.executor.runtimeConfiguration
+        )
         let models = try await scan(
             entity,
             transaction: transaction,
@@ -650,7 +674,11 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
                 "DELETE RETURNING is not representable by mutation effects"
             )
         }
-        let entity = try resolve(query.target, container: context.container)
+        let entity = try resolve(
+            query.target,
+            schema: context.executor.schema,
+            runtimeConfiguration: context.executor.runtimeConfiguration
+        )
         let models = try await scan(
             entity,
             transaction: transaction,
@@ -727,17 +755,20 @@ public struct CanonicalDatabaseStatementMutationExecutor: DatabaseStatementMutat
 
     private func resolve(
         _ table: TableRef,
-        container: DBContainer
+        schema: Schema,
+        runtimeConfiguration: DatabaseRuntimeConfiguration
     ) throws -> ResolvedEntity {
         guard table.schema == nil else {
             throw DatabaseMutationError.unsupportedStatement(
                 "compiled entities do not use SQL schema qualifiers"
             )
         }
-        guard let entity = container.schema.entities.first(where: { $0.name == table.table }) else {
+        guard let entity = schema.entities.first(where: {
+            $0.name == table.table
+        }) else {
             throw DatabaseMutationError.unknownEntity(table.table)
         }
-        guard let runtime = container.runtimeConfiguration.entityRuntimes.registration(
+        guard let runtime = runtimeConfiguration.entityRuntimes.registration(
             named: entity.name
         ) else {
             throw DatabaseMutationError.entityHasNoPersistableType(table.table)

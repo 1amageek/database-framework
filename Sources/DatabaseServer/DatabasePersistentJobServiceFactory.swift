@@ -49,6 +49,29 @@ public final class DatabasePersistentJobServiceFactory:
         guard let scheduler = context.hostServices.jobScheduler else {
             throw DatabaseServerHostServiceError.missingJobScheduler
         }
+        var registry = try registry.including(
+            AnyDatabaseResumableOperation(
+                DatabaseBaseLifecycleResumableOperation(
+                    runtimeLimits: context.runtimeLimits
+                )
+            )
+        ).including(
+            AnyDatabaseResumableOperation(
+                DatabaseLegacyLayoutMigrationResumableOperation(
+                    runtimeLimits: context.runtimeLimits
+                )
+            )
+        )
+        if let schemaRuntimeFactory = context.schemaRuntimeFactory {
+            registry = try registry.including(
+                AnyDatabaseResumableOperation(
+                    DatabaseSchemaApplyResumableOperation(
+                        runtimeFactory: schemaRuntimeFactory,
+                        runtimeLimits: context.runtimeLimits
+                    )
+                )
+            )
+        }
         let store = try await DatabasePersistentJobStore(
             container: context.container,
             wireLimits: context.wireLimits,

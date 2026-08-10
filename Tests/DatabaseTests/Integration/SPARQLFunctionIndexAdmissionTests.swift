@@ -41,7 +41,7 @@ struct SPARQLFunctionIndexAdmissionTests {
     func admittedIndexExecutes() async throws {
         let scenario = try await makeScenario()
 
-        let rows = try await scenario.container.newContext().executeSQL(
+        let rows = try await scenario.container.testBaseContext().executeSQL(
             Self.sql,
             as: SPARQLFunctionAdmissionUser.self
         )
@@ -55,7 +55,7 @@ struct SPARQLFunctionIndexAdmissionTests {
         let descriptor = try #require(
             try SPARQLFunctionAdmissionStatement.indexDescriptors.first
         )
-        let directory = try await scenario.container.resolveDirectory(
+        let directory = try await scenario.container.testBaseDirectory(
             for: SPARQLFunctionAdmissionStatement.self
         )
         let stateKey = directory
@@ -66,7 +66,7 @@ struct SPARQLFunctionIndexAdmissionTests {
         }
 
         do {
-            _ = try await scenario.container.newContext().executeSQL(
+            _ = try await scenario.container.testBaseContext().executeSQL(
                 Self.sql,
                 as: SPARQLFunctionAdmissionUser.self
             )
@@ -111,7 +111,7 @@ struct SPARQLFunctionIndexAdmissionTests {
                     ),
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         return (container, engine)
     }

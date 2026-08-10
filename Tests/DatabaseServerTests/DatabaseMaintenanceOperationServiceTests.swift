@@ -11,23 +11,18 @@ import Testing
 
 private let maintenanceJobTestStorageLimits =
     DatabasePersistentJobStorageLimits(maximumStorageValueBytes: 1_048_576)
+private let maintenanceJobStartRequirement = DatabaseOperationRequirement(
+    acceptedTargets: [.database, .base],
+    access: .administer,
+    transaction: .write,
+    baseAdmission: .activeData
+)
 
 @Suite("Database maintenance operation service", .serialized)
 struct DatabaseMaintenanceOperationServiceTests {
     @Test("Migration status and bounded execution use the compiled plan")
     func migrationsReportAndExecuteExactStages() async throws {
         let engine = InMemoryEngine()
-        let initial = try await DBContainer.open(
-            for: MaintenanceSchemaV1.self,
-            migrationPlan: MaintenanceInitialMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
-            ),
-            security: .disabled
-        )
-        try await initial.migrateIfNeeded()
-
         let target = try await DBContainer.open(
             for: MaintenanceSchemaV3.self,
             migrationPlan: MaintenanceMigrationPlan.self,
@@ -35,7 +30,10 @@ struct DatabaseMaintenanceOperationServiceTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
+        )
+        try await target.installTestBaseSchemaSnapshot(
+            for: MaintenanceSchemaV1.versionIdentifier
         )
         let maintenanceContext = try await makeMaintenanceServiceContext(
             container: target
@@ -76,7 +74,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         #expect(firstResult.completedWorkUnits == 1)
         #expect(!firstResult.isComplete)
         let continuation = try #require(firstResult.continuation)
-        #expect(try await target.getCurrentSchemaVersion() == Schema.Version(2, 0, 0))
+        #expect(try await target.testBaseCurrentSchemaVersion() == Schema.Version(2, 0, 0))
 
         let secondRequest = MaintenanceExecuteOperation.Request(
             invocation: firstRequest.invocation,
@@ -95,23 +93,12 @@ struct DatabaseMaintenanceOperationServiceTests {
         #expect(secondResult.completedWorkUnits == 2)
         #expect(secondResult.isComplete)
         #expect(secondResult.continuation == nil)
-        #expect(try await target.getCurrentSchemaVersion() == Schema.Version(3, 0, 0))
+        #expect(try await target.testBaseCurrentSchemaVersion() == Schema.Version(3, 0, 0))
     }
 
     @Test("Persistent migration job resumes the compiled plan")
     func persistentMigrationJobResumes() async throws {
         let engine = InMemoryEngine()
-        let initial = try await DBContainer.open(
-            for: MaintenanceSchemaV1.self,
-            migrationPlan: MaintenanceInitialMigrationPlan.self,
-            configuration: .testing(storageEngine: engine),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
-            ),
-            security: .disabled
-        )
-        try await initial.migrateIfNeeded()
-
         let target = try await DBContainer.open(
             for: MaintenanceSchemaV3.self,
             migrationPlan: MaintenanceMigrationPlan.self,
@@ -119,7 +106,10 @@ struct DatabaseMaintenanceOperationServiceTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
+        )
+        try await target.installTestBaseSchemaSnapshot(
+            for: MaintenanceSchemaV1.versionIdentifier
         )
         let maintenanceContext = try await makeMaintenanceServiceContext(
             container: target
@@ -132,18 +122,26 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         let nestedRequest = migrationRequest()
         let startRequest = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: JobOperations.maintenance.identifier,
             requestPayload: try encodeMaintenanceRequest(nestedRequest),
             maximumSliceWorkUnits: 1
         )
+        let baseContext = target.testBaseContext()
         let context = DatabaseOperationContext(
             container: target,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: maintenanceJobStartRequirement,
             requestID: 45,
             metadata: OperationRequestMetadata(
                 traceID: "migration-job",
                 idempotencyKey: "migration-job"
             ),
-            requestPayload: try encodeJobStartRequest(startRequest)
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: try encodeJobStartRequest(startRequest),
+            wireLimits: .default
         )
         let started = try await service.start(
             startRequest,
@@ -157,7 +155,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         #expect(firstSlice.state == .pending)
         #expect(firstSlice.completedWorkUnits == 1)
-        #expect(try await target.getCurrentSchemaVersion() == Schema.Version(2, 0, 0))
+        #expect(try await target.testBaseCurrentSchemaVersion() == Schema.Version(2, 0, 0))
 
         try await service.runScheduledWork()
         let result = try await service.result(
@@ -180,7 +178,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         #expect(execution.kind == .migrations)
         #expect(execution.completedWorkUnits == 2)
         #expect(execution.isComplete)
-        #expect(try await target.getCurrentSchemaVersion() == Schema.Version(3, 0, 0))
+        #expect(try await target.testBaseCurrentSchemaVersion() == Schema.Version(3, 0, 0))
         #expect(await scheduler.count() >= 2)
     }
 
@@ -409,18 +407,26 @@ struct DatabaseMaintenanceOperationServiceTests {
             )
         )
         let startRequest = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: JobOperations.maintenance.identifier,
             requestPayload: nestedPayload,
             maximumSliceWorkUnits: 1
         )
+        let baseContext = maintenanceContext.container.testBaseContext()
         let startContext = DatabaseOperationContext(
             container: maintenanceContext.container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: maintenanceJobStartRequirement,
             requestID: 41,
             metadata: OperationRequestMetadata(
                 traceID: "maintenance-job",
                 idempotencyKey: "maintenance-job"
             ),
-            requestPayload: try encodeJobStartRequest(startRequest)
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: try encodeJobStartRequest(startRequest),
+            wireLimits: .default
         )
 
         let started = try await firstService.start(
@@ -514,18 +520,26 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         let nestedRequest = compactionRequest()
         let startRequest = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: JobOperations.maintenance.identifier,
             requestPayload: try encodeMaintenanceRequest(nestedRequest),
             maximumSliceWorkUnits: 1
         )
+        let baseContext = maintenanceContext.container.testBaseContext()
         let context = DatabaseOperationContext(
             container: maintenanceContext.container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: maintenanceJobStartRequirement,
             requestID: 44,
             metadata: OperationRequestMetadata(
                 traceID: "compaction-job",
                 idempotencyKey: "compaction-job"
             ),
-            requestPayload: try encodeJobStartRequest(startRequest)
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: try encodeJobStartRequest(startRequest),
+            wireLimits: .default
         )
         let started = try await service.start(
             startRequest,
@@ -626,6 +640,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             limits: limits
         )
         let startRequest = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: JobOperations.maintenance.identifier,
             requestPayload: nestedPayload,
             maximumSliceWorkUnits: 1,
@@ -635,17 +650,24 @@ struct DatabaseMaintenanceOperationServiceTests {
                 maximumBackoffMilliseconds: 1
             )
         )
+        let baseContext = maintenanceContext.container.testBaseContext()
         let context = DatabaseOperationContext(
             container: maintenanceContext.container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: maintenanceJobStartRequirement,
             requestID: 45,
             metadata: OperationRequestMetadata(
                 traceID: "compaction-rollback",
                 idempotencyKey: "compaction-rollback"
             ),
+            authorization: TestBaseEnvironment.authorization,
             requestPayload: try encodeJobStartRequest(
                 startRequest,
                 limits: limits
-            )
+            ),
+            wireLimits: limits
         )
         let started = try await service.start(
             startRequest,
@@ -710,18 +732,26 @@ struct DatabaseMaintenanceOperationServiceTests {
             )
         )
         let startRequest = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: JobOperations.maintenance.identifier,
             requestPayload: nestedPayload,
             maximumSliceWorkUnits: 1
         )
+        let baseContext = maintenanceContext.container.testBaseContext()
         let context = DatabaseOperationContext(
             container: maintenanceContext.container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: maintenanceJobStartRequirement,
             requestID: 42,
             metadata: OperationRequestMetadata(
                 traceID: "maintenance-cancel",
                 idempotencyKey: "maintenance-cancel"
             ),
-            requestPayload: try encodeJobStartRequest(startRequest)
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: try encodeJobStartRequest(startRequest),
+            wireLimits: .default
         )
         let started = try await service.start(startRequest, context: context)
         try await service.runScheduledWork()
@@ -731,12 +761,18 @@ struct DatabaseMaintenanceOperationServiceTests {
         )
         let cancelContext = DatabaseOperationContext(
             container: maintenanceContext.container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: .canonical(for: .jobCancel),
             requestID: 43,
             metadata: OperationRequestMetadata(
                 traceID: "maintenance-cancel",
                 idempotencyKey: "maintenance-cancel-request"
             ),
-            requestPayload: try encodeJobCancelRequest(cancelRequest)
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: try encodeJobCancelRequest(cancelRequest),
+            wireLimits: .default
         )
         let cancelled = try await service.cancel(
             cancelRequest,
@@ -775,7 +811,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         return try await makeMaintenanceServiceContext(
             container: container,
@@ -787,7 +823,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         container: DBContainer,
         wireLimits: DatabaseWireLimits = .default
     ) async throws -> MaintenanceServiceContext {
-        let stateStore = try await DatabaseMutationStateStore(
+        let stateStore = DatabaseMutationStateStore(
             container: container
         )
         return MaintenanceServiceContext(
@@ -838,7 +874,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     }
 
     private func insertEntities(into container: DBContainer) async throws {
-        let context = container.newContext()
+        let context = container.testBaseContext()
         var first = CatalogPartitionedEntity()
         first.id = "first"
         first.tenantID = "tenant-a"
@@ -858,7 +894,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         value: String,
         into container: DBContainer
     ) async throws {
-        let context = container.newContext()
+        let context = container.testBaseContext()
         var entity = CatalogPartitionedEntity()
         entity.id = id
         entity.tenantID = tenant
@@ -920,11 +956,18 @@ struct DatabaseMaintenanceOperationServiceTests {
     private func operationContext(
         container: DBContainer
     ) -> DatabaseOperationContext {
-        DatabaseOperationContext(
+        let baseContext = container.testBaseContext()
+        return DatabaseOperationContext(
             container: container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: .canonical(for: .maintenanceExecute),
             requestID: 40,
             metadata: OperationRequestMetadata(traceID: "maintenance-direct"),
-            requestPayload: []
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: [],
+            wireLimits: .default
         )
     }
 
@@ -933,14 +976,21 @@ struct DatabaseMaintenanceOperationServiceTests {
         request: MaintenanceExecuteOperation.Request,
         idempotencyKey: String
     ) throws -> DatabaseOperationContext {
-        DatabaseOperationContext(
+        let baseContext = container.testBaseContext()
+        return DatabaseOperationContext(
             container: container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: .canonical(for: .maintenanceExecute),
             requestID: 40,
             metadata: OperationRequestMetadata(
                 traceID: "maintenance-direct",
                 idempotencyKey: idempotencyKey
             ),
-            requestPayload: try encodeMaintenanceRequest(request)
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: try encodeMaintenanceRequest(request),
+            wireLimits: .default
         )
     }
 

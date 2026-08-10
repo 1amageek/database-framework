@@ -118,17 +118,9 @@ struct SPARQLPropertyFilterIntegrationTests {
             entities: [try SocialConnection.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self)]), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self)]), security: .testingDisabled)
 
-
-        if try await database.namespaceExists(
-            path: ["test", "sparql_property"]
-        ) {
-            try await database.removeNamespace(
-                path: ["test", "sparql_property"]
-            )
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
 
         return container
     }
@@ -138,7 +130,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Property filter pushdown - equality")
     func testPropertyFilterPushdownEquality() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -187,7 +179,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Property filter pushdown - range comparison")
     func testPropertyFilterPushdownRange() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -232,7 +224,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Property filter pushdown - string contains")
     func testPropertyFilterPushdownStringContains() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -266,7 +258,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("AND decomposition - multiple pushable filters")
     func testAndMultiplePushable() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -301,7 +293,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("AND decomposition - pushable + complex filter")
     func testAndPushableAndComplex() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -344,32 +336,12 @@ struct SPARQLPropertyFilterIntegrationTests {
             entities: [try BasicEdge.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self)]), security: .disabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self)]), security: .testingDisabled)
 
 
-        if try await database.namespaceExists(
-            path: ["test", "basic_edge"]
-        ) {
-            try await database.removeNamespace(
-                path: ["test", "basic_edge"]
-            )
-        }
+        try await container.resetTestBaseData()
 
-        // Set index to readable
-        let subspace = try await container.resolveDirectory(for: BasicEdge.self)
-        let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
-
-        for descriptor in try BasicEdge.indexDescriptors {
-            let currentState = try await indexLifecycleStore.state(of: descriptor.name)
-            if currentState == .disabled {
-                try await indexLifecycleStore.enable(descriptor.name)
-                try await indexLifecycleStore.makeReadable(descriptor.name)
-            } else if currentState == .writeOnly {
-                try await indexLifecycleStore.makeReadable(descriptor.name)
-            }
-        }
-
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -403,7 +375,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Performance - property filter reduces scan")
     func testPerformancePropertyFilterReducesScan() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -449,7 +421,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Explicit projection excludes property variables")
     func testExplicitProjectionExcludesPropertyVariables() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -487,7 +459,7 @@ struct SPARQLPropertyFilterIntegrationTests {
     @Test("Property variables are bound in results")
     func testPropertyVariablesAreBound() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")

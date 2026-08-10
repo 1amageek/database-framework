@@ -123,7 +123,7 @@ struct PolymorphicVectorIndexE2ETests {
             runtimeConfiguration: try vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicVectorArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicVectorReport.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -143,7 +143,7 @@ struct PolymorphicVectorIndexE2ETests {
             runtimeConfiguration: try vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicOptionalVectorArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicOptionalVectorReport.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -162,7 +162,7 @@ struct PolymorphicVectorIndexE2ETests {
             runtimeConfiguration: try vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicVectorNoIndexArticle.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -180,7 +180,7 @@ struct PolymorphicVectorIndexE2ETests {
 
     private func countVectorIndexEntries(container: DBContainer) async throws -> Int {
         let group = try container.polymorphicGroup(identifier: PolymorphicVectorArticle.polymorphableType)
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
         let indexSubspace = groupSubspace
             .subspace(SubspaceKey.indexes)
             .subspace(indexName)
@@ -197,7 +197,7 @@ struct PolymorphicVectorIndexE2ETests {
 
     private func countOptionalVectorIndexEntries(container: DBContainer) async throws -> Int {
         let group = try container.polymorphicGroup(identifier: PolymorphicOptionalVectorArticle.polymorphableType)
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
         let indexSubspace = groupSubspace
             .subspace(SubspaceKey.indexes)
             .subspace(optionalIndexName)
@@ -271,7 +271,7 @@ struct PolymorphicVectorIndexE2ETests {
     func polymorphicVectorQueryRequiresQueryVector() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             do {
                 _ = try await context.findPolymorphic(PolymorphicVectorArticle.self)
@@ -289,7 +289,7 @@ struct PolymorphicVectorIndexE2ETests {
     func polymorphicVectorQueryRejectsMismatchedDimensions() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             do {
                 _ = try await context.findPolymorphic(PolymorphicVectorArticle.self)
@@ -310,7 +310,7 @@ struct PolymorphicVectorIndexE2ETests {
     func polymorphicVectorQueryReportsMissingSharedDescriptor() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupNoIndexContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             do {
                 _ = try await context.findPolymorphic(PolymorphicVectorNoIndexArticle.self)
@@ -334,7 +334,7 @@ struct PolymorphicVectorIndexE2ETests {
     func polymorphicOptionalVectorKeyPathOverloadQueriesSharedIndexEndToEnd() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupOptionalContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let article = PolymorphicOptionalVectorArticle(
                 title: "Optional Anchor",
                 embedding: try Vector(float32: [1.0, 0.0, 0.0]),
@@ -379,7 +379,7 @@ struct PolymorphicVectorIndexE2ETests {
     func polymorphicVectorIndexIsMaintainedAndQueriedEndToEnd() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let article = PolymorphicVectorArticle(
                 title: "Anchor",

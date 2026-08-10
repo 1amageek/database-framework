@@ -86,15 +86,15 @@ struct GraphTableExecutorTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self), try DatabaseFrameworkRuntime.entity(NoGraphIndexType.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
 
-        let subspace = try await container.resolveDirectory(for: SocialEdge.self)
+        let subspace = try await container.testBaseDirectory(for: SocialEdge.self)
         let (begin, end) = subspace.range()
         try await database.withTransaction { transaction in
             try transaction.clearRange(beginKey: begin, endKey: end)
         }
-        try await container.ensureIndexesReady()
+        try await container.ensureTestBaseIndexesReady()
 
         return container
     }
@@ -104,7 +104,7 @@ struct GraphTableExecutorTests {
     @Test("Execute GRAPH_TABLE with simple edge pattern")
     func testBasicExecution() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -136,7 +136,7 @@ struct GraphTableExecutorTests {
     @Test("Execute with property filter - equality")
     func testPropertyFilterEquality() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -175,7 +175,7 @@ struct GraphTableExecutorTests {
     @Test("Execute with property filter - comparison")
     func testPropertyFilterComparison() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -212,7 +212,7 @@ struct GraphTableExecutorTests {
     @Test("Execute with multiple property filters")
     func testMultiplePropertyFilters() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -254,7 +254,7 @@ struct GraphTableExecutorTests {
     @Test("Error: complex property expression")
     func testErrorComplexExpression() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         // Complex expression (subquery)
         let source = GraphTableSource(
@@ -300,9 +300,9 @@ struct GraphTableExecutorTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self), try DatabaseFrameworkRuntime.entity(NoGraphIndexType.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
-        let subspace = try await container.resolveDirectory(for: NoGraphIndexType.self)
+        let subspace = try await container.testBaseDirectory(for: NoGraphIndexType.self)
         let (begin, end) = subspace.range()
         try await database.withTransaction { transaction in
             try transaction.clearRange(beginKey: begin, endKey: end)
@@ -321,7 +321,7 @@ struct GraphTableExecutorTests {
 
         do {
             // This should fail because the type has no property-graph index.
-            _ = try await DatabaseContext(container: container).graphTable(
+            _ = try await container.testBaseContext().graphTable(
                 NoGraphIndexType.self,
                 source: source
             )
@@ -339,7 +339,7 @@ struct GraphTableExecutorTests {
     @Test("Array literal does not match scalar property")
     func testArrayLiteralDoesNotMatchScalarProperty() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         try context.insert(
             makeEdge(
@@ -377,7 +377,7 @@ struct GraphTableExecutorTests {
     @Test("Property filter emits matching edges only")
     func testPropertyFilterEmitsMatchingEdgesOnly() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 

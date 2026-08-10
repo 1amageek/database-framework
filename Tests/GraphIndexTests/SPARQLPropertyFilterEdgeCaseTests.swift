@@ -85,27 +85,10 @@ struct SPARQLPropertyFilterEdgeCaseTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeCaseConnection.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
 
-        if try await database.namespaceExists(path: ["sparql_property_filter_edge_case_tests"]) {
-            try await database.removeNamespace(path: ["sparql_property_filter_edge_case_tests"])
-        }
-        try await container.ensureIndexesReady()
-
-        // Set index to readable
-        let subspace = try await container.resolveDirectory(for: EdgeCaseConnection.self)
-        let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
-
-        for descriptor in try EdgeCaseConnection.indexDescriptors {
-            let currentState = try await indexLifecycleStore.state(of: descriptor.name)
-            if currentState == .disabled {
-                try await indexLifecycleStore.enable(descriptor.name)
-                try await indexLifecycleStore.makeReadable(descriptor.name)
-            } else if currentState == .writeOnly {
-                try await indexLifecycleStore.makeReadable(descriptor.name)
-            }
-        }
+        try await container.resetTestBaseData()
 
         return container
     }
@@ -115,7 +98,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Complex filter: OR expression (post-scan)")
     func testOrExpressionPostScan() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -152,7 +135,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Complex filter: NOT expression (post-scan)")
     func testNotExpressionPostScan() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -185,7 +168,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Complex filter: regex (post-scan)")
     func testRegexPostScan() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -219,7 +202,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Explicit SELECT of property variable only")
     func testSelectPropertyVariableOnly() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -255,7 +238,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("SELECT mix of structure and property variables")
     func testSelectMixedVariables() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
         let bob = uniqueID("bob")
@@ -289,7 +272,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Comparison operators: lessThanOrEqual")
     func testLessThanOrEqual() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -323,7 +306,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Comparison operators: greaterThan")
     func testGreaterThan() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -357,7 +340,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Comparison operators: notEquals")
     func testNotEquals() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -391,7 +374,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("String operators: hasPrefix")
     func testHasPrefix() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -423,7 +406,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("String operators: hasSuffix")
     func testHasSuffix() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
@@ -457,7 +440,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     @Test("Empty result: filter excludes all entities")
     func testEmptyResult() async throws {
         let container = try await setupContainer()
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 

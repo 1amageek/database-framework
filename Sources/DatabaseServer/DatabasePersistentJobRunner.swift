@@ -85,17 +85,98 @@ public actor DatabasePersistentJobRunner {
             return
         }
         let leasedSnapshot = leasedJob.snapshot
-        let operationContext = DatabasePersistentJobService.operationContext(
-            for: leasedSnapshot,
-            container: container
-        )
+        let baseAdmission: DatabaseBaseAdmissionKind
+        do {
+            baseAdmission = try registry.resolve(
+                leasedSnapshot.specification.operation
+            ).baseAdmission
+        } catch {
+            // Missing operation implementations still enter the lifecycle-safe
+            // path so `run` can publish the typed registry failure without
+            // granting data access.
+            baseAdmission = .lifecycleJob
+        }
+        switch leasedSnapshot.specification.target {
+        case .database:
+            let operationContext = DatabasePersistentJobService.operationContext(
+                for: leasedSnapshot,
+                container: container,
+                baseContext: nil,
+                baseAdmission: baseAdmission,
+                wireLimits: wireLimits
+            )
+            try await runBound(
+                leasedJob,
+                snapshot: leasedSnapshot,
+                operationContext: operationContext
+            )
+        case .base(let baseID):
+            do {
+                let lease: DatabaseBaseLease
+                switch baseAdmission {
+                case .activeData:
+                    lease = try container.acquireBaseLease(baseID)
+                case .administration, .lifecycleJob:
+                    lease = try container.acquireBaseAdministrationLease(baseID)
+                }
+                try await container.withBaseLease(lease) {
+                    let baseContext = container.session(
+                        authorization:
+                            leasedSnapshot.specification.authorization
+                    ).base(baseID).newContext()
+                    let operationContext = DatabasePersistentJobService
+                        .operationContext(
+                            for: leasedSnapshot,
+                            container: container,
+                            baseContext: baseContext,
+                            baseAdmission: baseAdmission,
+                            wireLimits: wireLimits
+                        )
+                    try await runBound(
+                        leasedJob,
+                        snapshot: leasedSnapshot,
+                        operationContext: operationContext
+                    )
+                }
+            } catch let leaseError as DatabaseBaseExecutionError {
+                let owner = ByteString(leasedSnapshot.specification.jobID.bytes)
+                guard try await container.permitsBaseDeletionFinalization(
+                    baseID,
+                    owner: owner
+                ) else {
+                    throw leaseError
+                }
+                let operationContext = DatabasePersistentJobService
+                    .operationContext(
+                    for: leasedSnapshot,
+                    container: container,
+                    baseContext: nil,
+                    baseAdmission: baseAdmission,
+                    wireLimits: wireLimits
+                    )
+                try await runBound(
+                    leasedJob,
+                    snapshot: leasedSnapshot,
+                    operationContext: operationContext
+                )
+            }
+        case .composition:
+            throw DatabaseJobRuntimeError.invalidTarget
+        }
+    }
+
+    private func runBound(
+        _ leasedJob: LeasedJob,
+        snapshot: DatabasePersistentJobSnapshot,
+        operationContext: DatabaseOperationContext
+    ) async throws {
         try await container.withSchemaLease { _ in
             try await RequestAuthorization.$context.withValue(
                 operationContext.authorization
             ) {
                 try await run(
                     leasedJob,
-                    snapshot: leasedSnapshot,
+                    snapshot: snapshot,
                     operationContext: operationContext
                 )
             }
@@ -123,6 +204,10 @@ public actor DatabasePersistentJobRunner {
                 return
             }
             do {
+                try await authorizeTarget(
+                    operationContext,
+                    snapshot: leasedSnapshot
+                )
                 switch try operation.commitModel(
                     planPayload: leasedSnapshot.plan.payload,
                     limits: wireLimits,
@@ -203,7 +288,7 @@ public actor DatabasePersistentJobRunner {
         let clock = self.clock
         let container = self.container
 
-        return try await container.newContext().withTransaction(
+        return try await container.withControlMetadataTransaction(
             configuration: .batch
         ) { transactionContext in
             let observedNow = clock.now
@@ -307,10 +392,14 @@ public actor DatabasePersistentJobRunner {
             timeoutMilliseconds: snapshot.specification.sliceTimeoutMilliseconds
         )
 
-        try await container.newContext().withTransaction(
+        try await container.withControlMetadataTransaction(
             configuration: transactionConfiguration
         ) { transactionContext in
             let transaction = transactionContext.storageAccess
+            try await self.requireTargetGrant(
+                operationContext,
+                transaction: transaction
+            )
             let currentState = try await store.loadState(
                 snapshot.specification.jobID,
                 specificationDigest: snapshot.specificationDigest,
@@ -379,6 +468,19 @@ public actor DatabasePersistentJobRunner {
             let updated: DatabasePersistentJobState
             switch slice.outcome {
             case .complete(let responsePayload):
+                try await operation.applySuccessfulOutcome(
+                    planPayload: current.plan.payload,
+                    statePayload: current.state.operationStatePayload,
+                    context: DatabaseResumableOperationContext(
+                        jobID: current.specification.jobID,
+                        completedWorkUnitsBeforeSlice:
+                            current.state.completedWorkUnits,
+                        transaction: transactionContext,
+                        operationContext: operationContext
+                    ),
+                    limits: wireLimits,
+                    storageLimits: storageLimits
+                )
                 let responseDigest = try await store.storeResult(
                     responsePayload,
                     snapshot: current,
@@ -439,7 +541,7 @@ public actor DatabasePersistentJobRunner {
             maximumWorkUnits: snapshot.specification.maximumSliceWorkUnits
         )
 
-        try await container.newContext().withTransaction(
+        try await container.withControlMetadataTransaction(
             configuration: Self.batchConfiguration(
                 timeoutMilliseconds: snapshot.specification
                     .sliceTimeoutMilliseconds
@@ -479,6 +581,19 @@ public actor DatabasePersistentJobRunner {
             let updated: DatabasePersistentJobState
             switch slice.outcome {
             case .complete(let responsePayload):
+                try await operation.applySuccessfulOutcome(
+                    planPayload: current.plan.payload,
+                    statePayload: current.state.operationStatePayload,
+                    context: DatabaseResumableOperationContext(
+                        jobID: current.specification.jobID,
+                        completedWorkUnitsBeforeSlice:
+                            current.state.completedWorkUnits,
+                        transaction: transactionContext,
+                        operationContext: operationContext
+                    ),
+                    limits: wireLimits,
+                    storageLimits: storageLimits
+                )
                 let responseDigest = try await store.storeResult(
                     responsePayload,
                     snapshot: current,
@@ -538,7 +653,7 @@ public actor DatabasePersistentJobRunner {
         let leasedState = snapshot.state
         let failureStoragePolicy = self.failureStoragePolicy
 
-        try await container.newContext().withTransaction(
+        try await container.withControlMetadataTransaction(
             configuration: Self.batchConfiguration(
                 timeoutMilliseconds: snapshot.specification
                     .sliceTimeoutMilliseconds
@@ -617,7 +732,38 @@ public actor DatabasePersistentJobRunner {
         let clock = self.clock
         let leasedState = snapshot.state
         do {
-            try await container.newContext().withTransaction(
+            try await container.withControlMetadataTransaction(
+                configuration: .readOnly
+            ) { transactionContext in
+                let currentState = try await store.loadState(
+                    snapshot.specification.jobID,
+                    specificationDigest: snapshot.specificationDigest,
+                    transaction: transactionContext.storageAccess
+                )
+                try Self.validateUnsuccessfulOutcomeLease(
+                    currentState,
+                    expected: leasedState,
+                    runnerID: runnerID,
+                    now: clock.now
+                )
+                guard currentState.pendingUnsuccessfulOutcome == outcome else {
+                    throw DatabaseJobRuntimeError.invalidStateTransition
+                }
+            }
+            try await operation.prepareUnsuccessfulOutcomeCommit(
+                planPayload: snapshot.plan.payload,
+                statePayload: leasedState.operationStatePayload,
+                outcome: outcome,
+                context: DatabaseCheckpointedResumableOperationContext(
+                    jobID: snapshot.specification.jobID,
+                    completedWorkUnitsBeforeSlice:
+                        leasedState.completedWorkUnits,
+                    operationContext: operationContext
+                ),
+                limits: wireLimits,
+                storageLimits: storageLimits
+            )
+            try await container.withControlMetadataTransaction(
                 configuration: Self.batchConfiguration(
                     timeoutMilliseconds: snapshot.specification
                         .sliceTimeoutMilliseconds
@@ -690,7 +836,7 @@ public actor DatabasePersistentJobRunner {
             configuration.unsuccessfulOutcomeCommitInitialBackoffMilliseconds
         let maximumBackoffMilliseconds =
             configuration.unsuccessfulOutcomeCommitMaximumBackoffMilliseconds
-        try await container.newContext().withTransaction(
+        try await container.withControlMetadataTransaction(
             configuration: Self.batchConfiguration(
                 timeoutMilliseconds: snapshot.specification
                     .sliceTimeoutMilliseconds
@@ -733,6 +879,67 @@ public actor DatabasePersistentJobRunner {
             return
         }
         try await scheduler.ensureWakeUp(noLaterThan: next)
+    }
+
+    private func authorizeTarget(
+        _ context: DatabaseOperationContext,
+        snapshot: DatabasePersistentJobSnapshot
+    ) async throws {
+        switch context.target {
+        case .database:
+            try await container.withControlTransaction(
+                requiredAccess: .administer,
+                authorization: context.authorization,
+                configuration: .readOnly
+            ) { _ in () }
+        case .base(let baseID):
+            do {
+                try await container.withBaseAdministrationTransaction(
+                    requiredAccess: .administer,
+                    authorization: context.authorization,
+                    configuration: .readOnly
+                ) { _ in () }
+            } catch {
+                guard try await container.permitsBaseDeletionFinalization(
+                    baseID,
+                    owner: ByteString(snapshot.specification.jobID.bytes)
+                ) else {
+                    throw error
+                }
+            }
+        case .composition:
+            throw DatabaseJobRuntimeError.invalidTarget
+        }
+    }
+
+    private func requireTargetGrant(
+        _ context: DatabaseOperationContext,
+        transaction: any TransactionAccess
+    ) async throws {
+        switch context.target {
+        case .database:
+            try await container.databaseGrantStore.require(
+                .administer,
+                authorization: context.authorization,
+                transaction: transaction
+            )
+        case .base(let baseID):
+            let lease = try container.requireBoundBaseLease()
+            guard lease.baseID == baseID,
+                  lease.domainID == container.controlDomainID.value else {
+                throw DatabaseJobRuntimeError.commitModelMismatch
+            }
+            try await DatabaseGrantStore(
+                resource: .base(baseID),
+                root: lease.root
+            ).require(
+                .administer,
+                authorization: context.authorization,
+                transaction: transaction
+            )
+        case .composition:
+            throw DatabaseJobRuntimeError.invalidTarget
+        }
     }
 
     private static func validateOperationLease(

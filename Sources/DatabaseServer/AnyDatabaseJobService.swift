@@ -5,6 +5,9 @@ import DatabaseEngine
 public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
     public let jobOperations: [JobOperationIdentifier]
 
+    private let resolveBaseAdmission: @Sendable (
+        JobOperationIdentifier
+    ) throws -> DatabaseBaseAdmissionKind
     private let startJob: @Sendable (
         JobStartOperation.Request,
         DatabaseOperationContext
@@ -27,12 +30,23 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
         DatabaseOperationContext,
         DatabaseTransaction
     ) async throws -> JobIdentity)?
+    private let prepareJobInTargetTransaction: (@Sendable (
+        JobStartOperation.Request,
+        DatabaseOperationContext,
+        DatabaseTransaction
+    ) async throws -> DatabasePreparedPersistentJob)?
+    private let storePreparedJobInControlTransaction: (@Sendable (
+        DatabasePreparedPersistentJob,
+        DatabaseTransaction
+    ) async throws -> JobIdentity)?
     private let recoverJobSchedule: (@Sendable () async throws -> Void)?
 
     public convenience init<Service: DatabaseJobService>(_ service: Service) {
         self.init(
             service: service,
             createJobInTransaction: nil,
+            prepareJobInTargetTransaction: nil,
+            storePreparedJobInControlTransaction: nil,
             recoverJobSchedule: nil
         )
     }
@@ -45,6 +59,19 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
                 try await service.createPersistentJob(
                     request,
                     context: context,
+                    transaction: transaction
+                )
+            },
+            prepareJobInTargetTransaction: { request, context, transaction in
+                try await service.preparePersistentJob(
+                    request,
+                    context: context,
+                    transaction: transaction
+                )
+            },
+            storePreparedJobInControlTransaction: { prepared, transaction in
+                try await service.storePreparedPersistentJob(
+                    prepared,
                     transaction: transaction
                 )
             },
@@ -61,9 +88,21 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
             DatabaseOperationContext,
             DatabaseTransaction
         ) async throws -> JobIdentity)?,
+        prepareJobInTargetTransaction: (@Sendable (
+            JobStartOperation.Request,
+            DatabaseOperationContext,
+            DatabaseTransaction
+        ) async throws -> DatabasePreparedPersistentJob)?,
+        storePreparedJobInControlTransaction: (@Sendable (
+            DatabasePreparedPersistentJob,
+            DatabaseTransaction
+        ) async throws -> JobIdentity)?,
         recoverJobSchedule: (@Sendable () async throws -> Void)?
     ) {
         self.jobOperations = service.jobOperations
+        self.resolveBaseAdmission = { operation in
+            try service.baseAdmission(for: operation)
+        }
         self.startJob = { request, context in
             try await service.start(request, context: context)
         }
@@ -80,6 +119,9 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
             try await service.runScheduledWork()
         }
         self.createJobInTransaction = createJobInTransaction
+        self.prepareJobInTargetTransaction = prepareJobInTargetTransaction
+        self.storePreparedJobInControlTransaction =
+            storePreparedJobInControlTransaction
         self.recoverJobSchedule = recoverJobSchedule
     }
 
@@ -88,6 +130,12 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
         context: DatabaseOperationContext
     ) async throws -> JobStartExecutionResult {
         try await startJob(request, context)
+    }
+
+    public func baseAdmission(
+        for operation: JobOperationIdentifier
+    ) throws -> DatabaseBaseAdmissionKind {
+        try resolveBaseAdmission(operation)
     }
 
     public func status(
@@ -125,6 +173,36 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
                 .persistentJobServiceUnavailable
         }
         return try await createJobInTransaction(request, context, transaction)
+    }
+
+    package func preparePersistentJob(
+        _ request: JobStartOperation.Request,
+        context: DatabaseOperationContext,
+        transaction: DatabaseTransaction
+    ) async throws -> DatabasePreparedPersistentJob {
+        guard let prepareJobInTargetTransaction else {
+            throw DatabaseSchemaExecutionError
+                .persistentJobServiceUnavailable
+        }
+        return try await prepareJobInTargetTransaction(
+            request,
+            context,
+            transaction
+        )
+    }
+
+    package func storePreparedPersistentJob(
+        _ prepared: DatabasePreparedPersistentJob,
+        transaction: DatabaseTransaction
+    ) async throws -> JobIdentity {
+        guard let storePreparedJobInControlTransaction else {
+            throw DatabaseSchemaExecutionError
+                .persistentJobServiceUnavailable
+        }
+        return try await storePreparedJobInControlTransaction(
+            prepared,
+            transaction
+        )
     }
 
     package func recoverPersistentJobSchedule() async throws {

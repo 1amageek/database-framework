@@ -72,7 +72,7 @@ struct PropertyPathAdvancedTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AdvancedPathEdge.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
@@ -154,7 +154,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -197,7 +197,7 @@ struct PropertyPathAdvancedTests {
     func testNegatedPropertySetEmpty() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -237,7 +237,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -278,7 +278,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let n1 = uniqueID("N1")
         let n2 = uniqueID("N2")
@@ -317,7 +317,7 @@ struct PropertyPathAdvancedTests {
     func testTransitiveClosureLinearChain() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let n0 = uniqueID("N0")
         let n1 = uniqueID("N1")
@@ -367,7 +367,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let n1 = uniqueID("N1")
         let n2 = uniqueID("N2")
@@ -406,7 +406,7 @@ struct PropertyPathAdvancedTests {
     func testDeepTransitiveClosure() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let linkPred = try uniquePredicate("link")
         let basePrefix = uniqueID("N")
@@ -436,7 +436,7 @@ struct PropertyPathAdvancedTests {
     @Test("Expression depth limit rejects the whole property-path evaluation")
     func testExpressionDepthLimitRejectsPartialSuccess() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let start = uniqueID("ExpressionDepthStart")
         let target = uniqueID("ExpressionDepthTarget")
         let predicate = try uniquePredicate("expression-depth")
@@ -482,7 +482,7 @@ struct PropertyPathAdvancedTests {
     @Test("Traversal depth limit rejects a reachable result prefix")
     func testTraversalDepthLimitRejectsPartialSuccess() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let start = uniqueID("TraversalDepthStart")
         let middle = uniqueID("TraversalDepthMiddle")
         let end = uniqueID("TraversalDepthEnd")
@@ -532,7 +532,7 @@ struct PropertyPathAdvancedTests {
     @Test("Result limit rejects a property-path result prefix")
     func testResultLimitRejectsPartialSuccess() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let start = uniqueID("ResultLimitStart")
         let first = uniqueID("ResultLimitFirst")
         let second = uniqueID("ResultLimitSecond")
@@ -588,7 +588,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let root = uniqueID("Root")
         let child1 = uniqueID("Child1")
@@ -626,7 +626,7 @@ struct PropertyPathAdvancedTests {
     func testInverseWithZeroOrMore() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -668,7 +668,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let start = uniqueID("Start")
         let mid1 = uniqueID("Mid1")
@@ -711,7 +711,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let start = uniqueID("Start")
         let mid1 = uniqueID("Mid1")
@@ -758,7 +758,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let node = uniqueID("Node")
         let unrelatedTarget = uniqueID("UnrelatedTarget")
@@ -794,7 +794,7 @@ struct PropertyPathAdvancedTests {
     func testZeroLengthPathWithEdges() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let node = uniqueID("Node")
         let target = uniqueID("Target")
@@ -826,7 +826,7 @@ struct PropertyPathAdvancedTests {
     func testPropertyPathPerformance100Nodes() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let linkPred = try uniquePredicate("link")
         let prefix = uniqueID("N")
@@ -871,7 +871,7 @@ struct PropertyPathAdvancedTests {
     func testPropertyPathBranchingFactor() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let linkPred = try uniquePredicate("link")
         let prefix = uniqueID("N")
@@ -1093,7 +1093,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -1129,7 +1129,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -1167,7 +1167,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -1205,7 +1205,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -1257,7 +1257,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -1312,7 +1312,7 @@ struct PropertyPathAdvancedTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")

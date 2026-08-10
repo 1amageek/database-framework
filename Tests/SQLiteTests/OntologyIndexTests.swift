@@ -6,6 +6,7 @@ import DatabaseTypes
 import DatabaseKit
 import DatabaseRuntime
 import StorageKit
+import TestSupport
 import TestHeartbeat
 
 private enum OntologyPersistenceVocabulary {
@@ -242,14 +243,14 @@ struct OWLClassRDFSQLiteIntegrationTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntoPerson.self), try DatabaseFrameworkRuntime.entity(OntoOrganization.self), try DatabaseFrameworkRuntime.entity(PlainItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
     @Test("Saving an entity atomically creates its RDF projection")
     func insertCreatesProjection() async throws {
         let container = try await makeContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let person = OntoPerson(name: "Alice", email: "alice@example.com")
 
         try context.insert(person)
@@ -266,7 +267,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
     @Test("Updating an entity replaces stale RDF assertions")
     func updateReplacesProjection() async throws {
         let container = try await makeContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         var person = OntoPerson(name: "Alice", email: "alice@example.com")
 
         try context.insert(person)
@@ -294,7 +295,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
     @Test("Deleting an entity removes its RDF projection")
     func deleteRemovesProjection() async throws {
         let container = try await makeContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let person = OntoPerson(name: "Bob", email: "bob@example.com")
         let subject = try person.ontologySubject()
 

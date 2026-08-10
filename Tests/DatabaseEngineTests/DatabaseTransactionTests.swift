@@ -59,17 +59,12 @@ struct DatabaseTransactionTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(TransactionUser.self), try DatabaseFrameworkRuntime.entity(TransactionProduct.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.namespaceExists(path: ["database_transaction_test_users"]) {
-            try await container.engine.removeNamespace(path: ["database_transaction_test_users"])
-        }
-        if try await container.engine.namespaceExists(path: ["database_transaction_test_products"]) {
-            try await container.engine.removeNamespace(path: ["database_transaction_test_products"])
-        }
+        try await container.resetTestBaseData()
     }
 
     // MARK: - TransactionConfiguration Tests
@@ -145,7 +140,7 @@ struct DatabaseTransactionTests {
     func savesAndFetchesModel() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = TransactionUser(name: "Alice", balance: 100)
 
@@ -178,7 +173,7 @@ struct DatabaseTransactionTests {
     func deletesModel() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = TransactionUser(name: "Bob", balance: 200)
 
@@ -217,7 +212,7 @@ struct DatabaseTransactionTests {
     func fetchesMultipleIdentities() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user1 = TransactionUser(name: "User1", balance: 100)
         let user2 = TransactionUser(name: "User2", balance: 200)
@@ -255,7 +250,7 @@ struct DatabaseTransactionTests {
     func snapshotReadParameter() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = TransactionUser(name: "SnapshotTest", balance: 500)
 
@@ -293,7 +288,7 @@ struct DatabaseTransactionTests {
     func readModifyWritePattern() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = TransactionUser(name: "ModifyTest", balance: 1000)
 
@@ -332,7 +327,7 @@ struct DatabaseTransactionTests {
     func batchConfigurationApplication() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = TransactionUser(name: "BatchTest", balance: 100)
 
@@ -356,7 +351,7 @@ struct DatabaseTransactionTests {
     func interactiveConfigurationApplication() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = TransactionUser(name: "InteractiveTest", balance: 50)
 
@@ -382,7 +377,7 @@ struct DatabaseTransactionTests {
     func withTransactionReturnsResult() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let user = TransactionUser(name: "ReturnTest", balance: 777)
 

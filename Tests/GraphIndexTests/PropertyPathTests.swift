@@ -66,7 +66,7 @@ struct PropertyPathTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForPropertyPath.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
@@ -109,7 +109,7 @@ struct PropertyPathTests {
     func testSimpleIRIPath() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -142,7 +142,7 @@ struct PropertyPathTests {
     func testInversePath() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -177,7 +177,7 @@ struct PropertyPathTests {
     func testSequencePath() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -216,7 +216,7 @@ struct PropertyPathTests {
     func testAlternativePath() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -253,7 +253,7 @@ struct PropertyPathTests {
     func testOneOrMorePath() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -292,7 +292,7 @@ struct PropertyPathTests {
     func testZeroOrMorePath() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -328,7 +328,7 @@ struct PropertyPathTests {
     func testZeroOrOnePath() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -363,7 +363,7 @@ struct PropertyPathTests {
     func testTransitivePathWithCycle() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -403,7 +403,7 @@ struct PropertyPathTests {
     func testCombinedSequenceAlternative() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")

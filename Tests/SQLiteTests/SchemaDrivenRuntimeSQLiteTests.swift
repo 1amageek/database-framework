@@ -202,8 +202,8 @@ struct SchemaDrivenRuntimeSQLiteTests {
                 ),
             ]
         )
-        let compiledAdults = try await compiled.newContext().query(adults)
-        let schemaDrivenAdults = try await schemaDriven.newContext().query(adults)
+        let compiledAdults = try await compiled.testBaseContext().query(adults)
+        let schemaDrivenAdults = try await schemaDriven.testBaseContext().query(adults)
         expectEqual(compiledAdults, schemaDrivenAdults)
 
         let indexedLookup = SelectQuery(
@@ -214,8 +214,8 @@ struct SchemaDrivenRuntimeSQLiteTests {
                 .literal(.string("alice@example.com"))
             )
         )
-        let compiledLookup = try await compiled.newContext().query(indexedLookup)
-        let schemaDrivenLookup = try await schemaDriven.newContext().query(indexedLookup)
+        let compiledLookup = try await compiled.testBaseContext().query(indexedLookup)
+        let schemaDrivenLookup = try await schemaDriven.testBaseContext().query(indexedLookup)
         expectEqual(compiledLookup, schemaDrivenLookup)
 
         let updatedAlice = try persistedAccount(
@@ -225,7 +225,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
             nickname: .string("Alice")
         )
         for container in [compiled, schemaDriven] {
-            try await container.newContext().withTransaction(
+            try await container.testBaseContext().withTransaction(
                 configuration: .batch
             ) { transaction in
                 try await transaction.savePersistedModel(
@@ -249,8 +249,8 @@ struct SchemaDrivenRuntimeSQLiteTests {
                 ),
             ]
         )
-        let compiledRows = try await compiled.newContext().query(allRows)
-        let schemaDrivenRows = try await schemaDriven.newContext().query(allRows)
+        let compiledRows = try await compiled.testBaseContext().query(allRows)
+        let schemaDrivenRows = try await schemaDriven.testBaseContext().query(allRows)
         expectEqual(compiledRows, schemaDrivenRows)
         #expect(compiledRows.rows.count == 1)
         #expect(
@@ -335,7 +335,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
                     configuration: .file(database.path)
                 )
             ),
-            security: .disabled
+            security: .testingDisabled
         ) { schema in
             try DatabaseFrameworkRuntime.configuration(schema: schema)
         }
@@ -349,6 +349,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
                 fingerprint: manifest.fingerprint(),
                 expectedFingerprint: first.schemaFingerprint,
                 idempotencyKey: "sqlite-schema-restore",
+                authorization: TestBaseEnvironment.authorization,
                 runtimeConfiguration: try DatabaseFrameworkRuntime
                     .configuration(schema: targetSchema)
             )
@@ -375,7 +376,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
                     configuration: .file(database.path)
                 )
             ),
-            security: .disabled
+            security: .testingDisabled
         ) { schema in
             try DatabaseFrameworkRuntime.configuration(schema: schema)
         }
@@ -384,7 +385,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
         #expect(reopened.schema == targetSchema)
         #expect(reopened.schemaFingerprint == publication.fingerprint)
         #expect(reopened.schemaGeneration == publication.generation)
-        let response = try await reopened.newContext().query(
+        let response = try await reopened.testBaseContext().query(
             SelectQuery(
                 projection: .all,
                 source: .table(
@@ -432,7 +433,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
 
         let inserted = try PersistedModel(parityEntity(revision: 1))
         for container in [compiled, schemaDriven] {
-            try await container.newContext().withTransaction(
+            try await container.testBaseContext().withTransaction(
                 configuration: .batch
             ) { transaction in
                 try await transaction.savePersistedModel(
@@ -445,7 +446,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
 
         let updated = try PersistedModel(parityEntity(revision: 2))
         for container in [compiled, schemaDriven] {
-            try await container.newContext().withTransaction(
+            try await container.testBaseContext().withTransaction(
                 configuration: .batch
             ) { transaction in
                 try await transaction.savePersistedModel(
@@ -457,7 +458,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
         try await expectIndexBytesEqual(compiled, schemaDriven)
 
         for container in [compiled, schemaDriven] {
-            try await container.newContext().withTransaction(
+            try await container.testBaseContext().withTransaction(
                 configuration: .batch
             ) { transaction in
                 try await transaction.deletePersistedModel(
@@ -577,6 +578,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
         in container: DBContainer,
         indexName: String
     ) async throws -> [RelativeIndexEntry] {
+        try await container.withTestBaseOperation {
         let entitySubspace = try await container.resolveDirectory(
             for: SchemaDrivenIndexParityEntity.self
         )
@@ -596,6 +598,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
                 )
             }
         }
+        }
     }
 
     private func makeContainer(
@@ -605,7 +608,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
         try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: runtimeConfiguration,
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -630,7 +633,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
         _ models: [PersistedModel],
         in container: DBContainer
     ) async throws {
-        try await container.newContext().withTransaction(
+        try await container.testBaseContext().withTransaction(
             configuration: .batch
         ) { transaction in
             for model in models {

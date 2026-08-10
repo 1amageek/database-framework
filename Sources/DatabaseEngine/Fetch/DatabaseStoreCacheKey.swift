@@ -1,4 +1,5 @@
 struct DatabaseStoreCacheKey: Sendable, Equatable, Comparable {
+    let basePlacementGeneration: UInt64
     let entity: String
     let components: [String]
 
@@ -6,6 +7,9 @@ struct DatabaseStoreCacheKey: Sendable, Equatable, Comparable {
         lhs: DatabaseStoreCacheKey,
         rhs: DatabaseStoreCacheKey
     ) -> Bool {
+        if lhs.basePlacementGeneration != rhs.basePlacementGeneration {
+            return lhs.basePlacementGeneration < rhs.basePlacementGeneration
+        }
         if lhs.entity != rhs.entity {
             return lhs.entity < rhs.entity
         }

@@ -2,6 +2,7 @@ import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
+import StorageKit
 
 struct DatabaseIndexStatusPager: Sendable {
     private static let maximumPageSize = 256
@@ -22,7 +23,8 @@ struct DatabaseIndexStatusPager: Sendable {
         index indexFilter: String?,
         partitions partitionFilter: FieldObject,
         continuation: ByteString?,
-        budget: ExecutionBudget
+        budget: ExecutionBudget,
+        transaction: any TransactionAccess
     ) async throws -> DatabaseIndexStatusTargetPage {
         try validateFilters(
             entity: entityFilter,
@@ -84,7 +86,8 @@ struct DatabaseIndexStatusPager: Sendable {
                 let catalogPage = try await container.partitionCatalogPage(
                     entity: entity.name,
                     continuation: state.partitionCatalogContinuation,
-                    limit: 1
+                    limit: 1,
+                    transaction: transaction
                 )
                 guard let entry = catalogPage.entries.first else {
                     state.advanceEntity()

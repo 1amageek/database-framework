@@ -18,6 +18,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         partitions: FieldObject
     ) async throws -> QueryResponse {
         try validate(selectQuery)
+        try context.authorizeRDFDatasetFieldRead()
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .serializable
@@ -50,6 +51,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         transaction: any TransactionAccess
     ) async throws -> QueryResponse {
         try validate(selectQuery)
+        try context.authorizeRDFDatasetFieldRead()
         let runtime = try await makeRuntime(
             context: context,
             partitions: partitions,
@@ -72,6 +74,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> Bool {
+        try context.authorizeRDFDatasetFieldRead()
         let scanner = try await makeRuntime(
             context: context,
             partitions: partitions,
@@ -97,6 +100,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph {
+        try context.authorizeRDFDatasetFieldRead()
         let scanner = try await makeRuntime(
             context: context,
             partitions: partitions,
@@ -122,6 +126,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph {
+        try context.authorizeRDFDatasetFieldRead()
         let scanner = try await makeRuntime(
             context: context,
             partitions: partitions,
@@ -183,7 +188,11 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         }
         return (
             scanner: CanonicalRDFDatasetScanner(
-                authoritativeStore: CanonicalRDFGraphStore(),
+                authoritativeStore: CanonicalRDFGraphStore(
+                    rootSubspace: CanonicalRDFGraphStore.rootSubspace(
+                        forBaseRoot: try context.requireOperationBaseLease().root
+                    )
+                ),
                 projectedSources: projectedSources
             ),
             storedFieldNames: resolution?.indexDescriptor.storedFieldNames ?? []

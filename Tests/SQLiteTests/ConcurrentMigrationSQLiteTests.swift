@@ -112,15 +112,15 @@ struct ConcurrentMigrationSQLiteTests {
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV1.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
         var user = SQLiteConcurrentMigrationUserV1(name: "Alice", email: "alice@example.com")
         user.id = "sqlite-reentrant-user"
         try initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
         await initialContainer.shutdown()
 
         let container = try await DBContainer.open(
@@ -128,17 +128,17 @@ struct ConcurrentMigrationSQLiteTests {
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await container.shutdown() }
 
-        try await container.migrateIfNeeded()
+        try await container.testBaseAdmin().migrateIfNeeded()
         let afterFirst = await concurrentMigrationCounter.snapshot()
 
-        try await container.migrateIfNeeded()
+        try await container.testBaseAdmin().migrateIfNeeded()
         let afterSecond = await concurrentMigrationCounter.snapshot()
 
-        let version = try await container.getCurrentSchemaVersion()
+        let version = try await container.testBaseCurrentSchemaVersion()
 
         #expect(afterFirst == (1, 1))
         #expect(afterSecond == afterFirst)
@@ -155,10 +155,10 @@ struct ConcurrentMigrationSQLiteTests {
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV1.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
 
         for i in 0..<5 {
             var user = SQLiteConcurrentMigrationUserV1(
@@ -169,7 +169,7 @@ struct ConcurrentMigrationSQLiteTests {
             try initialContext.insert(user)
         }
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
         await initialContainer.shutdown()
 
         let containerA = try await DBContainer.open(
@@ -177,7 +177,7 @@ struct ConcurrentMigrationSQLiteTests {
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await containerA.shutdown() }
         let containerB = try await DBContainer.open(
@@ -185,16 +185,16 @@ struct ConcurrentMigrationSQLiteTests {
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await containerB.shutdown() }
 
-        async let migrationA: Void = containerA.migrateIfNeeded()
-        async let migrationB: Void = containerB.migrateIfNeeded()
+        async let migrationA: Void = containerA.testBaseAdmin().migrateIfNeeded()
+        async let migrationB: Void = containerB.testBaseAdmin().migrateIfNeeded()
         _ = try await (migrationA, migrationB)
 
-        let versionA = try await containerA.getCurrentSchemaVersion()
-        let versionB = try await containerB.getCurrentSchemaVersion()
+        let versionA = try await containerA.testBaseCurrentSchemaVersion()
+        let versionB = try await containerB.testBaseCurrentSchemaVersion()
         await containerA.shutdown()
         await containerB.shutdown()
 
@@ -202,10 +202,10 @@ struct ConcurrentMigrationSQLiteTests {
             for: SQLiteConcurrentMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
-        let users = try await verificationContainer.newContext()
+        let users = try await verificationContainer.testBaseContext()
             .fetch(SQLiteConcurrentMigrationUserV2.self)
             .orderBy(SQLiteConcurrentMigrationUserV2.fields.fullName)
             .execute()
@@ -238,10 +238,10 @@ struct ConcurrentMigrationSQLiteTests {
                     ),
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
         for index in 0..<2 {
             var user = SQLiteConcurrentMigrationUserV1(
                 name: "User\(index)",
@@ -251,11 +251,11 @@ struct ConcurrentMigrationSQLiteTests {
             try initialContext.insert(user)
         }
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(
+        try await initialContainer.installTestBaseSchemaSnapshot(
             for: Schema.Version(1, 0, 0)
         )
 
-        let subspace = try await initialContainer.resolveDirectory(
+        let subspace = try await initialContainer.testBaseDirectory(
             for: SQLiteConcurrentMigrationUserV1.self
         )
         var alreadyMigrated = SQLiteConcurrentMigrationUserV2(
@@ -269,15 +269,20 @@ struct ConcurrentMigrationSQLiteTests {
             .pack(try alreadyMigrated.persistableIdentifierTuple())
         let alreadyMigratedBytes = try DataAccess.serialize(alreadyMigrated)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        try await initialContainer.transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: initialContainer.monotonicClock
-        ) { transaction in
-            let storage = initialContainer.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace
-            )
-            try await storage.write(alreadyMigratedBytes, for: alreadyMigratedKey)
+        try await initialContainer.withTestBaseOperation {
+            try await initialContainer.transactionExecutor.withTransaction(
+                configuration: .batch,
+                clock: initialContainer.monotonicClock
+            ) { transaction in
+                let storage = initialContainer.itemStorageFactory.make(
+                    transaction: transaction,
+                    blobsSubspace: blobsSubspace
+                )
+                try await storage.write(
+                    alreadyMigratedBytes,
+                    for: alreadyMigratedKey
+                )
+            }
         }
         await initialContainer.shutdown()
 
@@ -292,19 +297,19 @@ struct ConcurrentMigrationSQLiteTests {
                     ),
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
 
-        try await migratedContainer.migrateIfNeeded()
-        let users = try await migratedContainer.newContext()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
+        let users = try await migratedContainer.testBaseContext()
             .fetch(SQLiteConcurrentMigrationUserV2.self)
             .orderBy(SQLiteConcurrentMigrationUserV2.fields.fullName)
             .execute()
 
         #expect(users.map(\.fullName) == ["User0", "User1"])
         #expect(
-            try await migratedContainer.getCurrentSchemaVersion()
+            try await migratedContainer.testBaseCurrentSchemaVersion()
                 == Schema.Version(2, 0, 0)
         )
     }
@@ -326,10 +331,10 @@ struct ConcurrentMigrationSQLiteTests {
                     ),
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
         var user = SQLiteConcurrentMigrationUserV1(
             name: "Corrupt",
             email: "corrupt@example.com"
@@ -337,11 +342,11 @@ struct ConcurrentMigrationSQLiteTests {
         user.id = "sqlite-corrupt-migration-user"
         try initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(
+        try await initialContainer.installTestBaseSchemaSnapshot(
             for: Schema.Version(1, 0, 0)
         )
 
-        let subspace = try await initialContainer.resolveDirectory(
+        let subspace = try await initialContainer.testBaseDirectory(
             for: SQLiteConcurrentMigrationUserV1.self
         )
         let itemKey = subspace
@@ -350,15 +355,17 @@ struct ConcurrentMigrationSQLiteTests {
             .pack(try user.persistableIdentifierTuple())
         let malformedBytes = ByteString([0xFF])
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        try await initialContainer.transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: initialContainer.monotonicClock
-        ) { transaction in
-            let storage = initialContainer.itemStorageFactory.make(
-                transaction: transaction,
-                blobsSubspace: blobsSubspace
-            )
-            try await storage.write(malformedBytes, for: itemKey)
+        try await initialContainer.withTestBaseOperation {
+            try await initialContainer.transactionExecutor.withTransaction(
+                configuration: .batch,
+                clock: initialContainer.monotonicClock
+            ) { transaction in
+                let storage = initialContainer.itemStorageFactory.make(
+                    transaction: transaction,
+                    blobsSubspace: blobsSubspace
+                )
+                try await storage.write(malformedBytes, for: itemKey)
+            }
         }
         await initialContainer.shutdown()
 
@@ -373,12 +380,12 @@ struct ConcurrentMigrationSQLiteTests {
                     ),
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
 
         do {
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
             Issue.record("Expected malformed persisted data to fail migration")
         } catch let error as DatabaseRuntimeError {
             guard case .internalError(let message) = error else {
@@ -389,7 +396,7 @@ struct ConcurrentMigrationSQLiteTests {
         }
 
         #expect(
-            try await migratedContainer.getCurrentSchemaVersion()
+            try await migratedContainer.testBaseCurrentSchemaVersion()
                 == Schema.Version(1, 0, 0)
         )
         let persistedPayload = try await migratedContainer.transactionExecutor

@@ -4,6 +4,7 @@ import DatabaseRuntime
 import DatabaseTypes
 import DatabaseWire
 import Foundation
+import TestSupport
 import TestHeartbeat
 import Testing
 
@@ -220,7 +221,7 @@ struct SPARQLRuntimeSQLiteTests {
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSPARQLPrimaryStatement.self)],
             entities: [try SQLiteSPARQLPrimaryStatement.schemaEntity]
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         for statement in try primaryStatements() {
             try context.insert(statement)
         }
@@ -236,7 +237,7 @@ struct SPARQLRuntimeSQLiteTests {
                 try SQLiteSPARQLSecondaryStatement.schemaEntity,
             ]
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         try context.insert(
             try primaryStatement(
                 id: "federated-link",
@@ -270,7 +271,7 @@ struct SPARQLRuntimeSQLiteTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: entityRuntimes
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 

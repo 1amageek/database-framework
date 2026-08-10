@@ -25,12 +25,21 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try ContextBindingJob.operation().identifier,
             requestPayload: try encodedValue(13),
             maximumSliceWorkUnits: 1
         )
         let authorization = AuthorizationContext.authenticated(
             Principal(identifier: "persistent-job-user", roles: ["writer"])
+        )
+        try await jobContext.container.grantTestBaseAccess(
+            to: .principal("persistent-job-user"),
+            access: .all
+        )
+        try await jobContext.container.grantTestDatabaseAccess(
+            to: .principal("persistent-job-user"),
+            access: .administer
         )
         let context = try operationContext(
             container: jobContext.container,
@@ -72,6 +81,7 @@ struct DatabasePersistentJobServiceTests {
                     expectedFingerprint: jobContext.container
                         .schemaFingerprint.detached(),
                     idempotencyKey: "publish-during-job-slice",
+                    authorization: authorization,
                     runtimeConfiguration: nextRuntime
                 )
             )
@@ -194,6 +204,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try LargeResultJob.operation().identifier,
             requestPayload: try encodedValue(7),
             maximumSliceWorkUnits: 1
@@ -215,7 +226,8 @@ struct DatabasePersistentJobServiceTests {
         var receivedByteCount = 0
         var expectedDigest: JobResultDigest?
         var digest = JobResultDigestAccumulator(
-            operation: job.operation
+            operation: job.operation,
+            target: job.target
         )
         repeat {
             let result = try await service.result(
@@ -260,7 +272,8 @@ struct DatabasePersistentJobServiceTests {
         let finalExpectedDigest = try #require(expectedDigest)
         #expect(digest.finalize() == finalExpectedDigest)
         var independentlyComputedDigest = JobResultDigestAccumulator(
-            operation: job.operation
+            operation: job.operation,
+            target: job.target
         )
         independentlyComputedDigest.update(expectedEncodedResponse)
         #expect(
@@ -279,6 +292,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try LargeResultJob.operation().identifier,
             requestPayload: try encodedValue(7),
             maximumSliceWorkUnits: 1
@@ -314,7 +328,8 @@ struct DatabasePersistentJobServiceTests {
         let otherJobContinuation = try JobResultOperation.Continuation(
             job: JobIdentity(
                 jobID: DatabaseTypes.UUID(high: jobID.high ^ 1, low: jobID.low),
-                operation: job.operation
+                operation: job.operation,
+                target: job.target
             ),
             responseDigest: responseDigest,
             nextChunkIndex: continuation.nextChunkIndex
@@ -336,7 +351,8 @@ struct DatabasePersistentJobServiceTests {
             operation: try JobOperationIdentifier(
                 family: job.operation.family,
                 kind: "database.test.other-kind"
-            )
+            ),
+            target: job.target
         )
         let otherKindContinuation = try JobResultOperation.Continuation(
             job: otherKindJob,
@@ -395,7 +411,8 @@ struct DatabasePersistentJobServiceTests {
             operation: try JobOperationIdentifier(
                 family: persistedJob.operation.family,
                 kind: "database.test.other-kind"
-            )
+            ),
+            target: persistedJob.target
         )
         let expectedError = DatabaseJobRuntimeError.jobOperationMismatch(
             expected: mismatchedJob.operation,
@@ -440,6 +457,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try LargeResultJob.operation().identifier,
             requestPayload: try encodedValue(7),
             maximumSliceWorkUnits: 1
@@ -470,7 +488,9 @@ struct DatabasePersistentJobServiceTests {
             jobID: jobID,
             index: continuation.nextChunkIndex
         )
-        try await jobContext.container.engine.withTransaction { transaction in
+        try await withControlStorageTransaction(
+            container: jobContext.container
+        ) { transaction in
             try transaction.clear(key: chunkKey)
         }
 
@@ -489,7 +509,9 @@ struct DatabasePersistentJobServiceTests {
             )
         }
 
-        try await jobContext.container.engine.withTransaction { transaction in
+        try await withControlStorageTransaction(
+            container: jobContext.container
+        ) { transaction in
             try transaction.setValue([0x00], for: chunkKey)
         }
         await #expect(throws: DatabaseJobRuntimeError.corruptedResult) {
@@ -557,8 +579,9 @@ struct DatabasePersistentJobServiceTests {
                 component: testCase.0,
                 jobID: jobID
             )
-            try await jobContext.container.engine.withTransaction {
-                transaction in
+            try await withControlStorageTransaction(
+                container: jobContext.container
+            ) { transaction in
                 try transaction.clear(key: key)
             }
             await #expect(throws: testCase.1) {
@@ -592,7 +615,9 @@ struct DatabasePersistentJobServiceTests {
             component: "result-manifests",
             jobID: jobID
         )
-        try await jobContext.container.engine.withTransaction { transaction in
+        try await withControlStorageTransaction(
+            container: jobContext.container
+        ) { transaction in
             try transaction.clear(key: manifestKey)
         }
 
@@ -633,6 +658,7 @@ struct DatabasePersistentJobServiceTests {
                 DatabasePersistentJobSpecification(
                     jobID: specification.jobID,
                     operation: alternateOperation,
+                    target: specification.target,
                     requestDigest: specification.requestDigest,
                     requestID: specification.requestID,
                     traceID: specification.traceID,
@@ -737,6 +763,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try RetryingUnsuccessfulOutcomeJob.operation().identifier,
             requestPayload: try encodedValue(8),
             maximumSliceWorkUnits: 1,
@@ -848,6 +875,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try RetryingUnsuccessfulOutcomeJob
                 .operation().identifier,
             requestPayload: try encodedValue(8),
@@ -932,6 +960,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try RetryingUnsuccessfulOutcomeJob.operation().identifier,
             requestPayload: try encodedValue(8),
             maximumSliceWorkUnits: 1,
@@ -959,7 +988,7 @@ struct DatabasePersistentJobServiceTests {
             storageLimits: persistentJobTestStorageLimits
         )
         let expiredAt = jobContext.clock.now
-        try await jobContext.container.newContext().withTransaction(
+        try await jobContext.container.testBaseContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
             let transaction = transactionContext.storageAccess
@@ -1020,7 +1049,7 @@ struct DatabasePersistentJobServiceTests {
             storageLimits: persistentJobTestStorageLimits
         )
         let expiredAt = jobContext.clock.now
-        try await jobContext.container.newContext().withTransaction(
+        try await jobContext.container.testBaseContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
             let transaction = transactionContext.storageAccess
@@ -1116,6 +1145,7 @@ struct DatabasePersistentJobServiceTests {
             operation: OversizedPlanResumableOperation()
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try OversizedPlanJob.operation().identifier,
             requestPayload: try encodedValue(9),
             maximumSliceWorkUnits: 1
@@ -1151,6 +1181,7 @@ struct DatabasePersistentJobServiceTests {
             operation: OversizedStateResumableOperation()
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try OversizedStateJob.operation().identifier,
             requestPayload: try encodedValue(10),
             maximumSliceWorkUnits: 1
@@ -1196,6 +1227,7 @@ struct DatabasePersistentJobServiceTests {
             operation: OversizedResultResumableOperation()
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try OversizedResultJob.operation().identifier,
             requestPayload: try encodedValue(11),
             maximumSliceWorkUnits: 1
@@ -1243,6 +1275,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try AlwaysFailingJob.operation().identifier,
             requestPayload: try encodedValue(12),
             maximumSliceWorkUnits: 1
@@ -1431,6 +1464,7 @@ struct DatabasePersistentJobServiceTests {
             )
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try CheckpointedCancellationJob
                 .operation().identifier,
             requestPayload: try encodedValue(13),
@@ -1512,6 +1546,7 @@ struct DatabasePersistentJobServiceTests {
     func rejectsNonResumableOperation() async throws {
         let jobContext = try await makePersistentJobServiceContext()
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try JobOperationIdentifier(
                 family: .maintenanceExecute,
                 kind: "database.test.unregistered"
@@ -1535,6 +1570,7 @@ struct DatabasePersistentJobServiceTests {
     func exhaustedLeaseCommitsUnsuccessfulOutcome() async throws {
         let jobContext = try await makePersistentJobServiceContext()
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try TwoSliceJob.operation().identifier,
             requestPayload: try encodedValue(1),
             maximumSliceWorkUnits: 1,
@@ -1560,7 +1596,7 @@ struct DatabasePersistentJobServiceTests {
             storageLimits: persistentJobTestStorageLimits
         )
         let expiredAt = jobContext.clock.now
-        try await jobContext.container.newContext().withTransaction(
+        try await jobContext.container.testBaseContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
             let transaction = transactionContext.storageAccess
@@ -1631,6 +1667,7 @@ struct DatabasePersistentJobServiceTests {
     func missingOperationRegistrationPreservesUnsuccessfulOutcome() async throws {
         let jobContext = try await makePersistentJobServiceContext()
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try TwoSliceJob.operation().identifier,
             requestPayload: try encodedValue(1),
             maximumSliceWorkUnits: 1,
@@ -1656,7 +1693,7 @@ struct DatabasePersistentJobServiceTests {
             storageLimits: persistentJobTestStorageLimits
         )
         let expiredAt = jobContext.clock.now
-        try await jobContext.container.newContext().withTransaction(
+        try await jobContext.container.testBaseContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
             let transaction = transactionContext.storageAccess
@@ -1882,6 +1919,7 @@ struct DatabasePersistentJobServiceTests {
         let scheduler = WakeUpSchedulingFailureProbe(failingAttempts: [3])
         let service = try await jobContext.makeService(scheduler: scheduler)
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try RetryingUnsuccessfulOutcomeJob.operation().identifier,
             requestPayload: try encodedValue(8),
             maximumSliceWorkUnits: 1,
@@ -2031,6 +2069,7 @@ struct DatabasePersistentJobServiceTests {
             operation: FiveSliceResumableOperation()
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try FiveSliceJob.operation().identifier,
             requestPayload: try encodedValue(5),
             maximumSliceWorkUnits: 1,
@@ -2071,6 +2110,7 @@ struct DatabasePersistentJobServiceTests {
             operation: RetryingResumableOperation()
         )
         let request = JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try RetryingJob.operation().identifier,
             requestPayload: try encodedValue(3),
             maximumSliceWorkUnits: 1,
@@ -2163,9 +2203,9 @@ struct DatabasePersistentJobServiceTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let stateStore = try await DatabaseMutationStateStore(
+        let stateStore = DatabaseMutationStateStore(
             container: container
         )
         let coordinator = DatabaseTransactionalOperationCoordinator(
@@ -2194,6 +2234,7 @@ struct DatabasePersistentJobServiceTests {
 
     private func jobRequest() throws -> JobStartOperation.Request {
         JobStartOperation.Request(
+            target: .base(try TestBaseEnvironment.id()),
             operation: try TwoSliceJob.operation().identifier,
             requestPayload: try encodedValue(1),
             maximumSliceWorkUnits: 1,
@@ -2226,7 +2267,7 @@ struct DatabasePersistentJobServiceTests {
         identifiedBy id: String,
         in container: DBContainer
     ) async throws -> UInt8? {
-        try await container.newContext().withTransaction(
+        try await container.testBaseContext().withTransaction(
             configuration: .readOnly
         ) { transaction in
             guard let marker = try await transaction.fetch(
@@ -2249,9 +2290,7 @@ struct DatabasePersistentJobServiceTests {
         component: String,
         jobID: DatabaseTypes.UUID
     ) async throws -> ByteString {
-        let root = try await container.engine.resolveOrCreateNamespace(
-            path: ["database-framework", "persistent-jobs"]
-        )
+        let root = persistentJobRoot(container: container)
         return root.subspace(component).pack(Tuple(jobID))
     }
 
@@ -2260,9 +2299,7 @@ struct DatabasePersistentJobServiceTests {
         jobID: DatabaseTypes.UUID,
         index: UInt32
     ) async throws -> ByteString {
-        let root = try await container.engine.resolveOrCreateNamespace(
-            path: ["database-framework", "persistent-jobs"]
-        )
+        let root = persistentJobRoot(container: container)
         return root.subspace("result-chunks").pack(
             Tuple(jobID, Int64(index))
         )
@@ -2274,9 +2311,7 @@ struct DatabasePersistentJobServiceTests {
         jobID: DatabaseTypes.UUID,
         value: ByteString
     ) async throws {
-        let root = try await container.engine.resolveOrCreateNamespace(
-            path: ["database-framework", "persistent-jobs"]
-        )
+        let root = persistentJobRoot(container: container)
         let key = root.subspace("due").pack(
             Tuple(
                 scheduledAt.secondsSinceUnixEpoch,
@@ -2284,7 +2319,9 @@ struct DatabasePersistentJobServiceTests {
                 jobID
             )
         )
-        try await container.engine.withTransaction { transaction in
+        try await withControlStorageTransaction(
+            container: container
+        ) { transaction in
             try transaction.setValue(value, for: key)
         }
     }
@@ -2301,7 +2338,9 @@ struct DatabasePersistentJobServiceTests {
             component: component,
             jobID: jobID
         )
-        try await container.engine.withTransaction { transaction in
+        try await withControlStorageTransaction(
+            container: container
+        ) { transaction in
             guard let stored = try await transaction.getValue(
                 for: key,
                 snapshot: false
@@ -2324,11 +2363,29 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
+    private func persistentJobRoot(container: DBContainer) -> Subspace {
+        container.storageTopology.controlDomain.root
+            .subspace("persistent-jobs")
+    }
+
+    private func withControlStorageTransaction<Result: Sendable>(
+        container: DBContainer,
+        _ operation: @Sendable @escaping (
+            any TransactionAccess
+        ) async throws -> Result
+    ) async throws -> Result {
+        try await container.controlTransactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock,
+            operation
+        )
+    }
+
     private func operationContext(
         container: DBContainer,
         request: JobStartOperation.Request,
         idempotencyKey: String,
-        authorization: AuthorizationContext = .anonymous
+        authorization: AuthorizationContext = TestBaseEnvironment.authorization
     ) throws -> DatabaseOperationContext {
         try operationContext(
             container: container,
@@ -2344,10 +2401,28 @@ struct DatabasePersistentJobServiceTests {
         operation: DatabaseOperation<Request, Response>,
         request: Request,
         idempotencyKey: String,
-        authorization: AuthorizationContext = .anonymous
+        authorization: AuthorizationContext = TestBaseEnvironment.authorization
     ) throws -> DatabaseOperationContext {
-        DatabaseOperationContext(
+        let baseContext = container.testBaseContext()
+        let requirement: DatabaseOperationRequirement
+        if operation.identifier == .jobStart {
+            requirement = DatabaseOperationRequirement(
+                acceptedTargets: [.database, .base],
+                access: .administer,
+                transaction: .write,
+                baseAdmission: .activeData
+            )
+        } else {
+            requirement = DatabaseOperationRequirement.canonical(
+                for: operation.identifier
+            )
+        }
+        return DatabaseOperationContext(
             container: container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: requirement,
             requestID: 7,
             metadata: OperationRequestMetadata(
                 traceID: "trace",
@@ -2357,7 +2432,8 @@ struct DatabasePersistentJobServiceTests {
             requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
                 operation,
                 request: request
-            )
+            ),
+            wireLimits: .default
         )
     }
 
@@ -2854,12 +2930,12 @@ struct DatabasePersistentJobServiceTests {
                 throw PersistentJobScenarioError.invalidPayload
             }
             let generationBeforeSuspension = context.operationContext
-                .container.schemaGeneration
+                .executor.schemaGeneration
             await executionGate.waitForRelease()
             probe.record(ContextBindingObservation(
                 generationBeforeSuspension: generationBeforeSuspension,
                 generationAfterSuspension: context.operationContext
-                    .container.schemaGeneration,
+                    .executor.schemaGeneration,
                 operationAuthorization: context.operationContext.authorization,
                 taskLocalAuthorization: RequestAuthorization.context
             ))
@@ -2940,12 +3016,11 @@ struct DatabasePersistentJobServiceTests {
             }
             await executionGate.waitForRelease()
             executionCounter.recordExecution()
-            try await StorageTransactionExecutor(
-                engine: context.operationContext.container.engine
-            ).withTransaction(
-                configuration: .batch,
-                clock: TestProcessMonotonicClock()
-            ) { transaction in
+            try await context.operationContext.requireBaseExecutor()
+                .withStorageTransaction(
+                    requiredAccess: .administer,
+                    configuration: .batch
+                ) { transaction in
                     try transaction.setValue([1], for: Self.checkpointKey)
             }
             return .incomplete(

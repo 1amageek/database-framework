@@ -10,39 +10,40 @@ import Testing
 
 @Suite("Canonical graph query paging")
 struct DatabaseGraphQueryPagingTests {
-    @Test("CONSTRUCT pages the canonical graph without gaps or duplicates")
-    func constructPagesCanonicalGraph() async throws {
+    @Test("CONSTRUCT rejects continuation when the backend cannot restore its read version")
+    func constructRejectsNonHistoricalContinuation() async throws {
         let container = try await makeContainer()
         let query = constructQuery()
         let budget = executionBudget()
-        var continuation: ByteString?
-        var snapshots = Set<Int64>()
-        var triples: [RDFQuad] = []
-
-        for _ in 0..<8 {
-            let page = try graphPage(
-                try await execute(
-                    request(
-                        .construct(query),
-                        limit: 1,
-                        continuation: continuation,
-                        budget: budget
-                    ),
-                    container: container
-                )
+        let first = try graphPage(
+            try await execute(
+                request(.construct(query), limit: 1, budget: budget),
+                container: container
             )
-            triples.append(contentsOf: page.triples)
-            if let snapshotVersion = page.snapshotVersion {
-                snapshots.insert(snapshotVersion)
-            }
-            continuation = page.continuation
-            if continuation == nil { break }
+        )
+        let continuation = try #require(first.continuation)
+
+        await expectGraphError(.continuationSnapshotChanged) {
+            try await execute(
+                request(
+                    .construct(query),
+                    limit: 1,
+                    continuation: continuation,
+                    budget: budget
+                ),
+                container: container
+            )
         }
 
-        #expect(continuation == nil)
-        #expect(triples.count == 4)
-        #expect(Set(triples).count == 4)
-        #expect(snapshots.count == 1)
+        let complete = try graphPage(
+            try await execute(
+                request(.construct(query), limit: 10, budget: budget),
+                container: container
+            )
+        )
+        #expect(complete.triples.count == 4)
+        #expect(Set(complete.triples).count == 4)
+        #expect(complete.continuation == nil)
     }
 
     @Test("CONSTRUCT deduplicates globally and scopes template blank nodes per binding")
@@ -185,8 +186,8 @@ struct DatabaseGraphQueryPagingTests {
         })
     }
 
-    @Test("DESCRIBE pages all outgoing triples exactly once")
-    func describePagesOutgoingTriples() async throws {
+    @Test("DESCRIBE rejects continuation when the backend cannot restore its read version")
+    func describeRejectsNonHistoricalContinuation() async throws {
         let container = try await makeContainer()
         let query = DescribeQuery(
             selection: .resources(
@@ -195,29 +196,36 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         let budget = executionBudget()
-        var continuation: ByteString?
-        var triples: [RDFQuad] = []
-
-        for _ in 0..<6 {
-            let page = try graphPage(
-                try await execute(
-                    request(
-                        .describe(query),
-                        limit: 1,
-                        continuation: continuation,
-                        budget: budget
-                    ),
-                    container: container
-                )
+        let first = try graphPage(
+            try await execute(
+                request(.describe(query), limit: 1, budget: budget),
+                container: container
             )
-            triples.append(contentsOf: page.triples)
-            continuation = page.continuation
-            if continuation == nil { break }
+        )
+        let continuation = try #require(first.continuation)
+
+        await expectGraphError(.continuationSnapshotChanged) {
+            try await execute(
+                request(
+                    .describe(query),
+                    limit: 1,
+                    continuation: continuation,
+                    budget: budget
+                ),
+                container: container
+            )
         }
 
-        #expect(continuation == nil)
+        let complete = try graphPage(
+            try await execute(
+                request(.describe(query), limit: 10, budget: budget),
+                container: container
+            )
+        )
+        let triples = complete.triples
         #expect(triples.count == 3)
         #expect(Set(triples).count == 3)
+        #expect(complete.continuation == nil)
         let describedIRI = try RDFIRI(Self.describedSubject)
         #expect(triples.allSatisfy { $0.subject == .iri(describedIRI) })
     }
@@ -388,7 +396,7 @@ struct DatabaseGraphQueryPagingTests {
             )
         )
         let continuation = try #require(first.continuation)
-        let context = container.newContext()
+        let context = container.testBaseContext()
         try context.insert(
             try statement(
                 id: "source-3",
@@ -469,13 +477,16 @@ struct DatabaseGraphQueryPagingTests {
         let frame = try encoder.encodeRequest(
             DatabaseOperations.queryExecute,
             requestID: 77,
+            target: .base(try TestBaseEnvironment.id()),
             metadata: OperationRequestMetadata(traceID: "graph-page"),
             request: operationRequest
         )
 
         let responseFrame = try await endpoint.execute(
             frame,
-            context: DatabaseRequestExecutionContext(authorization: .anonymous)
+            context: DatabaseRequestExecutionContext(
+                authorization: TestBaseEnvironment.authorization
+            )
         )
         let header = try decoder.decodeResponseHeader(responseFrame)
         let decoded = try decoder.decodeResponse(
@@ -492,7 +503,10 @@ struct DatabaseGraphQueryPagingTests {
         #expect(header.requestID == 77)
         #expect(page.triples.count == 2)
         #expect(page.continuation != nil)
-        #expect(page.snapshotVersion != nil)
+        if case .transactional = page.consistency {
+        } else {
+            Issue.record("Expected one transactional Base read point")
+        }
     }
 
     @Test("cold SPARQL resolution uses one read-only caller transaction")
@@ -863,7 +877,7 @@ struct DatabaseGraphQueryPagingTests {
         engine: any StorageEngine
     ) async throws -> DBContainer {
         let container = try await makeEmptyContainer(engine: engine)
-        let context = container.newContext()
+        let context = container.testBaseContext()
         try context.insert(
             try statement(
                 id: "source-1",
@@ -961,7 +975,7 @@ struct DatabaseGraphQueryPagingTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphQueryStatement.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -1037,18 +1051,28 @@ struct DatabaseGraphQueryPagingTests {
         _ request: QueryExecuteOperation.Request,
         container: DBContainer
     ) async throws -> QueryExecuteOperation.Response {
-        try await QueryExecuteHandler().handle(
-            request,
-            context: DatabaseOperationContext(
-                container: container,
-                requestID: 1,
-                metadata: OperationRequestMetadata(),
-                requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
-                    DatabaseOperations.queryExecute,
-                    request: request
+        let baseContext = container.testBaseContext()
+        return try await baseContext.withBaseOperation {
+            try await QueryExecuteHandler().handle(
+                request,
+                context: DatabaseOperationContext(
+                    container: container,
+                    target: .base(baseContext.baseID),
+                    baseContext: baseContext,
+                    composition: nil,
+                    requirement: .canonical(for: .queryExecute),
+                    requestID: 1,
+                    metadata: OperationRequestMetadata(),
+                    authorization: TestBaseEnvironment.authorization,
+                    requestPayload: try DatabaseWireEncoder()
+                        .encodeRequestPayload(
+                            DatabaseOperations.queryExecute,
+                            request: request
+                        ),
+                    wireLimits: .default
                 )
             )
-        )
+        }
     }
 
     private func graphPage(
@@ -1062,7 +1086,7 @@ struct DatabaseGraphQueryPagingTests {
                 maximumCount: page.quadCount
             ),
             continuation: page.continuation,
-            snapshotVersion: page.snapshotVersion
+            consistency: page.consistency
         )
     }
 
@@ -1078,7 +1102,7 @@ struct DatabaseGraphQueryPagingTests {
                 maximumCount: page.rowCount
             ),
             continuation: page.continuation,
-            snapshotVersion: page.snapshotVersion
+            consistency: page.consistency
         )
     }
 
@@ -1097,14 +1121,14 @@ struct DatabaseGraphQueryPagingTests {
     private struct MaterializedGraphPage {
         let triples: [RDFQuad]
         let continuation: ByteString?
-        let snapshotVersion: Int64?
+        let consistency: DatabaseKit.DatabaseReadConsistency
     }
 
     private struct MaterializedRowPage {
         let columns: [QueryColumn]
         let rows: [DatabaseWire.QueryRow]
         let continuation: ByteString?
-        let snapshotVersion: UInt64?
+        let consistency: DatabaseKit.DatabaseReadConsistency
     }
 
     private func boolean(
@@ -1113,7 +1137,7 @@ struct DatabaseGraphQueryPagingTests {
         guard case .boolean(let value) = response else {
             throw GraphQueryResponseAssertionError.expectedBoolean
         }
-        return value
+        return value.value
     }
 
     private static let namedGraphOne = "urn:graph:one"

@@ -39,7 +39,7 @@ struct PostgreSQLCRUDTests {
     func roundTrip() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let itemId = uniqueID("demo")
 
@@ -101,7 +101,7 @@ struct PostgreSQLCRUDTests {
     func batchInsertSave() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let ids = (0..<5).map { _ in uniqueID("batch") }
 
@@ -132,7 +132,7 @@ struct PostgreSQLCRUDTests {
     func deleteViaChangeTracking() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let itemId = uniqueID("del")
             var item = PGDemoItem()
@@ -168,7 +168,7 @@ struct PostgreSQLCRUDTests {
     func fetchWithWhere() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let id1 = uniqueID("fw1")
             let id2 = uniqueID("fw2")
@@ -198,7 +198,7 @@ struct PostgreSQLCRUDTests {
     func fetchWithLimit() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Insert several items
             for i in 0..<10 {
@@ -225,7 +225,7 @@ struct PostgreSQLCRUDTests {
     func readNonExistent() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await context.withTransaction { tx in
                 let fetched = try await tx.fetch(PGDemoItem.self, identifiedBy: "nonexistent-id")
@@ -238,7 +238,7 @@ struct PostgreSQLCRUDTests {
     func upsertBehavior() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let itemId = uniqueID("upsert")
 
@@ -271,7 +271,7 @@ struct PostgreSQLCRUDTests {
     func emptyArrayRoundTrip() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let itemId = uniqueID("empty-arr")
 

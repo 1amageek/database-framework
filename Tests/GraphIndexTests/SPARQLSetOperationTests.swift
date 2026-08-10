@@ -61,7 +61,7 @@ struct SPARQLSetOperationTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SetOperationEdge.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
@@ -171,7 +171,7 @@ struct SPARQLSetOperationTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -225,7 +225,7 @@ struct SPARQLSetOperationTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let alice = uniqueID("Alice")
         let bob = uniqueID("Bob")
@@ -287,7 +287,7 @@ struct SPARQLSetOperationTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let person = uniqueID("Person")
         let namePred = uniqueID("name")
@@ -344,7 +344,7 @@ struct SPARQLSetOperationTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let typePred = uniqueID("type")
         let statusPred = uniqueID("status")
@@ -389,7 +389,7 @@ struct SPARQLSetOperationTests {
     func testMinusNoOverlap() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predA = uniqueID("hasA")
         let predB = uniqueID("hasB")
@@ -430,7 +430,7 @@ struct SPARQLSetOperationTests {
     func testMinusRemovesAll() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predType = uniqueID("type")
         let predFlag = uniqueID("flagged")
@@ -476,7 +476,7 @@ struct SPARQLSetOperationTests {
 
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pricePred = uniqueID("price")
         let discountPred = uniqueID("discount")
@@ -526,7 +526,7 @@ struct SPARQLSetOperationTests {
     func testUnionWithCommonFilter() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predA = uniqueID("valueA")
         let predB = uniqueID("valueB")
@@ -577,7 +577,7 @@ struct SPARQLSetOperationTests {
     func testUnionRemovesDuplicates() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred1 = uniqueID("rel1")
         let pred2 = uniqueID("rel2")
@@ -623,7 +623,7 @@ struct SPARQLSetOperationTests {
     func testUnionEmptyLeft() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred1 = uniqueID("emptyPred")
         let pred2 = uniqueID("hasSomething")
@@ -664,7 +664,7 @@ struct SPARQLSetOperationTests {
     func testUnionEmptyRight() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred1 = uniqueID("hasSomething")
         let pred2 = uniqueID("emptyPred")
@@ -704,7 +704,7 @@ struct SPARQLSetOperationTests {
     func testUnionBothEmpty() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred1 = uniqueID("empty1")
         let pred2 = uniqueID("empty2")
@@ -729,7 +729,7 @@ struct SPARQLSetOperationTests {
     func testMinusFromEmpty() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred1 = uniqueID("empty")
         let pred2 = uniqueID("something")
@@ -766,7 +766,7 @@ struct SPARQLSetOperationTests {
     func testMinusEmptySet() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let pred1 = uniqueID("something")
         let pred2 = uniqueID("empty")

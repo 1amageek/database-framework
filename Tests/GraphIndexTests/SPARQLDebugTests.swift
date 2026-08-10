@@ -69,25 +69,18 @@ struct SPARQLDebugTests {
             version: Schema.Version(1, 0, 0)
         )
 
-        // Clean up directory BEFORE creating container to avoid stale state
-
-        if try await database.namespaceExists(path: ["test", "debug_rdf"]) {
-            try await database.removeNamespace(path: ["test", "debug_rdf"])
-        }
-
-        // Create container and ensure indexes are ready AFTER cleanup
         let container = try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DebugEdge.self), try DatabaseFrameworkRuntime.entity(DebugRDFStatement.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
 
         // Set index to readable
-        let subspace = try await container.resolveDirectory(for: DebugRDFStatement.self)
+        let subspace = try await container.testBaseDirectory(for: DebugRDFStatement.self)
         let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
         let indexName = "debug_rdf"
 
@@ -100,7 +93,7 @@ struct SPARQLDebugTests {
         }
 
         // Insert test data
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
         let alice = "https://example.com/person/alice-debug"
         let bob = "https://example.com/person/bob-debug"
         let knows = "https://example.com/vocabulary/knows"
@@ -170,25 +163,18 @@ struct SPARQLDebugTests {
             version: Schema.Version(1, 0, 0)
         )
 
-        // Clean up directory BEFORE creating container to avoid stale state
-
-        if try await database.namespaceExists(path: ["test", "debug_edge"]) {
-            try await database.removeNamespace(path: ["test", "debug_edge"])
-        }
-
-        // Create container and ensure indexes are ready AFTER cleanup
         let container = try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DebugEdge.self), try DatabaseFrameworkRuntime.entity(DebugRDFStatement.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
 
         // Set index to readable
-        let subspace = try await container.resolveDirectory(for: DebugEdge.self)
+        let subspace = try await container.testBaseDirectory(for: DebugEdge.self)
         let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
         let indexName = "debug_graph"
 
@@ -201,7 +187,7 @@ struct SPARQLDebugTests {
         }
 
         // Insert test data
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
         let alice = "alice-direct"
         let bob = "bob-direct"
 
@@ -217,7 +203,7 @@ struct SPARQLDebugTests {
 
         // Direct GraphPropertyScanner test
         // Index entries are stored at [typeSubspace]/I/[indexName], not [typeSubspace]/[indexName]
-        let typeSubspace = try await container.resolveDirectory(for: DebugEdge.self)
+        let typeSubspace = try await container.testBaseDirectory(for: DebugEdge.self)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes).subspace(indexName)
 
         let metadata = try PropertyGraphIndexMetadata(canonical: indexDescriptor.kind)

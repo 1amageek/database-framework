@@ -3,7 +3,7 @@ import DatabaseKit
 import DatabaseWire
 
 /// Iteratively measures retained RDF graph payload before allocation.
-final class DatabaseRDFQuadFootprintMeter {
+package final class DatabaseRDFQuadFootprintMeter {
     private static let scratchContainerByteCount: UInt64 = 64
     private static let scratchSlotByteCount: UInt64 = 48
     private static let initialScratchCapacity = 4
@@ -30,7 +30,7 @@ final class DatabaseRDFQuadFootprintMeter {
         self.accountedCapacity = 0
     }
 
-    static func make(
+    package static func make(
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> DatabaseRDFQuadFootprintMeter {
@@ -44,7 +44,7 @@ final class DatabaseRDFQuadFootprintMeter {
         )
     }
 
-    func footprint(
+    package func footprint(
         of quad: borrowing RDFQuad
     ) throws -> DatabaseIntermediateFootprint {
         precondition(worklist.isEmpty)
@@ -86,7 +86,7 @@ final class DatabaseRDFQuadFootprintMeter {
         return DatabaseIntermediateFootprint(rows: 1, bytes: bytes)
     }
 
-    func shutdown() {
+    package func shutdown() {
         worklist.removeAll(keepingCapacity: false)
         accountedCapacity = 0
         scratchReservation?.release()

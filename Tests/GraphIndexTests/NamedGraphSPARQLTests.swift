@@ -226,13 +226,6 @@ struct NamedGraphSPARQLTests {
     private func seededContext() async throws -> DatabaseContext {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        if try await database.namespaceExists(
-            path: ["named_graph_sparql_tests"]
-        ) {
-            try await database.removeNamespace(
-                path: ["named_graph_sparql_tests"]
-            )
-        }
         let schema = try Schema(
             entities: [try SPARQLQuadStatement.schemaEntity],
             version: Schema.Version(1, 0, 0)
@@ -241,10 +234,10 @@ struct NamedGraphSPARQLTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLQuadStatement.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
-        try await container.ensureIndexesReady()
-        let context = container.newContext()
+        try await container.resetTestBaseData()
+        let context = container.testBaseContext()
 
         let quads = [
             try statement(alice, knows, bob, graph: socialGraph),

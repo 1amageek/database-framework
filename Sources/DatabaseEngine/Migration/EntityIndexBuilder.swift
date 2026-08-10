@@ -10,8 +10,8 @@ import DatabaseKit
 ///
 /// Dispatches through the statically bound entity runtime without reopening a
 /// model metatype during database execution.
-public struct EntityIndexBuilder {
-    public static func buildIndex(
+package struct EntityIndexBuilder {
+    package static func buildIndex(
         for runtime: EntityRuntimeRegistration,
         container: DBContainer,
         storeSubspace: Subspace,

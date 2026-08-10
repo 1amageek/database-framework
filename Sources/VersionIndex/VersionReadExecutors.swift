@@ -85,7 +85,10 @@ private struct VersionReadExecutor: IndexReadExecutor {
                 expectedEntity: entity.name
             )
             let canonical = try runtime.canonicalized(persisted)
-            try context.container.securityDelegate?.evaluateGet(persisted)
+            try context.container.securityDelegate?.evaluateGet(
+                persisted,
+                fields: nil
+            )
             results.append((result.version, canonical))
         }
 
@@ -169,7 +172,10 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
                 expectedEntity: runtime.entity.name
             )
             let item = try runtime.canonicalized(persistedModel)
-            try context.container.securityDelegate?.evaluateGet(persistedModel)
+            try context.container.securityDelegate?.evaluateGet(
+                persistedModel,
+                fields: nil
+            )
             results.append((result.version, item))
         }
 

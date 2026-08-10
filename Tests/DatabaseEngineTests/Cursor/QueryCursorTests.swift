@@ -46,7 +46,7 @@ struct QueryCursorTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(PaginatedUser.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -80,7 +80,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 25)
 
             let cursor = try context.cursor(PaginatedUser.self)
@@ -107,7 +107,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 50)
 
             let cursor = try context.cursor(PaginatedUser.self)
@@ -132,7 +132,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let cursor = try context.cursor(PaginatedUser.self)
                 .batchSize(10)
@@ -152,7 +152,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let seeded = try await seedUsers(context: context, count: 25)
 
             let cursor = try context.cursor(PaginatedUser.self)
@@ -176,7 +176,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let seeded = try await seedUsers(context: context, count: 18)
 
             let cursor = try context.cursor(PaginatedUser.self)
@@ -195,7 +195,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 50)
 
             let cursor = try context.cursor(PaginatedUser.self)
@@ -217,7 +217,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 25)
 
             let cursor = try context.cursor(PaginatedUser.self)
@@ -258,7 +258,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 5)
 
             let cursor = try context.cursor(PaginatedUser.self)
@@ -285,7 +285,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 5)
 
             let cursor = try context.cursor(PaginatedUser.self)
@@ -304,7 +304,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 3)
 
             let cursor = try context.cursor(PaginatedUser.self)
@@ -334,7 +334,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 10)
 
             let cursor = try context.cursor(PaginatedUser.self)
@@ -354,7 +354,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 12)
             let firstCursor = try context.cursor(PaginatedUser.self)
                 .orderBy(PaginatedUser.fields.name)
@@ -387,7 +387,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 12)
             let firstPage = try await context.cursor(PaginatedUser.self)
                 .where(PaginatedUser.fields.age > 20)
@@ -415,7 +415,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
             _ = try await seedUsers(context: context, count: 15)
             let cursor = try context.cursor(PaginatedUser.self)
                 .orderBy(PaginatedUser.fields.name)
@@ -441,7 +441,7 @@ struct QueryCursorTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let cursor = try container.newContext()
+            let cursor = try container.testBaseContext()
                 .cursor(PaginatedUser.self)
                 .build()
             await cursor.shutdown()
@@ -457,7 +457,7 @@ struct QueryCursorTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             #expect(throws: QueryCursorError.self) {
                 _ = try context.cursor(PaginatedUser.self)

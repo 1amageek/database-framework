@@ -20,6 +20,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
     }
 
     public let operation: JobOperationIdentifier
+    public let baseAdmission: DatabaseBaseAdmissionKind
 
     private let prepareJob: @Sendable (
         ByteString,
@@ -48,6 +49,21 @@ public struct AnyDatabaseResumableOperation: Sendable {
         DatabaseWireLimits,
         DatabasePersistentJobStorageLimits
     ) async throws -> Slice
+    private let applySuccessfulOutcome: @Sendable (
+        ByteString,
+        ByteString,
+        DatabaseResumableOperationContext,
+        DatabaseWireLimits,
+        DatabasePersistentJobStorageLimits
+    ) async throws -> Void
+    private let prepareUnsuccessfulOutcomeCommit: @Sendable (
+        ByteString,
+        ByteString,
+        DatabaseJobUnsuccessfulOutcome,
+        DatabaseCheckpointedResumableOperationContext,
+        DatabaseWireLimits,
+        DatabasePersistentJobStorageLimits
+    ) async throws -> Void
     private let applyUnsuccessfulOutcome: @Sendable (
         ByteString,
         ByteString,
@@ -62,6 +78,7 @@ public struct AnyDatabaseResumableOperation: Sendable {
     ) throws {
         let job = try Operation.job()
         self.operation = job.identifier
+        self.baseAdmission = operation.baseAdmission
         self.prepareJob = { payload, context, limits, storageLimits in
             let request = try job.decodeStartRequest(
                 payload,
@@ -227,6 +244,72 @@ public struct AnyDatabaseResumableOperation: Sendable {
                 outcome: outcome
             )
         }
+        self.applySuccessfulOutcome = {
+            planPayload,
+            statePayload,
+            context,
+            limits,
+            storageLimits in
+            let plan: Operation.Plan
+            do {
+                plan = try decodePersistentJobPayload(
+                    Operation.Plan.self,
+                    from: planPayload,
+                    limits: try storageLimits.planWireLimits(basedOn: limits)
+                )
+            } catch {
+                throw DatabaseJobRuntimeError.corruptedPlan
+            }
+            let state: Operation.State
+            do {
+                state = try decodePersistentJobPayload(
+                    Operation.State.self,
+                    from: statePayload,
+                    limits: try storageLimits.stateWireLimits(basedOn: limits)
+                )
+            } catch {
+                throw DatabaseJobRuntimeError.corruptedState
+            }
+            try await operation.applySuccessfulOutcome(
+                plan: plan,
+                state: state,
+                context: context
+            )
+        }
+        self.prepareUnsuccessfulOutcomeCommit = {
+            planPayload,
+            statePayload,
+            outcome,
+            context,
+            limits,
+            storageLimits in
+            let plan: Operation.Plan
+            do {
+                plan = try decodePersistentJobPayload(
+                    Operation.Plan.self,
+                    from: planPayload,
+                    limits: try storageLimits.planWireLimits(basedOn: limits)
+                )
+            } catch {
+                throw DatabaseJobRuntimeError.corruptedPlan
+            }
+            let state: Operation.State
+            do {
+                state = try decodePersistentJobPayload(
+                    Operation.State.self,
+                    from: statePayload,
+                    limits: try storageLimits.stateWireLimits(basedOn: limits)
+                )
+            } catch {
+                throw DatabaseJobRuntimeError.corruptedState
+            }
+            try await operation.prepareUnsuccessfulOutcomeCommit(
+                plan: plan,
+                state: state,
+                outcome: outcome,
+                context: context
+            )
+        }
         self.applyUnsuccessfulOutcome = {
             planPayload,
             statePayload,
@@ -321,6 +404,22 @@ public struct AnyDatabaseResumableOperation: Sendable {
         )
     }
 
+    func applySuccessfulOutcome(
+        planPayload: ByteString,
+        statePayload: ByteString,
+        context: DatabaseResumableOperationContext,
+        limits: DatabaseWireLimits,
+        storageLimits: DatabasePersistentJobStorageLimits
+    ) async throws {
+        try await applySuccessfulOutcome(
+            planPayload,
+            statePayload,
+            context,
+            limits,
+            storageLimits
+        )
+    }
+
     func applyUnsuccessfulOutcome(
         planPayload: ByteString,
         statePayload: ByteString,
@@ -330,6 +429,24 @@ public struct AnyDatabaseResumableOperation: Sendable {
         storageLimits: DatabasePersistentJobStorageLimits
     ) async throws {
         try await applyUnsuccessfulOutcome(
+            planPayload,
+            statePayload,
+            outcome,
+            context,
+            limits,
+            storageLimits
+        )
+    }
+
+    func prepareUnsuccessfulOutcomeCommit(
+        planPayload: ByteString,
+        statePayload: ByteString,
+        outcome: DatabaseJobUnsuccessfulOutcome,
+        context: DatabaseCheckpointedResumableOperationContext,
+        limits: DatabaseWireLimits,
+        storageLimits: DatabasePersistentJobStorageLimits
+    ) async throws {
+        try await prepareUnsuccessfulOutcomeCommit(
             planPayload,
             statePayload,
             outcome,

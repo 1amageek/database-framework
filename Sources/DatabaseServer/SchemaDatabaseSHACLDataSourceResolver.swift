@@ -11,16 +11,13 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
     DatabaseSHACLDataSourceResolver {
     private let container: DBContainer
     private let stateStore: DatabaseMutationStateStore
-    private let ontologyStore: OntologyStore
 
     public init(
         container: DBContainer,
-        stateStore: DatabaseMutationStateStore,
-        ontologyStore: OntologyStore
+        stateStore: DatabaseMutationStateStore
     ) {
         self.container = container
         self.stateStore = stateStore
-        self.ontologyStore = ontologyStore
     }
 
     public func resolve(
@@ -41,7 +38,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
             sources: resolved.source.map { [$0] } ?? []
         )
         let entailmentResolution = try await DatabaseSHACLEntailmentResolver(
-            ontologyStore: ontologyStore,
+            ontologyStore: try ontologyStore(),
             monotonicClock: container.monotonicClock
         ).resolve(
             entailment,
@@ -59,7 +56,9 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
             transaction: transaction
         )
         try workBudget.consume()
+        let baseID = try container.requireActiveBaseLease().baseID
         let logicalVersion = try await stateStore.currentLogicalVersion(
+            for: .base(baseID),
             transaction: transaction
         )
 
@@ -74,6 +73,16 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
             entailmentContext: entailmentResolution.entailmentContext,
             selectedFocusNodes: selectedFocusNodes,
             snapshotFingerprint: Self.bigEndianBytes(logicalVersion)
+        )
+    }
+
+    private func ontologyStore() throws -> OntologyStore {
+        let root = try container.requireActiveBaseLease().root
+            .subspace("data")
+            .subspace("database-framework")
+            .subspace("ontology-index")
+        return OntologyStore(
+            subspace: OntologySubspace(base: root)
         )
     }
 
@@ -109,8 +118,16 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         )
         let indexSubspace: Subspace?
         do {
+            let baseID = try container.requireActiveBaseLease().baseID
+            let databaseContext = container.session(
+                authorization: RequestAuthorization.context
+            ).base(baseID).newContext()
+            try databaseContext.authorizeIndexFieldRead(
+                entity: entity,
+                descriptor: descriptor
+            )
             indexSubspace = try await IndexQueryContext(
-                context: container.newContext()
+                context: databaseContext
             ).readableIndex(
                 named: data.index,
                 kindIdentifier: descriptor.kindIdentifier,
@@ -232,6 +249,10 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                     ) else {
                     throw DatabaseSHACLDataSourceError.focusEntityNotFound(identity)
                 }
+                try container.securityDelegate?.evaluateGet(
+                    entity,
+                    fields: [selection.metadata.subjectFieldName]
+                )
                 let fields = try DatabaseEntityProjection.fieldObject(
                     for: entity
                 )

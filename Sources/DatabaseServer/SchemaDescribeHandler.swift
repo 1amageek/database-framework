@@ -12,23 +12,30 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
         _ request: EmptyOperationPayload,
         context: DatabaseOperationContext
     ) async throws -> SchemaDescribeOperation.Response {
-        let entities = try context.container.schema.entities
-            .sorted { $0.name < $1.name }
-            .map {
-                try Self.describe(
-                    $0,
-                    container: context.container
-                )
-            }
-        return SchemaDescribeOperation.Response(
-            version: context.container.schema.version,
-            entities: entities
-        )
+        _ = request
+        let executor = try context.requireControlExecutor()
+        return try await executor.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
+        ) { _ in
+            let entities = try context.executor.schema.entities
+                .sorted { $0.name < $1.name }
+                .map {
+                    try Self.describe(
+                        $0,
+                        runtimeConfiguration: executor.runtimeConfiguration
+                    )
+                }
+            return SchemaDescribeOperation.Response(
+                version: context.executor.schema.version,
+                entities: entities
+            )
+        }
     }
 
     private static func describe(
         _ entity: Schema.Entity,
-        container: DBContainer
+        runtimeConfiguration: DatabaseRuntimeConfiguration
     ) throws -> SchemaDescribeOperation.Entity {
         let fields = try entity.fields
             .sorted { $0.fieldNumber < $1.fieldNumber }
@@ -49,7 +56,7 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
                     reference: try reference(
                         for: field,
                         entity: entity,
-                        container: container
+                        runtimeConfiguration: runtimeConfiguration
                     )
                 )
             }
@@ -149,10 +156,10 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
     private static func reference(
         for field: FieldSchema,
         entity: Schema.Entity,
-        container: DBContainer
+        runtimeConfiguration: DatabaseRuntimeConfiguration
     ) throws -> SchemaDescribeOperation.Reference? {
         guard field.type == .reference else { return nil }
-        guard container.runtimeConfiguration.entityRuntimes.registration(
+        guard runtimeConfiguration.entityRuntimes.registration(
             named: entity.name
         ) != nil,
               let descriptor = entity.relationships.first(where: {

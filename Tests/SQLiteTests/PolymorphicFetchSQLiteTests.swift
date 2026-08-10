@@ -220,7 +220,7 @@ struct PolymorphicFetchSQLiteTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -240,7 +240,7 @@ struct PolymorphicFetchSQLiteTests {
             runtimeConfiguration: try vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorReport.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -260,7 +260,7 @@ struct PolymorphicFetchSQLiteTests {
             runtimeConfiguration: try vectorRuntimeConfiguration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicOptionalVectorArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicOptionalVectorReport.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -287,7 +287,7 @@ struct PolymorphicFetchSQLiteTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorNoIndexArticle.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -296,6 +296,7 @@ struct PolymorphicFetchSQLiteTests {
         indexName: String,
         valuePrefix: String? = nil
     ) async throws -> Int {
+        try await container.withTestBaseOperation {
         let group = try container.polymorphicGroup(identifier: SQLitePolymorphicArticle.polymorphableType)
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
         let baseIndexSubspace = groupSubspace
@@ -320,9 +321,11 @@ struct PolymorphicFetchSQLiteTests {
                 snapshot: true
             ).count
         }
+        }
     }
 
     private func countPolymorphicVectorIndexEntries(container: DBContainer) async throws -> Int {
+        try await container.withTestBaseOperation {
         let group = try container.polymorphicGroup(identifier: SQLitePolymorphicVectorArticle.polymorphableType)
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
         let indexSubspace = groupSubspace
@@ -337,12 +340,14 @@ struct PolymorphicFetchSQLiteTests {
                 snapshot: true
             ).count
         }
+        }
     }
 
     private func countSecurePolymorphicIndexEntries(
         container: DBContainer,
         valuePrefix: String? = nil
     ) async throws -> Int {
+        try await container.withTestBaseOperation {
         let group = try container.polymorphicGroup(
             identifier: SQLiteSecurePolymorphicArticle.polymorphableType
         )
@@ -369,9 +374,11 @@ struct PolymorphicFetchSQLiteTests {
                 snapshot: true
             ).count
         }
+        }
     }
 
     private func countPolymorphicOptionalVectorIndexEntries(container: DBContainer) async throws -> Int {
+        try await container.withTestBaseOperation {
         let group = try container.polymorphicGroup(
             identifier: SQLitePolymorphicOptionalVectorArticle.polymorphableType
         )
@@ -387,6 +394,7 @@ struct PolymorphicFetchSQLiteTests {
                 end: end,
                 snapshot: true
             ).count
+        }
         }
     }
 
@@ -443,9 +451,9 @@ struct PolymorphicFetchSQLiteTests {
             for: schema,
             path: database.path,
             runtimeConfiguration: runtimeConfiguration,
-            security: .disabled
+            security: .testingDisabled
         )
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
 
         var article = SQLitePolymorphicArticle(title: "Catalog Needle Article", body: "Body")
         article.id = "sqlite-polymorphic-reopen-article"
@@ -456,11 +464,8 @@ struct PolymorphicFetchSQLiteTests {
         try initialContext.insert(report)
         try await initialContext.save()
 
-        let registry = SchemaRegistry(
-            database: initialContainer.engine,
-            clock: TestProcessMonotonicClock()
-        )
-        let persistedEntities = try await registry.loadAll()
+        let persistedEntities = try await initialContainer
+            .testPersistedControlSchemaEntities()
         let persistedEntityNames = persistedEntities.map(\.name)
         #expect(persistedEntityNames.contains(SQLitePolymorphicArticle.persistableType))
         #expect(persistedEntityNames.contains(SQLitePolymorphicReport.persistableType))
@@ -470,10 +475,10 @@ struct PolymorphicFetchSQLiteTests {
             for: schema,
             path: database.path,
             runtimeConfiguration: runtimeConfiguration,
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await reopenedContainer.shutdown() }
-        let reopenedContext = reopenedContainer.newContext()
+        let reopenedContext = reopenedContainer.testBaseContext()
         let fetched = try await reopenedContext.fetchPolymorphic(SQLitePolymorphicArticle.self)
         let fullTextResults = try await reopenedContext.findPolymorphic(SQLitePolymorphicArticle.self)
             .fullText(SQLitePolymorphicArticle.fields.title)
@@ -492,7 +497,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("fetchPolymorphic returns SQLite transaction-maintained projections")
     func fetchPolymorphicScansMaintainedProjections() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = SQLitePolymorphicArticle(title: "Hello", body: "World")
         let report = SQLitePolymorphicReport(title: "Quarterly", pageCount: 42)
@@ -513,7 +518,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("fetchPolymorphic(id:) retrieves SQLite items across concrete types")
     func fetchPolymorphicByIDAcrossTypes() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = SQLitePolymorphicArticle(title: "Headline", body: "Body text")
         let report = SQLitePolymorphicReport(title: "Audit", pageCount: 7)
@@ -534,7 +539,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("findPolymorphic decodes mixed SQLite rows with ordering and continuation")
     func findPolymorphicDecodesMixedSQLiteRowsWithContinuation() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let gamma = SQLitePolymorphicArticle(title: "Gamma", body: "third")
         let alpha = SQLitePolymorphicReport(title: "Alpha", pageCount: 1)
@@ -569,7 +574,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("Projection maintenance updates SQLite shared polymorphic scalar indexes")
     func projectionMaintenanceUpdatesSharedScalarIndexes() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = SQLitePolymorphicArticle(title: "Indexed Article", body: "Body")
         let report = SQLitePolymorphicReport(title: "Indexed Report", pageCount: 4)
@@ -601,7 +606,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("staged update and delete maintain SQLite shared scalar indexes")
     func stagedUpdateAndDeleteMaintainSharedScalarIndexes() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var article = SQLitePolymorphicArticle(title: "Direct Indexed", body: "Saved directly")
         try context.upsert(article)
@@ -659,14 +664,14 @@ struct PolymorphicFetchSQLiteTests {
         )
         original.id = "sqlite-polymorphic-stale-delete-article"
 
-        let seedContext = container.newContext()
+        let seedContext = container.testBaseContext()
         try seedContext.insert(original)
         try await seedContext.save()
 
         var current = original
         current.title = "Shared Stale Current"
         current.body = "current body"
-        let updateContext = container.newContext()
+        let updateContext = container.testBaseContext()
         try updateContext.update(current)
         try await updateContext.save()
 
@@ -681,11 +686,11 @@ struct PolymorphicFetchSQLiteTests {
             valuePrefix: "Shared Stale Current"
         ) == 1)
 
-        let deleteContext = container.newContext()
+        let deleteContext = container.testBaseContext()
         try deleteContext.delete(original)
         try await deleteContext.save()
 
-        let afterDelete = try await container.newContext()
+        let afterDelete = try await container.testBaseContext()
             .fetchPolymorphic(SQLitePolymorphicArticle.self, id: original.id)
 
         #expect(afterDelete == nil)
@@ -708,7 +713,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("deleteAll removes only the target concrete type from SQLite shared polymorphic indexes")
     func deleteAllRemovesOnlyTargetConcreteTypeFromSharedPolymorphicIndexes() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var article = SQLitePolymorphicArticle(
             title: "Clear Target Article",
@@ -782,6 +787,21 @@ struct PolymorphicFetchSQLiteTests {
             ),
             security: .enabled()
         )
+        defer { await container.shutdown() }
+        try await container.grantTestBaseAccess(
+            to: .principal("alice"),
+            access: [.read, .write]
+        )
+        try await container.grantTestBaseAccess(
+            to: .principal("bob"),
+            access: [.read, .write]
+        )
+        let aliceAuthorization = AuthorizationContext.authenticated(
+            Principal(identifier: "alice")
+        )
+        let bobAuthorization = AuthorizationContext.authenticated(
+            Principal(identifier: "bob")
+        )
 
         var original = SQLiteSecurePolymorphicArticle(
             title: "Secure Original",
@@ -789,37 +809,31 @@ struct PolymorphicFetchSQLiteTests {
             body: "Created by Alice"
         )
         original.id = "sqlite-secure-polymorphic-article"
-        try await RequestAuthorization.$context.withValue(
-            .authenticated(Principal(identifier: "alice"))
-        ) {
-            let context = container.newContext()
-            try context.insert(original)
-            try await context.save()
-        }
+        let createContext = container.testBaseContext(
+            authorization: aliceAuthorization
+        )
+        try createContext.insert(original)
+        try await createContext.save()
 
         var transferred = original
         transferred.title = "Secure Transferred"
         transferred.ownerID = "bob"
         transferred.body = "Transferred to Bob"
-        try await RequestAuthorization.$context.withValue(
-            .authenticated(Principal(identifier: "alice"))
-        ) {
-            let context = container.newContext()
-            try context.upsert(transferred)
-            try await context.save()
-        }
+        let transferContext = container.testBaseContext(
+            authorization: aliceAuthorization
+        )
+        try transferContext.upsert(transferred)
+        try await transferContext.save()
 
         var deniedUpdate = transferred
         deniedUpdate.title = "Secure Unauthorized"
         deniedUpdate.body = "Alice should not be able to update after transfer"
         do {
-            try await RequestAuthorization.$context.withValue(
-                .authenticated(Principal(identifier: "alice"))
-            ) {
-                let context = container.newContext()
-                try context.upsert(deniedUpdate)
-                try await context.save()
-            }
+            let context = container.testBaseContext(
+                authorization: aliceAuthorization
+            )
+            try context.upsert(deniedUpdate)
+            try await context.save()
             Issue.record("Expected transferred polymorphic update to be denied")
         } catch let error as SecurityError {
             #expect(error.operation == .update)
@@ -827,13 +841,11 @@ struct PolymorphicFetchSQLiteTests {
         }
 
         do {
-            try await RequestAuthorization.$context.withValue(
-                .authenticated(Principal(identifier: "alice"))
-            ) {
-                let context = container.newContext()
-                try context.delete(transferred, precondition: .exists)
-                try await context.save()
-            }
+            let context = container.testBaseContext(
+                authorization: aliceAuthorization
+            )
+            try context.delete(transferred, precondition: .exists)
+            try await context.save()
             Issue.record("Expected transferred polymorphic delete to be denied")
         } catch let error as SecurityError {
             #expect(error.operation == .delete)
@@ -854,27 +866,23 @@ struct PolymorphicFetchSQLiteTests {
             valuePrefix: "Secure Unauthorized"
         ) == 0)
 
-        let fetchedAsBob = try await RequestAuthorization.$context.withValue(
-            .authenticated(Principal(identifier: "bob"))
-        ) {
-            try await container.newContext().fetchPolymorphic(
-                SQLiteSecurePolymorphicArticle.self,
-                id: original.id
-            )
-        }
+        let fetchedAsBob = try await container.testBaseContext(
+            authorization: bobAuthorization
+        ).fetchPolymorphic(
+            SQLiteSecurePolymorphicArticle.self,
+            id: original.id
+        )
         let decodedForBob = try fetchedAsBob?.decode(
             as: SQLiteSecurePolymorphicArticle.self
         )
         #expect(decodedForBob?.title == "Secure Transferred")
         #expect(decodedForBob?.ownerID == "bob")
 
-        try await RequestAuthorization.$context.withValue(
-            .authenticated(Principal(identifier: "bob"))
-        ) {
-            let context = container.newContext()
-            try context.delete(transferred, precondition: .exists)
-            try await context.save()
-        }
+        let bobContext = container.testBaseContext(
+            authorization: bobAuthorization
+        )
+        try bobContext.delete(transferred, precondition: .exists)
+        try await bobContext.save()
 
         #expect(try await countSecurePolymorphicIndexEntries(container: container) == 0)
     }
@@ -882,7 +890,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("polymorphic SQLite full-text query resolves shared descriptor and maintains indexes")
     func polymorphicSQLiteFullTextQueryResolvesSharedDescriptorAndMaintainsIndexes() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = SQLitePolymorphicArticle(title: "Needle Article", body: "Body")
         var report = SQLitePolymorphicReport(title: "Needle Report", pageCount: 4)
@@ -933,7 +941,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("staged writes are visible to polymorphic fetches on SQLite")
     func stagedWriteIsVisibleToPolymorphicFetches() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = SQLitePolymorphicArticle(title: "Direct", body: "Saved via staged upsert")
         try context.upsert(article)
@@ -950,7 +958,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("staged delete removes a SQLite item from the shared directory")
     func stagedDeleteRemovesItem() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = SQLitePolymorphicArticle(title: "Doomed", body: "Delete me")
         try context.upsert(article)
@@ -972,7 +980,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("Polymorphic vector query requires a query vector on SQLite")
     func polymorphicVectorQueryRequiresQueryVectorOnSQLite() async throws {
         let container = try await setupVectorContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         do {
             _ = try await context.findPolymorphic(SQLitePolymorphicVectorArticle.self)
@@ -988,7 +996,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("Polymorphic vector query rejects mismatched dimensions on SQLite")
     func polymorphicVectorQueryRejectsMismatchedDimensionsOnSQLite() async throws {
         let container = try await setupVectorContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         do {
             _ = try await context.findPolymorphic(SQLitePolymorphicVectorArticle.self)
@@ -1007,7 +1015,7 @@ struct PolymorphicFetchSQLiteTests {
     @Test("Polymorphic vector query reports missing shared descriptor on SQLite")
     func polymorphicVectorQueryReportsMissingSharedDescriptorOnSQLite() async throws {
         let container = try await setupNoIndexVectorContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         do {
             _ = try await context.findPolymorphic(SQLitePolymorphicVectorNoIndexArticle.self)
@@ -1030,7 +1038,7 @@ struct PolymorphicFetchSQLiteTests {
     func polymorphicOptionalVectorKeyPathOverloadQueriesSharedIndexEndToEndOnSQLite() async throws {
         let container = try await setupOptionalVectorContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let article = SQLitePolymorphicOptionalVectorArticle(
             title: "Optional Anchor",
             embedding: try Vector(float32: [1.0, 0.0, 0.0]),
@@ -1074,7 +1082,7 @@ struct PolymorphicFetchSQLiteTests {
     func polymorphicVectorIndexIsMaintainedAndQueriedEndToEndOnSQLite() async throws {
         let container = try await setupVectorContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = SQLitePolymorphicVectorArticle(
             title: "Anchor",

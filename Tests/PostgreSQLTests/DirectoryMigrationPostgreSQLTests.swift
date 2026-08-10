@@ -92,12 +92,12 @@ struct DirectoryMigrationPostgreSQLTests {
                 schema: PGDirectoryMigrationSchemaV1.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV1.self)]
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
             var seededUser = PGDirectoryMigrationUserV1(name: "Alice", email: "alice@example.com")
             seededUser.id = seededID
             try initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: PGDirectoryMigrationSchemaV2.self,
@@ -105,13 +105,13 @@ struct DirectoryMigrationPostgreSQLTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV2.self)])
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGDirectoryMigrationSchemaV2.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV2.self)]
             )
-            let rows = try await verificationContainer.newContext()
+            let rows = try await verificationContainer.testBaseContext()
                 .fetch(PGDirectoryMigrationUserV2.self)
                 .execute()
 
@@ -132,12 +132,12 @@ struct DirectoryMigrationPostgreSQLTests {
                 schema: PGDirectoryMigrationSchemaV1.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV1.self)]
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
             var seededUser = PGDirectoryMigrationUserV1(name: "Bob", email: "bob@example.com")
             seededUser.id = seededID
             try initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: PGDirectoryMigrationSchemaV2.self,
@@ -145,14 +145,14 @@ struct DirectoryMigrationPostgreSQLTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV2.self)])
             )
-            try await migratedContainer.migrateIfNeeded()
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGDirectoryMigrationSchemaV2.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV2.self)]
             )
-            let rows = try await verificationContainer.newContext()
+            let rows = try await verificationContainer.testBaseContext()
                 .fetch(PGDirectoryMigrationUserV2.self)
                 .execute()
 

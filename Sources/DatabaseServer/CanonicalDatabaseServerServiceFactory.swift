@@ -1,7 +1,6 @@
 import DatabaseEngine
 #if DATABASE_SERVER_GRAPH_INDEXES
 import GraphIndex
-import OntologyIndex
 #endif
 import StorageKit
 
@@ -82,16 +81,9 @@ public final class CanonicalDatabaseServerServiceFactory:
             namespace: "ontology",
             wireLimits: context.wireLimits
         )
-        let ontologyIndexSubspace = try await context.container.engine
-            .resolveOrCreateNamespace(
-                path: ["database-framework", "ontology-index"]
-            )
-        let ontologyIndexStore = OntologyStore(
-            subspace: OntologySubspace(base: ontologyIndexSubspace)
-        )
         let ontologyProcessor = DatabaseOntologyReasoningProcessor(
             documentStore: ontologyStore,
-            ontologyStore: ontologyIndexStore,
+            container: context.container,
             clock: context.clock,
             monotonicClock: context.container.monotonicClock,
             wireLimits: context.wireLimits
@@ -103,8 +95,7 @@ public final class CanonicalDatabaseServerServiceFactory:
         )
         let shaclDataSourceResolver = SchemaDatabaseSHACLDataSourceResolver(
             container: context.container,
-            stateStore: context.stateStore,
-            ontologyStore: ontologyIndexStore
+            stateStore: context.stateStore
         )
         let shaclProcessor = DatabaseSHACLValidationProcessor(
             documentStore: shaclStore,
@@ -117,7 +108,6 @@ public final class CanonicalDatabaseServerServiceFactory:
                 statementExecutor:
                     CanonicalDatabaseStatementMutationExecutor(
                         runtimeLimits: context.runtimeLimits,
-                        graphStore: CanonicalRDFGraphStore(),
                         loadSource: loadSource,
                         functionRegistry: functionRegistry,
                         graphOperationLimits: context.graphOperationLimits

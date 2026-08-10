@@ -28,7 +28,7 @@ struct OnlineIndexerBatchDispatchTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         let index = Index(
             name: "unique_player_name_idx",
@@ -121,7 +121,7 @@ struct OnlineIndexerBatchDispatchTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         let index = PlayerIdentifierIndexDefinition.make(
             name: "invalid_configuration_idx"
@@ -252,7 +252,7 @@ struct OnlineIndexerBatchDispatchTests {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
 
         let batchSize = 5
@@ -315,7 +315,7 @@ struct OnlineIndexerBatchDispatchTests {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
 
         let batchSize = 5
@@ -386,7 +386,7 @@ struct OnlineIndexerBatchDispatchTests {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
 
         let batchSize = 5

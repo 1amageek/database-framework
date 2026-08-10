@@ -266,9 +266,9 @@ struct PolymorphicVectorMigrationFDBTests {
                 for: FDBPolymorphicVectorSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV1.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var anchor = FDBPolymorphicVectorPersonV1(
                 name: "Alice",
@@ -295,7 +295,7 @@ struct PolymorphicVectorMigrationFDBTests {
             try initialContext.insert(organization)
 
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV2.self,
@@ -304,13 +304,13 @@ struct PolymorphicVectorMigrationFDBTests {
                 runtimeConfiguration: try Self.vectorRuntimeConfiguration(
                     entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV2.self)]
                 ),
-                security: .disabled
+                security: .testingDisabled
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             #expect(try await Self.countEntityVectorIndexEntries(container: migratedContainer) == 107)
 
-            let page = try await migratedContainer.newContext()
+            let page = try await migratedContainer.testBaseContext()
                 .findPolymorphic(FDBPolymorphicVectorPersonV2.self)
                 .vector(FDBPolymorphicVectorPersonV2.fields.embedding, dimensions: 3)
                 .query([1, 0, 0], k: 2)
@@ -320,7 +320,7 @@ struct PolymorphicVectorMigrationFDBTests {
 
             #expect(ids == Set([anchor.id, organization.id]))
 
-            let organizationStartedPage = try await migratedContainer.newContext()
+            let organizationStartedPage = try await migratedContainer.testBaseContext()
                 .findPolymorphic(FDBPolymorphicVectorOrganizationV2.self)
                 .vector(
                     FDBPolymorphicVectorOrganizationV2.fields.embedding,
@@ -345,9 +345,9 @@ struct PolymorphicVectorMigrationFDBTests {
                 for: FDBPolymorphicVectorSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV2.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let context = initialContainer.newContext()
+            let context = initialContainer.testBaseContext()
 
             var person = FDBPolymorphicVectorPersonV2(
                 name: "Alice",
@@ -364,7 +364,7 @@ struct PolymorphicVectorMigrationFDBTests {
             try context.upsert(person)
             try context.upsert(organization)
             try await context.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(2, 0, 0))
             try await Self.clearEntityVectorIndexEntries(container: initialContainer)
             #expect(try await Self.countEntityVectorIndexEntries(container: initialContainer) == 0)
 
@@ -375,11 +375,11 @@ struct PolymorphicVectorMigrationFDBTests {
                 runtimeConfiguration: try Self.vectorRuntimeConfiguration(
                     entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV3.self)]
                 ),
-                security: .disabled
+                security: .testingDisabled
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
-            let page = try await migratedContainer.newContext()
+            let page = try await migratedContainer.testBaseContext()
                 .findPolymorphic(FDBPolymorphicVectorPersonV3.self)
                 .vector(FDBPolymorphicVectorPersonV3.fields.embedding, dimensions: 3)
                 .query([1, 0, 0], k: 2)
@@ -389,7 +389,7 @@ struct PolymorphicVectorMigrationFDBTests {
 
             #expect(ids == Set([person.id, organization.id]))
 
-            let organizationStartedPage = try await migratedContainer.newContext()
+            let organizationStartedPage = try await migratedContainer.testBaseContext()
                 .findPolymorphic(FDBPolymorphicVectorOrganizationV3.self)
                 .vector(
                     FDBPolymorphicVectorOrganizationV3.fields.embedding,
@@ -488,14 +488,14 @@ struct PolymorphicVectorMigrationFDBTests {
 
     private static func entityVectorIndexState(container: DBContainer) async throws -> IndexState {
         let group = try container.polymorphicGroup(identifier: FDBPolymorphicVectorPersonV2.polymorphableType)
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
         let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
         return try await lifecycleStore.state(of: "Entity_vector_embedding")
     }
 
     private static func entityVectorIndexSubspace(container: DBContainer) async throws -> Subspace {
         let group = try container.polymorphicGroup(identifier: FDBPolymorphicVectorPersonV2.polymorphableType)
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
         return groupSubspace
             .subspace(SubspaceKey.indexes)
             .subspace("Entity_vector_embedding")

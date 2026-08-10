@@ -8,6 +8,7 @@ import DatabaseServerFoundation
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
+import TestSupport
 import Testing
 
 @Persistable(type: "RestartSchemaBuildAccount")
@@ -67,12 +68,12 @@ struct SchemaIndexJobRestartSQLiteTests {
                     ),
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         let job: JobIdentity
         do {
             let firstRuntime = try await makeRuntime(container: first)
-            let context = first.newContext()
+            let context = first.testBaseContext()
             try context.insert(
                 RestartSchemaBuildAccountV1(
                     id: "persisted-before-restart",
@@ -92,16 +93,20 @@ struct SchemaIndexJobRestartSQLiteTests {
                 requestID: 1,
                 runtime: firstRuntime
             )
-            guard case .applied(let publication) = response,
-                  let publishedJob = publication.job else {
-                Issue.record("Expected a persistent schema index build job")
+            guard case .accepted(let acceptedJob) = response else {
+                Issue.record("Expected an accepted schema transition job")
                 await first.shutdown()
                 return
             }
-            job = publishedJob
+            job = acceptedJob
+            #expect(first.schema == initialSchema)
+            try await firstRuntime.runScheduledWork()
+            try await firstRuntime.runScheduledWork()
+            #expect(first.schema == targetSchema)
             #expect(
-                try await indexStatus(container: first).indexState
-                    == .writeOnly
+                try await first.withTestBaseOperation {
+                    try await first.getCurrentSchemaVersion()
+                } == initialSchema.version
             )
             await first.shutdown()
         } catch {
@@ -115,23 +120,21 @@ struct SchemaIndexJobRestartSQLiteTests {
                     configuration: .file(database.path)
                 )
             ),
-            security: .disabled
+            security: .testingDisabled
         ) { schema in
             try DatabaseFrameworkRuntime.configuration(schema: schema)
         }
         defer { await reopened.shutdown() }
         #expect(reopened.schema == targetSchema)
-        #expect(try await indexStatus(container: reopened).indexState == .writeOnly)
 
         let restoredRuntime = try await makeRuntime(container: reopened)
-        try await restoredRuntime.runScheduledWork()
-        let status = try await invoke(
-            DatabaseOperations.jobStatus,
-            request: JobStatusOperation.Request(job: job),
-            requestID: 2,
-            runtime: restoredRuntime
+        let status = try await runUntilTerminal(
+            job,
+            runtime: restoredRuntime,
+            firstRequestID: 2
         )
         #expect(status.state == .succeeded)
+        #expect(reopened.schema == targetSchema)
         let index = try await indexStatus(container: reopened)
         #expect(index.indexState == .readable)
         #expect(index.rebuildState?.indexedEntityCount == 1)
@@ -144,11 +147,6 @@ struct SchemaIndexJobRestartSQLiteTests {
         let identifierGenerator = RandomDatabaseUUIDGenerator()
         let registry = try DatabaseResumableOperationRegistry(
             operations: [
-                try AnyDatabaseResumableOperation(
-                    DatabaseSchemaApplyResumableOperation(
-                        runtimeLimits: runtimeLimits
-                    )
-                ),
                 try AnyDatabaseResumableOperation(
                     DatabaseMaintenanceResumableOperation(
                         runtimeLimits: runtimeLimits
@@ -193,10 +191,35 @@ struct SchemaIndexJobRestartSQLiteTests {
         )
     }
 
+    private func runUntilTerminal(
+        _ job: JobIdentity,
+        runtime: DatabaseServerRuntime,
+        firstRequestID: UInt64
+    ) async throws -> JobStatusOperation.Response {
+        var requestID = firstRequestID
+        for _ in 0..<64 {
+            try await runtime.runScheduledWork()
+            let status = try await invoke(
+                DatabaseOperations.jobStatus,
+                request: JobStatusOperation.Request(job: job),
+                requestID: requestID,
+                runtime: runtime
+            )
+            switch status.state {
+            case .succeeded, .failed, .cancelled:
+                return status
+            case .pending, .running, .committingUnsuccessfulOutcome:
+                break
+            }
+            requestID += 1
+        }
+        throw SchemaIndexJobRestartTestError.didNotReachTerminalState
+    }
+
     private func indexStatus(
         container: DBContainer
     ) async throws -> DatabaseIndexMaintenanceStatus {
-        try await container.newContext().withTransaction { transaction in
+        try await container.testBaseContext().withTransaction { transaction in
             try await DatabaseIndexMaintenanceRuntime(
                 container: container
             ).status(
@@ -217,13 +240,14 @@ struct SchemaIndexJobRestartSQLiteTests {
         let requestBytes = try DatabaseWireEncoder().encodeRequest(
             operation,
             requestID: requestID,
+            target: .database,
             metadata: OperationRequestMetadata(),
             request: request
         )
         let responseBytes = try await runtime.execute(
             requestBytes,
             context: DatabaseRequestExecutionContext(
-                authorization: .anonymous
+                authorization: TestBaseEnvironment.authorization
             )
         )
         let response = try DatabaseWireDecoder().decodeResponse(
@@ -238,6 +262,10 @@ struct SchemaIndexJobRestartSQLiteTests {
             throw error
         }
     }
+}
+
+private enum SchemaIndexJobRestartTestError: Error {
+    case didNotReachTerminalState
 }
 
 private actor SQLiteSchemaJobScheduler: DatabaseJobScheduler {

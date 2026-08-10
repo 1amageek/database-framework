@@ -3,6 +3,7 @@ import DatabaseRuntime
 import DatabaseTypes
 import ScalarIndex
 import StorageKit
+import TestSupport
 import Testing
 @testable import DatabaseEngine
 
@@ -229,9 +230,9 @@ struct IndexLifecycleStoreCorruptionTests {
                     )
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let dataStore = try await container.store(
+        let dataStore = try await container.testBaseStore(
             for: IndexedCatalogEntry.self
         )
         let indexName = "IndexedCatalogEntry_value"
@@ -245,7 +246,7 @@ struct IndexLifecycleStoreCorruptionTests {
         await expectIndexStateError(
             .missingPersistedState(index: indexName)
         ) {
-            _ = try await container.newContext()
+            _ = try await container.testBaseContext()
                 .indexQueryContext.withReadableIndex(
                     named: indexName,
                     kindIdentifier: IndexDefinition.scalar.identifier,
@@ -276,9 +277,9 @@ struct IndexLifecycleStoreCorruptionTests {
                     )
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let dataStore = try await container.store(
+        let dataStore = try await container.testBaseStore(
             for: IndexedCatalogEntry.self
         )
         let indexName = "IndexedCatalogEntry_value"
@@ -293,12 +294,14 @@ struct IndexLifecycleStoreCorruptionTests {
         await expectIndexStateError(
             .unknownPersistedStateValue(index: indexName, value: 0xFF)
         ) {
-            try await dataStore.save([
-                IndexedCatalogEntry(
-                    id: "entity",
-                    value: "value"
-                )
-            ])
+            try await container.withTestBaseOperation {
+                try await dataStore.save([
+                    IndexedCatalogEntry(
+                        id: "entity",
+                        value: "value"
+                    )
+                ])
+            }
         }
 
         try await engine.withTransaction { transaction in
@@ -346,7 +349,7 @@ struct IndexLifecycleStoreCorruptionTests {
                     )
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         let root = Subspace(
             prefix: Tuple("index-lifecycle-store-corruption").pack()

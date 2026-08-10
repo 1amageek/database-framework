@@ -118,9 +118,6 @@ struct OntologyIRIValidationTests {
     private func setupContext() async throws -> DatabaseContext {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        if try await database.namespaceExists(path: ["ontology_iri_validation_tests"]) {
-            try await database.removeNamespace(path: ["ontology_iri_validation_tests"])
-        }
         let schema = try Schema(
             entities: [
                 try ValEmployee.schemaEntity,
@@ -137,9 +134,10 @@ struct OntologyIRIValidationTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(ValEmployee.self), try DatabaseFrameworkRuntime.entity(ValAssignment.self), try DatabaseFrameworkRuntime.entity(ValBadClass.self), try DatabaseFrameworkRuntime.entity(ValBadRelation.self), try DatabaseFrameworkRuntime.entity(ValDataPropAsObjectProp.self), try DatabaseFrameworkRuntime.entity(ValBadDataProperty.self), try DatabaseFrameworkRuntime.entity(ValObjPropAsDataProp.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
-        return container.newContext()
+        try await container.resetTestBaseData()
+        return container.testBaseContext()
     }
 
     private func loadTestOntology(context: DatabaseContext) async throws {
@@ -168,14 +166,29 @@ struct OntologyIRIValidationTests {
         )
     }
 
+    private func ontologyStore(
+        context: DatabaseContext
+    ) async throws -> OntologyStore {
+        try await context.withBaseOperation {
+            let root = try context.requireOperationBaseLease().root
+                .subspace("data")
+                .subspace("database-framework")
+                .subspace("ontology-index")
+            return OntologyStore(
+                subspace: OntologySubspace(base: root)
+            )
+        }
+    }
+
     // MARK: - Class Validation
 
     @Test("Valid class IRI passes validation")
     func validClassIRIPasses() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: ByteString(utf8: "O"))))
+        let store = try await ontologyStore(context: context)
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -190,9 +203,10 @@ struct OntologyIRIValidationTests {
     @Test("Invalid class IRI throws classNotFound")
     func invalidClassIRIThrows() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: ByteString(utf8: "O"))))
+        let store = try await ontologyStore(context: context)
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -219,9 +233,10 @@ struct OntologyIRIValidationTests {
     @Test("Valid object property IRI passes validation")
     func validObjectPropertyIRIPasses() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: ByteString(utf8: "O"))))
+        let store = try await ontologyStore(context: context)
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -236,9 +251,10 @@ struct OntologyIRIValidationTests {
     @Test("Invalid property IRI throws propertyNotFound")
     func invalidPropertyIRIThrows() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: ByteString(utf8: "O"))))
+        let store = try await ontologyStore(context: context)
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -263,9 +279,10 @@ struct OntologyIRIValidationTests {
     @Test("DataProperty IRI used as ObjectProperty throws propertyTypeMismatch")
     func dataPropertyAsObjectPropertyThrows() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
-        let store = OntologyStore(subspace: OntologySubspace(base: Subspace(prefix: ByteString(utf8: "O"))))
+        let store = try await ontologyStore(context: context)
         let validator = OntologyIRIValidator(store: store)
 
         try await context.indexQueryContext.withTransaction { transaction in
@@ -295,6 +312,7 @@ struct OntologyIRIValidationTests {
     @Test("Schema validation passes for valid IRIs")
     func schemaValidationPasses() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         let schema = try Schema(
@@ -311,6 +329,7 @@ struct OntologyIRIValidationTests {
     @Test("Schema validation fails for invalid class IRI")
     func schemaValidationFailsForBadClass() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         let schema = try Schema(
@@ -339,6 +358,7 @@ struct OntologyIRIValidationTests {
     @Test("Schema validation fails for invalid property IRI")
     func schemaValidationFailsForBadProperty() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         let schema = try Schema(
@@ -367,6 +387,7 @@ struct OntologyIRIValidationTests {
     @Test("Schema validation detects DataProperty used as ObjectProperty")
     func schemaValidationDetectsTypeMismatch() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         let schema = try Schema(
@@ -397,6 +418,7 @@ struct OntologyIRIValidationTests {
     @Test("Schema validation collects multiple errors")
     func schemaValidationCollectsMultipleErrors() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         let schema = try Schema(
@@ -423,6 +445,7 @@ struct OntologyIRIValidationTests {
     @Test("Schema with no ontology annotations passes validation")
     func schemaWithNoOntologyPasses() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         let schema = try Schema(
@@ -436,6 +459,7 @@ struct OntologyIRIValidationTests {
     @Test("Empty schema passes validation")
     func emptySchemaPassesValidation() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         let schema = try Schema(
@@ -449,6 +473,7 @@ struct OntologyIRIValidationTests {
     @Test("Validation against non-existent ontology IRI reports errors")
     func validationAgainstNonExistentOntology() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         let schema = try Schema(
@@ -490,6 +515,7 @@ struct OntologyIRIValidationTests {
     @Test("Valid data property IRI passes schema validation")
     func validDataPropertyPasses() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         // ValEmployee has @OWLDataProperty("http://test.org/onto#name") which exists
@@ -504,6 +530,7 @@ struct OntologyIRIValidationTests {
     @Test("Invalid data property IRI fails schema validation")
     func invalidDataPropertyFails() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         let schema = try Schema(
@@ -533,6 +560,7 @@ struct OntologyIRIValidationTests {
     @Test("ObjectProperty IRI used as @OWLDataProperty throws propertyTypeMismatch")
     func objectPropertyAsDataPropertyThrows() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         let schema = try Schema(
@@ -564,6 +592,7 @@ struct OntologyIRIValidationTests {
     @Test("Valid schema with both class and data property IRIs passes")
     func schemaWithClassAndDataPropertyPasses() async throws {
         let context = try await setupContext()
+        defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
         // ValEmployee: @OWLClass("...#Employee") + @OWLDataProperty("...#name")

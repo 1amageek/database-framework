@@ -7,26 +7,48 @@ public struct DatabaseSchemaApplyJobPlan:
     Sendable,
     Hashable
 {
-    struct Target: Sendable, Hashable {
+    struct BaseTarget: Sendable, Hashable {
+        let id: Base.ID
+        let placementGeneration: UInt64
+    }
+
+    struct IndexTarget: Sendable, Hashable {
         let entity: String
         let index: String
         let usesDynamicDirectory: Bool
     }
 
-    private static let formatVersion: UInt8 = 1
+    private static let formatVersion: UInt8 = 2
 
     let previousFingerprint: SchemaFingerprint
     let targetFingerprint: SchemaFingerprint
     let schemaVersion: Schema.Version
-    let targets: [Target]
+    let idempotencyKey: String
+    let manifestBytes: ByteString
+    let bases: [BaseTarget]
+    let indexes: [IndexTarget]
     let maximumWorkUnitsPerSlice: UInt64
+
+    var manifest: SchemaManifest {
+        get throws {
+            try SchemaManifest(canonicalBytes: manifestBytes)
+        }
+    }
 
     public func persistentJobValue()
         throws(PersistentJobPayloadError) -> FieldValue {
-        let encodedTargets: [FieldValue]
         do {
-            encodedTargets = try targets.map { target in
-                .object(try FieldObject([
+            let encodedBases = try bases.map { base in
+                FieldValue.object(try FieldObject([
+                    (key: "id", value: .string(base.id.value)),
+                    (
+                        key: "placementGeneration",
+                        value: .uint64(base.placementGeneration)
+                    ),
+                ]))
+            }
+            let encodedIndexes = try indexes.map { target in
+                FieldValue.object(try FieldObject([
                     (key: "entity", value: .string(target.entity)),
                     (key: "index", value: .string(target.index)),
                     (
@@ -45,11 +67,11 @@ public struct DatabaseSchemaApplyJobPlan:
                     key: "targetFingerprint",
                     value: .bytes(targetFingerprint.bytes)
                 ),
-                (
-                    key: "schemaVersion",
-                    value: Self.value(schemaVersion)
-                ),
-                (key: "targets", value: .array(encodedTargets)),
+                (key: "schemaVersion", value: Self.value(schemaVersion)),
+                (key: "idempotencyKey", value: .string(idempotencyKey)),
+                (key: "manifest", value: .bytes(manifestBytes)),
+                (key: "bases", value: .array(encodedBases)),
+                (key: "indexes", value: .array(encodedIndexes)),
                 (
                     key: "maximumWorkUnitsPerSlice",
                     value: .uint64(maximumWorkUnitsPerSlice)
@@ -64,12 +86,16 @@ public struct DatabaseSchemaApplyJobPlan:
         persistentJobValue: FieldValue
     ) throws(PersistentJobPayloadError) {
         guard let fields = persistentJobValue.objectValue,
-              fields.count == 6,
+              fields.count == 9,
               fields["version"]?.uint8Value == Self.formatVersion,
               let previousBytes = fields["previousFingerprint"]?.bytesValue,
               let targetBytes = fields["targetFingerprint"]?.bytesValue,
               let schemaVersion = Self.schemaVersion(fields["schemaVersion"]),
-              let targetValues = fields["targets"]?.arrayValue,
+              let idempotencyKey = fields["idempotencyKey"]?.stringValue,
+              !idempotencyKey.isEmpty,
+              let manifestBytes = fields["manifest"]?.bytesValue,
+              let baseValues = fields["bases"]?.arrayValue,
+              let indexValues = fields["indexes"]?.arrayValue,
               let maximumWorkUnitsPerSlice =
                 fields["maximumWorkUnitsPerSlice"]?.uint64Value,
               maximumWorkUnitsPerSlice > 0 else {
@@ -77,56 +103,102 @@ public struct DatabaseSchemaApplyJobPlan:
         }
         let previousFingerprint: SchemaFingerprint
         let targetFingerprint: SchemaFingerprint
+        let manifest: SchemaManifest
         do {
             previousFingerprint = try SchemaFingerprint(previousBytes)
             targetFingerprint = try SchemaFingerprint(targetBytes)
+            manifest = try SchemaManifest(canonicalBytes: manifestBytes)
+            guard try manifest.fingerprint() == targetFingerprint,
+                  manifest.schema.version == schemaVersion else {
+                throw DatabaseSchemaApplyJobError.corruptedPlan
+            }
         } catch {
-            throw .invalidValue("Invalid schema apply job fingerprint")
+            throw .invalidValue("Invalid schema apply job manifest")
         }
-        var targets: [Target] = []
-        targets.reserveCapacity(targetValues.count)
-        for value in targetValues {
-            guard let target = value.objectValue,
-                  target.count == 3,
-                  let entity = target["entity"]?.stringValue,
+
+        var bases: [BaseTarget] = []
+        bases.reserveCapacity(baseValues.count)
+        for value in baseValues {
+            guard let fields = value.objectValue,
+                  fields.count == 2,
+                  let identifier = fields["id"]?.stringValue,
+                  let generation = fields["placementGeneration"]?.uint64Value else {
+                throw .invalidValue("Invalid schema apply Base target")
+            }
+            let id: Base.ID
+            do {
+                id = try Base.ID(identifier)
+            } catch {
+                throw .invalidValue("Invalid schema apply Base target")
+            }
+            bases.append(
+                BaseTarget(id: id, placementGeneration: generation)
+            )
+        }
+        guard bases == bases.sorted(by: { $0.id < $1.id }),
+              Set(bases.map { $0.id }).count == bases.count else {
+            throw .invalidValue("Schema apply Base targets are not canonical")
+        }
+
+        var indexes: [IndexTarget] = []
+        indexes.reserveCapacity(indexValues.count)
+        for value in indexValues {
+            guard let fields = value.objectValue,
+                  fields.count == 3,
+                  let entity = fields["entity"]?.stringValue,
                   !entity.isEmpty,
-                  let index = target["index"]?.stringValue,
+                  let index = fields["index"]?.stringValue,
                   !index.isEmpty,
-                  let usesDynamicDirectory =
-                    target["usesDynamicDirectory"]?.boolValue else {
+                  let dynamic = fields["usesDynamicDirectory"]?.boolValue else {
                 throw .invalidValue("Invalid schema apply index target")
             }
-            targets.append(
-                Target(
+            indexes.append(
+                IndexTarget(
                     entity: entity,
                     index: index,
-                    usesDynamicDirectory: usesDynamicDirectory
+                    usesDynamicDirectory: dynamic
                 )
             )
         }
-        guard !targets.isEmpty,
-              Set(targets).count == targets.count else {
-            throw .invalidValue("Schema apply index targets are empty or duplicated")
+        guard indexes == indexes.sorted(by: Self.indexLessThan),
+              Set(indexes).count == indexes.count else {
+            throw .invalidValue("Schema apply index targets are not canonical")
         }
+
         self.previousFingerprint = previousFingerprint
         self.targetFingerprint = targetFingerprint
         self.schemaVersion = schemaVersion
-        self.targets = targets
+        self.idempotencyKey = idempotencyKey
+        self.manifestBytes = manifestBytes
+        self.bases = bases
+        self.indexes = indexes
         self.maximumWorkUnitsPerSlice = maximumWorkUnitsPerSlice
     }
 
     init(
         previousFingerprint: SchemaFingerprint,
         targetFingerprint: SchemaFingerprint,
-        schemaVersion: Schema.Version,
-        targets: [Target],
+        manifest: SchemaManifest,
+        idempotencyKey: String,
+        bases: [BaseTarget],
+        indexes: [IndexTarget],
         maximumWorkUnitsPerSlice: UInt64
-    ) {
+    ) throws {
         self.previousFingerprint = previousFingerprint
         self.targetFingerprint = targetFingerprint
-        self.schemaVersion = schemaVersion
-        self.targets = targets
+        self.schemaVersion = manifest.schema.version
+        self.idempotencyKey = idempotencyKey
+        self.manifestBytes = try manifest.canonicalBytes()
+        self.bases = bases.sorted { $0.id < $1.id }
+        self.indexes = indexes.sorted(by: Self.indexLessThan)
         self.maximumWorkUnitsPerSlice = maximumWorkUnitsPerSlice
+    }
+
+    private static func indexLessThan(
+        _ lhs: IndexTarget,
+        _ rhs: IndexTarget
+    ) -> Bool {
+        (lhs.entity, lhs.index) < (rhs.entity, rhs.index)
     }
 
     private static func value(_ version: Schema.Version) -> FieldValue {

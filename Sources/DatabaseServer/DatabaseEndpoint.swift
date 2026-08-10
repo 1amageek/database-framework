@@ -69,9 +69,86 @@ public final class DatabaseEndpoint: Sendable {
         _ request: DatabaseWireRequestEnvelope,
         executionContext: DatabaseRequestExecutionContext
     ) async throws -> ByteString {
+        guard let operationHandler = registry.resolve(request.operation) else {
+            let requirement = DatabaseOperationRequirement.canonical(
+                for: request.operation
+            )
+            let context = makeContext(
+                request: request,
+                executionContext: executionContext,
+                baseContext: nil,
+                composition: nil,
+                requirement: requirement
+            )
+            return try encodeFailureResponse(
+                for: request,
+                error: errorMapper.remoteError(
+                    for: DatabaseEndpointError.missingHandler(
+                        request.operation
+                    ),
+                    context: context,
+                    limits: limits
+                )
+            )
+        }
+        let prepared: PreparedDatabaseOperation
+        do {
+            prepared = try operationHandler.prepare(
+                envelope: request,
+                limits: limits
+            )
+        } catch {
+            let context = DatabaseOperationContext(
+                container: container,
+                target: request.target,
+                baseContext: nil,
+                composition: nil,
+                requirement: DatabaseOperationRequirement.canonical(
+                    for: request.operation
+                ),
+                requestID: request.requestID,
+                metadata: request.metadata,
+                authorization: executionContext.authorization,
+                requestPayload: request.payload,
+                wireLimits: limits
+            )
+            return try encodeFailureResponse(
+                for: request,
+                error: errorMapper.remoteError(
+                    for: error,
+                    context: context,
+                    limits: limits
+                )
+            )
+        }
+        guard prepared.requirement.acceptedTargets.accepts(request.target) else {
+            let context = DatabaseOperationContext(
+                container: container,
+                target: request.target,
+                baseContext: nil,
+                composition: nil,
+                requirement: prepared.requirement,
+                requestID: request.requestID,
+                metadata: request.metadata,
+                authorization: executionContext.authorization,
+                requestPayload: request.payload,
+                wireLimits: limits
+            )
+            return try encodeFailureResponse(
+                for: request,
+                error: errorMapper.remoteError(
+                    for: DatabaseEndpointError.targetKindNotAccepted(
+                        request.target
+                    ),
+                    context: context,
+                    limits: limits
+                )
+            )
+        }
         let admissionRequest = DatabaseOperationAdmissionRequest(
             requestID: request.requestID,
             operation: request.operation,
+            target: request.target,
             metadata: request.metadata,
             authorization: executionContext.authorization
         )
@@ -89,17 +166,156 @@ public final class DatabaseEndpoint: Sendable {
                 )
             )
         }
+        guard container.layoutStatus == .current
+                || prepared.requirement.permitsMigrationRequiredLayout else {
+            let context = makeContext(
+                request: request,
+                executionContext: executionContext,
+                baseContext: nil,
+                composition: nil,
+                requirement: prepared.requirement
+            )
+            return try encodeFailureResponse(
+                for: request,
+                error: errorMapper.remoteError(
+                    for: DatabaseEndpointError.migrationRequired,
+                    context: context,
+                    limits: limits
+                )
+            )
+        }
 
-        let context = DatabaseOperationContext(
+        return try await execute(
+            prepared,
+            request: request,
+            executionContext: executionContext
+        )
+    }
+
+    private func execute(
+        _ prepared: PreparedDatabaseOperation,
+        request: DatabaseWireRequestEnvelope,
+        executionContext: DatabaseRequestExecutionContext
+    ) async throws -> ByteString {
+        switch request.target {
+        case .database:
+            let context = makeContext(
+                request: request,
+                executionContext: executionContext,
+                baseContext: nil,
+                composition: nil,
+                requirement: prepared.requirement
+            )
+            return try await invoke(
+                prepared,
+                request: request,
+                context: context
+            )
+        case .base(let baseID):
+            let lease: DatabaseBaseLease
+            do {
+                switch prepared.requirement.baseAdmission {
+                case .activeData:
+                    lease = try container.acquireBaseLease(baseID)
+                case .administration, .lifecycleJob:
+                    lease = try container.acquireBaseAdministrationLease(baseID)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if prepared.requirement.baseAdmission == .lifecycleJob {
+                    let context = self.makeContext(
+                        request: request,
+                        executionContext: executionContext,
+                        baseContext: nil,
+                        composition: nil,
+                        requirement: prepared.requirement
+                    )
+                    return try await self.invoke(
+                        prepared,
+                        request: request,
+                        context: context
+                    )
+                }
+                return try encodeFailureResponse(
+                    for: request,
+                    error: Self.baseUnavailableError()
+                )
+            }
+            return try await container.withBaseLease(lease) {
+                let baseContext = self.container.session(
+                    authorization: executionContext.authorization
+                ).base(baseID).newContext()
+                let context = self.makeContext(
+                    request: request,
+                    executionContext: executionContext,
+                    baseContext: baseContext,
+                    composition: nil,
+                    requirement: prepared.requirement
+                )
+                return try await self.invoke(
+                    prepared,
+                    request: request,
+                    context: context
+                )
+            }
+        case .composition(let compositionID):
+            let source = container.session(
+                authorization: executionContext.authorization
+            ).composition(compositionID)
+            let context = makeContext(
+                request: request,
+                executionContext: executionContext,
+                baseContext: nil,
+                composition: source,
+                requirement: prepared.requirement
+            )
+            return try await invoke(
+                prepared,
+                request: request,
+                context: context
+            )
+        }
+    }
+
+    private static func baseUnavailableError() -> RemoteOperationError {
+        RemoteOperationError(
+            category: .authorization,
+            code: "BASE_UNAVAILABLE",
+            message: "The Base is unavailable",
+            retryability: .never
+        )
+    }
+
+    private func makeContext(
+        request: DatabaseWireRequestEnvelope,
+        executionContext: DatabaseRequestExecutionContext,
+        baseContext: DatabaseContext?,
+        composition: CompositionDataSource?,
+        requirement: DatabaseOperationRequirement
+    ) -> DatabaseOperationContext {
+        DatabaseOperationContext(
             container: container,
+            target: request.target,
+            baseContext: baseContext,
+            composition: composition,
+            requirement: requirement,
             requestID: request.requestID,
             metadata: request.metadata,
             authorization: executionContext.authorization,
-            requestPayload: request.payload
+            requestPayload: request.payload,
+            wireLimits: limits
         )
+    }
+
+    private func invoke(
+        _ prepared: PreparedDatabaseOperation,
+        request: DatabaseWireRequestEnvelope,
+        context: DatabaseOperationContext
+    ) async throws -> ByteString {
         let result: DatabaseOperationResult
         do {
-            result = try await handlerChain()(request, context)
+            result = try await handlerChain(prepared: prepared)(request, context)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -147,16 +363,12 @@ public final class DatabaseEndpoint: Sendable {
         }
     }
 
-    private func handlerChain() -> DatabaseRequestHandler {
-        var handler: DatabaseRequestHandler = { [registry, limits] request, context in
-            guard let operationHandler = registry.resolve(request.operation) else {
-                throw DatabaseEndpointError.missingHandler(request.operation)
-            }
-            return try await operationHandler.invoke(
-                envelope: request,
-                context: context,
-                limits: limits
-            )
+    private func handlerChain(
+        prepared: PreparedDatabaseOperation
+    ) -> DatabaseRequestHandler {
+        var handler: DatabaseRequestHandler = { request, context in
+            _ = request
+            return try await prepared.invoke(context)
         }
         for middleware in middlewares.reversed() {
             let next = handler

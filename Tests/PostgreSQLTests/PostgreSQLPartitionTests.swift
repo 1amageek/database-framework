@@ -81,7 +81,7 @@ struct PostgreSQLPartitionTests {
     func saveTenantOrderExtractsTenantID() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -108,7 +108,7 @@ struct PostgreSQLPartitionTests {
     func saveOrdersToDifferentTenants() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenant1 = uniqueID("t1")
             let tenant2 = uniqueID("t2")
@@ -149,7 +149,7 @@ struct PostgreSQLPartitionTests {
     func fetchWithoutPartitionThrows() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             await #expect(throws: DirectoryPathError.self) {
                 _ = try await context.fetch(TenantOrder.self).execute()
@@ -161,7 +161,7 @@ struct PostgreSQLPartitionTests {
     func fetchWithWhereFiltersWithinPartition() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenantID = uniqueID("tenant")
             let order1ID = uniqueID("o1")
@@ -194,7 +194,7 @@ struct PostgreSQLPartitionTests {
     func deleteFromCorrectPartition() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -232,7 +232,7 @@ struct PostgreSQLPartitionTests {
     func deleteAllWithoutPartitionThrows() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             await #expect(throws: DirectoryPathError.self) {
                 try await context.deleteAll(TenantOrder.self)
@@ -244,7 +244,7 @@ struct PostgreSQLPartitionTests {
     func deleteAllWithPartition() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenant1 = uniqueID("t1")
             let tenant2 = uniqueID("t2")
@@ -289,7 +289,7 @@ struct PostgreSQLPartitionTests {
     func enumerateWithoutPartitionThrows() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             await #expect(throws: DirectoryPathError.self) {
                 try await context.enumerate(TenantOrder.self) { _ in }
@@ -301,7 +301,7 @@ struct PostgreSQLPartitionTests {
     func enumerateWithPartition() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -331,7 +331,7 @@ struct PostgreSQLPartitionTests {
     func staticDirectoryTypesWork() async throws {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let playerID = uniqueID("player")
             var player = Player(name: "Test Player", score: 100, level: 5)
@@ -358,7 +358,7 @@ struct PostgreSQLPartitionTests {
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            try await container.newContext().withTransaction { transaction in
+            try await container.testBaseContext().withTransaction { transaction in
                 var order = TenantOrder(tenantID: tenantID, status: "tx-test", total: 500.0)
                 order.id = orderID
 
@@ -387,7 +387,7 @@ struct PostgreSQLPartitionTests {
             let container = try await setupContainer()
 
             await #expect(throws: DirectoryPathError.self) {
-                try await container.newContext().withTransaction { transaction in
+                try await container.testBaseContext().withTransaction { transaction in
                     _ = try await transaction.fetch(
                         TenantOrder.self,
                         identifiedBy: "any-id"

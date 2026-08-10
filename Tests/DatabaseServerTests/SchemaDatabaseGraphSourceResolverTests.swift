@@ -131,16 +131,18 @@ struct SchemaDatabaseGraphSourceResolverTests {
         container: DBContainer
     ) async throws -> ResolvedDatabaseGraphSource {
         let resolver = SchemaDatabaseGraphSourceResolver(container: container)
-        return try await StorageTransactionExecutor(
-            engine: container.engine
-        ).withTransaction(
-            configuration: .readOnly,
-            clock: TestProcessMonotonicClock()
-        ) { transaction in
-            try await resolver.resolve(
-                source,
-                transaction: transaction
-            )
+        return try await container.testBaseContext().withBaseOperation {
+            try await StorageTransactionExecutor(
+                engine: container.engine
+            ).withTransaction(
+                configuration: .readOnly,
+                clock: TestProcessMonotonicClock()
+            ) { transaction in
+                try await resolver.resolve(
+                    source,
+                    transaction: transaction
+                )
+            }
         }
     }
 
@@ -158,7 +160,7 @@ struct SchemaDatabaseGraphSourceResolverTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphSourceEdge.self), try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self), try DatabaseFrameworkRuntime.entity(DefaultGraphSourceStatement.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 }

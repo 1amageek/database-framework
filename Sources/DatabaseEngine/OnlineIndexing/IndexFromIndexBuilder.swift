@@ -58,7 +58,7 @@ public enum IndexSourceCompatibility: Sendable {
 ///
 /// try await builder.build(clearFirst: true)
 /// ```
-public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
+package final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Properties
 
     /// FDB Container for database access

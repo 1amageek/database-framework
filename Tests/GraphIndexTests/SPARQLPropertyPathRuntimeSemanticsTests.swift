@@ -47,7 +47,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
     func absentBoundNodesRetainZeroHopForms() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let executor = try await Self.makeExecutor(
                 container: container,
                 context: context
@@ -143,7 +143,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
     func mixedNegatedDirectionsPreserveBagMultiplicity() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let source = Self.uniqueIRI("mixed-nps-source")
             let target = Self.uniqueIRI("mixed-nps-target")
             let forwardPredicate = try Self.uniquePredicate(
@@ -196,7 +196,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
     func exactOneHopRangePreservesAlternativeMultiplicity() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let source = Self.uniqueIRI("exact-one-source")
             let target = Self.uniqueIRI("exact-one-target")
             let predicate = try Self.uniquePredicate("exact-one")
@@ -239,7 +239,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
     func exactTwoHopRangePreservesIntermediateMultiplicity() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let source = Self.uniqueIRI("exact-two-source")
             let firstMiddle = Self.uniqueIRI("exact-two-first-middle")
             let secondMiddle = Self.uniqueIRI("exact-two-second-middle")
@@ -296,7 +296,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
     func correlatedExistsAppliesSeedBeforeResultLimit() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let token = UUID().uuidString.lowercased()
             let noiseStart = Self.orderedIRI("00-noise-start", token: token)
             let noiseTarget = Self.orderedIRI("01-noise-target", token: token)
@@ -371,7 +371,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
     func sameVariableCyclesApplyLimitAfterCompatibility() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let acyclicStart = Self.uniqueIRI("same-variable-acyclic-start")
             let acyclicMiddle = Self.uniqueIRI("same-variable-acyclic-middle")
             let acyclicEnd = Self.uniqueIRI("same-variable-acyclic-end")
@@ -434,7 +434,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
     func compatibleResultOverflowIsTypedFailure() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let predicate = try Self.uniquePredicate("typed-overflow")
             let first = Self.uniqueIRI("typed-overflow-first")
             let second = Self.uniqueIRI("typed-overflow-second")
@@ -503,7 +503,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
     func subpropertyAndInverseAxiomsCompose() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let requested = try Self.uniquePredicate("ontology-super")
             let subproperty = try Self.uniquePredicate("ontology-sub")
             let inverse = try Self.uniquePredicate("ontology-sub-inverse")
@@ -563,7 +563,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
     func symmetricAndDeclaredInverseEntailmentsCompose() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let symmetric = try Self.uniquePredicate("ontology-symmetric")
             let declaredInverse = try Self.uniquePredicate(
                 "ontology-declared-inverse"
@@ -637,7 +637,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
     func publicBuilderExecutesPersistedSequenceEndToEnd() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let source = Self.uniqueIRI("builder-source")
             let middle = Self.uniqueIRI("builder-middle")
             let target = Self.uniqueIRI("builder-target")
@@ -690,7 +690,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(RuntimeSemanticPathEdge.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 

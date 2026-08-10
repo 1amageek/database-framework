@@ -58,7 +58,7 @@ struct SCCFinderTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForSCC.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -82,7 +82,7 @@ struct SCCFinderTests {
     @Test("Simple DAG - no SCCs")
     func testSimpleDAG() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -112,7 +112,7 @@ struct SCCFinderTests {
     @Test("Single SCC - simple cycle")
     func testSingleSCCSimpleCycle() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -147,7 +147,7 @@ struct SCCFinderTests {
     @Test("Multiple SCCs")
     func testMultipleSCCs() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -206,7 +206,7 @@ struct SCCFinderTests {
     @Test("Strongly connected check - same SCC")
     func testStronglyConnectedSameSCC() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -233,7 +233,7 @@ struct SCCFinderTests {
     @Test("Strongly connected check - different SCCs")
     func testStronglyConnectedDifferentSCCs() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -261,7 +261,7 @@ struct SCCFinderTests {
     @Test("Condensation graph")
     func testCondensationGraph() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -300,7 +300,7 @@ struct SCCFinderTests {
     @Test("Single node graph")
     func testSingleNodeGraph() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let predicate = uniqueID("edge")
@@ -323,7 +323,7 @@ struct SCCFinderTests {
     @Test("Complex graph with multiple SCC sizes")
     func testComplexGraphMultipleSCCSizes() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create unique IDs
         let a = uniqueID("A")
@@ -361,7 +361,7 @@ struct SCCFinderTests {
     @Test("Edge label filtering")
     func testEdgeLabelFiltering() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -420,7 +420,7 @@ struct GraphEdgeScannerBatchTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForSCC.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -510,7 +510,7 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllOutgoing groups edges by source")
     func testBatchScanAllOutgoingGrouping() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -559,7 +559,7 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllIncoming groups edges by target")
     func testBatchScanAllIncomingGrouping() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -608,7 +608,7 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllOutgoing returns empty dict for empty sources")
     func testBatchScanAllOutgoingEmpty() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predicate = uniqueID("edge")
 
@@ -639,7 +639,7 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllIncoming returns empty dict for empty targets")
     func testBatchScanAllIncomingEmpty() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predicate = uniqueID("edge")
 
@@ -670,7 +670,7 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllOutgoing with wildcard edge label")
     func testBatchScanAllOutgoingWildcard() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -710,7 +710,7 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllOutgoing with single node batch")
     func testBatchScanAllOutgoingSingleNode() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")
@@ -745,7 +745,7 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllOutgoing includes nodes with no edges")
     func testBatchScanAllOutgoingNoEdges() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let a = uniqueID("A")
         let b = uniqueID("B")

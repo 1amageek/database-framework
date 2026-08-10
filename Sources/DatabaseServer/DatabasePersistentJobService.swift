@@ -1,7 +1,18 @@
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 import StorageKit
+
+/// Immutable result of validating and compiling a persistent job in the
+/// request target's transaction domain. It is later stored in the control
+/// domain without reopening or retaining the target transaction.
+package struct DatabasePreparedPersistentJob: Sendable {
+    let identity: JobIdentity
+    let specification: DatabasePersistentJobStore.PreparedSpecification
+    let plan: DatabasePersistentJobPlan
+    let state: DatabasePersistentJobState
+}
 
 public final class DatabasePersistentJobService:
     DatabaseJobService,
@@ -9,6 +20,12 @@ public final class DatabasePersistentJobService:
     Sendable {
     public var jobOperations: [JobOperationIdentifier] {
         registry.identifiers
+    }
+
+    public func baseAdmission(
+        for operation: JobOperationIdentifier
+    ) throws -> DatabaseBaseAdmissionKind {
+        try registry.resolve(operation).baseAdmission
     }
 
     private let store: DatabasePersistentJobStore
@@ -55,22 +72,77 @@ public final class DatabasePersistentJobService:
         let wireLimits = self.wireLimits
         let requestPayload = context.requestPayload
         let service = self
-        let coordinated = try await coordinator.execute(
-            operation: JobStartOperation.identifier,
-            requestPayload: requestPayload,
-            context: context,
-            timeoutMilliseconds: runtimeLimits.maximumTimeoutMilliseconds
-        ) { transactionContext in
-            try await service.createPersistentJob(
-                request,
+        let coordinated: DatabaseCoordinatedOperationResponse
+        switch context.target {
+        case .database:
+            coordinated = try await coordinator.executeControlMetadata(
+                operation: JobStartOperation.identifier,
+                requestPayload: requestPayload,
                 context: context,
-                transaction: transactionContext
-            )
-        } makeResponse: { job, _ in
-            return DatabaseOperationResponseEncoder(
-                JobStartOperation.self,
-                response: JobStartOperation.Response(job: job)
-            )
+                timeoutMilliseconds: runtimeLimits.maximumTimeoutMilliseconds
+            ) { transactionContext in
+                try await service.createPersistentJob(
+                    request,
+                    context: context,
+                    transaction: transactionContext
+                )
+            } makeResponse: { job, _ in
+                DatabaseOperationResponseEncoder(
+                    JobStartOperation.self,
+                    response: JobStartOperation.Response(job: job)
+                )
+            }
+        case .base:
+            let executor = try context.requireBaseExecutor()
+            let baseAdmission = try baseAdmission(for: request.operation)
+            guard context.requirement.baseAdmission == baseAdmission else {
+                throw DatabaseJobRuntimeError.invalidTarget
+            }
+            coordinated = try await coordinator
+                .executeControlMetadataAfterTargetAuthorizationStaged(
+                    operation: JobStartOperation.identifier,
+                    requestPayload: requestPayload,
+                    context: context,
+                    timeoutMilliseconds:
+                        runtimeLimits.maximumTimeoutMilliseconds
+                ) {
+                    switch baseAdmission {
+                    case .activeData:
+                        return try await executor.withActiveDataTransaction(
+                            requiredAccess: .administer,
+                            configuration: .batch
+                        ) { transaction in
+                            try await service.preparePersistentJob(
+                                request,
+                                context: context,
+                                transaction: transaction
+                            )
+                        }
+                    case .administration, .lifecycleJob:
+                        return try await executor.withAdministrationTransaction(
+                            requiredAccess: .administer,
+                            configuration: .batch
+                        ) { transaction in
+                            try await service.preparePersistentJob(
+                                request,
+                                context: context,
+                                transaction: transaction
+                            )
+                        }
+                    }
+                } body: { prepared, transactionContext in
+                    try await service.storePreparedPersistentJob(
+                        prepared,
+                        transaction: transactionContext
+                    )
+                } makeResponse: { job, _ in
+                    DatabaseOperationResponseEncoder(
+                        JobStartOperation.self,
+                        response: JobStartOperation.Response(job: job)
+                    )
+                }
+        case .composition:
+            throw DatabaseJobRuntimeError.invalidTarget
         }
         try await runner.recoverSchedule()
         return try JobStartExecutionResult(
@@ -84,7 +156,26 @@ public final class DatabasePersistentJobService:
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction
     ) async throws -> JobIdentity {
+        let prepared = try await preparePersistentJob(
+            request,
+            context: context,
+            transaction: transaction
+        )
+        return try await storePreparedPersistentJob(
+            prepared,
+            transaction: transaction
+        )
+    }
+
+    package func preparePersistentJob(
+        _ request: JobStartOperation.Request,
+        context: DatabaseOperationContext,
+        transaction: DatabaseTransaction
+    ) async throws -> DatabasePreparedPersistentJob {
         try validate(request)
+        guard request.target == context.target else {
+            throw DatabaseJobRuntimeError.invalidTarget
+        }
         let operation = try registry.resolve(request.operation)
         let jobID = identifierGenerator.generate()
         let createdAt = clock.now
@@ -110,8 +201,13 @@ public final class DatabasePersistentJobService:
             sliceTimeoutMilliseconds: compiled.sliceTimeoutMilliseconds
         )
 
+        let targetDigestPrefix = try DatabaseWireWriter.encode {
+            (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
+            try request.target.encode(into: &writer)
+        }
         let requestDigest = DatabaseRequestDigest.compute(
             jobOperation: request.operation,
+            prefix: targetDigestPrefix,
             payload: request.requestPayload
         )
         let planDigest = DatabasePersistentJobDigest.plan(
@@ -121,6 +217,7 @@ public final class DatabasePersistentJobService:
         let specification = DatabasePersistentJobSpecification(
             jobID: jobID,
             operation: request.operation,
+            target: request.target,
             requestDigest: requestDigest,
             requestID: context.requestID,
             traceID: context.metadata.traceID,
@@ -164,13 +261,30 @@ public final class DatabasePersistentJobService:
             failure: nil,
             updatedAt: createdAt
         )
-        try await store.create(
+        let identity = JobIdentity(
+            jobID: jobID,
+            operation: request.operation,
+            target: request.target
+        )
+        return DatabasePreparedPersistentJob(
+            identity: identity,
             specification: preparedSpecification,
             plan: plan,
-            state: state,
+            state: state
+        )
+    }
+
+    package func storePreparedPersistentJob(
+        _ prepared: DatabasePreparedPersistentJob,
+        transaction: DatabaseTransaction
+    ) async throws -> JobIdentity {
+        try await store.create(
+            specification: prepared.specification,
+            plan: prepared.plan,
+            state: prepared.state,
             transaction: transaction.storageAccess
         )
-        return JobIdentity(jobID: jobID, operation: request.operation)
+        return prepared.identity
     }
 
     package func recoverPersistentJobSchedule() async throws {
@@ -181,8 +295,8 @@ public final class DatabasePersistentJobService:
         _ request: JobStatusOperation.Request,
         context: DatabaseOperationContext
     ) async throws -> JobStatusOperation.Response {
-        _ = context
         let snapshot = try await requiredSnapshot(request.job)
+        try await authorizeTarget(context, snapshot: snapshot)
         let state = snapshot.state
         if state.status == .succeeded {
             _ = try await store.loadResultManifest(for: snapshot)
@@ -208,8 +322,8 @@ public final class DatabasePersistentJobService:
         _ request: JobResultOperation.Request,
         context: DatabaseOperationContext
     ) async throws -> JobResultOperation.Response {
-        _ = context
         let snapshot = try await requiredSnapshot(request.job)
+        try await authorizeTarget(context, snapshot: snapshot)
         switch snapshot.state.status {
         case .succeeded:
             let manifest = try await store.loadResultManifest(for: snapshot)
@@ -268,12 +382,10 @@ public final class DatabasePersistentJobService:
         let store = self.store
         let clock = self.clock
         let requestPayload = context.requestPayload
-        let coordinated = try await coordinator.execute(
-            operation: JobCancelOperation.identifier,
-            requestPayload: requestPayload,
-            context: context,
-            timeoutMilliseconds: runtimeLimits.maximumTimeoutMilliseconds
-        ) { transactionContext in
+        let requestedSnapshot = try await requiredSnapshot(request.job)
+        try await authorizeTarget(context, snapshot: requestedSnapshot)
+        let mutation: @Sendable (DatabaseTransaction) async throws
+            -> JobCancelOperation.Response = { transactionContext in
             let transaction = transactionContext.storageAccess
             guard let snapshot = try await store.load(
                 request.jobID,
@@ -286,6 +398,9 @@ public final class DatabasePersistentJobService:
                     expected: request.operation,
                     actual: snapshot.specification.operation
                 )
+            }
+            guard snapshot.specification.target == request.target else {
+                throw DatabaseJobRuntimeError.invalidTarget
             }
             let cancellationRequestedAt = max(
                 clock.now,
@@ -327,11 +442,39 @@ public final class DatabasePersistentJobService:
                 state: updated.status,
                 accepted: true
             )
-        } makeResponse: { response, _ in
-            DatabaseOperationResponseEncoder(
-                JobCancelOperation.self,
-                response: response
-            )
+        }
+        let coordinated: DatabaseCoordinatedOperationResponse
+        switch context.target {
+        case .database:
+            coordinated = try await coordinator.executeControlMetadata(
+                operation: JobCancelOperation.identifier,
+                requestPayload: requestPayload,
+                context: context,
+                timeoutMilliseconds: runtimeLimits.maximumTimeoutMilliseconds,
+                body: mutation
+            ) { response, _ in
+                DatabaseOperationResponseEncoder(
+                    JobCancelOperation.self,
+                    response: response
+                )
+            }
+        case .base:
+            coordinated = try await coordinator
+                .executeControlMetadataAfterTargetAuthorization(
+                    operation: JobCancelOperation.identifier,
+                    requestPayload: requestPayload,
+                    context: context,
+                    timeoutMilliseconds:
+                        runtimeLimits.maximumTimeoutMilliseconds,
+                    body: mutation
+                ) { response, _ in
+                    DatabaseOperationResponseEncoder(
+                        JobCancelOperation.self,
+                        response: response
+                    )
+                }
+        case .composition:
+            throw DatabaseJobRuntimeError.invalidTarget
         }
         try await runner.recoverSchedule()
         return try JobCancellationExecutionResult(
@@ -356,7 +499,53 @@ public final class DatabasePersistentJobService:
                 actual: snapshot.specification.operation
             )
         }
+        guard snapshot.specification.target == job.target else {
+            throw DatabaseJobRuntimeError.invalidTarget
+        }
         return snapshot
+    }
+
+    private func authorizeTarget(
+        _ context: DatabaseOperationContext,
+        snapshot: DatabasePersistentJobSnapshot
+    ) async throws {
+        switch context.target {
+        case .database:
+            try await context.requireControlExecutor().withTransaction(
+                requiredAccess: .administer,
+                configuration: .readOnly
+            ) { _ in () }
+        case .base(let baseID):
+            let executor = try context.requireBaseExecutor()
+            guard executor.baseID == baseID else {
+                throw DatabaseJobRuntimeError.invalidTarget
+            }
+            do {
+                try await executor.authorize(.administer)
+            } catch {
+                guard Self.sameAuthenticatedPrincipal(
+                    context.authorization,
+                    snapshot.specification.authorization
+                ), try await executor.permitsDeletionFinalization(
+                        owner: ByteString(snapshot.specification.jobID.bytes)
+                    ) else {
+                    throw error
+                }
+            }
+        case .composition:
+            throw DatabaseJobRuntimeError.invalidTarget
+        }
+    }
+
+    private static func sameAuthenticatedPrincipal(
+        _ lhs: AuthorizationContext,
+        _ rhs: AuthorizationContext
+    ) -> Bool {
+        guard let lhsIdentifier = lhs.principal?.identifier,
+              let rhsIdentifier = rhs.principal?.identifier else {
+            return false
+        }
+        return lhsIdentifier == rhsIdentifier
     }
 
     private func resultChunkIndex(
@@ -402,17 +591,30 @@ public final class DatabasePersistentJobService:
 
     static func operationContext(
         for snapshot: DatabasePersistentJobSnapshot,
-        container: DBContainer
+        container: DBContainer,
+        baseContext: DatabaseContext?,
+        baseAdmission: DatabaseBaseAdmissionKind,
+        wireLimits: DatabaseWireLimits
     ) -> DatabaseOperationContext {
         DatabaseOperationContext(
             container: container,
+            target: snapshot.specification.target,
+            baseContext: baseContext,
+            composition: nil,
+            requirement: DatabaseOperationRequirement(
+                acceptedTargets: [.database, .base],
+                access: .administer,
+                transaction: .write,
+                baseAdmission: baseAdmission
+            ),
             requestID: snapshot.specification.requestID,
             metadata: OperationRequestMetadata(
                 traceID: snapshot.specification.traceID
             ),
             authorization: snapshot.specification.authorization,
             requestPayload: [],
-            requestDigest: snapshot.specification.requestDigest
+            requestDigest: snapshot.specification.requestDigest,
+            wireLimits: wireLimits
         )
     }
 }

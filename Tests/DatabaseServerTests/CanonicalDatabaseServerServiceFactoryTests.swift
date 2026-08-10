@@ -21,9 +21,9 @@ struct CanonicalDatabaseServerServiceFactoryTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphSourceEdge.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let stateStore = try await DatabaseMutationStateStore(
+        let stateStore = DatabaseMutationStateStore(
             container: container
         )
         let context = DatabaseServerServiceContext(
@@ -60,6 +60,13 @@ struct CanonicalDatabaseServerServiceFactoryTests {
         DatabaseJobServiceFactory,
         DatabaseJobService {
         var jobOperations: [JobOperationIdentifier] { [] }
+
+        func baseAdmission(
+            for operation: JobOperationIdentifier
+        ) throws -> DatabaseBaseAdmissionKind {
+            _ = operation
+            throw UnexpectedPlatformInvocation.unexpectedInvocation
+        }
 
         func makeMaintenanceService(
             context: DatabaseServerServiceContext

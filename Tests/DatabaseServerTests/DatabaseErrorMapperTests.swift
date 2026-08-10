@@ -13,6 +13,32 @@ import Testing
 
 @Suite("Database error mapper")
 struct DatabaseErrorMapperTests {
+    @Test("Schema application reports Base lifecycle and generation conflicts")
+    func schemaBaseConflicts() async throws {
+        let context = try await makeContext()
+        let mapper = CanonicalDatabaseErrorMapper()
+        let baseID = try Base.ID("schema-target")
+
+        let lifecycle = mapper.remoteError(
+            for: DatabaseSchemaApplyJobError
+                .baseLifecycleTransitionInProgress(baseID, "moving"),
+            context: context
+        )
+        #expect(lifecycle.category == .conflict)
+        #expect(lifecycle.code == "SCHEMA_BASE_LIFECYCLE_IN_PROGRESS")
+        #expect(lifecycle.retryability == .backoff)
+
+        let generation = mapper.remoteError(
+            for: DatabaseSchemaApplyJobError.baseGenerationChanged(baseID),
+            context: context
+        )
+        expect(
+            generation,
+            category: .conflict,
+            code: "SCHEMA_BASE_GENERATION_CHANGED"
+        )
+    }
+
     @Test("Empty mutations have a stable request error code")
     func emptyMutationFailure() async throws {
         let context = try await makeContext()
@@ -1200,13 +1226,19 @@ struct DatabaseErrorMapperTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         return DatabaseOperationContext(
             container: container,
+            target: .database,
+            baseContext: nil,
+            composition: nil,
+            requirement: .canonical(for: .capabilitiesDescribe),
             requestID: 1,
             metadata: OperationRequestMetadata(),
-            requestPayload: []
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: [],
+            wireLimits: .default
         )
     }
 

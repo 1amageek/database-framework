@@ -9,6 +9,8 @@ public enum DatabaseEndpointError: Error, Sendable, CustomStringConvertible {
     )
     case responseRequestIDMismatch(expected: UInt64, actual: UInt64)
     case missingHandler(DatabaseOperationIdentifier)
+    case targetKindNotAccepted(DatabaseOperationTarget)
+    case migrationRequired
 
     public var description: String {
         switch self {
@@ -22,6 +24,10 @@ public enum DatabaseEndpointError: Error, Sendable, CustomStringConvertible {
             return "Database response request ID \(actual) does not match request \(expected)"
         case .missingHandler(let identifier):
             return "Database operation \(identifier) has no registered handler"
+        case .targetKindNotAccepted(let target):
+            return "Database operation does not accept target \(target)"
+        case .migrationRequired:
+            return "The database layout must be migrated before this operation can run"
         }
     }
 }

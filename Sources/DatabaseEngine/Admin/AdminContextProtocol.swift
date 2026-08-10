@@ -4,7 +4,7 @@ import DatabaseKit
 ///
 /// **Usage**:
 /// ```swift
-/// let admin = container.newAdminContext()
+/// let admin = session.base(baseID).admin()
 ///
 /// // Read collection statistics
 /// let stats = try await admin.collectionStatistics(User.self)
@@ -17,6 +17,19 @@ import DatabaseKit
 /// print("Plan type: \(plan.planType)")
 /// ```
 public protocol AdminContextProtocol: Sendable {
+    // MARK: - Schema Migration
+
+    /// Returns the migration state for this Base.
+    func migrationStatus(
+        targetVersion: Schema.Version?
+    ) async throws -> DatabaseMigrationStatus
+
+    /// Executes at most the requested number of migration stages in this Base.
+    func runMigrations(
+        targetVersion: Schema.Version?,
+        maximumStageCount: UInt64
+    ) async throws -> DatabaseMigrationExecutionResult
+
     // MARK: - Collection Statistics
 
     /// Returns statistics for a persistable collection.
@@ -106,6 +119,19 @@ public protocol AdminContextProtocol: Sendable {
 // MARK: - Default Implementations
 
 extension AdminContextProtocol {
+    /// Returns migration state for the currently compiled schema.
+    public func migrationStatus() async throws -> DatabaseMigrationStatus {
+        try await migrationStatus(targetVersion: nil)
+    }
+
+    /// Migrates this Base completely to the currently compiled schema.
+    public func migrateIfNeeded() async throws {
+        _ = try await runMigrations(
+            targetVersion: nil,
+            maximumStageCount: .max
+        )
+    }
+
     /// Rebuilds an index without a progress callback.
     public func rebuildIndex(_ indexName: String) async throws {
         try await rebuildIndex(indexName, progress: nil)

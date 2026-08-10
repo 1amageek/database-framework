@@ -222,7 +222,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Resolve the physical access path using the same selection, encoding, and
     /// lifecycle checks as query execution.
     func executionPlan<T: Persistable>(
-        for query: Query<T>
+        for query: Query<T>,
+        transaction: any TransactionAccess
     ) async throws -> QueryAccessPlan {
         try QueryResultWindow.validate(
             limit: query.fetchLimit,
@@ -280,7 +281,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         _ = try encodeScalarIndexAccess(selection)
 
         let state = try await indexLifecycleStore.state(
-            of: selection.descriptor.name
+            of: selection.descriptor.name,
+            transaction: transaction
         )
         guard state.isReadable else {
             if query.forcedIndex != nil {
@@ -1389,7 +1391,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let result = try persistedModel.decode(as: T.self)
 
         // Evaluate GET security via delegate after fetch
-        try securityDelegate?.evaluateGet(persistedModel)
+        try securityDelegate?.evaluateGet(persistedModel, fields: nil)
 
         return result
     }

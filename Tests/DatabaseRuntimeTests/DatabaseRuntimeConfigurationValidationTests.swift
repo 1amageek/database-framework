@@ -184,7 +184,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
                     storageEngine: InMemoryEngine()
                 ),
                 runtimeConfiguration: configuration,
-                security: .disabled
+                security: .testingDisabled
             )
         }
     }

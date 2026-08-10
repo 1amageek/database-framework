@@ -10,10 +10,10 @@ import Testing
 
 @Suite("Canonical query continuation endpoint", .serialized)
 struct DatabaseQueryContinuationEndpointTests {
-    @Test("row pages traverse the binary endpoint without gaps or duplicates")
-    func rowPagesRoundTripWithoutGapsOrDuplicates() async throws {
+    @Test("a backend without historical reads rejects cross-transaction continuation")
+    func nonHistoricalBackendRejectsContinuation() async throws {
         let endpoint = try await makeEndpoint()
-        let query = valuesQuery()
+        let query = tableQuery()
 
         let first = try await successfulPage(
             request(query: query, pageLimit: 2),
@@ -21,7 +21,16 @@ struct DatabaseQueryContinuationEndpointTests {
             endpoint: endpoint
         )
         let continuation = try #require(first.continuation)
-        let second = try await successfulPage(
+        guard case .transactional(let readPoint) = first.consistency else {
+            Issue.record("Expected one transactional read point")
+            return
+        }
+        guard case .version = readPoint.position else {
+            Issue.record("Expected the in-memory backend to report its current version")
+            return
+        }
+
+        let error = try await remoteFailure(
             request(
                 query: query,
                 pageLimit: 2,
@@ -30,22 +39,27 @@ struct DatabaseQueryContinuationEndpointTests {
             requestID: 2,
             endpoint: endpoint
         )
+        expectInvalidContinuation(error)
 
-        let rows = try first.materializedRows(maximumCount: 2)
-            + second.materializedRows(maximumCount: 2)
+        let complete = try await successfulPage(
+            request(query: query, pageLimit: 4),
+            requestID: 3,
+            endpoint: endpoint
+        )
+        let rows = try complete.materializedRows(maximumCount: 4)
         let identifiers = try rows.map {
-            try identifier(from: $0, columns: first.columns)
+            try identifier(from: $0, columns: complete.columns)
         }
         #expect(identifiers == ["entity-0", "entity-1", "entity-2", "entity-3"])
         #expect(Set(identifiers).count == identifiers.count)
-        #expect(second.continuation == nil)
+        #expect(complete.continuation == nil)
     }
 
     @Test("a continuation is rejected for a different canonical QueryIR")
     func continuationRejectsDifferentQueryIR() async throws {
         let endpoint = try await makeEndpoint()
         let first = try await successfulPage(
-            request(query: valuesQuery(), pageLimit: 1),
+            request(query: tableQuery(), pageLimit: 1),
             requestID: 10,
             endpoint: endpoint
         )
@@ -53,7 +67,7 @@ struct DatabaseQueryContinuationEndpointTests {
 
         let error = try await remoteFailure(
             request(
-                query: valuesQuery(distinct: true),
+                query: tableQuery(distinct: true),
                 pageLimit: 1,
                 continuation: continuation
             ),
@@ -69,7 +83,7 @@ struct DatabaseQueryContinuationEndpointTests {
         let endpoint = try await makeEndpoint()
         let first = try await successfulPage(
             request(
-                query: valuesQuery(),
+                query: tableQuery(),
                 graphPartitions: try partition("calendar-a"),
                 pageLimit: 1
             ),
@@ -80,7 +94,7 @@ struct DatabaseQueryContinuationEndpointTests {
 
         let error = try await remoteFailure(
             request(
-                query: valuesQuery(),
+                query: tableQuery(),
                 graphPartitions: try partition("calendar-b"),
                 pageLimit: 1,
                 continuation: continuation
@@ -104,7 +118,7 @@ struct DatabaseQueryContinuationEndpointTests {
         )
         let continuation = try #require(first.continuation)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         var inserted = DatabaseEndpointEntity()
         inserted.id = "entity-added"
         inserted.title = "Added after the first page"
@@ -131,7 +145,7 @@ struct DatabaseQueryContinuationEndpointTests {
 
         let error = try await remoteFailure(
             request(
-                query: valuesQuery(),
+                query: tableQuery(),
                 pageLimit: 1,
                 continuation: [0x43, 0x51, 0x50]
             ),
@@ -161,7 +175,7 @@ struct DatabaseQueryContinuationEndpointTests {
         )
     }
 
-    private func makeContainer(seedCount: Int = 0) async throws -> DBContainer {
+    private func makeContainer(seedCount: Int = 4) async throws -> DBContainer {
         let container = try await DBContainer.open(
             for: try Schema(
                 entities: [
@@ -173,12 +187,12 @@ struct DatabaseQueryContinuationEndpointTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         guard seedCount > 0 else {
             return container
         }
-        let context = container.newContext()
+        let context = container.testBaseContext()
         for index in 0..<seedCount {
             var entity = DatabaseEndpointEntity()
             entity.id = "entity-\(index)"
@@ -190,21 +204,11 @@ struct DatabaseQueryContinuationEndpointTests {
         return container
     }
 
-    private func valuesQuery(distinct: Bool = false) -> SelectQuery {
+    private func tableQuery(distinct: Bool = false) -> SelectQuery {
         SelectQuery(
             projection: .all,
-            source: .values(
-                (0..<4).map { [.string("entity-\($0)")] },
-                columnNames: ["id"]
-            ),
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)),
             distinct: distinct
-        )
-    }
-
-    private func tableQuery() -> SelectQuery {
-        SelectQuery(
-            projection: .all,
-            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
         )
     }
 
@@ -284,12 +288,15 @@ struct DatabaseQueryContinuationEndpointTests {
         let requestFrame = try DatabaseWireEncoder().encodeRequest(
             DatabaseOperations.queryExecute,
             requestID: requestID,
+            target: .base(try TestBaseEnvironment.id()),
             metadata: OperationRequestMetadata(),
             request: request
         )
         let responseFrame = try await endpoint.execute(
             requestFrame,
-            context: DatabaseRequestExecutionContext(authorization: .anonymous)
+            context: DatabaseRequestExecutionContext(
+                authorization: TestBaseEnvironment.authorization
+            )
         )
         let decoder = DatabaseWireDecoder()
         let header = try decoder.decodeResponseHeader(responseFrame)

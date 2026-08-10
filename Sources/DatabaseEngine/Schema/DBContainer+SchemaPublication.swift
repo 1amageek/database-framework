@@ -4,20 +4,120 @@ import DatabaseTypes
 import StorageKit
 
 extension DBContainer {
+    package func requireNoActiveSchemaTransition(
+        transaction: any TransactionAccess
+    ) async throws {
+        try await DatabaseSchemaApplicationStore(
+            metadataSubspace: metadataSubspace
+        ).requireNoActiveTransition(transaction: transaction)
+    }
+
+    /// Atomically publishes the complete initial schema catalog for a compiled
+    /// application. Existing complete state is validated, never overwritten.
+    package func initializeSchemaCatalogIfNeeded(
+        _ schema: Schema,
+        fingerprint targetFingerprint: SchemaFingerprint
+    ) async throws {
+        let registry = SchemaRegistry(
+            database: storageTopology.controlDomain.engine,
+            root: storageTopology.controlDomain.root,
+            clock: monotonicClock
+        )
+        try await controlTransactionExecutor.withTransaction(
+            configuration: .default,
+            clock: monotonicClock
+        ) { transaction in
+            let entities = try await registry.loadAll(transaction: transaction)
+            let version = try await Self.loadSchemaVersion(
+                metadataSubspace: self.metadataSubspace,
+                transaction: transaction
+            )
+            let fingerprint = try await Self.loadActiveSchemaFingerprint(
+                metadataSubspace: self.metadataSubspace,
+                transaction: transaction
+            )
+            let generation = try await Self.loadPersistedSchemaGeneration(
+                metadataSubspace: self.metadataSubspace,
+                transaction: transaction
+            )
+
+            if entities.isEmpty,
+               version == nil,
+               fingerprint == nil,
+               generation == nil {
+                try await registry.persistInitialSchema(
+                    schema,
+                    transaction: transaction
+                )
+                try Self.setCurrentSchemaSnapshot(
+                    schema,
+                    metadataSubspace: self.metadataSubspace,
+                    transaction: transaction
+                )
+                try transaction.setValue(
+                    targetFingerprint.bytes,
+                    for: Self.activeSchemaFingerprintKey(
+                        metadataSubspace: self.metadataSubspace
+                    )
+                )
+                try transaction.setValue(
+                    Tuple(UInt64(0)).pack(),
+                    for: Self.schemaGenerationKey(
+                        metadataSubspace: self.metadataSubspace
+                    )
+                )
+                return
+            }
+
+            guard let version else {
+                throw DatabaseSchemaRestorationError.missingVersion
+            }
+            guard let fingerprint else {
+                throw DatabaseSchemaRestorationError.missingFingerprint
+            }
+            guard generation != nil else {
+                throw DatabaseSchemaRestorationError.invalidGeneration
+            }
+            let persistedSchema = try Schema(
+                entities: entities,
+                version: version
+            )
+            let computedFingerprint = try SchemaManifest(
+                schema: persistedSchema
+            ).fingerprint()
+            guard computedFingerprint == fingerprint else {
+                throw DatabaseSchemaRestorationError.fingerprintMismatch
+            }
+            guard fingerprint == targetFingerprint else {
+                throw DatabaseSchemaPublicationError.fingerprintConflict(
+                    expected: targetFingerprint,
+                    actual: fingerprint
+                )
+            }
+        }
+    }
+
     package func storedSchemaPublication(
         idempotencyKey: String,
-        matching targetFingerprint: SchemaFingerprint
+        matching targetFingerprint: SchemaFingerprint,
+        authorization: AuthorizationContext
     ) async throws -> DatabaseSchemaPublicationResult? {
         guard !idempotencyKey.isEmpty else {
             throw DatabaseSchemaPublicationError.invalidIdempotencyKey
         }
-        return try await newContext().withTransaction(
-            configuration: .readOnly
-        ) { databaseTransaction in
+        return try await controlTransactionExecutor.withTransaction(
+            configuration: .readOnly,
+            clock: monotonicClock
+        ) { transaction in
+            try await self.databaseGrantStore.require(
+                .administer,
+                authorization: authorization,
+                transaction: transaction
+            )
             guard let stored = try await Self.loadSchemaPublication(
                 idempotencyKey: idempotencyKey,
                 metadataSubspace: self.metadataSubspace,
-                transaction: databaseTransaction.storageAccess
+                transaction: transaction
             ) else {
                 return nil
             }
@@ -35,27 +135,8 @@ extension DBContainer {
         fingerprint targetFingerprint: SchemaFingerprint,
         expectedFingerprint: SchemaFingerprint,
         idempotencyKey: String,
+        authorization: AuthorizationContext,
         runtimeConfiguration targetRuntimeConfiguration: DatabaseRuntimeConfiguration
-    ) async throws -> DatabaseSchemaPublicationResult {
-        try await publishSchema(
-            schema,
-            fingerprint: targetFingerprint,
-            expectedFingerprint: expectedFingerprint,
-            idempotencyKey: idempotencyKey,
-            runtimeConfiguration: targetRuntimeConfiguration,
-            prepareIndexBuildJob: nil
-        )
-    }
-
-    package func publishSchema(
-        _ schema: Schema,
-        fingerprint targetFingerprint: SchemaFingerprint,
-        expectedFingerprint: SchemaFingerprint,
-        idempotencyKey: String,
-        runtimeConfiguration targetRuntimeConfiguration: DatabaseRuntimeConfiguration,
-        prepareIndexBuildJob: (@Sendable (
-            DatabaseTransaction
-        ) async throws -> JobIdentity?)?
     ) async throws -> DatabaseSchemaPublicationResult {
         guard !idempotencyKey.isEmpty else {
             throw DatabaseSchemaPublicationError.invalidIdempotencyKey
@@ -67,18 +148,28 @@ extension DBContainer {
         )
 
         let publishedLease = acquirePublishedSchemaLease()
-        let leasedSchema = publishedLease.schema
         let leasedFingerprint = publishedLease.fingerprint.detached()
         let leasedGeneration = publishedLease.generation
         let registry = SchemaRegistry(
-            database: engine,
+            database: storageTopology.controlDomain.engine,
+            root: storageTopology.controlDomain.root,
             clock: monotonicClock
         )
-        let outcome = try await newContext().withTransaction(
+        let outcome = try await controlTransactionExecutor.withTransaction(
             configuration: .batch,
+            clock: monotonicClock,
             executionDeadline: nil
-        ) { databaseTransaction in
-            let transaction = databaseTransaction.storageAccess
+        ) { transaction in
+            try await self.databaseGrantStore.require(
+                .administer,
+                authorization: authorization,
+                transaction: transaction
+            )
+            let databaseTransaction = DatabaseTransaction(
+                storageAccess: transaction,
+                container: self
+            )
+            do {
             if let stored = try await Self.loadSchemaPublication(
                 idempotencyKey: idempotencyKey,
                 metadataSubspace: self.metadataSubspace,
@@ -104,12 +195,14 @@ extension DBContainer {
                         "idempotent publication exists without active schema state"
                     )
                 }
-                return SchemaPublicationTransactionOutcome(
+                let outcome = SchemaPublicationTransactionOutcome(
                     publication: stored,
                     shouldPublishGeneration:
                         activeFingerprint == stored.fingerprint
                             && activeGeneration == stored.generation
                 )
+                try await databaseTransaction.prepareForCommit()
+                return outcome
             }
 
             let actualFingerprint = try await Self.loadActiveSchemaFingerprint(
@@ -144,18 +237,6 @@ extension DBContainer {
                 mode: .strict,
                 transaction: transaction
             )
-            let introducedIndexBuild = try await self
-                .initializeNewSchemaIndexStates(
-                from: leasedSchema,
-                to: schema,
-                transaction: transaction
-            )
-            let pendingIndexBuilds = try await self.pendingSchemaIndexBuilds(
-                in: schema,
-                transaction: transaction
-            )
-            let requiresIndexBuild = introducedIndexBuild
-                || !pendingIndexBuilds.isEmpty
             try Self.setCurrentSchemaSnapshot(
                 schema,
                 metadataSubspace: self.metadataSubspace,
@@ -174,26 +255,11 @@ extension DBContainer {
                 )
             )
 
-            let job: JobIdentity?
-            if requiresIndexBuild {
-                guard let prepareIndexBuildJob else {
-                    throw DatabaseSchemaPublicationError
-                        .persistentIndexBuildJobRequired
-                }
-                job = try await prepareIndexBuildJob(databaseTransaction)
-                guard job != nil else {
-                    throw DatabaseSchemaPublicationError
-                        .persistentIndexBuildJobRequired
-                }
-            } else {
-                job = nil
-            }
             let result = DatabaseSchemaPublicationResult(
                 previousFingerprint: actualFingerprint,
                 fingerprint: targetFingerprint,
                 schemaVersion: schema.version,
-                generation: nextGeneration,
-                job: job
+                generation: nextGeneration
             )
             try transaction.setValue(
                 Self.encodeSchemaPublication(result),
@@ -202,10 +268,16 @@ extension DBContainer {
                     metadataSubspace: self.metadataSubspace
                 )
             )
-            return SchemaPublicationTransactionOutcome(
+            let outcome = SchemaPublicationTransactionOutcome(
                 publication: result,
                 shouldPublishGeneration: true
             )
+            try await databaseTransaction.prepareForCommit()
+            return outcome
+            } catch {
+                await databaseTransaction.invalidate()
+                throw error
+            }
         }
 
         if outcome.shouldPublishGeneration {
@@ -235,7 +307,7 @@ extension DBContainer {
         )
     }
 
-    private func initializeNewSchemaIndexStates(
+    package func initializeNewSchemaIndexStates(
         from previous: Schema,
         to target: Schema,
         transaction: any TransactionAccess
@@ -325,9 +397,8 @@ extension DBContainer {
         for group in target.polymorphicGroups
         where previous.polymorphicGroup(identifier: group.identifier) == nil
             && !group.indexes.isEmpty {
-            let subspace = try await engine.namespaceResolver.resolveOrCreate(
-                path: group.resolvedDirectoryPath(),
-                transaction: transaction
+            let subspace = try activeDataSubspace(
+                relativePath: group.resolvedDirectoryPath()
             )
             try await IndexLifecycleStore(
                 container: self,
@@ -346,6 +417,7 @@ extension DBContainer {
         indexes: [String],
         transaction: any TransactionAccess
     ) async throws -> Set<String> {
+        let schemaMetadataSubspace = try baseSchemaMetadataSubspace()
         var pending = Set<String>()
         pending.reserveCapacity(indexes.count)
         for index in indexes {
@@ -353,7 +425,7 @@ extension DBContainer {
                 for: Self.schemaIndexBuildPendingKey(
                     entity: entity,
                     index: index,
-                    metadataSubspace: metadataSubspace
+                    metadataSubspace: schemaMetadataSubspace
                 ),
                 snapshot: false
             ) != nil {
@@ -400,12 +472,25 @@ extension DBContainer {
         index: String,
         transaction: any TransactionAccess
     ) throws {
+        let schemaMetadataSubspace = try baseSchemaMetadataSubspace()
         try transaction.clear(
             key: Self.schemaIndexBuildPendingKey(
                 entity: entity,
                 index: index,
-                metadataSubspace: metadataSubspace
+                metadataSubspace: schemaMetadataSubspace
             )
+        )
+    }
+
+    package func installBaseSchemaSnapshot(
+        _ schema: Schema,
+        transaction: any TransactionAccess
+    ) throws {
+        try Self.setCurrentSchemaSnapshot(
+            schema,
+            metadataSubspace: requireBoundBaseLease().root
+                .subspace("metadata"),
+            transaction: transaction
         )
     }
 
@@ -414,12 +499,13 @@ extension DBContainer {
         index: String,
         transaction: any TransactionAccess
     ) throws {
+        let schemaMetadataSubspace = try baseSchemaMetadataSubspace()
         try transaction.setValue(
             [1],
             for: Self.schemaIndexBuildPendingKey(
                 entity: entity,
                 index: index,
-                metadataSubspace: metadataSubspace
+                metadataSubspace: schemaMetadataSubspace
             )
         )
     }
@@ -448,6 +534,10 @@ extension DBContainer {
             .pack(Tuple(entity, index))
     }
 
+    private func baseSchemaMetadataSubspace() throws -> Subspace {
+        try requireBoundBaseLease().root.subspace("_metadata")
+    }
+
     package static func activeSchemaFingerprintKey(
         metadataSubspace: Subspace
     ) -> ByteString {
@@ -458,10 +548,15 @@ extension DBContainer {
 
     static func restoreSchemaState(
         storageEngine: any StorageEngine,
+        root: Subspace,
         metadataSubspace: Subspace,
         clock: any StorageMonotonicClock
     ) async throws -> DatabaseRestoredSchemaState {
-        let registry = SchemaRegistry(database: storageEngine, clock: clock)
+        let registry = SchemaRegistry(
+            database: storageEngine,
+            root: root,
+            clock: clock
+        )
         return try await StorageTransactionExecutor(engine: storageEngine)
             .withTransaction(configuration: .default, clock: clock) {
                 transaction in
@@ -519,7 +614,7 @@ extension DBContainer {
             }
     }
 
-    private static func loadSchemaVersion(
+    package static func loadSchemaVersion(
         metadataSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> Schema.Version? {
@@ -555,7 +650,7 @@ extension DBContainer {
             .pack(Tuple(idempotencyKey))
     }
 
-    private static func loadActiveSchemaFingerprint(
+    package static func loadActiveSchemaFingerprint(
         metadataSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> SchemaFingerprint? {
@@ -574,7 +669,7 @@ extension DBContainer {
         }
     }
 
-    private static func loadPersistedSchemaGeneration(
+    package static func loadPersistedSchemaGeneration(
         metadataSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> UInt64? {
@@ -616,21 +711,15 @@ extension DBContainer {
     private static func encodeSchemaPublication(
         _ publication: DatabaseSchemaPublicationResult
     ) -> ByteString {
-        let job = publication.job
         return Tuple(
-            UInt64(2),
+            UInt64(3),
             publication.previousFingerprint != nil,
             publication.previousFingerprint?.bytes ?? ByteString(),
             publication.fingerprint.bytes,
             publication.generation,
             UInt64(publication.schemaVersion.major),
             UInt64(publication.schemaVersion.minor),
-            UInt64(publication.schemaVersion.patch),
-            job != nil,
-            job?.jobID.high ?? 0,
-            job?.jobID.low ?? 0,
-            UInt64(job?.operation.family.rawValue ?? 0),
-            job?.operation.kind ?? ""
+            UInt64(publication.schemaVersion.patch)
         ).pack()
     }
 
@@ -639,8 +728,8 @@ extension DBContainer {
     ) throws -> DatabaseSchemaPublicationResult {
         do {
             let tuple = try Tuple(packed: bytes)
-            guard tuple.count == 13,
-                  unsignedInteger(try tuple.value(at: 0)) == 2,
+            guard tuple.count == 8,
+                  unsignedInteger(try tuple.value(at: 0)) == 3,
                   case .boolean(let hasPrevious) = try tuple.value(at: 1),
                   case .bytes(let previousBytes) = try tuple.value(at: 2),
                   case .bytes(let fingerprintBytes) = try tuple.value(at: 3),
@@ -648,11 +737,6 @@ extension DBContainer {
                   let major = unsignedInteger(try tuple.value(at: 5)),
                   let minor = unsignedInteger(try tuple.value(at: 6)),
                   let patch = unsignedInteger(try tuple.value(at: 7)),
-                  case .boolean(let hasJob) = try tuple.value(at: 8),
-                  let jobHigh = unsignedInteger(try tuple.value(at: 9)),
-                  let jobLow = unsignedInteger(try tuple.value(at: 10)),
-                  let jobFamilyRaw = unsignedInteger(try tuple.value(at: 11)),
-                  case .string(let jobKind) = try tuple.value(at: 12),
                   let majorValue = UInt32(exactly: major),
                   let minorValue = UInt32(exactly: minor),
                   let patchValue = UInt32(exactly: patch) else {
@@ -663,34 +747,6 @@ extension DBContainer {
             let previous = hasPrevious
                 ? try SchemaFingerprint(previousBytes)
                 : nil
-            let job: JobIdentity?
-            if hasJob {
-                guard let familyRaw = UInt16(exactly: jobFamilyRaw),
-                      let family = DatabaseOperationIdentifier(
-                          rawValue: familyRaw
-                      ) else {
-                    throw DatabaseSchemaPublicationError.corruptedState(
-                        "idempotency job family is invalid"
-                    )
-                }
-                job = JobIdentity(
-                    jobID: DatabaseTypes.UUID(high: jobHigh, low: jobLow),
-                    operation: try JobOperationIdentifier(
-                        family: family,
-                        kind: jobKind
-                    )
-                )
-            } else {
-                guard jobHigh == 0,
-                      jobLow == 0,
-                      jobFamilyRaw == 0,
-                      jobKind.isEmpty else {
-                    throw DatabaseSchemaPublicationError.corruptedState(
-                        "idempotency job fields are inconsistent"
-                    )
-                }
-                job = nil
-            }
             return DatabaseSchemaPublicationResult(
                 previousFingerprint: previous,
                 fingerprint: try SchemaFingerprint(fingerprintBytes),
@@ -699,8 +755,7 @@ extension DBContainer {
                     minorValue,
                     patchValue
                 ),
-                generation: generation,
-                job: job
+                generation: generation
             )
         } catch let publicationError as DatabaseSchemaPublicationError {
             throw publicationError

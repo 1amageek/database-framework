@@ -4,6 +4,7 @@ import Database
 import Testing
 import TestHeartbeat
 import DatabaseRuntime
+import TestSupport
 
 @Persistable(type: "SQLiteFacadeUser")
 struct SQLiteFacadeUserV1 {
@@ -69,11 +70,11 @@ struct DatabaseContainerConfigurationSQLiteTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV1.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await container.shutdown() }
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         var user = SQLiteFacadeUserV1(name: "Alice")
         user.id = "sqlite-facade-user"
         try context.insert(user)
@@ -102,34 +103,34 @@ struct DatabaseContainerConfigurationSQLiteTests {
             for: SQLiteFacadeSchemaV1.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV1.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
         var user = SQLiteFacadeUserV1(name: "Bob")
         user.id = "sqlite-facade-migration"
         try initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: SQLiteFacadeSchemaV1.versionIdentifier)
+        try await initialContainer.installTestBaseSchemaSnapshot(for: SQLiteFacadeSchemaV1.versionIdentifier)
 
         let migratedContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV2.self,
             migrationPlan: SQLiteFacadeMigrationPlan.self,
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV2.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
-        let verificationContext = verificationContainer.newContext()
+        let verificationContext = verificationContainer.testBaseContext()
         let fetched = try await verificationContext.fetch(SQLiteFacadeUserV2.self).execute()
 
         #expect(fetched.count == 1)

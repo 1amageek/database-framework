@@ -8,6 +8,7 @@ import DatabaseServerFoundation
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
+import TestSupport
 import TestHeartbeat
 import Testing
 
@@ -146,7 +147,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: runtimeConfiguration,
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -214,7 +215,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         _ models: [PersistedModel],
         in container: DBContainer
     ) async throws {
-        try await container.newContext().withTransaction(
+        try await container.testBaseContext().withTransaction(
             configuration: .batch
         ) { transaction in
             for model in models {
@@ -290,7 +291,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         guard case .boolean(let value) = response else {
             throw SemanticParityTestError.unexpectedQueryResponse
         }
-        return value
+        return value.value
     }
 
     private func validateMissingName(
@@ -390,11 +391,12 @@ struct SchemaDrivenSemanticParitySQLiteTests {
             try encoder.encodeRequest(
                 operation,
                 requestID: requestID,
+                target: .base(try TestBaseEnvironment.id()),
                 metadata: metadata,
                 request: request
             ),
             context: DatabaseRequestExecutionContext(
-                authorization: .anonymous
+                authorization: TestBaseEnvironment.authorization
             )
         )
         switch try DatabaseWireDecoder().decodeResponse(

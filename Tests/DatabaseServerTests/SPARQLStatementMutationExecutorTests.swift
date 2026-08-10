@@ -87,14 +87,11 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(inserted.insertedQuads == 2)
         #expect(inserted.deletedQuads == 0)
 
-        let store = CanonicalRDFGraphStore()
         let defaultRows = try await scan(
-            store,
             graphTarget: .defaultGraph,
             container: container
         )
         let namedRows = try await scan(
-            store,
             graphTarget: .named(try RDFGraphName(iri: graphIRI)),
             container: container
         )
@@ -108,7 +105,6 @@ struct SPARQLStatementMutationExecutorTests {
         )
         #expect(deleted.deletedQuads == 1)
         #expect(try await scan(
-            store,
             graphTarget: .named(try RDFGraphName(iri: graphIRI)),
             container: container
         ).isEmpty)
@@ -162,7 +158,6 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(effect.insertedQuads == 1)
 
         let rows = try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         )
@@ -193,22 +188,24 @@ struct SPARQLStatementMutationExecutorTests {
             Issue.record("Expected the SPARQL runtime executor")
             return
         }
-        let response = try await queryExecutor.execute(
-            context: container.newContext(),
-            selectQuery: SelectQuery(
-                projection: .all,
-                source: .graphPattern(
-                    .graph(
-                        name: .variable("graph"),
-                        pattern: .basic([])
+        let response = try await container.withTestBaseOperation {
+            try await queryExecutor.execute(
+                context: container.testBaseContext(),
+                selectQuery: SelectQuery(
+                    projection: .all,
+                    source: .graphPattern(
+                        .graph(
+                            name: .variable("graph"),
+                            pattern: .basic([])
+                        )
                     )
-                )
-            ),
-            options: ReadExecutionContext(
-                monotonicClock: TestProcessMonotonicClock()
-            ),
-            partitions: FieldObject()
-        )
+                ),
+                options: ReadExecutionContext(
+                    monotonicClock: TestProcessMonotonicClock()
+                ),
+                partitions: FieldObject()
+            )
+        }
         #expect(response.continuation == nil)
         #expect(response.rows.count == 1)
         #expect(
@@ -253,7 +250,6 @@ struct SPARQLStatementMutationExecutorTests {
         }
 
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         ).isEmpty)
@@ -286,7 +282,6 @@ struct SPARQLStatementMutationExecutorTests {
         )
 
         let rows = try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         )
@@ -340,7 +335,6 @@ struct SPARQLStatementMutationExecutorTests {
 
         #expect(effect.deletedQuads == 1)
         let rows = try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         )
@@ -422,12 +416,10 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(effect.deletedQuads == 1)
         #expect(effect.insertedQuads == 1)
         let targetRows = try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .named(try RDFGraphName(iri: target)),
             container: container
         )
         let sourceRows = try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .named(try RDFGraphName(iri: source)),
             container: container
         )
@@ -557,12 +549,10 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(copied.insertedQuads == 1)
         #expect(copied.deletedQuads == 1)
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .named(try RDFGraphName(iri: source)),
             container: container
         ).count == 1)
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .named(try RDFGraphName(iri: destination)),
             container: container
         ).count == 1)
@@ -583,7 +573,6 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(moved.droppedGraphs == 1)
         #expect(try await !containsGraph(source, container: container))
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         ).count == 1)
@@ -610,7 +599,9 @@ struct SPARQLStatementMutationExecutorTests {
     @Test("Graph transfer retains its scan owner through destination writes")
     func graphTransferRetainsScanOwner() async throws {
         let container = try await makeContainer()
-        let store = TrackingRDFGraphMutationStore()
+        let store = TrackingRDFGraphMutationStore(
+            base: try await canonicalRDFStore(in: container)
+        )
         let executor = CanonicalDatabaseStatementMutationExecutor(
             graphStore: store
         )
@@ -710,7 +701,6 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(effect.insertedQuads == 2)
         #expect(effect.deletedQuads == 1)
         let rows = try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         )
@@ -767,7 +757,6 @@ struct SPARQLStatementMutationExecutorTests {
         }
 
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         ).isEmpty)
@@ -803,7 +792,6 @@ struct SPARQLStatementMutationExecutorTests {
         }
 
         let rows = try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         )
@@ -854,7 +842,6 @@ struct SPARQLStatementMutationExecutorTests {
 
         #expect(source.callCount == 0)
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         ).isEmpty)
@@ -894,7 +881,6 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(effect.insertedQuads == 1)
         #expect(effect.createdGraphs == 1)
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .named(try RDFGraphName(iri: graph)),
             container: container
         ).count == 1)
@@ -1030,7 +1016,6 @@ struct SPARQLStatementMutationExecutorTests {
         }
 
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         ).isEmpty)
@@ -1056,7 +1041,7 @@ struct SPARQLStatementMutationExecutorTests {
             )
         }
         let handler = MutationExecuteHandler(
-            stateStore: try await DatabaseMutationStateStore(container: container),
+            stateStore: DatabaseMutationStateStore(container: container),
             statementExecutor: AnyDatabaseStatementMutationExecutor(
                 CanonicalDatabaseStatementMutationExecutor(
                     loadSource: AnySPARQLLoadSource(source)
@@ -1105,7 +1090,6 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(source.callCount == 1)
         #expect(first == replay)
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         ).count == 1)
@@ -1114,7 +1098,9 @@ struct SPARQLStatementMutationExecutorTests {
     @Test("UPDATE WHERE reads the injected authoritative store serializably")
     func updateWhereUsesInjectedSerializableStore() async throws {
         let container = try await makeContainer()
-        let store = TrackingRDFGraphMutationStore()
+        let store = TrackingRDFGraphMutationStore(
+            base: try await canonicalRDFStore(in: container)
+        )
         let executor = CanonicalDatabaseStatementMutationExecutor(
             graphStore: store
         )
@@ -1166,7 +1152,6 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(!store.scanReadModes.isEmpty)
         #expect(store.scanReadModes.allSatisfy { $0 == .serializable })
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .defaultGraph,
             container: container
         ).count == 2)
@@ -1178,6 +1163,7 @@ struct SPARQLStatementMutationExecutorTests {
         let graphIRI = "https://example.test/graphs/silent-rollback"
         let graph = try RDFGraphName(iri: graphIRI)
         let store = TrackingRDFGraphMutationStore(
+            base: try await canonicalRDFStore(in: container),
             clearBehavior: .delegateThenFail(.graphNotFound(graph))
         )
         let executor = CanonicalDatabaseStatementMutationExecutor(
@@ -1214,7 +1200,6 @@ struct SPARQLStatementMutationExecutorTests {
         }
 
         #expect(try await scan(
-            CanonicalRDFGraphStore(),
             graphTarget: .named(graph),
             container: container
         ).count == 1)
@@ -1274,7 +1259,7 @@ struct SPARQLStatementMutationExecutorTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -1282,13 +1267,20 @@ struct SPARQLStatementMutationExecutorTests {
         _ container: DBContainer,
         idempotencyKey: String
     ) -> DatabaseOperationContext {
-        DatabaseOperationContext(
+        let baseContext = container.testBaseContext()
+        return DatabaseOperationContext(
             container: container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: .canonical(for: .mutationExecute),
             requestID: 1,
             metadata: OperationRequestMetadata(
                 idempotencyKey: idempotencyKey
             ),
-            requestPayload: []
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: [],
+            wireLimits: .default
         )
     }
 
@@ -1326,7 +1318,7 @@ struct SPARQLStatementMutationExecutorTests {
             budget: budget,
             context: context
         )
-        let database = context.container.newContext()
+        let database = try context.requireBaseContext()
         let result = try await database.withTransaction(
             configuration: .batch
         ) { transaction in
@@ -1355,6 +1347,7 @@ struct SPARQLStatementMutationExecutorTests {
         let request = try DatabaseWireEncoder().encodeRequest(
             DatabaseOperations.mutationExecute,
             requestID: requestID,
+            target: .base(try TestBaseEnvironment.id()),
             metadata: OperationRequestMetadata(
                 idempotencyKey: idempotencyKey
             ),
@@ -1365,7 +1358,7 @@ struct SPARQLStatementMutationExecutorTests {
             from: try await endpoint.execute(
                 request,
                 context: DatabaseRequestExecutionContext(
-                    authorization: .anonymous
+                    authorization: TestBaseEnvironment.authorization
                 )
             ),
             matching: requestID
@@ -1377,24 +1370,26 @@ struct SPARQLStatementMutationExecutorTests {
     }
 
     private func scan(
-        _ store: CanonicalRDFGraphStore,
         graphTarget: RDFGraphScanTarget,
         container: DBContainer
     ) async throws -> RDFDatasetScanResult {
-        try await container.engine.withTransaction { transaction in
-            try await store.scan(
-                subject: nil,
-                predicate: nil,
-                object: nil,
-                graphTarget: graphTarget,
-                limit: nil,
-                readMode: .snapshot,
-                transaction: transaction,
-                workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget(),
-                    monotonicClock: TestProcessMonotonicClock()
+        try await container.withTestBaseOperation {
+            let store = try canonicalRDFStoreForActiveBase(in: container)
+            return try await container.engine.withTransaction { transaction in
+                try await store.scan(
+                    subject: nil,
+                    predicate: nil,
+                    object: nil,
+                    graphTarget: graphTarget,
+                    limit: nil,
+                    readMode: .snapshot,
+                    transaction: transaction,
+                    workMeter: DatabaseWorkMeter(
+                        budget: ExecutionBudget(),
+                        monotonicClock: TestProcessMonotonicClock()
+                    )
                 )
-            )
+            }
         }
     }
 
@@ -1402,17 +1397,38 @@ struct SPARQLStatementMutationExecutorTests {
         _ iri: String,
         container: DBContainer
     ) async throws -> Bool {
-        try await container.engine.withTransaction { transaction in
-            try await CanonicalRDFGraphStore().containsGraph(
-                try RDFGraphName(iri: iri),
-                readMode: .snapshot,
-                transaction: transaction,
-                workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget(),
-                    monotonicClock: TestProcessMonotonicClock()
+        try await container.withTestBaseOperation {
+            let store = try canonicalRDFStoreForActiveBase(in: container)
+            return try await container.engine.withTransaction { transaction in
+                try await store.containsGraph(
+                    try RDFGraphName(iri: iri),
+                    readMode: .snapshot,
+                    transaction: transaction,
+                    workMeter: DatabaseWorkMeter(
+                        budget: ExecutionBudget(),
+                        monotonicClock: TestProcessMonotonicClock()
+                    )
                 )
-            )
+            }
         }
+    }
+
+    private func canonicalRDFStore(
+        in container: DBContainer
+    ) async throws -> CanonicalRDFGraphStore {
+        try await container.withTestBaseOperation {
+            try canonicalRDFStoreForActiveBase(in: container)
+        }
+    }
+
+    private func canonicalRDFStoreForActiveBase(
+        in container: DBContainer
+    ) throws -> CanonicalRDFGraphStore {
+        CanonicalRDFGraphStore(
+            rootSubspace: CanonicalRDFGraphStore.rootSubspace(
+                forBaseRoot: try container.requireActiveBaseLease().root
+            )
+        )
     }
 }
 

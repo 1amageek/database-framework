@@ -6,7 +6,7 @@ import StorageKit
 ///
 /// **Usage**:
 /// ```swift
-/// let admin = container.newAdminContext()
+/// let admin = session.base(baseID).admin()
 ///
 /// // Collection statistics
 /// let stats = try await admin.collectionStatistics(User.self)
@@ -19,12 +19,48 @@ import StorageKit
 public final class AdminContext: AdminContextProtocol, Sendable {
     // MARK: - Properties
 
-    private let container: DBContainer
+    private let context: DatabaseContext
+
+    private var container: DBContainer {
+        context.container
+    }
 
     // MARK: - Initialization
 
-    public init(container: DBContainer) {
-        self.container = container
+    package init(context: DatabaseContext) {
+        self.context = context
+    }
+
+    // MARK: - Schema Migration
+
+    public func migrationStatus(
+        targetVersion: Schema.Version?
+    ) async throws -> DatabaseMigrationStatus {
+        try await context.withTransaction(
+            requiredAccess: .administer,
+            configuration: .readOnly
+        ) { transaction in
+            try await self.container.migrationStatus(
+                targetVersion: targetVersion,
+                transaction: transaction.storageAccess
+            )
+        }
+    }
+
+    public func runMigrations(
+        targetVersion: Schema.Version?,
+        maximumStageCount: UInt64
+    ) async throws -> DatabaseMigrationExecutionResult {
+        try await context.withTransaction(
+            requiredAccess: .administer,
+            configuration: .readOnly
+        ) { _ in () }
+        return try await context.withBaseOperation {
+            try await self.container.runMigrations(
+                targetVersion: targetVersion,
+                maximumStageCount: maximumStageCount
+            )
+        }
     }
 
     // MARK: - Private: Index State
@@ -39,10 +75,14 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     ///   - entitySubspace: The entity's resolved directory subspace
     private func getIndexBuildState(
         _ indexName: String,
-        entitySubspace: Subspace
+        entitySubspace: Subspace,
+        transaction: any TransactionAccess
     ) async throws -> AdminIndexState {
         let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: entitySubspace)
-        let internalState = try await indexLifecycleStore.state(of: indexName)
+        let internalState = try await indexLifecycleStore.state(
+            of: indexName,
+            transaction: transaction
+        )
 
         switch internalState {
         case .readable:
@@ -59,12 +99,16 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     public func collectionStatistics<T: Persistable>(
         _ type: T.Type
     ) async throws -> AdminCollectionStatistics {
+        try await context.withBaseOperation { [self] in
         let subspace = try await container.resolveDirectory(for: type)
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(T.persistableType)
         let (begin, end) = itemSubspace.range()
 
         // Use server-side estimation for size and count
-        let (documentCount, storageSize) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        let (documentCount, storageSize) = try await context.withStorageAccess(
+            requiredAccess: .read,
+            configuration: .batch
+        ) { transaction in
             // Get estimated range size
             let sizeBytes = try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
@@ -95,6 +139,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             keyRangeStart: begin,
             keyRangeEnd: end
         )
+        }
     }
 
     // MARK: - Index Statistics
@@ -102,6 +147,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     public func indexStatistics(
         _ indexName: String
     ) async throws -> AdminIndexStatistics {
+        try await context.withBaseOperation { [self] in
         // Find index descriptor from schema
         guard let indexDescriptor = findIndexDescriptor(name: indexName) else {
             throw AdminError.indexNotFound(indexName)
@@ -120,7 +166,10 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let (begin, end) = indexSubspace.range()
 
         // Get index statistics
-        let (entryCount, storageSize) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        let (entryCount, storageSize, state) = try await context.withStorageAccess(
+            requiredAccess: .read,
+            configuration: .batch
+        ) { transaction in
             let sizeBytes = try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -134,11 +183,13 @@ public final class AdminContext: AdminContextProtocol, Sendable {
                 }
             }
 
-            return (count, Int64(sizeBytes))
+            let state = try await self.getIndexBuildState(
+                indexName,
+                entitySubspace: subspace,
+                transaction: transaction
+            )
+            return (count, Int64(sizeBytes), state)
         }
-
-        // Determine index state from IndexLifecycleStore (using entity subspace)
-        let state = try await getIndexBuildState(indexName, entitySubspace: subspace)
 
         return AdminIndexStatistics(
             indexName: indexName,
@@ -150,6 +201,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             lastUsed: nil,
             usageCount: nil
         )
+        }
     }
 
     public func allIndexStatistics() async throws -> [AdminIndexStatistics] {
@@ -170,7 +222,6 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     public func explain<T: Persistable>(
         _ query: Query<T>
     ) async throws -> AdminQueryPlan {
-        let context = container.newContext()
         let accessPlan = try await context.executionPlan(for: query)
         let planKind: AdminQueryPlanKind
         let selectedIndex: String?
@@ -203,8 +254,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let plan = try await explain(query)
 
         // Execute the query to get actual stats
-        let store = try await container.store(for: T.self)
-        let results = try await store.fetch(query)
+        let results = try await context.fetch(query)
 
         let elapsedNanoseconds = DatabaseMonotonicMeasurement.nanoseconds(
             from: startTime,
@@ -244,6 +294,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     ///   - indexName: Name of the index to rebuild
     ///   - progress: Optional progress reporting action (0.0 to 1.0)
     public func rebuildIndex(_ indexName: String, progress: (@Sendable (Double) -> Void)?) async throws {
+        try await context.withBaseOperation { [self] in
         // Find the index and its owning entity
         guard let (entity, indexDescriptor) = findEntityAndIndex(name: indexName) else {
             throw AdminError.indexNotFound(indexName)
@@ -264,7 +315,10 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let indexDataSubspace = indexSubspace.subspace(indexName)
         let indexRange = indexDataSubspace.range()
 
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await context.withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
             // Disable index (from any state)
             try await indexLifecycleStore.disable(indexName, transaction: transaction)
 
@@ -305,6 +359,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         )
 
         progress?(1.0)
+        }
     }
 
     /// Build Index from IndexDescriptor
@@ -337,6 +392,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     /// `updateStatistics(for: Type.self)` for each type. This bulk method
     /// only collects index-level statistics due to type erasure limitations.
     public func updateStatistics() async throws {
+        try await context.withBaseOperation { [self] in
+        try await requireAdministerAccess()
         // Get statistics subspace from metadata
         let statisticsSubspace = try await getStatisticsSubspace()
         let statisticsService = QueryStatisticsService(
@@ -358,6 +415,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
                 )
             }
         }
+        }
     }
 
     /// Update statistics for a specific type
@@ -370,6 +428,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     ///
     /// - Parameter type: The Persistable type to analyze
     public func updateStatistics<T: Persistable>(for type: T.Type) async throws {
+        try await context.withBaseOperation { [self] in
+        try await requireAdministerAccess()
         // Get statistics subspace from metadata
         let statisticsSubspace = try await getStatisticsSubspace()
         let statisticsService = QueryStatisticsService(
@@ -388,30 +448,39 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             sampleRate: nil,
             fields: nil
         )
+        }
     }
 
     /// Get statistics subspace from DirectoryLayer
     private func getStatisticsSubspace() async throws -> Subspace {
-        return try await container.engine.resolveOrCreateNamespace(
-            path: ["_metadata", "statistics"]
-        )
+        let lease = try context.requireOperationBaseLease()
+        return lease.root
+            .subspace("data")
+            .subspace("statistics")
     }
 
     // MARK: - FDB-Specific Features
 
     public func currentReadVersion() async throws -> UInt64 {
-        let version: Int64 = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        let version: Int64 = try await context.withStorageAccess(
+            requiredAccess: .read,
+            configuration: .batch
+        ) { transaction in
             try await transaction.getReadVersion()
         }
         return UInt64(version)
     }
 
     public func estimatedStorageSize<T: Persistable>(for type: T.Type) async throws -> Int64 {
+        try await context.withBaseOperation { [self] in
         let subspace = try await container.resolveDirectory(for: type)
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(T.persistableType)
         let (begin, end) = itemSubspace.range()
 
-        let sizeBytes = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        let sizeBytes = try await context.withStorageAccess(
+            requiredAccess: .read,
+            configuration: .batch
+        ) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -419,6 +488,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         }
 
         return Int64(sizeBytes)
+        }
     }
 
     // MARK: - Private Helpers
@@ -466,6 +536,12 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         case .false:
             return "FALSE"
         }
+    }
+
+    private func requireAdministerAccess() async throws {
+        try await context.withStorageAccess(
+            requiredAccess: .administer
+        ) { _ in () }
     }
 }
 

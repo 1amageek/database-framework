@@ -19,12 +19,14 @@ struct DatabaseMutationStateStoreTests {
         let firstVersion = try await storeContext.container.engine
             .withTransaction { transaction in
                 try await storeContext.stateStore.nextLogicalVersion(
+                    for: .database,
                     transaction: transaction
                 )
             }
         let secondVersion = try await storeContext.container.engine
             .withTransaction { transaction in
                 try await storeContext.stateStore.nextLogicalVersion(
+                    for: .database,
                     transaction: transaction
                 )
             }
@@ -35,6 +37,7 @@ struct DatabaseMutationStateStoreTests {
             clock: TestProcessMonotonicClock()
         ) { transaction in
                 try await storeContext.stateStore.currentLogicalVersion(
+                    for: .database,
                     transaction: transaction
                 )
             }
@@ -351,18 +354,12 @@ struct DatabaseMutationStateStoreTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let stateStore = try await DatabaseMutationStateStore(
+        let stateStore = DatabaseMutationStateStore(
             container: container
         )
-        let root = try await container.engine.withTransaction {
-            transaction in
-            try await container.engine.namespaceResolver.resolveOrCreate(
-                path: ["database-framework", "wire-runtime"],
-                transaction: transaction
-            )
-        }
+        let root = try container.operationStateRoot(for: .database)
         return MutationStateStoreContext(
             container: container,
             stateStore: stateStore,
@@ -405,6 +402,7 @@ struct DatabaseMutationStateStoreTests {
             try storeContext.stateStore.store(
                 entity,
                 for: storeContext.key,
+                target: .database,
                 transaction: transaction,
                 limits: .default
             )
@@ -423,6 +421,7 @@ struct DatabaseMutationStateStoreTests {
         ) { transaction in
             try await storeContext.stateStore.idempotencyEntry(
                 for: storeContext.key,
+                target: .database,
                 transaction: transaction,
                 limits: limits
             )

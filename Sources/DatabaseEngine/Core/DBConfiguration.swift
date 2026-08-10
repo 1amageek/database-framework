@@ -3,13 +3,13 @@ import DatabaseKit
 
 /// Database configuration
 ///
-/// Configures an injected storage engine and runtime index parameters.
+/// Configures an injected storage topology and runtime index parameters.
 ///
 /// **Example usage**:
 /// ```swift
 /// let sqliteEngine = try SQLiteStorageEngine(configuration: .inMemory)
 /// let config = DBConfiguration(
-///     storageEngine: sqliteEngine,
+///     storageTopology: topology,
 ///     indexConfigurations: [
 ///         VectorIndexConfiguration<Document>(
 ///             field: Document.fields.embedding,
@@ -20,13 +20,18 @@ import DatabaseKit
 /// let container = try await DBContainer.open(for: schema, configuration: config)
 /// ```
 public struct DBConfiguration: Sendable {
+    package struct TestingBootstrap: Sendable {
+        package let baseID: Base.ID
+        package let principal: Principal
+    }
+
     // MARK: - Properties
 
     /// Configuration name (optional, for debugging)
     public let name: String?
 
-    /// Single-use lifecycle that owns the injected storage engine.
-    private let storageLifecycle: DatabaseStorageLifecycle
+    /// Single-use lifecycle that owns every injected storage domain.
+    private let storageTopologyLifecycle: DatabaseStorageTopologyLifecycle
 
     /// Index configurations for runtime parameters
     ///
@@ -52,17 +57,20 @@ public struct DBConfiguration: Sendable {
     /// Absolute time source for persisted values and observable events.
     public let wallClock: any WallClock
 
+    /// Explicit test-only Base bootstrap supplied by TestSupport.
+    package let testingBootstrap: TestingBootstrap?
+
     // MARK: - Initialization
 
     /// Create database configuration
     ///
     /// - Parameters:
     ///   - name: Configuration name for debugging (default: nil)
-    ///   - storageEngine: Initialized storage engine.
+    ///   - storageTopology: Validated storage domains and placements.
     ///   - indexConfigurations: Runtime index configurations (default: [])
     public init(
         name: String? = nil,
-        storageEngine: any StorageEngine,
+        storageTopology: DatabaseStorageTopology,
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         indexConfigurations: [any IndexRuntimeConfiguration] = [],
@@ -71,8 +79,8 @@ public struct DBConfiguration: Sendable {
         metrics: DatabaseMetricsConfiguration = .disabled
     ) {
         self.name = name
-        self.storageLifecycle = DatabaseStorageLifecycle(
-            storageEngine: storageEngine
+        self.storageTopologyLifecycle = DatabaseStorageTopologyLifecycle(
+            topology: storageTopology
         )
         self.indexConfigurations = indexConfigurations
         self.itemStorage = itemStorage
@@ -80,26 +88,56 @@ public struct DBConfiguration: Sendable {
         self.metrics = metrics
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
+        self.testingBootstrap = nil
     }
 
-    func claimStorageEngine() throws -> any StorageEngine {
-        try storageLifecycle.claimStorageEngine()
+    @_spi(Testing)
+    public init(
+        testingName name: String? = nil,
+        storageTopology: DatabaseStorageTopology,
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock,
+        testingBaseID: Base.ID,
+        testingPrincipal: Principal,
+        indexConfigurations: [any IndexRuntimeConfiguration] = [],
+        itemStorage: ItemStorageConfiguration = .v1,
+        logging: DatabaseLoggingConfiguration = .disabled,
+        metrics: DatabaseMetricsConfiguration = .disabled
+    ) {
+        self.name = name
+        self.storageTopologyLifecycle = DatabaseStorageTopologyLifecycle(
+            topology: storageTopology
+        )
+        self.indexConfigurations = indexConfigurations
+        self.itemStorage = itemStorage
+        self.logging = logging
+        self.metrics = metrics
+        self.monotonicClock = monotonicClock
+        self.wallClock = wallClock
+        self.testingBootstrap = TestingBootstrap(
+            baseID: testingBaseID,
+            principal: testingPrincipal
+        )
     }
 
-    func finishOpeningStorageEngine() throws {
-        try storageLifecycle.finishOpening()
+    func claimStorageTopology() throws -> ClaimedDatabaseStorageTopology {
+        try storageTopologyLifecycle.claim()
     }
 
-    func shutdownStorageEngine() async {
-        await storageLifecycle.shutdown()
+    func finishOpeningStorageTopology() throws {
+        try storageTopologyLifecycle.finishOpening()
     }
 
-    func shutdownStorageEngineIfUnclaimed() async {
-        await storageLifecycle.shutdownIfUnclaimed()
+    func shutdownStorageTopology() async {
+        await storageTopologyLifecycle.shutdown()
     }
 
-    func requestStorageEngineShutdown() {
-        storageLifecycle.requestShutdown()
+    func shutdownStorageTopologyIfUnclaimed() async {
+        await storageTopologyLifecycle.shutdownIfUnclaimed()
+    }
+
+    func requestStorageTopologyShutdown() {
+        storageTopologyLifecycle.requestShutdown()
     }
 }
 

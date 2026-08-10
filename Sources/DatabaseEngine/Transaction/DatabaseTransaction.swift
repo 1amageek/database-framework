@@ -200,7 +200,10 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                     expectedEntity: Model.persistableType
                 )
                 let model = try persistedModel.decode(as: Model.self)
-                try container.securityDelegate?.evaluateGet(persistedModel)
+                try container.securityDelegate?.evaluateGet(
+                    persistedModel,
+                    fields: nil
+                )
                 models.append(model)
             }
 
@@ -611,7 +614,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             write,
             transaction: storageAccess
         )
-        let mutationContext = makeMutationContext(operationID: operationID)
+        let mutationContext = try makeMutationContext(operationID: operationID)
         do {
             try await mutationMaintenanceService.update(
                 identity: identity,
@@ -679,7 +682,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             ),
             transaction: storageAccess
         )
-        let mutationContext = makeMutationContext(operationID: operationID)
+        let mutationContext = try makeMutationContext(operationID: operationID)
         do {
             try await mutationMaintenanceService.update(
                 identity: identity,
@@ -743,7 +746,10 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             expectedEntity: entity
         )
         let model = try runtime.canonicalized(persistedModel)
-        try container.securityDelegate?.evaluateGet(persistedModel)
+        try container.securityDelegate?.evaluateGet(
+            persistedModel,
+            fields: nil
+        )
         return model
     }
 
@@ -793,7 +799,10 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 expectedEntity: entity
             )
             let model = try runtime.canonicalized(persistedModel)
-            try container.securityDelegate?.evaluateGet(persistedModel)
+            try container.securityDelegate?.evaluateGet(
+                persistedModel,
+                fields: nil
+            )
             models.append(model)
         }
         return models
@@ -875,11 +884,12 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
 
     private func makeMutationContext(
         operationID: UInt64
-    ) -> PersistableMutationContext {
-        PersistableMutationContext(
+    ) throws -> PersistableMutationContext {
+        try PersistableMutationContext(
             schema: container.schema,
             transaction: self,
             operationID: operationID,
+            baseRoot: container.requireActiveBaseLease().root,
             storageAccess: storageAccess
         )
     }
@@ -921,19 +931,19 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let path = try partition ?? AnyDirectoryPath(for: entity)
         try path.validate()
         let partitionPath = path.resolve()
+        let lease = try container.requireActiveBaseLease()
         let cacheKey = DatabaseStoreCacheKey(
+            basePlacementGeneration: lease.generation.record.placementGeneration,
             entity: entity.name,
             components: partitionPath
         )
         if let cached = subspaceCache.value(for: cacheKey) {
             return cached
         }
-        guard try await container.engine.namespaceResolver.namespaceExists(
-            path: partitionPath,
-            transaction: storageAccess
-        ) else {
-            return nil
-        }
+        // Base-local model directories are deterministic subspaces below the
+        // leased Base root. They are not entries in the backend namespace
+        // catalog, so probing NamespaceResolver here would make every new Base
+        // appear empty and would break read-your-writes on FoundationDB.
         let root = try await container.openDirectory(
             for: entity,
             path: path,
@@ -972,7 +982,10 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             expectedEntity: Model.persistableType
         )
         let model = try persistedModel.decode(as: Model.self)
-        try container.securityDelegate?.evaluateGet(persistedModel)
+        try container.securityDelegate?.evaluateGet(
+            persistedModel,
+            fields: nil
+        )
         return model
     }
 

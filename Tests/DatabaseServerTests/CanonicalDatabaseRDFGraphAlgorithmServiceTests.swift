@@ -24,6 +24,7 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
 
     private struct RDFGraphAlgorithmContext {
         let container: DBContainer
+        let databaseContext: DatabaseContext
         let service: CanonicalDatabaseGraphAlgorithmService
         let maintainer: RDFQuadIndexMaintainer<CanonicalRDFGraphStatement>
         let subspace: Subspace
@@ -153,17 +154,19 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             graphTarget: .named(try .rdf(namedGraph))
         )
 
-        let edges = try await StorageTransactionExecutor(
-            engine: graphContext.container.engine
-        ).withTransaction(
-            configuration: .default,
-            clock: TestProcessMonotonicClock()
-        ) { transaction in
-            try await scanner.scanAllOutgoing(
-                from: source,
-                edgeLabel: label,
-                transaction: transaction
-            )
+        let edges = try await graphContext.databaseContext.withBaseOperation {
+            try await StorageTransactionExecutor(
+                engine: graphContext.container.engine
+            ).withTransaction(
+                configuration: .default,
+                clock: TestProcessMonotonicClock()
+            ) { transaction in
+                try await scanner.scanAllOutgoing(
+                    from: source,
+                    edgeLabel: label,
+                    transaction: transaction
+                )
+            }
         }
         #expect(edges.count == 1)
         #expect(
@@ -237,11 +240,14 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self), try DatabaseFrameworkRuntime.entity(CanonicalRDFGraphStatement.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let subspace = Subspace(
-            prefix: Tuple("canonical-rdf-graph-service").pack()
-        )
+        let databaseContext = container.testBaseContext()
+        let subspace = try await databaseContext.withBaseOperation {
+            try databaseContext.requireOperationBaseLease().root
+                .subspace("test-indexes")
+                .subspace("canonical-rdf-graph-service")
+        }
         guard let descriptor =
             try CanonicalRDFGraphStatement.indexDescriptors.first
         else {
@@ -283,6 +289,7 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
         )
         let graphContext = RDFGraphAlgorithmContext(
             container: container,
+            databaseContext: databaseContext,
             service: CanonicalDatabaseGraphAlgorithmService(
                 sourceResolver: FixedSourceResolver(source: resolvedSource)
             ),
@@ -323,15 +330,17 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
                 weight: 0.1
             ),
         ] {
-            try await StorageTransactionExecutor(engine: engine).withTransaction(
-                configuration: .batch,
-                clock: TestProcessMonotonicClock()
-            ) { transaction in
-                try await maintainer.updateIndex(
-                    oldItem: nil,
-                    newItem: statement,
-                    transaction: transaction
-                )
+            try await databaseContext.withBaseOperation {
+                try await StorageTransactionExecutor(engine: engine).withTransaction(
+                    configuration: .batch,
+                    clock: TestProcessMonotonicClock()
+                ) { transaction in
+                    try await maintainer.updateIndex(
+                        oldItem: nil,
+                        newItem: statement,
+                        transaction: transaction
+                    )
+                }
             }
         }
         return graphContext
@@ -351,18 +360,26 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             page: GraphAlgorithmOperation.Page(limit: 100),
             budget: ExecutionBudget(maximumWorkUnits: 10_000)
         )
-        return try await graphContext.service.execute(
-            request,
-            context: DatabaseOperationContext(
-                container: graphContext.container,
-                requestID: 1,
-                metadata: OperationRequestMetadata(),
-                requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
-                    DatabaseOperations.graphAlgorithm,
-                    request: request
+        return try await graphContext.databaseContext.withBaseOperation {
+            try await graphContext.service.execute(
+                request,
+                context: DatabaseOperationContext(
+                    container: graphContext.container,
+                    target: .base(graphContext.databaseContext.baseID),
+                    baseContext: graphContext.databaseContext,
+                    composition: nil,
+                    requirement: .canonical(for: .graphAlgorithm),
+                    requestID: 1,
+                    metadata: OperationRequestMetadata(),
+                    authorization: TestBaseEnvironment.authorization,
+                    requestPayload: try DatabaseWireEncoder().encodeRequestPayload(
+                        DatabaseOperations.graphAlgorithm,
+                        request: request
+                    ),
+                    wireLimits: .default
                 )
             )
-        )
+        }
     }
 }
 

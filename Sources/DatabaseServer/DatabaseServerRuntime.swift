@@ -5,14 +5,14 @@ import DatabaseTypes
 public final class DatabaseServerRuntime: Sendable {
     public let endpoint: DatabaseEndpoint
     private let jobService: AnyDatabaseJobService
+    private let compositionSnapshotStore: DatabaseCompositionSnapshotStore?
 
     public init(
         container: DBContainer,
         configuration: DatabaseServerRuntimeConfiguration,
         hostServices: DatabaseServerHostServices = .none
     ) async throws {
-        try await container.migrateIfNeeded()
-        let stateStore = try await DatabaseMutationStateStore(
+        let stateStore = DatabaseMutationStateStore(
             container: container
         )
         let coordinator = DatabaseTransactionalOperationCoordinator(
@@ -29,6 +29,7 @@ public final class DatabaseServerRuntime: Sendable {
             wireLimits: configuration.wireLimits,
             clock: configuration.clock,
             graphOperationLimits: configuration.graphOperationLimits,
+            schemaRuntimeFactory: configuration.schemaRuntimeFactory,
             hostServices: hostServices
         )
         #else
@@ -39,6 +40,7 @@ public final class DatabaseServerRuntime: Sendable {
             runtimeLimits: configuration.runtimeLimits,
             wireLimits: configuration.wireLimits,
             clock: configuration.clock,
+            schemaRuntimeFactory: configuration.schemaRuntimeFactory,
             hostServices: hostServices
         )
         #endif
@@ -46,19 +48,42 @@ public final class DatabaseServerRuntime: Sendable {
             context: serviceContext
         )
         let includesSchemaExecution = configuration.schemaRuntimeFactory != nil
+        if includesSchemaExecution {
+            let schemaJob = try DatabaseSchemaApplyResumableOperation.job()
+                .identifier
+            guard services.jobService.jobOperations.contains(schemaJob) else {
+                throw DatabaseServerHostServiceError
+                    .missingSchemaApplyJobOperation
+            }
+        }
         let advertisedOperations = DatabaseRuntimeCapabilityCatalog.operations(
             includesSchemaExecution: includesSchemaExecution
         )
         #if DATABASE_SERVER_GRAPH_INDEXES
         let graphOperations = services.graphOperations
         #endif
+        let compositionSnapshotStore: DatabaseCompositionSnapshotStore?
+        if let identifierGenerator = hostServices.identifierGenerator,
+           let scheduler = hostServices.jobScheduler {
+            compositionSnapshotStore = DatabaseCompositionSnapshotStore(
+                container: container,
+                clock: configuration.clock,
+                identifierGenerator: identifierGenerator,
+                scheduler: scheduler,
+                wireLimits: configuration.wireLimits
+            )
+        } else {
+            compositionSnapshotStore = nil
+        }
         var handlers = [
             AnyDatabaseOperationHandler(
                 CapabilitiesDescribeHandler(
                     identity: configuration.identity,
                     jobOperations: services.jobService.jobOperations,
                     features: DatabaseRuntimeCapabilityCatalog.features(
-                        includesSchemaExecution: includesSchemaExecution
+                        includesSchemaExecution: includesSchemaExecution,
+                        includesDurableCompositionPaging:
+                            compositionSnapshotStore != nil
                     )
                 )
             ),
@@ -66,8 +91,28 @@ public final class DatabaseServerRuntime: Sendable {
                 SchemaDescribeHandler()
             ),
             AnyDatabaseOperationHandler(
-                QueryExecuteHandler(
+                BaseExecuteHandler(
+                    coordinator: coordinator,
+                    jobService: services.jobService,
                     runtimeLimits: configuration.runtimeLimits
+                )
+            ),
+            AnyDatabaseOperationHandler(
+                CompositionExecuteHandler(
+                    coordinator: coordinator,
+                    runtimeLimits: configuration.runtimeLimits
+                )
+            ),
+            AnyDatabaseOperationHandler(
+                GrantExecuteHandler(
+                    coordinator: coordinator,
+                    runtimeLimits: configuration.runtimeLimits
+                )
+            ),
+            AnyDatabaseOperationHandler(
+                QueryExecuteHandler(
+                    runtimeLimits: configuration.runtimeLimits,
+                    compositionSnapshotStore: compositionSnapshotStore
                 )
             ),
             AnyDatabaseOperationHandler(
@@ -150,6 +195,7 @@ public final class DatabaseServerRuntime: Sendable {
             requiredOperations: advertisedOperations
         )
         self.jobService = services.jobService
+        self.compositionSnapshotStore = compositionSnapshotStore
         self.endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
@@ -168,6 +214,7 @@ public final class DatabaseServerRuntime: Sendable {
     }
 
     public func runScheduledWork() async throws {
+        try await compositionSnapshotStore?.cleanupExpired()
         try await jobService.runScheduledWork()
     }
 }

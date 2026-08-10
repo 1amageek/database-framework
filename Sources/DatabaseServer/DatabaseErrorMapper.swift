@@ -96,7 +96,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             )
         }
         if let endpointError = error as? DatabaseEndpointError {
-            if case .missingHandler(let operation) = endpointError {
+            switch endpointError {
+            case .missingHandler(let operation):
                 return RemoteOperationError(
                     category: .unavailable,
                     code: "OPERATION_UNAVAILABLE",
@@ -109,6 +110,15 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                         ),
                     ])
                 )
+            case .migrationRequired:
+                return RemoteOperationError(
+                    category: .unavailable,
+                    code: "MIGRATION_REQUIRED",
+                    message: endpointError.description,
+                    retryability: .never
+                )
+            default:
+                break
             }
         }
         if let limitError = error as? DatabaseRuntimeLimitError {
@@ -329,6 +339,27 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let projectionError = error as? PolymorphicProjectionError {
             return Self.map(projectionError)
         }
+        if let grantError = error as? DatabaseGrantAuthorizationError {
+            return Self.map(grantError, target: context.target)
+        }
+        if let baseError = error as? DatabaseBaseExecutionError {
+            return Self.map(baseError, target: context.target)
+        }
+        if let baseCatalogError = error as? DatabaseBaseCatalogError {
+            return Self.map(baseCatalogError)
+        }
+        if let migrationError = error as? DatabaseLegacyLayoutMigrationError {
+            return Self.map(migrationError)
+        }
+        if let compositionError = error as? DatabaseCompositionAccessError {
+            return Self.map(compositionError)
+        }
+        if let compositionCatalogError = error as? DatabaseCompositionCatalogError {
+            return Self.map(compositionCatalogError)
+        }
+        if let administrationError = error as? DatabaseAdministrationError {
+            return Self.map(administrationError)
+        }
         if let jobError = error as? DatabaseJobRuntimeError {
             return Self.map(jobError)
         }
@@ -356,6 +387,13 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                     code: "SCHEMA_IDEMPOTENCY_KEY_REUSED",
                     message: schemaError.description,
                     retryability: .never
+                )
+            case .transitionInProgress:
+                return RemoteOperationError(
+                    category: .conflict,
+                    code: "SCHEMA_TRANSITION_IN_PROGRESS",
+                    message: schemaError.description,
+                    retryability: .backoff
                 )
             case .invalidIdempotencyKey:
                 return RemoteOperationError(
@@ -413,6 +451,22 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             }
         }
         if let schemaJobError = error as? DatabaseSchemaApplyJobError {
+            if case .baseLifecycleTransitionInProgress = schemaJobError {
+                return RemoteOperationError(
+                    category: .conflict,
+                    code: "SCHEMA_BASE_LIFECYCLE_IN_PROGRESS",
+                    message: schemaJobError.description,
+                    retryability: .backoff
+                )
+            }
+            if case .baseGenerationChanged = schemaJobError {
+                return RemoteOperationError(
+                    category: .conflict,
+                    code: "SCHEMA_BASE_GENERATION_CHANGED",
+                    message: schemaJobError.description,
+                    retryability: .never
+                )
+            }
             return RemoteOperationError(
                 category: .internalFailure,
                 code: "SCHEMA_INDEX_BUILD_FAILED",
@@ -464,6 +518,14 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 category: .invalidRequest,
                 code: "INVALID_MUTATION_EXPRESSION",
                 message: expressionError.description,
+                retryability: .never
+            )
+        }
+        if error is FieldSecurityError {
+            return RemoteOperationError(
+                category: .authorization,
+                code: "FIELD_ACCESS_DENIED",
+                message: "Field access was denied",
                 retryability: .never
             )
         }
@@ -876,19 +938,42 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         let category: OperationErrorCategory
         let code: String
         switch error {
-        case .featureUnavailable:
+        case .featureUnavailable, .compositionSnapshotUnavailable:
             category = .unavailable
             code = "QUERY_FEATURE_UNAVAILABLE"
+        case .compositionSnapshotStale:
+            category = .conflict
+            code = "COMPOSITION_SNAPSHOT_STALE"
+        case .compositionSnapshotExpired:
+            category = .notFound
+            code = "COMPOSITION_SNAPSHOT_EXPIRED"
+        case .compositionSnapshotCorrupted:
+            category = .internalFailure
+            code = "COMPOSITION_SNAPSHOT_CORRUPTED"
+        case .compositionSnapshotLimitExceeded:
+            category = .resourceLimit
+            code = "COMPOSITION_SNAPSHOT_LIMIT"
+        case .compositionAggregateFailure:
+            category = .constraint
+            code = "COMPOSITION_AGGREGATE_FAILED"
         #if DATABASE_SERVER_GRAPH_INDEXES
         case .rdfLiteralTooLarge:
             category = .resourceLimit
             code = "QUERY_RESOURCE_LIMIT"
         #endif
+        case .invalidContinuation:
+            category = .invalidRequest
+            code = "INVALID_CONTINUATION"
         case .pageLimitMustBePositive, .solutionModifierMustBeNonNegative,
              .continuationNotSupported,
-             .mutationRequiresMutationOperation:
+             .mutationRequiresMutationOperation,
+             .compositionPlanUnsupported:
             category = .invalidRequest
-            code = "INVALID_QUERY"
+            if case .compositionPlanUnsupported = error {
+                code = "COMPOSITION_PLAN_UNSUPPORTED"
+            } else {
+                code = "INVALID_QUERY"
+            }
         #if DATABASE_SERVER_GRAPH_INDEXES
         case .unresolvedConstructTerm,
              .nonRDFBinding, .invalidRDFTermRole,
@@ -1309,6 +1394,321 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
     #endif
 
     private static func map(
+        _ error: DatabaseGrantAuthorizationError,
+        target: DatabaseOperationTarget
+    ) -> RemoteOperationError {
+        switch error {
+        case .unauthenticated:
+            return RemoteOperationError(
+                category: .authentication,
+                code: "AUTHENTICATION_REQUIRED",
+                message: "Authentication is required",
+                retryability: .never
+            )
+        case .denied, .resourceMismatch:
+            if case .base = target {
+                return baseUnavailableError()
+            }
+            return RemoteOperationError(
+                category: .authorization,
+                code: "ACCESS_DENIED",
+                message: "Access was denied",
+                retryability: .never
+            )
+        case .invalidSubject, .invalidAccessBits:
+            return RemoteOperationError(
+                category: .invalidRequest,
+                code: "INVALID_GRANT",
+                message: "The Grant is invalid",
+                retryability: .never
+            )
+        case .revisionConflict:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "GRANT_REVISION_CONFLICT",
+                message: "The Grant revision does not match",
+                retryability: .never
+            )
+        case .revisionOverflow, .corruptedGrant:
+            return RemoteOperationError(
+                category: .internalFailure,
+                code: "GRANT_STORE_FAILURE",
+                message: "The Grant store is inconsistent",
+                retryability: .never
+            )
+        }
+    }
+
+    private static func map(
+        _ error: DatabaseBaseExecutionError,
+        target: DatabaseOperationTarget
+    ) -> RemoteOperationError {
+        if case .base = target {
+            switch error {
+            case .baseNotFound, .baseUnavailable, .placementRootMissing:
+                return baseUnavailableError()
+            case .baseTargetRequired, .storageDomainUnavailable,
+                 .leaseCountOverflow:
+                break
+            }
+        }
+        switch error {
+        case .baseTargetRequired:
+            return RemoteOperationError(
+                category: .invalidRequest,
+                code: "BASE_TARGET_REQUIRED",
+                message: "A Base target is required",
+                retryability: .never
+            )
+        case .baseNotFound:
+            return RemoteOperationError(
+                category: .notFound,
+                code: "BASE_NOT_FOUND",
+                message: "The Base was not found",
+                retryability: .never
+            )
+        case .baseUnavailable:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "BASE_UNAVAILABLE",
+                message: "The Base does not accept this operation",
+                retryability: .never
+            )
+        case .storageDomainUnavailable:
+            return RemoteOperationError(
+                category: .unavailable,
+                code: "BASE_STORAGE_UNAVAILABLE",
+                message: "The Base storage domain is unavailable",
+                retryability: .backoff
+            )
+        case .placementRootMissing, .leaseCountOverflow:
+            return RemoteOperationError(
+                category: .internalFailure,
+                code: "BASE_RUNTIME_FAILURE",
+                message: "The Base runtime state is inconsistent",
+                retryability: .never
+            )
+        }
+    }
+
+    private static func baseUnavailableError() -> RemoteOperationError {
+        RemoteOperationError(
+            category: .authorization,
+            code: "BASE_UNAVAILABLE",
+            message: "The Base is unavailable",
+            retryability: .never
+        )
+    }
+
+    private static func map(
+        _ error: DatabaseBaseCatalogError
+    ) -> RemoteOperationError {
+        switch error {
+        case .baseNotFound:
+            return RemoteOperationError(
+                category: .notFound,
+                code: "BASE_NOT_FOUND",
+                message: "The Base was not found",
+                retryability: .never
+            )
+        case .baseAlreadyExists, .baseIdentifierRetired:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "BASE_IDENTITY_CONFLICT",
+                message: "The Base identifier is unavailable",
+                retryability: .never
+            )
+        case .revisionConflict:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "BASE_REVISION_CONFLICT",
+                message: "The Base revision does not match",
+                retryability: .never
+            )
+        case .invalidLifecycleTransition, .baseReferencedByComposition,
+             .placementAlreadySelected, .placementDestinationMatchesSource,
+             .placementDestinationClaimed, .placementDestinationNotEmpty,
+             .baseDeletionClaimed:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "BASE_LIFECYCLE_CONFLICT",
+                message: "The Base lifecycle transition is not currently allowed",
+                retryability: .never
+            )
+        case .placementNotFound:
+            return RemoteOperationError(
+                category: .notFound,
+                code: "PLACEMENT_NOT_FOUND",
+                message: "The storage placement was not found",
+                retryability: .never
+            )
+        case .catalogTooLarge:
+            return RemoteOperationError(
+                category: .resourceLimit,
+                code: "BASE_CATALOG_RESOURCE_LIMIT",
+                message: "The Base catalog exceeds the configured limit",
+                retryability: .never
+            )
+        case .storageDomainNotFound, .placementDigestMismatch,
+             .placementTransferOverflow, .invalidPlacementMoveOwner,
+             .invalidDeletionOwner, .baseDeletionMarkerMissing,
+             .corruptedRecord:
+            return RemoteOperationError(
+                category: .internalFailure,
+                code: "BASE_CATALOG_FAILURE",
+                message: "The Base catalog is inconsistent",
+                retryability: .never
+            )
+        }
+    }
+
+    private static func map(
+        _ error: DatabaseLegacyLayoutMigrationError
+    ) -> RemoteOperationError {
+        switch error {
+        case .layoutIsCurrent:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "LAYOUT_ALREADY_CURRENT",
+                message: "The database already uses the current Base layout",
+                retryability: .never
+            )
+        case .legacyJobsPresent:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "LEGACY_JOBS_PRESENT",
+                message: "Legacy jobs must be completed or removed before migration",
+                retryability: .never
+            )
+        case .destinationBaseExists:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "MIGRATION_BASE_CONFLICT",
+                message: "The migration destination Base already exists",
+                retryability: .never
+            )
+        case .fingerprintMismatch, .sourceChangedDuringMigration:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "LAYOUT_FINGERPRINT_CONFLICT",
+                message: "The legacy layout changed after it was planned",
+                retryability: .never
+            )
+        case .cleanupFailed:
+            return RemoteOperationError(
+                category: .unavailable,
+                code: "LEGACY_CLEANUP_FAILED",
+                message: "Legacy layout cleanup did not complete",
+                retryability: .backoff
+            )
+        case .unknownPartitionEntity,
+             .conflictingLegacyOntologyStores,
+             .controlDomainOverlapsLegacyData,
+             .destinationOverlapsLegacyData,
+             .invalidInventory,
+             .destinationDigestMismatch,
+             .invalidTransferState,
+             .transferOverflow:
+            return RemoteOperationError(
+                category: .internalFailure,
+                code: "LEGACY_LAYOUT_INVALID",
+                message: "The legacy layout cannot be migrated safely",
+                retryability: .never
+            )
+        }
+    }
+
+    private static func map(
+        _ error: DatabaseCompositionAccessError
+    ) -> RemoteOperationError {
+        _ = error
+        return RemoteOperationError(
+            category: .notFound,
+            code: "COMPOSITION_UNAVAILABLE",
+            message: "The Composition is unavailable",
+            retryability: .never
+        )
+    }
+
+    private static func map(
+        _ error: DatabaseCompositionCatalogError
+    ) -> RemoteOperationError {
+        switch error {
+        case .compositionNotFound:
+            return RemoteOperationError(
+                category: .notFound,
+                code: "COMPOSITION_NOT_FOUND",
+                message: "The Composition was not found",
+                retryability: .never
+            )
+        case .compositionAlreadyExists:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "COMPOSITION_IDENTITY_CONFLICT",
+                message: "The Composition identifier is unavailable",
+                retryability: .never
+            )
+        case .revisionConflict:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "COMPOSITION_REVISION_CONFLICT",
+                message: "The Composition revision does not match",
+                retryability: .never
+            )
+        case .memberBaseNotFound:
+            return RemoteOperationError(
+                category: .notFound,
+                code: "COMPOSITION_MEMBER_UNAVAILABLE",
+                message: "A Composition member is unavailable",
+                retryability: .never
+            )
+        case .memberBaseNotActive:
+            return RemoteOperationError(
+                category: .conflict,
+                code: "COMPOSITION_MEMBER_UNAVAILABLE",
+                message: "A Composition member does not accept reads",
+                retryability: .never
+            )
+        case .catalogTooLarge:
+            return RemoteOperationError(
+                category: .resourceLimit,
+                code: "COMPOSITION_CATALOG_RESOURCE_LIMIT",
+                message: "The Composition catalog exceeds the configured limit",
+                retryability: .never
+            )
+        case .corruptedRecord:
+            return RemoteOperationError(
+                category: .internalFailure,
+                code: "COMPOSITION_CATALOG_FAILURE",
+                message: "The Composition catalog is inconsistent",
+                retryability: .never
+            )
+        }
+    }
+
+    private static func map(
+        _ error: DatabaseAdministrationError
+    ) -> RemoteOperationError {
+        switch error {
+        case .targetMismatch, .grantResourceMismatch,
+             .idempotencyKeyMismatch:
+            return RemoteOperationError(
+                category: .invalidRequest,
+                code: "INVALID_ADMINISTRATION_REQUEST",
+                message: "The administration request does not match its target",
+                retryability: .never
+            )
+        case .unsupportedLifecycleAction:
+            return RemoteOperationError(
+                category: .unavailable,
+                code: "ADMINISTRATION_ACTION_UNAVAILABLE",
+                message: "The administration action is unavailable",
+                retryability: .never
+            )
+        }
+    }
+
+    private static func map(
         _ error: DatabaseJobRuntimeError
     ) -> RemoteOperationError {
         let category: OperationErrorCategory
@@ -1320,14 +1720,14 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .resultNotReady:
             category = .conflict
             code = "JOB_RESULT_NOT_READY"
-        case .invalidRetryPolicy, .requestPayloadTooLarge,
+        case .invalidRetryPolicy, .invalidTarget, .requestPayloadTooLarge,
              .jobOperationMismatch,
              .invalidResultContinuation:
             category = .invalidRequest
             code = "INVALID_JOB_REQUEST"
         case .sliceExceededBudget, .responseTooLarge,
              .specificationTooLarge, .planTooLarge, .stateTooLarge,
-             .unsuccessfulOutcomeExceedsLimits:
+             .unsuccessfulOutcomeExceedsLimits, .sliceMadeNoProgress:
             category = .resourceLimit
             code = "JOB_RESOURCE_LIMIT"
         case .invalidConfiguration, .corruptedSpecification, .corruptedPlan,

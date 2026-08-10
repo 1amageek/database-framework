@@ -1,0 +1,28 @@
+import DatabaseKit
+
+/// Validation and lifecycle failures for a container-owned storage topology.
+public enum DatabaseStorageTopologyError: Error, Sendable, Equatable {
+    case noDomains
+    case duplicateDomainID(DatabaseStorageDomain.ID)
+    case duplicateStorageEngine(
+        first: DatabaseStorageDomain.ID,
+        second: DatabaseStorageDomain.ID
+    )
+    case missingControlDomain(DatabaseStorageDomain.ID)
+    case emptyDomainNamespace(domainID: DatabaseStorageDomain.ID)
+    case emptyNamespaceComponent(domainID: DatabaseStorageDomain.ID)
+    case noPlacements
+    case duplicatePlacementID(Base.Placement.ID)
+    case duplicatePlacementDestination(
+        first: Base.Placement.ID,
+        second: Base.Placement.ID
+    )
+    case missingPlacementDomain(
+        placementID: Base.Placement.ID,
+        domainID: DatabaseStorageDomain.ID
+    )
+    case missingDefaultPlacement(Base.Placement.ID)
+    case emptyPlacementPath(placementID: Base.Placement.ID)
+    case emptyPlacementPathComponent(placementID: Base.Placement.ID)
+    case configurationAlreadyClaimed
+}

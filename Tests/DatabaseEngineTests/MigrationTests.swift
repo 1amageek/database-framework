@@ -164,7 +164,9 @@ struct MigrationTests {
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
 
-    private func setupContainer() async throws -> DBContainer {
+    private func setupContainer(
+        databaseIdentifier: String
+    ) async throws -> DBContainer {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await makeSystemPriorityEngine()
 
@@ -173,15 +175,20 @@ struct MigrationTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(storageEngine: database),
+            configuration: .testing(
+                databaseIdentifier: databaseIdentifier,
+                storageEngine: database
+            ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
             )
     }
 
-    private func setupBatchTestContainer() async throws -> DBContainer {
+    private func setupBatchTestContainer(
+        databaseIdentifier: String
+    ) async throws -> DBContainer {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await makeSystemPriorityEngine()
 
@@ -190,23 +197,15 @@ struct MigrationTests {
 
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(storageEngine: database),
+            configuration: .testing(
+                databaseIdentifier: databaseIdentifier,
+                storageEngine: database
+            ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(BatchMigrationEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
             )
-    }
-
-    private func cleanup(container: DBContainer) async throws {
-        do {
-            try await container.engine.removeNamespace(path: ["test", "migration"])
-        } catch {
-        }
-        do {
-            try await container.engine.removeNamespace(path: ["_metadata"])
-        } catch {
-        }
     }
 
     private func clearSchemaEntries(
@@ -220,18 +219,11 @@ struct MigrationTests {
         }
     }
 
-    private func clearMetadata(in database: any StorageEngine) async throws {
-        do {
-            try await database.removeNamespace(path: ["_metadata"])
-        } catch {
-        }
-    }
-
     private func insertTestEntities(
         container: DBContainer,
         entities: [BatchMigrationEntity]
     ) async throws {
-        let subspace = try await container.resolveDirectory(for: BatchMigrationEntity.self)
+        let subspace = try await container.testBaseDirectory(for: BatchMigrationEntity.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationEntity.persistableType)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
@@ -248,29 +240,29 @@ struct MigrationTests {
 
     // MARK: - Schema Version Tests
 
-    @Test("getCurrentSchemaVersion returns nil for new database")
-    func getCurrentSchemaVersionReturnsNilForNewDatabase() async throws {
+    @Test("A newly provisioned Base exposes its compiled schema version")
+    func newlyProvisionedBaseExposesCompiledSchemaVersion() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let container = try await setupContainer()
-            // Clean up at START of test
-            try await cleanup(container: container)
+            let container = try await setupContainer(
+                databaseIdentifier: "migration-version-bootstrap"
+            )
 
-            let version = try await container.getCurrentSchemaVersion()
-            #expect(version == nil)
+            let version = try await container.testBaseCurrentSchemaVersion()
+            #expect(version == Schema.Version(1, 0, 0))
         }
     }
 
     @Test("Installed schema snapshot exposes its compiled version")
     func schemaSnapshotVersionRoundtrip() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let container = try await setupContainer()
-            // Clean up at START of test
-            try await cleanup(container: container)
+            let container = try await setupContainer(
+                databaseIdentifier: "migration-version-roundtrip"
+            )
 
             let testVersion = Schema.Version(1, 0, 0)
-            try await container.installSchemaSnapshot(for: testVersion)
+            try await container.installTestBaseSchemaSnapshot(for: testVersion)
 
-            let retrievedVersion = try await container.getCurrentSchemaVersion()
+            let retrievedVersion = try await container.testBaseCurrentSchemaVersion()
             #expect(retrievedVersion == testVersion)
         }
     }
@@ -279,38 +271,39 @@ struct MigrationTests {
     func schemaVersionPersistsAcrossContainers() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
+            let databaseIdentifier = "migration-version-persistence"
 
             let schema = try Schema(entities: [try MigrationUser.schemaEntity], version: Schema.Version(2, 0, 0))
-
-            // Clean up first
-            try await clearMetadata(in: database)
 
             // Create first container and set version
             let container1 = try await DBContainer.open(
                 for: schema,
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
                 ),
-                security: .disabled
+                security: .testingDisabled
             )
-            try await container1.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
+            try await container1.installTestBaseSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
             // Create second container and read version
             let container2 = try await DBContainer.open(
                 for: schema,
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
                 ),
-                security: .disabled
+                security: .testingDisabled
             )
-            let version = try await container2.getCurrentSchemaVersion()
+            let version = try await container2.testBaseCurrentSchemaVersion()
 
             #expect(version == Schema.Version(2, 0, 0))
-
-            // Cleanup
-            try await clearMetadata(in: database)
         }
     }
 
@@ -320,6 +313,7 @@ struct MigrationTests {
             let database = try await makeSystemPriorityEngine()
             let registry = SchemaRegistry(
                 database: database,
+                root: Subspace(),
                 clock: TestProcessMonotonicClock()
             )
             let typeName = SchemaRegistryAppendOnlyUserV1.persistableType
@@ -340,19 +334,19 @@ struct MigrationTests {
     func lightweightMigrationPreservesExistingDataEndToEnd() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
-            let typeName = SchemaRegistryAppendOnlyUserV1.persistableType
+            let databaseIdentifier = "migration-lightweight-data"
             let userID = "fdb-lightweight-\(UUID().uuidString)"
-
-            try await clearSchemaEntries(in: database, typeNames: [typeName])
-            try await clearMetadata(in: database)
 
             let initialContainer = try await DBContainer.open(
                 for: SchemaRegistryAppendOnlySchemaV1.makeSchema(),
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV1.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var user = SchemaRegistryAppendOnlyUserV1(
                 name: "Alice",
@@ -361,24 +355,30 @@ struct MigrationTests {
             user.id = userID
             try initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: SchemaRegistryAppendOnlySchemaV2.self,
                 migrationPlan: SchemaRegistryAppendOnlyMigrationPlan.self,
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV2.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let verificationContainer = try await DBContainer.open(
                 for: SchemaRegistryAppendOnlySchemaV2.makeSchema(),
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV2.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
             let migratedUsers = try await verificationContainer
-                .newContext()
+                .testBaseContext()
                 .fetch(SchemaRegistryAppendOnlyUserV2.self)
                 .execute()
             let migratedUser = migratedUsers.first { $0.id == userID }
@@ -396,6 +396,7 @@ struct MigrationTests {
             let database = try await makeSystemPriorityEngine()
             let registry = SchemaRegistry(
                 database: database,
+                root: Subspace(),
                 clock: TestProcessMonotonicClock()
             )
             let typeName = SchemaRegistryAppendOnlyUserV1.persistableType
@@ -431,20 +432,21 @@ struct MigrationTests {
     func customMigrationCanPersistBreakingSchemaChanges() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
+            let databaseIdentifier = "migration-breaking-schema"
             let typeName = SchemaRegistryMigratedUserV1.persistableType
             let idPrefix = UUID().uuidString
             let seededID = "fdb-breaking-\(idPrefix)"
 
-            try await clearSchemaEntries(in: database, typeNames: [typeName])
-            try await clearMetadata(in: database)
-
             let initialContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV1.makeSchema(),
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV1.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
             var seededUser = SchemaRegistryMigratedUserV1(
                 name: "Charlie",
                 email: "charlie@example.com"
@@ -452,22 +454,23 @@ struct MigrationTests {
             seededUser.id = seededID
             try initialContext.insert(seededUser)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.self,
                 migrationPlan: SchemaRegistryCustomMigrationPlan.self,
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
-            let registry = SchemaRegistry(
-                database: database,
-                clock: TestProcessMonotonicClock()
-            )
-            let entity = try await registry.load(typeName: typeName)
-            let version = try await migratedContainer.getCurrentSchemaVersion()
+            let entity = try await migratedContainer
+                .testPersistedControlSchemaEntities()
+                .first { $0.name == typeName }
+            let version = try await migratedContainer.testBaseCurrentSchemaVersion()
 
             #expect(version == Schema.Version(2, 0, 0))
             #expect(entity?.fieldMapByName["fullName"]?.fieldNumber == 2)
@@ -476,11 +479,14 @@ struct MigrationTests {
 
             let verificationContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.makeSchema(),
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let verificationContext = verificationContainer.newContext()
+            let verificationContext = verificationContainer.testBaseContext()
             let migratedUsers = try await verificationContext
                 .fetch(SchemaRegistryMigratedUserV2.self)
                 .execute()
@@ -495,21 +501,21 @@ struct MigrationTests {
     func customMigrationTransformsDataEndToEnd() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
-            let typeName = SchemaRegistryMigratedUserV1.persistableType
+            let databaseIdentifier = "migration-custom-data"
             let idPrefix = UUID().uuidString
             let firstID = "fdb-migrated-\(idPrefix)-1"
             let secondID = "fdb-migrated-\(idPrefix)-2"
 
-            try await clearSchemaEntries(in: database, typeNames: [typeName])
-            try await clearMetadata(in: database)
-
             let initialContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV1.makeSchema(),
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV1.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var firstUser = SchemaRegistryMigratedUserV1(
                 name: "Alice",
@@ -526,24 +532,30 @@ struct MigrationTests {
             try initialContext.insert(secondUser)
 
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.self,
                 migrationPlan: SchemaRegistryCustomMigrationPlan.self,
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let verificationContainer = try await DBContainer.open(
                 for: SchemaRegistryMigrationSchemaV2.makeSchema(),
-                configuration: .testing(storageEngine: database),
+                configuration: .testing(
+                    databaseIdentifier: databaseIdentifier,
+                    storageEngine: database
+                ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
-                security: .disabled
+                security: .testingDisabled
             )
             let migratedUsers = try await verificationContainer
-                .newContext()
+                .testBaseContext()
                 .fetch(SchemaRegistryMigratedUserV2.self)
                 .execute()
             let migratedUsersByID = Dictionary(uniqueKeysWithValues: migratedUsers.map { ($0.id, $0) })
@@ -560,16 +572,16 @@ struct MigrationTests {
     @Test("MigrationContext batch update works correctly")
     func migrationContextBatchUpdate() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let container = try await setupBatchTestContainer()
-            // Clean up at START of test
-            try await cleanup(container: container)
+            let container = try await setupBatchTestContainer(
+                databaseIdentifier: "migration-context-batch-update"
+            )
 
             // Create test entities with known IDs
             let entities = (1...5).map { BatchMigrationEntity(name: "User \($0)", status: "active") }
             try await insertTestEntities(container: container, entities: entities)
 
             // Setup MigrationContext
-            let subspace = try await container.resolveDirectory(for: BatchMigrationEntity.self)
+            let subspace = try await container.testBaseDirectory(for: BatchMigrationEntity.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),
@@ -577,7 +589,7 @@ struct MigrationTests {
             )
             let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
 
-            let metadataSubspace = try await container.engine.resolveOrCreateNamespace(path: ["_metadata"])
+            let metadataSubspace = subspace.subspace("migration-metadata")
 
             let context = MigrationContext(
                 container: container,
@@ -590,7 +602,9 @@ struct MigrationTests {
             let updatedEntities = entities.map {
                 BatchMigrationEntity(id: $0.id, name: $0.name, status: "migrated")
             }
-            try await context.batchUpdate(updatedEntities, batchSize: 2)
+            try await container.withTestBaseOperation {
+                try await context.batchUpdate(updatedEntities, batchSize: 2)
+            }
 
             // Verify updates
             let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationEntity.persistableType)
@@ -615,16 +629,16 @@ struct MigrationTests {
     @Test("MigrationContext count works correctly")
     func migrationContextCount() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let container = try await setupBatchTestContainer()
-            // Clean up at START of test
-            try await cleanup(container: container)
+            let container = try await setupBatchTestContainer(
+                databaseIdentifier: "migration-context-count"
+            )
 
             // Insert test entities
             let entities = (1...7).map { BatchMigrationEntity(name: "User \($0)") }
             try await insertTestEntities(container: container, entities: entities)
 
             // Setup MigrationContext
-            let subspace = try await container.resolveDirectory(for: BatchMigrationEntity.self)
+            let subspace = try await container.testBaseDirectory(for: BatchMigrationEntity.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),
@@ -632,7 +646,7 @@ struct MigrationTests {
             )
             let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
 
-            let metadataSubspace = try await container.engine.resolveOrCreateNamespace(path: ["_metadata"])
+            let metadataSubspace = subspace.subspace("migration-metadata")
 
             let context = MigrationContext(
                 container: container,
@@ -641,7 +655,9 @@ struct MigrationTests {
                 storeRegistry: storeRegistry
             )
 
-            let count = try await context.count(BatchMigrationEntity.self)
+            let count = try await container.withTestBaseOperation {
+                try await context.count(BatchMigrationEntity.self)
+            }
             #expect(count == 7)
         }
     }
@@ -649,9 +665,9 @@ struct MigrationTests {
     @Test("MigrationContext single update and delete work correctly")
     func migrationContextSingleOperations() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let container = try await setupBatchTestContainer()
-            // Clean up at START of test
-            try await cleanup(container: container)
+            let container = try await setupBatchTestContainer(
+                databaseIdentifier: "migration-context-single-operations"
+            )
 
             // Create test entities
             let updateEntity = BatchMigrationEntity(name: "ToUpdate", status: "active")
@@ -659,7 +675,7 @@ struct MigrationTests {
             try await insertTestEntities(container: container, entities: [updateEntity, deleteEntity])
 
             // Setup MigrationContext
-            let subspace = try await container.resolveDirectory(for: BatchMigrationEntity.self)
+            let subspace = try await container.testBaseDirectory(for: BatchMigrationEntity.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),
@@ -667,7 +683,7 @@ struct MigrationTests {
             )
             let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
 
-            let metadataSubspace = try await container.engine.resolveOrCreateNamespace(path: ["_metadata"])
+            let metadataSubspace = subspace.subspace("migration-metadata")
 
             let context = MigrationContext(
                 container: container,
@@ -678,10 +694,14 @@ struct MigrationTests {
 
             // Single update
             let updated = BatchMigrationEntity(id: updateEntity.id, name: "ToUpdate", status: "updated")
-            try await context.update(updated)
+            try await container.withTestBaseOperation {
+                try await context.update(updated)
+            }
 
             // Single delete
-            try await context.delete(deleteEntity)
+            try await container.withTestBaseOperation {
+                try await context.delete(deleteEntity)
+            }
 
             // Verify
             let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchMigrationEntity.persistableType)

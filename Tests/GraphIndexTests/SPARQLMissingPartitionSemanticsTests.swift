@@ -2,6 +2,7 @@ import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
 import StorageKit
+import TestSupport
 import Testing
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -46,9 +47,10 @@ struct SPARQLMissingPartitionSemanticsTests {
                     )
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let query = try container.newContext()
+        defer { await container.shutdown() }
+        let query = try container.testBaseContext()
             .sparql(PartitionedRDFStatement.self)
             .partition(
                 PartitionedRDFStatement.fields.tenantID,
@@ -75,10 +77,12 @@ struct SPARQLMissingPartitionSemanticsTests {
         #expect(aggregateResult.count == 1)
         #expect(aggregateResult.firstNumericAggregate("count") == 0)
 
-        let partitions = try await container.partitionCatalogPage(
-            entity: PartitionedRDFStatement.persistableType,
-            limit: 1
-        )
+        let partitions = try await container.withTestBaseOperation {
+            try await container.partitionCatalogPage(
+                entity: PartitionedRDFStatement.persistableType,
+                limit: 1
+            )
+        }
         #expect(partitions.entries.isEmpty)
     }
 }

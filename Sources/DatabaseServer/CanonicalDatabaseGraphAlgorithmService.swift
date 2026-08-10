@@ -35,11 +35,8 @@ public struct CanonicalDatabaseGraphAlgorithmService: DatabaseGraphAlgorithmServ
             throw DatabaseGraphAlgorithmError.continuationDoesNotMatchRequest
         }
 
-        let fullResponse = try await context.container.transactionExecutor
-            .withTransaction(
-            configuration: .default,
-            clock: context.container.monotonicClock
-        ) { transaction in
+        let fullResponse = try await context.requireBaseExecutor()
+            .withStorageTransaction(configuration: .readOnly) { transaction in
             // The budget belongs to one transaction attempt. A storage retry must
             // restart both the snapshot and accounting from the same boundary.
             let workBudget = GraphAlgorithmWorkBudget(
@@ -54,7 +51,7 @@ public struct CanonicalDatabaseGraphAlgorithmService: DatabaseGraphAlgorithmServ
                 source: source,
                 snapshot: GraphReadSnapshot(
                     transaction: transaction,
-                    monotonicClock: context.container.monotonicClock,
+                    monotonicClock: context.executor.monotonicClock,
                     workBudget: workBudget
                 ),
                 workBudget: workBudget,

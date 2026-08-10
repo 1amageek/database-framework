@@ -31,6 +31,23 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         return target.partitions
     }
 
+    /// Validates and canonicalizes an index target without creating or opening
+    /// storage. Persistent job compilation uses this pure boundary so a job
+    /// cannot leave Base-local resources behind before its control record is
+    /// committed.
+    package func canonicalPartitions(
+        entity entityName: String,
+        index indexName: String,
+        partitions: FieldObject
+    ) throws -> FieldObject {
+        let target = try resolveDefinition(
+            entity: entityName,
+            index: indexName,
+            partitions: partitions
+        )
+        return target.binding?.canonicalPartitions() ?? FieldObject()
+    }
+
     package func status(
         entity: String,
         index: String,
@@ -94,7 +111,9 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             entity: entity,
             index: indexName,
             partitions: partitions,
-            directoryAccess: .open(transaction)
+            directoryAccess: mode == .start
+                ? .create(transaction)
+                : .open(transaction)
         )
         let lifecycleStore = IndexLifecycleStore(
             container: container,
@@ -111,6 +130,21 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         let current: DatabaseIndexRebuildState
         switch mode {
         case .start:
+            if let existing = existingState,
+               existing.generation == generation,
+               existing.phase == .complete {
+                return DatabaseIndexRebuildSlice(
+                    completedWorkUnits: 0,
+                    indexedEntityCount: existing.indexedEntityCount,
+                    isComplete: true
+                )
+            }
+            if let existing = existingState,
+               existing.generation == generation,
+               existing.phase == .building {
+                current = existing
+                break
+            }
             if let existing = existingState, existing.phase == .building {
                 throw DatabaseIndexRebuildError.buildAlreadyActive(
                     index: indexName,
@@ -242,8 +276,13 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         ) else {
             throw DatabaseIndexRebuildError.corruptedRebuildState
         }
-        guard state.generation == generation,
-              state.phase == .building else {
+        guard state.generation == generation else {
+            throw DatabaseIndexRebuildError.corruptedRebuildState
+        }
+        if state.phase == .failed {
+            return
+        }
+        guard state.phase == .building else {
             throw DatabaseIndexRebuildError.corruptedRebuildState
         }
         let failed = DatabaseIndexRebuildState(
@@ -349,6 +388,41 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         partitions: FieldObject,
         directoryAccess: DirectoryAccess
     ) async throws -> Target {
+        let definition = try resolveDefinition(
+            entity: entityName,
+            index: indexName,
+            partitions: partitions
+        )
+        let subspace: Subspace
+        switch directoryAccess {
+        case .create(let transaction):
+            subspace = try await container.resolveDirectory(
+                for: definition.entity,
+                path: definition.binding,
+                transaction: transaction
+            )
+        case .open(let transaction):
+            subspace = try await container.openDirectory(
+                for: definition.entity,
+                path: definition.binding,
+                transaction: transaction
+            )
+        }
+        return Target(
+            entity: entityName,
+            entityRuntime: definition.entityRuntime,
+            descriptor: definition.descriptor,
+            partitions: definition.binding?.canonicalPartitions()
+                ?? FieldObject(),
+            subspace: subspace
+        )
+    }
+
+    private func resolveDefinition(
+        entity entityName: String,
+        index indexName: String,
+        partitions: FieldObject
+    ) throws -> TargetDefinition {
         guard let entity = container.schema.entities.first(where: {
             $0.name == entityName
         }) else {
@@ -370,27 +444,11 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             for: entity,
             partitions: partitions
         )
-        let subspace: Subspace
-        switch directoryAccess {
-        case .create(let transaction):
-            subspace = try await container.resolveDirectory(
-                for: entity,
-                path: binding,
-                transaction: transaction
-            )
-        case .open(let transaction):
-            subspace = try await container.openDirectory(
-                for: entity,
-                path: binding,
-                transaction: transaction
-            )
-        }
-        return Target(
-            entity: entityName,
+        return TargetDefinition(
+            entity: entity,
             entityRuntime: entityRuntime,
             descriptor: descriptor,
-            partitions: binding?.canonicalPartitions() ?? FieldObject(),
-            subspace: subspace
+            binding: binding
         )
     }
 
@@ -430,5 +488,12 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         let descriptor: IndexDescriptor
         let partitions: FieldObject
         let subspace: Subspace
+    }
+
+    private struct TargetDefinition {
+        let entity: Schema.Entity
+        let entityRuntime: EntityRuntimeRegistration
+        let descriptor: IndexDescriptor
+        let binding: AnyDirectoryPath?
     }
 }

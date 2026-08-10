@@ -23,7 +23,7 @@ struct PartitionedDirectoryTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try Player.schemaEntity, try TenantOrder.schemaEntity], version: Schema.Version(1, 0, 0))
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self), try DatabaseFrameworkRuntime.entity(TenantOrder.self)]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self), try DatabaseFrameworkRuntime.entity(TenantOrder.self)]), security: .testingDisabled)
     }
 
     // MARK: - hasDynamicDirectory Tests
@@ -46,7 +46,7 @@ struct PartitionedDirectoryTests {
     func testSaveTenantOrderExtractsTenantID() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -73,7 +73,7 @@ struct PartitionedDirectoryTests {
     func testSaveOrdersToDifferentTenants() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenant1 = uniqueID("tenant1")
             let tenant2 = uniqueID("tenant2")
@@ -116,7 +116,7 @@ struct PartitionedDirectoryTests {
     func testFetchWithoutPartitionThrows() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             await #expect(throws: DirectoryPathError.self) {
                 _ = try await context.fetch(TenantOrder.self).execute()
@@ -128,7 +128,7 @@ struct PartitionedDirectoryTests {
     func testFetchWithPartitionReturnsCorrectData() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -151,7 +151,7 @@ struct PartitionedDirectoryTests {
     func testFetchWithWhereFiltersWithinPartition() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenantID = uniqueID("tenant")
             let order1ID = uniqueID("order1")
@@ -184,7 +184,7 @@ struct PartitionedDirectoryTests {
     func testDeleteFromCorrectPartition() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -222,7 +222,7 @@ struct PartitionedDirectoryTests {
     func testDeleteAllWithoutPartitionThrows() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             await #expect(throws: DirectoryPathError.self) {
                 try await context.deleteAll(TenantOrder.self)
@@ -234,7 +234,7 @@ struct PartitionedDirectoryTests {
     func testDeleteAllWithPartition() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenant1 = uniqueID("tenant1")
             let tenant2 = uniqueID("tenant2")
@@ -275,7 +275,7 @@ struct PartitionedDirectoryTests {
     func testEnumerateWithoutPartitionThrows() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             await #expect(throws: DirectoryPathError.self) {
                 try await context.enumerate(TenantOrder.self) { _ in }
@@ -287,7 +287,7 @@ struct PartitionedDirectoryTests {
     func testEnumerateWithPartition() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -346,7 +346,7 @@ struct PartitionedDirectoryTests {
     func testStaticDirectoryTypesWorkWithoutPartition() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let playerID = uniqueID("player")
             var player = Player(name: "Test Player", score: 100, level: 5)
@@ -369,7 +369,7 @@ struct PartitionedDirectoryTests {
     func testDeleteAllWorksForStaticDirectoryTypes() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let playerID = uniqueID("player")
             var player = Player(name: "Delete Test", score: 50, level: 1)
@@ -389,7 +389,7 @@ struct PartitionedDirectoryTests {
     func testModelWithoutPartitionThrows() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             await #expect(throws: DirectoryPathError.self) {
                 _ = try await context.model(for: "any-id", as: TenantOrder.self)
@@ -401,7 +401,7 @@ struct PartitionedDirectoryTests {
     func testModelWithPartitionReturnsCorrectData() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
@@ -432,7 +432,7 @@ struct PartitionedDirectoryTests {
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            try await container.newContext().withTransaction { transaction in
+            try await container.testBaseContext().withTransaction { transaction in
                 var order = TenantOrder(tenantID: tenantID, status: "tx-test", total: 500.0)
                 order.id = orderID
 
@@ -459,7 +459,7 @@ struct PartitionedDirectoryTests {
             let container = try await setupContainer()
 
             await #expect(throws: DirectoryPathError.self) {
-                try await container.newContext().withTransaction { transaction in
+                try await container.testBaseContext().withTransaction { transaction in
                     _ = try await transaction.fetch(
                         TenantOrder.self,
                         identifiedBy: "any-id",

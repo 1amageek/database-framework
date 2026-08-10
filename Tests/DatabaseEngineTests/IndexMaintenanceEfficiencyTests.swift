@@ -39,7 +39,7 @@ struct IndexMaintenanceEfficiencyTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try IndexMaintenanceProduct.schemaEntity])
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexMaintenanceProduct.self)]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexMaintenanceProduct.self)]), security: .testingDisabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
@@ -57,7 +57,7 @@ struct IndexMaintenanceEfficiencyTests {
     func testUpdateUsesEfficientPath() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create a product with unique SKU and unique prices
         let testPrefix = uniqueID("upd")
@@ -116,7 +116,7 @@ struct IndexMaintenanceEfficiencyTests {
     func testDeleteUsesEfficientPath() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create a product with unique SKU and unique price
         let testPrefix = uniqueID("del")
@@ -150,7 +150,7 @@ struct IndexMaintenanceEfficiencyTests {
     func testInsertCreatesIndexEntry() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert first - no old data, so no scan needed
         let testPrefix = uniqueID("ins")
@@ -175,7 +175,7 @@ struct IndexMaintenanceEfficiencyTests {
     func testMultipleUpdates() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let testPrefix = uniqueID("mul")
         let productId = uniqueID("P")
@@ -225,7 +225,7 @@ struct IndexMaintenanceEfficiencyTests {
     func testUpdateWithManyEntities() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert many entities to create a large index
         let testPrefix = uniqueID("batch")
@@ -288,7 +288,7 @@ struct IndexMaintenanceEfficiencyTests {
     func testBatchOperations() async throws {
         let container = try await createContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert multiple products with unique prefix and unique prices
         let testPrefix = uniqueID("multi")

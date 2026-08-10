@@ -279,8 +279,8 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [minIndexDescriptor])]), security: .disabled)
-        let context = container.newContext()
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [minIndexDescriptor])]), security: .testingDisabled)
+        let context = container.testBaseContext()
 
         // Build query with MIN aggregation
         let builder = context.aggregate(AggregationOrder.self)
@@ -335,8 +335,8 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [maxIndexDescriptor])]), security: .disabled)
-        let context = container.newContext()
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [maxIndexDescriptor])]), security: .testingDisabled)
+        let context = container.testBaseContext()
 
         // Build query with MAX aggregation
         let builder = context.aggregate(AggregationOrder.self)
@@ -390,8 +390,8 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor])]), security: .disabled)
-        let context = container.newContext()
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor])]), security: .testingDisabled)
+        let context = container.testBaseContext()
 
         // Build query with COUNT aggregation matching the index
         let builder = context.aggregate(AggregationOrder.self)
@@ -445,8 +445,8 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [sumIndexDescriptor])]), security: .disabled)
-        let context = container.newContext()
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [sumIndexDescriptor])]), security: .testingDisabled)
+        let context = container.testBaseContext()
 
         // Build query with SUM aggregation matching the index
         let builder = context.aggregate(AggregationOrder.self)
@@ -509,8 +509,8 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor, minIndexDescriptor])]), security: .disabled)
-        let context = container.newContext()
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor, minIndexDescriptor])]), security: .testingDisabled)
+        let context = container.testBaseContext()
 
         // Build query with both COUNT and MIN (both have indexes)
         let builder = context.aggregate(AggregationOrder.self)
@@ -569,8 +569,8 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor])]), security: .disabled)
-        let context = container.newContext()
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor])]), security: .testingDisabled)
+        let context = container.testBaseContext()
 
         // Build query grouping by DIFFERENT field (amount instead of region)
         // This should NOT match the index

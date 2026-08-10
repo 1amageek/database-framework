@@ -92,7 +92,7 @@ struct IndexStateInitializationTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         let root = Subspace(prefix: Tuple("index-state-initialization").pack())
         let entitySubspace = root.subspace("entities")

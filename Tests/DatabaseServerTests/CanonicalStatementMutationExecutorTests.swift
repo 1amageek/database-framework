@@ -91,11 +91,18 @@ struct CanonicalStatementMutationExecutorTests {
     @Test("INSERT UPDATE and DELETE share the canonical entity mutation path")
     func sqlDataModificationLifecycle() async throws {
         let container = try await makeContainer()
+        let baseContext = container.testBaseContext()
         let context = DatabaseOperationContext(
             container: container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: .canonical(for: .mutationExecute),
             requestID: 1,
             metadata: OperationRequestMetadata(),
-            requestPayload: []
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: [],
+            wireLimits: .default
         )
         let executor = CanonicalDatabaseStatementMutationExecutor()
         let entity = DatabaseEndpointEntity.persistableType
@@ -188,11 +195,18 @@ struct CanonicalStatementMutationExecutorTests {
     @Test("Statement mutations enforce entity preconditions in the mutation transaction")
     func statementPreconditionsAreEnforced() async throws {
         let container = try await makeContainer()
+        let baseContext = container.testBaseContext()
         let context = DatabaseOperationContext(
             container: container,
+            target: .base(baseContext.baseID),
+            baseContext: baseContext,
+            composition: nil,
+            requirement: .canonical(for: .mutationExecute),
             requestID: 2,
             metadata: OperationRequestMetadata(),
-            requestPayload: []
+            authorization: TestBaseEnvironment.authorization,
+            requestPayload: [],
+            wireLimits: .default
         )
         let executor = CanonicalDatabaseStatementMutationExecutor()
         let entity = DatabaseEndpointEntity.persistableType
@@ -261,7 +275,7 @@ struct CanonicalStatementMutationExecutorTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -282,7 +296,7 @@ struct CanonicalStatementMutationExecutorTests {
             statement,
             context: context
         )
-        let database = context.container.newContext()
+        let database = try context.requireBaseContext()
         let result = try await database.withTransaction(configuration: .batch) { transaction in
             try await executor.execute(
                 prepared,
@@ -304,7 +318,7 @@ struct CanonicalStatementMutationExecutorTests {
         _ id: String,
         container: DBContainer
     ) async throws -> DatabaseEndpointEntity? {
-        let database = container.newContext()
+        let database = container.testBaseContext()
         return try await database.withTransaction { transaction in
             guard let model = try await transaction.loadPersistedModel(
                 entity: DatabaseEndpointEntity.persistableType,

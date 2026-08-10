@@ -123,6 +123,10 @@ build gates documented in [Production Readiness](../production-readiness.md).
 
 | Date | Scope | Result |
 | --- | --- | --- |
+| 2026-08-10 | Base/Composition release candidate: strict FoundationDB Xcode harness with database-kit 26.0809.8, storage-kit 26.0807.0, and swift-hnsw 1.1.4 | Passed: 3,964 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors; cluster teardown confirmed negative readiness |
+| 2026-08-10 | Base/Composition release candidate: strict SQLite Xcode harness | Passed: 119 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors |
+| 2026-08-10 | Base/Composition release candidate: strict PostgreSQL Xcode harness against isolated PostgreSQL 16.14 | Passed: 72 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors; explicit and trap teardown both confirmed negative readiness |
+| 2026-08-10 | Base/Composition release candidate: standard and Embedded WASM release builds with the pinned Swift 6.4 snapshot SDKs | Passed: both products compiled and linked from the final source revision without compiler warnings |
 | 2026-08-08 | Strict FoundationDB Xcode harness with database-kit 26.0808.0 and storage-kit 26.0807.0, Swift 6.4 snapshot `2026-07-23-a` | Passed: 3,910 tests; 0 failures, skips, expected failures, runtime warnings, compiler internal errors, macro-plugin internal errors, or coverage-profiler errors |
 | 2026-08-07 | Strict SQLite Xcode harness with the same published dependency graph | Passed: 101 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors |
 | 2026-08-07 | Strict PostgreSQL Xcode harness against PostgreSQL 16.14 in an isolated native process | Passed: 71 tests; 0 failures, skips, expected failures, runtime warnings, startup-order warnings, or internal tool errors |

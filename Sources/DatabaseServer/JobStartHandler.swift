@@ -15,6 +15,17 @@ public struct JobStartHandler: DatabaseOperationEndpointHandler {
         self.runtimeLimits = runtimeLimits
     }
 
+    public func requirement(
+        for request: JobStartOperation.Request
+    ) throws -> DatabaseOperationRequirement {
+        DatabaseOperationRequirement(
+            acceptedTargets: [.database, .base],
+            access: .administer,
+            transaction: .write,
+            baseAdmission: try service.baseAdmission(for: request.operation)
+        )
+    }
+
     public func invoke(
         request: JobStartOperation.Request,
         context: DatabaseOperationContext,

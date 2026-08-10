@@ -141,7 +141,7 @@ enum SQLiteStageBoundaryMigrationPlan: SchemaMigrationPlan {
     }
 
     static func migrateUsers(context: MigrationContext) async throws {
-        let currentVersion = try await context.container.getCurrentSchemaVersion()
+        let currentVersion = try await context.container.testBaseCurrentSchemaVersion()
         await sqliteMigrationEventRecorder.record("will:\(versionLabel(currentVersion))")
 
         var migratedUsers: [SQLiteStageBoundaryUserV3] = []
@@ -163,7 +163,7 @@ enum SQLiteStageBoundaryMigrationPlan: SchemaMigrationPlan {
     }
 
     static func auditStage(context: MigrationContext) async throws {
-        let currentVersion = try await context.container.getCurrentSchemaVersion()
+        let currentVersion = try await context.container.testBaseCurrentSchemaVersion()
         await sqliteMigrationEventRecorder.record("did:\(versionLabel(currentVersion))")
     }
 }
@@ -315,7 +315,7 @@ enum SQLiteStageFailureMigrationPlan: SchemaMigrationPlan {
     }
 
     static func failStage(context: MigrationContext) async throws {
-        let currentVersion = try await context.container.getCurrentSchemaVersion()
+        let currentVersion = try await context.container.testBaseCurrentSchemaVersion()
         await sqliteMigrationEventRecorder.record("fail:\(versionLabel(currentVersion))")
         throw SQLiteMigrationExecutionError.expectedFailure
     }
@@ -333,16 +333,16 @@ struct MigrationExecutionSQLiteTests {
             for: SQLiteStageBoundarySchemaV1.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV1.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
 
         var user = SQLiteStageBoundaryUserV1(name: "Alice", email: "alice@example.com")
         user.id = "sqlite-stage-boundary-user"
         try initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
         await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
@@ -350,23 +350,23 @@ struct MigrationExecutionSQLiteTests {
             migrationPlan: SQLiteStageBoundaryMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
         let events = await sqliteMigrationEventRecorder.snapshot()
-        let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
+        let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
         await migratedContainer.shutdown()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteStageBoundarySchemaV3.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
-        let migratedUsers = try await verificationContainer.newContext()
+        let migratedUsers = try await verificationContainer.testBaseContext()
             .fetch(SQLiteStageBoundaryUserV3.self)
             .execute()
         let migratedUser = migratedUsers.first { $0.id == "sqlite-stage-boundary-user" }
@@ -387,10 +387,12 @@ struct MigrationExecutionSQLiteTests {
             for: SQLiteIndexLifecycleSchemaV2.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteIndexLifecycleUserV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let subspace = try await initialContainer.resolveDirectory(for: SQLiteIndexLifecycleUserV2.self)
+        let subspace = try await initialContainer.testBaseDirectory(
+            for: SQLiteIndexLifecycleUserV2.self
+        )
         let ageIndexSubspace = subspace
             .subspace(SubspaceKey.indexes)
             .subspace("SQLiteIndexLifecycleUser_age")
@@ -398,7 +400,7 @@ struct MigrationExecutionSQLiteTests {
             .subspace(SubspaceKey.indexes)
             .subspace("SQLiteIndexLifecycleUser_createdAt")
 
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
         var user = SQLiteIndexLifecycleUserV2(
             name: "Alice",
             email: "alice@example.com",
@@ -407,7 +409,7 @@ struct MigrationExecutionSQLiteTests {
         user.id = "sqlite-index-lifecycle-user"
         try initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
         #expect(
             try await countKeys(
@@ -422,17 +424,14 @@ struct MigrationExecutionSQLiteTests {
             migrationPlan: SQLiteIndexLifecycleMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteIndexLifecycleUserV3.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
-        let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
-        let registry = SchemaRegistry(
-            database: migratedContainer.engine,
-            clock: TestProcessMonotonicClock()
-        )
-        let entity = try await registry.load(typeName: SQLiteIndexLifecycleUserV2.persistableType)
+        let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
+        let entity = try await migratedContainer.testBaseSchemaDefinition()?
+            .entity(named: SQLiteIndexLifecycleUserV2.persistableType)
         let formerIndexKey = subspace
             .subspace("storeInfo")
             .subspace("formerIndexes")
@@ -442,9 +441,14 @@ struct MigrationExecutionSQLiteTests {
             engine: migratedContainer.engine
         )
         let indexRegistry = DatabaseIndexRegistry(container: migratedContainer, subspace: subspace)
-        let removedIndexState = try await indexRegistry.state(of: "SQLiteIndexLifecycleUser_age")
+        let removedIndexState = try await migratedContainer
+            .withTestBaseOperation {
+                try await indexRegistry.state(
+                    of: "SQLiteIndexLifecycleUser_age"
+                )
+            }
 
-        let migratedUsers = try await migratedContainer.newContext()
+        let migratedUsers = try await migratedContainer.testBaseContext()
             .fetch(SQLiteIndexLifecycleUserV3.self)
             .execute()
         let migratedUser = migratedUsers.first { $0.id == "sqlite-index-lifecycle-user" }
@@ -480,16 +484,16 @@ struct MigrationExecutionSQLiteTests {
             for: SQLiteStageFailureSchemaV1.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV1.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
 
         var user = SQLiteStageFailureUserV1(name: "Alice", email: "alice@example.com")
         user.id = "sqlite-stage-failure-user"
         try initialContext.insert(user)
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
         await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
@@ -497,34 +501,31 @@ struct MigrationExecutionSQLiteTests {
             migrationPlan: SQLiteStageFailureMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV3.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
 
         do {
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
             Issue.record("Expected migration failure")
         } catch let error as SQLiteMigrationExecutionError {
             #expect(error == .expectedFailure)
         }
 
         let events = await sqliteMigrationEventRecorder.snapshot()
-        let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
-        let registry = SchemaRegistry(
-            database: migratedContainer.engine,
-            clock: TestProcessMonotonicClock()
-        )
-        let entity = try await registry.load(typeName: SQLiteStageFailureUserV1.persistableType)
+        let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
+        let entity = try await migratedContainer.testBaseSchemaDefinition()?
+            .entity(named: SQLiteStageFailureUserV1.persistableType)
         await migratedContainer.shutdown()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLiteStageFailureSchemaV2.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
-        let migratedUsers = try await verificationContainer.newContext()
+        let migratedUsers = try await verificationContainer.testBaseContext()
             .fetch(SQLiteStageFailureUserV2.self)
             .execute()
         let migratedUser = migratedUsers.first { $0.id == "sqlite-stage-failure-user" }
@@ -546,18 +547,15 @@ struct MigrationExecutionSQLiteTests {
             migrationPlan: SQLiteStageBoundaryMigrationPlan.self,
             configuration: .inMemory,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
         let events = await sqliteMigrationEventRecorder.snapshot()
-        let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
-        let registry = SchemaRegistry(
-            database: migratedContainer.engine,
-            clock: TestProcessMonotonicClock()
-        )
-        let entity = try await registry.load(typeName: SQLiteStageBoundaryUserV1.persistableType)
+        let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
+        let entity = try await migratedContainer.testBaseSchemaDefinition()?
+            .entity(named: SQLiteStageBoundaryUserV1.persistableType)
 
         #expect(events.isEmpty)
         #expect(currentVersion == Schema.Version(3, 0, 0))

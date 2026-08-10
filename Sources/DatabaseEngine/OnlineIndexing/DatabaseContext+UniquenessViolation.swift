@@ -40,11 +40,20 @@ extension DatabaseContext {
         indexName: String,
         limit: Int? = nil
     ) async throws -> [UniquenessViolation] {
-        let databaseStore = try await container.store(for: type)
-        return try await databaseStore.violationTracker.scanViolations(
-            indexName: indexName,
-            limit: limit
-        )
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                transaction: transaction
+            )
+            return try await databaseStore.violationTracker.scanViolations(
+                indexName: indexName,
+                limit: limit,
+                transaction: transaction
+            )
+        }
     }
 
     /// Scan uniqueness violations for a partitioned type
@@ -75,11 +84,21 @@ extension DatabaseContext {
         limit: Int? = nil,
         partition: DirectoryPath<T>
     ) async throws -> [UniquenessViolation] {
-        let databaseStore = try await container.store(for: type, path: partition)
-        return try await databaseStore.violationTracker.scanViolations(
-            indexName: indexName,
-            limit: limit
-        )
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                path: partition,
+                transaction: transaction
+            )
+            return try await databaseStore.violationTracker.scanViolations(
+                indexName: indexName,
+                limit: limit,
+                transaction: transaction
+            )
+        }
     }
 
     /// Check if an index has any uniqueness violations
@@ -101,8 +120,19 @@ extension DatabaseContext {
         for type: T.Type,
         indexName: String
     ) async throws -> Bool {
-        let databaseStore = try await container.store(for: type)
-        return try await databaseStore.violationTracker.hasViolations(indexName: indexName)
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                transaction: transaction
+            )
+            return try await databaseStore.violationTracker.hasViolations(
+                indexName: indexName,
+                transaction: transaction
+            )
+        }
     }
 
     /// Check if an index has any uniqueness violations (partitioned type)
@@ -119,8 +149,20 @@ extension DatabaseContext {
         indexName: String,
         partition: DirectoryPath<T>
     ) async throws -> Bool {
-        let databaseStore = try await container.store(for: type, path: partition)
-        return try await databaseStore.violationTracker.hasViolations(indexName: indexName)
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                path: partition,
+                transaction: transaction
+            )
+            return try await databaseStore.violationTracker.hasViolations(
+                indexName: indexName,
+                transaction: transaction
+            )
+        }
     }
 
     /// Get a summary of uniqueness violations for an index
@@ -148,8 +190,19 @@ extension DatabaseContext {
         for type: T.Type,
         indexName: String
     ) async throws -> ViolationSummary {
-        let databaseStore = try await container.store(for: type)
-        return try await databaseStore.violationTracker.violationSummary(indexName: indexName)
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                transaction: transaction
+            )
+            return try await databaseStore.violationTracker.violationSummary(
+                indexName: indexName,
+                transaction: transaction
+            )
+        }
     }
 
     /// Get a summary of uniqueness violations for a partitioned type
@@ -166,8 +219,20 @@ extension DatabaseContext {
         indexName: String,
         partition: DirectoryPath<T>
     ) async throws -> ViolationSummary {
-        let databaseStore = try await container.store(for: type, path: partition)
-        return try await databaseStore.violationTracker.violationSummary(indexName: indexName)
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                path: partition,
+                transaction: transaction
+            )
+            return try await databaseStore.violationTracker.violationSummary(
+                indexName: indexName,
+                transaction: transaction
+            )
+        }
     }
 
     /// Clear a resolved uniqueness violation
@@ -194,11 +259,20 @@ extension DatabaseContext {
         indexName: String,
         valueKey: ByteString
     ) async throws {
-        let databaseStore = try await container.store(for: type)
-        try await databaseStore.violationTracker.clearViolation(
-            indexName: indexName,
-            valueKey: valueKey
-        )
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                transaction: transaction
+            )
+            try await databaseStore.violationTracker.clearViolation(
+                indexName: indexName,
+                valueKey: valueKey,
+                transaction: transaction
+            )
+        }
     }
 
     /// Clear a resolved uniqueness violation (partitioned type)
@@ -216,11 +290,21 @@ extension DatabaseContext {
         valueKey: ByteString,
         partition: DirectoryPath<T>
     ) async throws {
-        let databaseStore = try await container.store(for: type, path: partition)
-        try await databaseStore.violationTracker.clearViolation(
-            indexName: indexName,
-            valueKey: valueKey
-        )
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                path: partition,
+                transaction: transaction
+            )
+            try await databaseStore.violationTracker.clearViolation(
+                indexName: indexName,
+                valueKey: valueKey,
+                transaction: transaction
+            )
+        }
     }
 
     /// Clear all uniqueness violations for an index
@@ -234,8 +318,19 @@ extension DatabaseContext {
         for type: T.Type,
         indexName: String
     ) async throws {
-        let databaseStore = try await container.store(for: type)
-        try await databaseStore.violationTracker.clearAllViolations(indexName: indexName)
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                transaction: transaction
+            )
+            try await databaseStore.violationTracker.clearAllViolations(
+                indexName: indexName,
+                transaction: transaction
+            )
+        }
     }
 
     /// Clear all uniqueness violations for a partitioned type
@@ -251,8 +346,20 @@ extension DatabaseContext {
         indexName: String,
         partition: DirectoryPath<T>
     ) async throws {
-        let databaseStore = try await container.store(for: type, path: partition)
-        try await databaseStore.violationTracker.clearAllViolations(indexName: indexName)
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                path: partition,
+                transaction: transaction
+            )
+            try await databaseStore.violationTracker.clearAllViolations(
+                indexName: indexName,
+                transaction: transaction
+            )
+        }
     }
 
     /// Verify if a uniqueness violation has been resolved
@@ -286,14 +393,22 @@ extension DatabaseContext {
         indexName: String,
         valueKey: ByteString
     ) async throws -> ViolationResolution {
-        let databaseStore = try await container.store(for: type)
-
-        let indexSubspace = databaseStore.indexSubspace.subspace(indexName)
-        return try await databaseStore.violationTracker.verifyResolution(
-            indexName: indexName,
-            valueKey: valueKey,
-            indexSubspace: indexSubspace
-        )
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                transaction: transaction
+            )
+            let indexSubspace = databaseStore.indexSubspace.subspace(indexName)
+            return try await databaseStore.violationTracker.verifyResolution(
+                indexName: indexName,
+                valueKey: valueKey,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
     }
 
     /// Verify if a uniqueness violation has been resolved (partitioned type)
@@ -312,13 +427,22 @@ extension DatabaseContext {
         valueKey: ByteString,
         partition: DirectoryPath<T>
     ) async throws -> ViolationResolution {
-        let databaseStore = try await container.store(for: type, path: partition)
-
-        let indexSubspace = databaseStore.indexSubspace.subspace(indexName)
-        return try await databaseStore.violationTracker.verifyResolution(
-            indexName: indexName,
-            valueKey: valueKey,
-            indexSubspace: indexSubspace
-        )
+        try await withStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let databaseStore = try await self.container.store(
+                for: type,
+                path: partition,
+                transaction: transaction
+            )
+            let indexSubspace = databaseStore.indexSubspace.subspace(indexName)
+            return try await databaseStore.violationTracker.verifyResolution(
+                indexName: indexName,
+                valueKey: valueKey,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
     }
 }

@@ -2,6 +2,7 @@ import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
 import StorageKit
+import TestSupport
 import Testing
 @testable import DatabaseEngine
 @testable import VectorIndex
@@ -31,7 +32,7 @@ struct SimilarFusionTests {
         ] {
             let container = try await makeContainer(algorithm: algorithm)
             do {
-                let context = container.newContext()
+                let context = container.testBaseContext()
                 let strongest = SimilarFusionDocument(
                     id: "strongest",
                     title: "Strongest",
@@ -70,7 +71,7 @@ struct SimilarFusionTests {
     func emptyCandidatesAreRestrictive() async throws {
         let container = try await makeContainer(algorithm: .flat)
         do {
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let query = Similar(
                 SimilarFusionDocument.fields.embedding,
                 dimensions: 2,
@@ -91,7 +92,7 @@ struct SimilarFusionTests {
     func largeCandidateSetsDoNotDependOnGlobalNearestNeighbors() async throws {
         let container = try await makeContainer(algorithm: .flat)
         do {
-            let context = container.newContext()
+            let context = container.testBaseContext()
             var candidateIDs: Set<String> = []
 
             for index in 0...1_000 {
@@ -137,7 +138,7 @@ struct SimilarFusionTests {
     @Test("Similar reports missing query configuration")
     func missingQueryIsTypedFailure() async throws {
         let container = try await makeContainer(algorithm: .flat)
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let query = Similar(
             SimilarFusionDocument.fields.embedding,
             dimensions: 2,
@@ -162,7 +163,7 @@ struct SimilarFusionTests {
             algorithm: .flat,
             engine: engine
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let indexName = "SimilarFusionDocument_embedding"
         let indexSubspace = try await context.indexQueryContext
             .withReadableIndex(
@@ -230,7 +231,7 @@ struct SimilarFusionTests {
                     )
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 }

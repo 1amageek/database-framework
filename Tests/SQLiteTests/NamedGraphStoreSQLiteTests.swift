@@ -4,6 +4,7 @@ import DatabaseRuntime
 import DatabaseTypes
 import DatabaseWire
 import Foundation
+import TestSupport
 import TestHeartbeat
 import Testing
 
@@ -207,9 +208,9 @@ struct NamedGraphStoreSQLiteTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteNamedGraphStatement.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         for statement in try statements() {
             try context.insert(statement)
         }

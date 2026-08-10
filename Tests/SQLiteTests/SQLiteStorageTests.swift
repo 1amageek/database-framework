@@ -3,6 +3,7 @@ import Testing
 import Foundation
 import Database
 import DatabaseRuntime
+import TestSupport
 import TestHeartbeat
 
 @Persistable
@@ -35,7 +36,7 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -49,7 +50,7 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         #expect(container.schema.entities.count == 1)
     }
@@ -68,7 +69,7 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer {
             await container.shutdown()
@@ -82,7 +83,7 @@ struct SQLiteStorageTests {
         }
 
         // Insert and verify persistence
-        let context = container.newContext()
+        let context = container.testBaseContext()
         var item = SQLiteStoredItem()
         item.id = "file-test"
         item.name = "Persisted"
@@ -110,11 +111,11 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self), try DatabaseFrameworkRuntime.entity(SQLiteStoredNote.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         #expect(container.schema.entities.count == 2)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var item = SQLiteStoredItem()
         item.id = "item-1"
@@ -148,10 +149,10 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let itemId = "sqlite-storage-\(UUID().uuidString.prefix(8))"
 
         var item = SQLiteStoredItem()
@@ -179,10 +180,10 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let itemId = "upsert-\(UUID().uuidString.prefix(8))"
 
         // Initial insert
@@ -216,10 +217,10 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         for i in 0..<5 {
             var item = SQLiteStoredItem()
@@ -242,10 +243,10 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var item = SQLiteStoredItem()
         item.id = "del-\(UUID().uuidString.prefix(8))"
@@ -269,7 +270,7 @@ struct SQLiteStorageTests {
     @Test("Pending insert is visible only inside the staging context until save")
     func pendingInsertVisibilityIsContextScopedUntilSave() async throws {
         let container = try await makeItemContainer()
-        let writer = container.newContext()
+        let writer = container.testBaseContext()
         let itemID = "pending-insert-\(UUID().uuidString.prefix(8))"
 
         var item = SQLiteStoredItem()
@@ -280,7 +281,7 @@ struct SQLiteStorageTests {
         try writer.insert(item)
 
         let staged = try await writer.model(for: itemID, as: SQLiteStoredItem.self)
-        let isolatedBeforeSave = try await container.newContext().model(
+        let isolatedBeforeSave = try await container.testBaseContext().model(
             for: itemID,
             as: SQLiteStoredItem.self
         )
@@ -290,7 +291,7 @@ struct SQLiteStorageTests {
 
         try await writer.save()
 
-        let persisted = try await container.newContext().model(
+        let persisted = try await container.testBaseContext().model(
             for: itemID,
             as: SQLiteStoredItem.self
         )
@@ -308,11 +309,11 @@ struct SQLiteStorageTests {
         item.name = "Stored"
         item.age = 31
 
-        let seedContext = container.newContext()
+        let seedContext = container.testBaseContext()
         try seedContext.insert(item)
         try await seedContext.save()
 
-        let deletingContext = container.newContext()
+        let deletingContext = container.testBaseContext()
         let stored = try #require(
             try await deletingContext.model(for: itemID, as: SQLiteStoredItem.self)
         )
@@ -322,7 +323,7 @@ struct SQLiteStorageTests {
             for: itemID,
             as: SQLiteStoredItem.self
         )
-        let visibleBeforeSave = try await container.newContext().model(
+        let visibleBeforeSave = try await container.testBaseContext().model(
             for: itemID,
             as: SQLiteStoredItem.self
         )
@@ -332,7 +333,7 @@ struct SQLiteStorageTests {
 
         try await deletingContext.save()
 
-        let visibleAfterSave = try await container.newContext().model(
+        let visibleAfterSave = try await container.testBaseContext().model(
             for: itemID,
             as: SQLiteStoredItem.self
         )
@@ -342,7 +343,7 @@ struct SQLiteStorageTests {
     @Test("Delete cancels a pending insert before save")
     func deleteCancelsPendingInsertBeforeSave() async throws {
         let container = try await makeItemContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let itemID = "insert-delete-\(UUID().uuidString.prefix(8))"
 
         var item = SQLiteStoredItem()
@@ -358,11 +359,11 @@ struct SQLiteStorageTests {
 
         try await context.save()
 
-        let persisted = try await container.newContext().model(
+        let persisted = try await container.testBaseContext().model(
             for: itemID,
             as: SQLiteStoredItem.self
         )
-        let allItems = try await container.newContext().fetch(SQLiteStoredItem.self).execute()
+        let allItems = try await container.testBaseContext().fetch(SQLiteStoredItem.self).execute()
 
         #expect(persisted == nil)
         #expect(allItems.isEmpty)
@@ -377,11 +378,11 @@ struct SQLiteStorageTests {
         storedItem.name = "Stored"
         storedItem.age = 28
 
-        let seedContext = container.newContext()
+        let seedContext = container.testBaseContext()
         try seedContext.insert(storedItem)
         try await seedContext.save()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let stored = try #require(
             try await context.model(for: storedItem.id, as: SQLiteStoredItem.self)
         )
@@ -403,7 +404,7 @@ struct SQLiteStorageTests {
 
         try await context.save()
 
-        let verificationContext = container.newContext()
+        let verificationContext = container.testBaseContext()
         #expect(
             try await verificationContext.model(for: storedItem.id, as: SQLiteStoredItem.self)?.name
                 == "Stored"
@@ -421,10 +422,10 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         for (i, name) in ["Alice", "Bob", "Carol"].enumerated() {
             var item = SQLiteStoredItem()
@@ -454,10 +455,10 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         for (i, name) in ["Charlie", "Alice", "Bob"].enumerated() {
             var item = SQLiteStoredItem()
@@ -485,10 +486,10 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         for i in 0..<5 {
             var item = SQLiteStoredItem()
@@ -515,10 +516,10 @@ struct SQLiteStorageTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let results = try await context.fetch(SQLiteStoredItem.self).execute()
         #expect(results.isEmpty)
     }

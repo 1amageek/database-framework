@@ -12,29 +12,28 @@ struct DatabaseSchemaBootstrapTests {
         let engine = InMemoryEngine()
         let container = try await makeVersionedContainer(engine: engine)
 
-        try await container.migrateIfNeeded()
+        try await container.testBaseAdmin().migrateIfNeeded()
 
-        #expect(try await container.getCurrentSchemaVersion() == Schema.Version(1, 0, 0))
-        let entities = try await SchemaRegistry(
-            database: engine,
-            clock: TestProcessMonotonicClock()
-        ).loadAll()
+        #expect(try await container.testBaseCurrentSchemaVersion() == Schema.Version(1, 0, 0))
+        let entities = try await container.testPersistedControlSchemaEntities()
         #expect(
             entities.map { $0.name }
                 .contains(BootstrapIndexedEntity.persistableType)
         )
-        let subspace = try await container.resolveDirectory(
-            for: BootstrapIndexedEntity.self
-        )
-        let state = try await IndexLifecycleStore(
-            container: container,
-            subspace: subspace
-        ).state(of: "bootstrap_value")
+        let state = try await container.testBaseContext().withBaseOperation {
+            let subspace = try await container.resolveDirectory(
+                for: BootstrapIndexedEntity.self
+            )
+            return try await IndexLifecycleStore(
+                container: container,
+                subspace: subspace
+            ).state(of: "bootstrap_value")
+        }
         #expect(state == .readable)
     }
 
-    @Test("Unversioned rows cannot be silently adopted by initial schema")
-    func rejectsUnversionedRows() async throws {
+    @Test("Schema-driven rows retain their published version across a compiled reopen")
+    func schemaDrivenRowsRetainPublishedVersion() async throws {
         let engine = InMemoryEngine()
         let unversioned = try await DBContainer.open(
             for: try Schema(
@@ -47,27 +46,39 @@ struct DatabaseSchemaBootstrapTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = unversioned.newContext()
+        let context = unversioned.testBaseContext()
         var entity = BootstrapIndexedEntity()
         entity.id = "orphan"
         entity.value = "value"
         try context.insert(entity)
         try await context.save()
+        #expect(
+            try await unversioned.testBaseCurrentSchemaVersion()
+                == Schema.Version(1, 0, 0)
+        )
 
         let versioned = try await makeVersionedContainer(engine: engine)
-        await #expect(throws: MigrationPlanError.self) {
-            try await versioned.migrateIfNeeded()
-        }
-        #expect(try await versioned.getCurrentSchemaVersion() == nil)
+        try await versioned.testBaseAdmin().migrateIfNeeded()
+        #expect(
+            try await versioned.testBaseCurrentSchemaVersion()
+                == Schema.Version(1, 0, 0)
+        )
+        let reopened = versioned.testBaseContext()
+        #expect(
+            try await reopened.model(
+                for: "orphan",
+                as: BootstrapIndexedEntity.self
+            )?.value == "value"
+        )
     }
 
     @Test("A reused version cannot conceal a different compiled schema")
     func rejectsDivergentSchemaAtCommittedVersion() async throws {
         let engine = InMemoryEngine()
         let initial = try await makeVersionedContainer(engine: engine)
-        try await initial.migrateIfNeeded()
+        try await initial.testBaseAdmin().migrateIfNeeded()
 
         let divergent = try await DBContainer.open(
             for: try Schema(
@@ -81,11 +92,11 @@ struct DatabaseSchemaBootstrapTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self), try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
 
         do {
-            _ = try await divergent.migrationStatus()
+            _ = try await divergent.testBaseAdmin().migrationStatus()
             Issue.record("Expected the committed schema fingerprint to be rejected")
         } catch MigrationPlanError.schemaFingerprintMismatch(let version) {
             #expect(version == Schema.Version(1, 0, 0))
@@ -102,7 +113,7 @@ struct DatabaseSchemaBootstrapTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 

@@ -16,13 +16,15 @@ struct DatabaseServerApplicationTests {
         )
         let definition = DatabaseContainerDefinition(
             schemaRuntimeFactory: schemaFactory,
-            security: .disabled,
+            security: .testingDisabled,
             databaseName: "schema-driven-application",
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: RealtimeDatabaseWallClock()
         )
         let container = try await definition.open(
-            storageEngine: InMemoryEngine()
+            storageTopology: try DatabaseStorageTopology.testing(
+                storageEngine: InMemoryEngine()
+            )
         )
         defer { await container.shutdown() }
 
@@ -39,7 +41,7 @@ struct DatabaseServerApplicationTests {
         )
         let definition = DatabaseContainerDefinition(
             schemaRuntimeFactory: schemaFactory,
-            security: .disabled,
+            security: .testingDisabled,
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: RealtimeDatabaseWallClock()
         )
@@ -53,7 +55,9 @@ struct DatabaseServerApplicationTests {
         let erased = AnyDatabaseServerApplication(application)
         let resolvedDefinition = try await erased.makeContainerDefinition()
         let container = try await resolvedDefinition.open(
-            storageEngine: InMemoryEngine()
+            storageTopology: try DatabaseStorageTopology.testing(
+                storageEngine: InMemoryEngine()
+            )
         )
         defer { await container.shutdown() }
         let resolvedRuntime = try await erased.makeRuntimeConfiguration(
@@ -76,7 +80,7 @@ struct DatabaseServerApplicationTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 schema: emptySchema
             ),
-            security: .disabled,
+            security: .testingDisabled,
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: RealtimeDatabaseWallClock()
         )
@@ -95,7 +99,7 @@ struct DatabaseServerApplicationTests {
 
         let dynamicDefinition = DatabaseContainerDefinition(
             schemaRuntimeFactory: schemaFactory,
-            security: .disabled,
+            security: .testingDisabled,
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: RealtimeDatabaseWallClock()
         )

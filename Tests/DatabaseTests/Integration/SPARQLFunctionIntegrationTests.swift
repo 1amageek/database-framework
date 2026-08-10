@@ -94,31 +94,10 @@ struct SPARQLFunctionIntegrationTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLFunctionUser.self), try DatabaseFrameworkRuntime.entity(SPARQLFunctionTriple.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
 
-        // Clean up previous test data
-        if try await database.namespaceExists(path: ["sparql_function_test_users"]) {
-            try await database.removeNamespace(path: ["sparql_function_test_users"])
-        }
-        if try await database.namespaceExists(path: ["sparql_function_test_rdf"]) {
-            try await database.removeNamespace(path: ["sparql_function_test_rdf"])
-        }
-        try await container.ensureIndexesReady()
-
-        // Set index to readable (required for SPARQL queries)
-        let subspace = try await container.resolveDirectory(for: SPARQLFunctionTriple.self)
-        let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
-
-        for descriptor in try SPARQLFunctionTriple.indexDescriptors {
-            let currentState = try await indexLifecycleStore.state(of: descriptor.name)
-            if currentState == .disabled {
-                try await indexLifecycleStore.enable(descriptor.name)
-                try await indexLifecycleStore.makeReadable(descriptor.name)
-            } else if currentState == .writeOnly {
-                try await indexLifecycleStore.makeReadable(descriptor.name)
-            }
-        }
+        try await container.resetTestBaseData()
 
         return container
     }
@@ -132,7 +111,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("Basic IN predicate with SPARQL()")
     func testBasicINPredicate() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Setup: Create users
         var alice = SPARQLFunctionUser(name: "Alice", age: 25)
@@ -173,7 +152,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("SPARQL() with complex WHERE clause")
     func testComplexWhereClause() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Setup: Create users
         var user1 = SPARQLFunctionUser(name: "User1", age: 20)
@@ -216,7 +195,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("Multiple SPARQL() calls in same query")
     func testMultipleSPARQLCalls() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Setup: Create users
         var admin = SPARQLFunctionUser(name: "Admin", age: 30)
@@ -264,7 +243,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("Error: Type not found")
     func testErrorTypeNotFound() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let sql = """
         SELECT * FROM SPARQLFunctionUser
@@ -281,7 +260,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("Error: No graph index")
     func testErrorNoGraphIndex() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // User type has no graph index
         let sql = """
@@ -299,7 +278,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("Error: Multiple variables without explicit selection")
     func testErrorMultipleVariables() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Setup: Create triple
         var user = SPARQLFunctionUser(name: "Test", age: 25)
@@ -325,7 +304,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("Explicit variable selection")
     func testExplicitVariableSelection() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Setup
         var person1 = SPARQLFunctionUser(name: "Person1", age: 25)
@@ -360,7 +339,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("Empty result set from SPARQL()")
     func testEmptyResultSet() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Setup: Create users but no matching triples
         var user = SPARQLFunctionUser(name: "Test", age: 25)
@@ -386,7 +365,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("Performance: Large result set")
     func testPerformanceLargeResultSet() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Setup: Create 100 users and triples
         var users: [SPARQLFunctionUser] = []
@@ -428,7 +407,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("SPARQLFunctionRewriter preserves the dataset")
     func testRewriterPreservesDatasetClauses() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let query = SelectQuery(
             projection: .all,
@@ -470,7 +449,7 @@ struct SPARQLFunctionIntegrationTests {
     @Test("Integration with ORDER BY and LIMIT")
     func testOrderByAndLimit() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Setup
         var user1 = SPARQLFunctionUser(name: "Alice", age: 30)

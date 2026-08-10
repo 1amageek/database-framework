@@ -324,10 +324,10 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV1.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
 
         var article = SQLitePolymorphicMigrationArticleV1(title: "Legacy Needle Article", body: "Body")
         article.id = "sqlite-polymorphic-migration-article"
@@ -337,7 +337,7 @@ struct PolymorphicMigrationSQLiteTests {
         try initialContext.insert(article)
         try initialContext.insert(report)
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
         await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
@@ -345,20 +345,20 @@ struct PolymorphicMigrationSQLiteTests {
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
         await migratedContainer.shutdown()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
-        let verificationContext = verificationContainer.newContext()
+        let verificationContext = verificationContainer.testBaseContext()
         let migratedResults = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV2.self)
             .fullText(SQLitePolymorphicMigrationArticleV2.fields.title)
@@ -407,10 +407,10 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV1.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
 
         for offset in 0..<105 {
             var article = SQLitePolymorphicMigrationArticleV1(
@@ -428,7 +428,7 @@ struct PolymorphicMigrationSQLiteTests {
         try initialContext.insert(report)
 
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
         await initialContainer.shutdown()
 
         let migratedContainer = try await DBContainer.open(
@@ -436,20 +436,20 @@ struct PolymorphicMigrationSQLiteTests {
             migrationPlan: SQLitePolymorphicMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
         await migratedContainer.shutdown()
 
         let verificationContainer = try await DBContainer.open(
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
-        let verificationContext = verificationContainer.newContext()
+        let verificationContext = verificationContainer.testBaseContext()
         let results = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV2.self)
             .fullText(SQLitePolymorphicMigrationArticleV2.fields.title)
@@ -471,10 +471,10 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
 
         var article = SQLitePolymorphicMigrationArticleV2(title: "Removal Needle Article", body: "Body")
         article.id = "sqlite-polymorphic-removal-article"
@@ -484,7 +484,7 @@ struct PolymorphicMigrationSQLiteTests {
         try initialContext.upsert(article)
         try initialContext.upsert(report)
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
         #expect(try await Self.countPolymorphicIndexEntries(
             container: initialContainer,
@@ -497,10 +497,10 @@ struct PolymorphicMigrationSQLiteTests {
             migrationPlan: SQLitePolymorphicRemovalMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV3.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV3.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
         #expect(try await Self.countPolymorphicIndexEntries(
             container: migratedContainer,
@@ -511,7 +511,7 @@ struct PolymorphicMigrationSQLiteTests {
             indexName: "SQLitePolymorphicMigrationDocument_title"
         ) == .disabled)
 
-        let postRemovalContext = migratedContainer.newContext()
+        let postRemovalContext = migratedContainer.testBaseContext()
         var postRemovalArticle = SQLitePolymorphicMigrationArticleV3(
             title: "Removal Needle After",
             body: "Body"
@@ -538,10 +538,10 @@ struct PolymorphicMigrationSQLiteTests {
             for: SQLitePolymorphicMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV2.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
-        let initialContext = initialContainer.newContext()
+        let initialContext = initialContainer.testBaseContext()
 
         var article = SQLitePolymorphicMigrationArticleV2(title: "Rebuild Needle Article", body: "Body")
         article.id = "sqlite-polymorphic-rebuild-article"
@@ -551,7 +551,7 @@ struct PolymorphicMigrationSQLiteTests {
         try initialContext.upsert(article)
         try initialContext.upsert(report)
         try await initialContext.save()
-        try await initialContainer.installSchemaSnapshot(for: Schema.Version(2, 0, 0))
+        try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(2, 0, 0))
 
         try await Self.clearPolymorphicIndexEntries(
             container: initialContainer,
@@ -572,12 +572,12 @@ struct PolymorphicMigrationSQLiteTests {
             migrationPlan: SQLitePolymorphicRebuildMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationArticleV4.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicMigrationReportV4.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.migrateIfNeeded()
+        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
-        let verificationContext = migratedContainer.newContext()
+        let verificationContext = migratedContainer.testBaseContext()
         let rebuiltResults = try await verificationContext
             .findPolymorphic(SQLitePolymorphicMigrationArticleV4.self)
             .fullText(SQLitePolymorphicMigrationArticleV4.fields.title)
@@ -620,6 +620,7 @@ struct PolymorphicMigrationSQLiteTests {
         container: DBContainer,
         indexName: String
     ) async throws -> Int {
+        try await container.withTestBaseOperation {
         let group = try container.polymorphicGroup(
             identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
         )
@@ -636,12 +637,14 @@ struct PolymorphicMigrationSQLiteTests {
                 snapshot: true
             ).count
         }
+        }
     }
 
     private static func clearPolymorphicIndexEntries(
         container: DBContainer,
         indexName: String
     ) async throws {
+        try await container.withTestBaseOperation {
         let group = try container.polymorphicGroup(
             identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
         )
@@ -654,18 +657,21 @@ struct PolymorphicMigrationSQLiteTests {
         try await container.engine.withTransaction { transaction in
             try transaction.clearRange(beginKey: range.begin, endKey: range.end)
         }
+        }
     }
 
     private static func polymorphicIndexState(
         container: DBContainer,
         indexName: String
     ) async throws -> IndexState {
+        try await container.withTestBaseOperation {
         let group = try container.polymorphicGroup(
             identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
         )
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
         let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
         return try await lifecycleStore.state(of: indexName)
+        }
     }
 }
 #endif

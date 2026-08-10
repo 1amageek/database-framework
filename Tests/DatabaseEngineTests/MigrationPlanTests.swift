@@ -63,7 +63,7 @@ struct UserV2Reordered {
 /// - VersionedSchema protocol
 /// - SchemaMigrationPlan protocol
 /// - MigrationStage enum
-/// - DBContainer.migrateIfNeeded()
+/// - DBContainer.testBaseAdmin().migrateIfNeeded()
 @Suite("Migration Plan Tests", .heartbeat)
 struct MigrationPlanTests {
 

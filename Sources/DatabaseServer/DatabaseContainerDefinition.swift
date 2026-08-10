@@ -16,7 +16,7 @@ public struct DatabaseContainerDefinition: Sendable {
     public let metrics: DatabaseMetricsConfiguration
 
     private let openContainer: @Sendable (
-        any StorageEngine
+        DatabaseStorageTopology
     ) async throws -> DBContainer
 
     /// Defines a container backed by a statically compiled schema.
@@ -41,12 +41,12 @@ public struct DatabaseContainerDefinition: Sendable {
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics
-        self.openContainer = { storageEngine in
+        self.openContainer = { storageTopology in
             try await DBContainer.open(
                 for: schema,
                 configuration: DBConfiguration(
                     name: databaseName,
-                    storageEngine: storageEngine,
+                    storageTopology: storageTopology,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
                     indexConfigurations: indexConfigurations,
@@ -83,13 +83,13 @@ public struct DatabaseContainerDefinition: Sendable {
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics
-        self.openContainer = { storageEngine in
+        self.openContainer = { storageTopology in
             try await DBContainer.open(
                 for: schema,
                 migrationPlan: migrationPlan,
                 configuration: DBConfiguration(
                     name: databaseName,
-                    storageEngine: storageEngine,
+                    storageTopology: storageTopology,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
                     indexConfigurations: indexConfigurations,
@@ -124,11 +124,11 @@ public struct DatabaseContainerDefinition: Sendable {
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics
-        self.openContainer = { storageEngine in
+        self.openContainer = { storageTopology in
             try await DBContainer.openRestoringSchema(
                 configuration: DBConfiguration(
                     name: databaseName,
-                    storageEngine: storageEngine,
+                    storageTopology: storageTopology,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
                     indexConfigurations: indexConfigurations,
@@ -149,10 +149,10 @@ public struct DatabaseContainerDefinition: Sendable {
         declaredSchema == nil
     }
 
-    /// Opens the single-use definition with the host-selected storage engine.
+    /// Opens the single-use definition with the host-selected storage topology.
     public func open(
-        storageEngine: any StorageEngine
+        storageTopology: DatabaseStorageTopology
     ) async throws -> DBContainer {
-        try await openContainer(storageEngine)
+        try await openContainer(storageTopology)
     }
 }

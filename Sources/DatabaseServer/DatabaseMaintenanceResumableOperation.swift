@@ -1,9 +1,15 @@
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
 import StorageKit
 
 public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation {
+    private struct DurableSlice: Sendable {
+        let checkpoint: DatabaseMaintenanceJobCheckpoint
+        let completedWorkUnits: UInt64
+    }
+
     public static func job()
         throws(DatabaseWireError)
         -> JobOperation<
@@ -34,13 +40,13 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
 
         switch request.invocation {
         case .runMigrations(let requestedTarget):
+            let executor = try context.operationContext.requireBaseExecutor()
             let targetVersion = requestedTarget
-                ?? context.operationContext.container.schema.version
-            let status = try await context.operationContext.container
-                .migrationStatus(
-                    targetVersion: targetVersion,
-                    transaction: context.databaseTransaction.storageAccess
-                )
+                ?? executor.schema.version
+            let status = try await executor.migrationStatus(
+                targetVersion: targetVersion,
+                transaction: context.transaction.storageAccess
+            )
             let maximumStagesPerSlice = min(
                 context.maximumSliceWorkUnits,
                 request.budget.maximumWorkUnits,
@@ -67,16 +73,15 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             let partitions,
             let batchSize
         ):
+            let executor = try context.operationContext.requireBaseExecutor()
             guard batchSize > 0 else {
                 throw DatabaseMaintenanceRuntimeError.invalidBatchSize(batchSize)
             }
-            let canonicalPartitions = try await DatabaseIndexMaintenanceRuntime(
-                container: context.operationContext.container
-            ).prepareResources(
+            let runtime = executor.makeIndexMaintenanceRuntime()
+            let canonicalPartitions = try runtime.canonicalPartitions(
                 entity: entity,
                 index: index,
-                partitions: partitions,
-                transaction: context.databaseTransaction.storageAccess
+                partitions: partitions
             )
             let effectiveWorkUnits = min(
                 context.maximumSliceWorkUnits,
@@ -93,7 +98,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                     entity: entity,
                     index: index,
                     partitions: canonicalPartitions,
-                    schemaVersion: context.operationContext.container.schema.version,
+                    schemaVersion: context.operationContext.executor.schema.version,
                     maximumWorkUnits: effectiveWorkUnits
                 )
             )
@@ -101,15 +106,17 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 value: .indexRebuild(started: false)
             )
         case .compact:
-            guard let compaction = context.databaseTransaction.storageAccess
-                .compaction else {
+            _ = try context.operationContext.requireBaseExecutor()
+            guard let compaction = context.transaction.storageAccess.compaction
+            else {
                 throw DatabaseMaintenanceRuntimeError.compactionUnavailable
             }
+            let compactionLimits = compaction.limits
             let effectiveWorkUnits = min(
                 context.maximumSliceWorkUnits,
                 request.budget.maximumWorkUnits,
                 runtimeLimits.maximumWorkUnits,
-                compaction.limits.maximumWorkUnitsPerSlice
+                compactionLimits.maximumWorkUnitsPerSlice
             )
             guard effectiveWorkUnits > 0 else {
                 throw DatabaseMaintenanceRuntimeError.invalidInvocation(
@@ -139,12 +146,8 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
     public func commitModel(
         for plan: DatabaseMaintenanceJobPlan
     ) -> DatabaseResumableOperationCommitModel {
-        switch plan.invocation {
-        case .migrations:
-            return .operationCheckpointed
-        case .indexRebuild, .compaction:
-            return .atomicWithJobState
-        }
+        _ = plan
+        return .operationCheckpointed
     }
 
     public func runCheckpointedSlice(
@@ -156,15 +159,51 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
         DatabaseMaintenanceJobState,
         MaintenanceExecuteOperation.Response
     > {
-        guard case let .migrations(
+        switch (plan.invocation, state.value) {
+        case let (
+            .migrations(
             targetVersion,
             totalStageCount,
             maximumStagesPerSlice
-        ) = plan.invocation,
-        case .migrations = state.value else {
-            throw DatabaseJobRuntimeError.commitModelMismatch
+            ),
+            .migrations
+        ):
+            return try await runMigrationSlice(
+                targetVersion: targetVersion,
+                totalStageCount: totalStageCount,
+                maximumStagesPerSlice: maximumStagesPerSlice,
+                maximumWorkUnits: maximumWorkUnits,
+                context: context
+            )
+        case (.indexRebuild, .indexRebuild),
+             (.compaction, .compaction):
+            return try await runDurablyCheckpointedMaintenanceSlice(
+                plan: plan,
+                state: state,
+                maximumWorkUnits: maximumWorkUnits,
+                context: context
+            )
+        case (.migrations, .indexRebuild),
+             (.migrations, .compaction),
+             (.indexRebuild, .migrations),
+             (.indexRebuild, .compaction),
+             (.compaction, .migrations),
+             (.compaction, .indexRebuild):
+            throw DatabaseMaintenanceRuntimeError.invalidContinuation
         }
-        guard context.operationContext.container.schema.version
+    }
+
+    private func runMigrationSlice(
+        targetVersion: Schema.Version,
+        totalStageCount: UInt64,
+        maximumStagesPerSlice: UInt64,
+        maximumWorkUnits: UInt64,
+        context: DatabaseCheckpointedResumableOperationContext
+    ) async throws -> sending DatabaseResumableOperationSlice<
+        DatabaseMaintenanceJobState,
+        MaintenanceExecuteOperation.Response
+    > {
+        guard context.operationContext.executor.schema.version
                 == targetVersion else {
             throw DatabaseMaintenanceRuntimeError.invalidContinuation
         }
@@ -178,7 +217,8 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 "Migration has no executable work budget"
             )
         }
-        let result = try await context.operationContext.container.runMigrations(
+        let executor = try context.operationContext.requireBaseExecutor()
+        let result = try await executor.runMigrations(
             targetVersion: targetVersion,
             maximumStageCount: effectiveWorkUnits
         )
@@ -188,8 +228,9 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 maximum: effectiveWorkUnits
             )
         }
-        let status = try await context.operationContext.container
-            .migrationStatus(targetVersion: targetVersion)
+        let status = try await executor.migrationStatus(
+            targetVersion: targetVersion
+        )
         let remaining = UInt64(status.pendingMigrationIdentifiers.count)
         guard remaining <= totalStageCount else {
             throw DatabaseMaintenanceRuntimeError.invalidContinuation
@@ -212,19 +253,115 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
         )
     }
 
-    public func runSlice(
+    private func runDurablyCheckpointedMaintenanceSlice(
         plan: DatabaseMaintenanceJobPlan,
         state: DatabaseMaintenanceJobState,
         maximumWorkUnits: UInt64,
-        context: DatabaseResumableOperationContext
+        context: DatabaseCheckpointedResumableOperationContext
     ) async throws -> sending DatabaseResumableOperationSlice<
         DatabaseMaintenanceJobState,
         MaintenanceExecuteOperation.Response
     > {
-        switch (plan.invocation, state.value) {
-        case (.migrations, .migrations):
-            throw DatabaseJobRuntimeError.commitModelMismatch
+        let executor = try context.operationContext.requireBaseExecutor()
+        let durable = try await executor.withActiveDataTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            let stored = try await executor.maintenanceCheckpoint(
+                for: context.jobID,
+                transaction: transaction.storageAccess
+            )
+            let checkpoint: DatabaseMaintenanceJobCheckpoint?
+            if let stored {
+                do {
+                    checkpoint = try PersistentJobPayloadStorage.decode(
+                        DatabaseMaintenanceJobCheckpoint.self,
+                        from: stored,
+                        limits: context.operationContext.wireLimits
+                    )
+                } catch {
+                    throw DatabaseJobRuntimeError.corruptedState
+                }
+            } else {
+                checkpoint = nil
+            }
 
+            let controlWorkUnits = context.completedWorkUnitsBeforeSlice
+            if let checkpoint {
+                guard checkpoint.cumulativeWorkUnits >= controlWorkUnits else {
+                    throw DatabaseJobRuntimeError.corruptedState
+                }
+                let replayedWorkUnits = checkpoint.cumulativeWorkUnits
+                    - controlWorkUnits
+                guard replayedWorkUnits <= maximumWorkUnits else {
+                    throw DatabaseJobRuntimeError.corruptedState
+                }
+                if replayedWorkUnits > 0 || checkpoint.isComplete {
+                    return DurableSlice(
+                        checkpoint: checkpoint,
+                        completedWorkUnits: replayedWorkUnits
+                    )
+                }
+                guard checkpoint.state == state else {
+                    throw DatabaseJobRuntimeError.corruptedState
+                }
+            } else if controlWorkUnits != 0 {
+                throw DatabaseJobRuntimeError.corruptedState
+            }
+
+            let currentState = checkpoint?.state ?? state
+            let currentWorkUnits = checkpoint?.cumulativeWorkUnits
+                ?? controlWorkUnits
+            let next = try await executeMaintenanceSlice(
+                plan: plan,
+                state: currentState,
+                maximumWorkUnits: maximumWorkUnits,
+                jobID: context.jobID,
+                cumulativeWorkUnitsBeforeSlice: currentWorkUnits,
+                transaction: transaction.storageAccess,
+                operationContext: context.operationContext
+            )
+            let encoded = try PersistentJobPayloadStorage.encode(
+                next.checkpoint,
+                limits: context.operationContext.wireLimits
+            )
+            try executor.storeMaintenanceCheckpoint(
+                encoded,
+                for: context.jobID,
+                transaction: transaction.storageAccess
+            )
+            return next
+        }
+
+        if durable.checkpoint.isComplete {
+            return .complete(
+                completedWorkUnits: durable.completedWorkUnits,
+                result: .execution(
+                    MaintenanceExecuteOperation.ExecutionResult(
+                        kind: resultKind(for: plan),
+                        completedWorkUnits:
+                            durable.checkpoint.cumulativeWorkUnits,
+                        isComplete: true
+                    )
+                )
+            )
+        }
+        return .incomplete(
+            completedWorkUnits: durable.completedWorkUnits,
+            state: durable.checkpoint.state
+        )
+    }
+
+    private func executeMaintenanceSlice(
+        plan: DatabaseMaintenanceJobPlan,
+        state: DatabaseMaintenanceJobState,
+        maximumWorkUnits: UInt64,
+        jobID: DatabaseTypes.UUID,
+        cumulativeWorkUnitsBeforeSlice: UInt64,
+        transaction: any TransactionAccess,
+        operationContext: DatabaseOperationContext
+    ) async throws -> DurableSlice {
+        switch (plan.invocation, state.value) {
         case let (
             .indexRebuild(
                 entity,
@@ -235,8 +372,8 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             ),
             .indexRebuild(started)
         ):
-            guard context.operationContext.container.schema.version
-                    == schemaVersion else {
+            let executor = try operationContext.requireBaseExecutor()
+            guard operationContext.executor.schema.version == schemaVersion else {
                 throw DatabaseIndexRebuildError.corruptedRebuildState
             }
             let effectiveWorkUnits = min(
@@ -250,52 +387,43 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                     effectiveWorkUnits
                 )
             }
-            let slice = try await DatabaseIndexMaintenanceRuntime(
-                container: context.operationContext.container
-            ).runRebuildSlice(
-                entity: entity,
-                index: index,
-                partitions: partitions,
-                generation: context.jobID,
-                mode: started ? .resume : .start,
-                maximumWorkUnits: effectiveWorkUnits,
-                transaction: context.databaseTransaction.storageAccess
-            )
+            let slice = try await executor.makeIndexMaintenanceRuntime()
+                .runRebuildSlice(
+                    entity: entity,
+                    index: index,
+                    partitions: partitions,
+                    generation: jobID,
+                    mode: started ? .resume : .start,
+                    maximumWorkUnits: effectiveWorkUnits,
+                    transaction: transaction
+                )
             guard slice.completedWorkUnits <= effectiveWorkUnits else {
                 throw DatabaseJobRuntimeError.sliceExceededBudget(
                     actual: slice.completedWorkUnits,
                     maximum: effectiveWorkUnits
                 )
             }
-            let cumulativeWorkUnits = try cumulativeWorkUnits(
-                before: context.completedWorkUnitsBeforeSlice,
+            let cumulative = try cumulativeWorkUnits(
+                before: cumulativeWorkUnitsBeforeSlice,
                 completed: slice.completedWorkUnits
             )
-            if slice.isComplete {
-                return .complete(
-                    completedWorkUnits: slice.completedWorkUnits,
-                    result: .execution(
-                        MaintenanceExecuteOperation.ExecutionResult(
-                            kind: .indexRebuild,
-                            completedWorkUnits: cumulativeWorkUnits,
-                            isComplete: true
-                        )
-                    )
-                )
-            }
-            return .incomplete(
-                completedWorkUnits: slice.completedWorkUnits,
+            let checkpoint = DatabaseMaintenanceJobCheckpoint(
                 state: DatabaseMaintenanceJobState(
                     value: .indexRebuild(started: true)
-                )
+                ),
+                cumulativeWorkUnits: cumulative,
+                isComplete: slice.isComplete
+            )
+            return DurableSlice(
+                checkpoint: checkpoint,
+                completedWorkUnits: slice.completedWorkUnits
             )
 
         case let (
             .compaction(planWorkUnits),
             .compaction(backendContinuation)
         ):
-            guard let compaction = context.databaseTransaction.storageAccess
-                .compaction else {
+            guard let compaction = transaction.compaction else {
                 throw DatabaseMaintenanceRuntimeError.compactionUnavailable
             }
             let effectiveWorkUnits = min(
@@ -312,43 +440,137 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             let result = try await compaction.stageSlice(
                 maximumWorkUnits: effectiveWorkUnits,
                 continuation: backendContinuation.map {
-                    StorageCompactionContinuation(
-                        bytes: $0
-                    )
+                    StorageCompactionContinuation(bytes: $0)
                 }
             )
             try validateCompactionResult(
                 result,
                 maximumWorkUnits: effectiveWorkUnits
             )
-            let cumulativeWorkUnits = try cumulativeWorkUnits(
-                before: context.completedWorkUnitsBeforeSlice,
+            let cumulative = try cumulativeWorkUnits(
+                before: cumulativeWorkUnitsBeforeSlice,
                 completed: result.workUnitsConsumed
             )
-            if result.isComplete {
-                return .complete(
-                    completedWorkUnits: result.workUnitsConsumed,
-                    result: .execution(
-                        MaintenanceExecuteOperation.ExecutionResult(
-                            kind: .compaction,
-                            completedWorkUnits: cumulativeWorkUnits,
-                            isComplete: true
-                        )
-                    )
-                )
-            }
-            guard let backend = result.continuation else {
-                throw DatabaseMaintenanceRuntimeError.invalidContinuation
-            }
-            return .incomplete(
-                completedWorkUnits: result.workUnitsConsumed,
+            let checkpoint = DatabaseMaintenanceJobCheckpoint(
                 state: DatabaseMaintenanceJobState(
                     value: .compaction(
-                        continuation: backend.bytes
+                        continuation: result.continuation?.bytes
                     )
-                )
+                ),
+                cumulativeWorkUnits: cumulative,
+                isComplete: result.isComplete
+            )
+            return DurableSlice(
+                checkpoint: checkpoint,
+                completedWorkUnits: result.workUnitsConsumed
             )
 
+        case (.migrations, .migrations):
+            throw DatabaseJobRuntimeError.commitModelMismatch
+        case (.migrations, .indexRebuild),
+             (.migrations, .compaction),
+             (.indexRebuild, .migrations),
+             (.indexRebuild, .compaction),
+             (.compaction, .migrations),
+             (.compaction, .indexRebuild):
+            throw DatabaseMaintenanceRuntimeError.invalidContinuation
+        }
+    }
+
+    private func resultKind(
+        for plan: DatabaseMaintenanceJobPlan
+    ) -> MaintenanceExecuteOperation.ExecutionKind {
+        switch plan.invocation {
+        case .migrations:
+            return .migrations
+        case .indexRebuild:
+            return .indexRebuild
+        case .compaction:
+            return .compaction
+        }
+    }
+
+    public func runSlice(
+        plan: DatabaseMaintenanceJobPlan,
+        state: DatabaseMaintenanceJobState,
+        maximumWorkUnits: UInt64,
+        context: DatabaseResumableOperationContext
+    ) async throws -> sending DatabaseResumableOperationSlice<
+        DatabaseMaintenanceJobState,
+        MaintenanceExecuteOperation.Response
+    > {
+        _ = plan
+        _ = state
+        _ = maximumWorkUnits
+        _ = context
+        throw DatabaseJobRuntimeError.commitModelMismatch
+    }
+
+    public func prepareUnsuccessfulOutcomeCommit(
+        plan: DatabaseMaintenanceJobPlan,
+        state: DatabaseMaintenanceJobState,
+        outcome: DatabaseJobUnsuccessfulOutcome,
+        context: DatabaseCheckpointedResumableOperationContext
+    ) async throws {
+        switch (plan.invocation, state.value) {
+        case (.migrations, .migrations),
+             (.compaction, .compaction):
+            return
+        case let (
+            .indexRebuild(entity, index, partitions, _, _),
+            .indexRebuild(started)
+        ):
+            let executor = try context.operationContext.requireBaseExecutor()
+            let detail: String
+            switch outcome {
+            case .failed(let error):
+                detail = "\(error.code): \(error.message)"
+            case .cancelled:
+                detail = "cancelled"
+            }
+            try await executor.withActiveDataTransaction(
+                requiredAccess: .administer,
+                configuration: .batch
+            ) { transaction in
+                let stored = try await executor.maintenanceCheckpoint(
+                    for: context.jobID,
+                    transaction: transaction.storageAccess
+                )
+                let checkpoint: DatabaseMaintenanceJobCheckpoint?
+                if let stored {
+                    do {
+                        checkpoint = try PersistentJobPayloadStorage.decode(
+                            DatabaseMaintenanceJobCheckpoint.self,
+                            from: stored,
+                            limits: context.operationContext.wireLimits
+                        )
+                    } catch {
+                        throw DatabaseJobRuntimeError.corruptedState
+                    }
+                } else {
+                    checkpoint = nil
+                }
+                let rebuildStarted: Bool
+                if let checkpoint {
+                    guard case .indexRebuild(let checkpointStarted) =
+                            checkpoint.state.value,
+                          !checkpoint.isComplete else {
+                        throw DatabaseJobRuntimeError.corruptedState
+                    }
+                    rebuildStarted = checkpointStarted
+                } else {
+                    rebuildStarted = started
+                }
+                guard rebuildStarted else { return }
+                try await executor.makeIndexMaintenanceRuntime().markFailed(
+                    entity: entity,
+                    index: index,
+                    partitions: partitions,
+                    generation: context.jobID,
+                    detail: detail,
+                    transaction: transaction.storageAccess
+                )
+            }
         case (.migrations, .indexRebuild),
              (.migrations, .compaction),
              (.indexRebuild, .migrations),
@@ -368,28 +590,13 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
         switch (plan.invocation, state.value) {
         case (.migrations, .migrations):
             return
-        case let (
-            .indexRebuild(entity, index, partitions, _, _),
-            .indexRebuild(started)
+        case (
+            .indexRebuild(_, _, _, _, _),
+            .indexRebuild(started: _)
         ):
-            guard started else { return }
-            let detail: String
-            switch outcome {
-            case .failed(let error):
-                detail = "\(error.code): \(error.message)"
-            case .cancelled:
-                detail = "cancelled"
-            }
-            try await DatabaseIndexMaintenanceRuntime(
-                container: context.operationContext.container
-            ).markFailed(
-                entity: entity,
-                index: index,
-                partitions: partitions,
-                generation: context.jobID,
-                detail: detail,
-                transaction: context.databaseTransaction.storageAccess
-            )
+            _ = outcome
+            _ = context
+            return
         case (.compaction, .compaction):
             return
         case (.migrations, .indexRebuild),

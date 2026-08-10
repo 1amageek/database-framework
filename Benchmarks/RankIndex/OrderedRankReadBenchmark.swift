@@ -49,11 +49,11 @@ struct OrderedRankReadBenchmark {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(RankBenchmarkPlayer.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         try await container.ensureIndexesReady()
 
-        let context = DatabaseContext(container: container)
+        let context = container.testBaseContext()
         for index in 0..<playerCount {
             try context.insert(
                 RankBenchmarkPlayer(

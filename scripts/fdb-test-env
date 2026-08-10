@@ -203,6 +203,7 @@ inject_cluster_file_into_xctestrun() {
   local swiftc
   local toolchain_root
   local testing_library_path
+  local fdb_library_path=""
   if [[ -n "${TOOLCHAINS:-}" ]]; then
     swiftc="$(xcrun --toolchain "$TOOLCHAINS" --find swiftc)"
   else
@@ -213,6 +214,20 @@ inject_cluster_file_into_xctestrun() {
 
   if [[ ! -f "$testing_library_path/libTesting.dylib" ]]; then
     testing_library_path=""
+  fi
+  local candidate
+  for candidate in \
+      "${FDB_CLIENT_LIBRARY_DIRECTORY:-}" \
+      /usr/local/lib \
+      /opt/homebrew/lib; do
+    if [[ -n "$candidate" && -f "$candidate/libfdb_c.dylib" ]]; then
+      fdb_library_path="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$fdb_library_path" ]]; then
+    echo "error: libfdb_c.dylib was not found for the FDB test process" >&2
+    return 1
   fi
 
   while plutil -extract "TestConfigurations.$configuration_index.Name" raw \
@@ -241,6 +256,10 @@ inject_cluster_file_into_xctestrun() {
           "TestConfigurations.$configuration_index.TestTargets.$target_index.TestingEnvironmentVariables" \
           "$testing_library_path"
       fi
+      prepend_testing_library_path \
+        "$xctestrun" \
+        "TestConfigurations.$configuration_index.TestTargets.$target_index.TestingEnvironmentVariables" \
+        "$fdb_library_path"
 
       target_count=$((target_count + 1))
       target_index=$((target_index + 1))
@@ -275,6 +294,10 @@ inject_cluster_file_into_xctestrun() {
         "$top_level_key.TestingEnvironmentVariables" \
         "$testing_library_path"
     fi
+    prepend_testing_library_path \
+      "$xctestrun" \
+      "$top_level_key.TestingEnvironmentVariables" \
+      "$fdb_library_path"
     target_count=$((target_count + 1))
   done < <(
     plutil -p "$xctestrun" \

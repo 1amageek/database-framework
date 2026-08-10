@@ -60,7 +60,7 @@ struct ContextMutationIntentTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DelInsUser.self), try DatabaseFrameworkRuntime.entity(DelInsArticle.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
@@ -71,22 +71,16 @@ struct ContextMutationIntentTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DelInsUser.self), try DatabaseFrameworkRuntime.entity(DelInsArticle.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
     private func cleanupUsers(_ container: DBContainer) async throws {
-        if try await container.engine.namespaceExists(path: ["context_delete_insert_same_id", "users"]) {
-            try await container.engine.removeNamespace(path: ["context_delete_insert_same_id", "users"])
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
     }
 
     private func cleanupArticles(_ container: DBContainer) async throws {
-        if try await container.engine.namespaceExists(path: ["context_delete_insert_same_id", "articles"]) {
-            try await container.engine.removeNamespace(path: ["context_delete_insert_same_id", "articles"])
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
     }
 
     private func uniq(_ prefix: String) -> String {
@@ -99,7 +93,7 @@ struct ContextMutationIntentTests {
     func scalarUpdateMaintainsIndex() async throws {
         let container = try await makeUserContainer()
         try await cleanupUsers(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let userId = uniq("U")
         let oldEmail = uniq("old") + "@example.com"
@@ -135,7 +129,7 @@ struct ContextMutationIntentTests {
     func strictInsertThenDeleteRetractsPendingWrite() async throws {
         let container = try await makeUserContainer()
         try await cleanupUsers(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let userId = uniq("U")
         let oldEmail = uniq("old") + "@example.com"
@@ -169,7 +163,7 @@ struct ContextMutationIntentTests {
     func scalarMultiFieldUpdate() async throws {
         let container = try await makeUserContainer()
         try await cleanupUsers(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let userId = uniq("U")
         let oldEmail = uniq("oldE") + "@example.com"
@@ -207,7 +201,7 @@ struct ContextMutationIntentTests {
     func scalarDeleteOneInsertAnotherDifferentIDs() async throws {
         let container = try await makeUserContainer()
         try await cleanupUsers(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let idA = uniq("UA")
         let idB = uniq("UB")
@@ -239,7 +233,7 @@ struct ContextMutationIntentTests {
     func scalarDeleteThenInsertAcrossTwoSaves() async throws {
         let container = try await makeUserContainer()
         try await cleanupUsers(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let userId = uniq("U")
         let oldEmail = uniq("old") + "@example.com"
@@ -274,7 +268,7 @@ struct ContextMutationIntentTests {
     func fullTextUpdateMaintainsIndex() async throws {
         let container = try await makeArticleContainer()
         try await cleanupArticles(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let articleId = uniq("A")
         // Single alphabetic tokens only — the `.simple` tokenizer splits on non-word

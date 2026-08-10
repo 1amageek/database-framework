@@ -4,6 +4,7 @@ import DatabaseTypes
 public enum DatabaseJobRuntimeError: Error, CustomStringConvertible, Equatable {
     case invalidConfiguration(String)
     case invalidRetryPolicy
+    case invalidTarget
     case requestPayloadTooLarge(actual: Int, maximum: Int)
     case specificationTooLarge(actual: Int, maximum: Int)
     case planTooLarge(actual: Int, maximum: Int)
@@ -25,6 +26,7 @@ public enum DatabaseJobRuntimeError: Error, CustomStringConvertible, Equatable {
     case stateRevisionOverflow
     case workUnitOverflow
     case sliceExceededBudget(actual: UInt64, maximum: UInt64)
+    case sliceMadeNoProgress
     case responseTooLarge(actual: Int, maximum: Int)
     case duplicateJobIdentifier(DatabaseTypes.UUID)
     case commitModelMismatch
@@ -35,6 +37,8 @@ public enum DatabaseJobRuntimeError: Error, CustomStringConvertible, Equatable {
             return "Invalid job runtime configuration: \(detail)"
         case .invalidRetryPolicy:
             return "Invalid job retry policy"
+        case .invalidTarget:
+            return "Job target does not match the request target"
         case .requestPayloadTooLarge(let actual, let maximum):
             return "Job request payload is too large: \(actual) > \(maximum)"
         case .specificationTooLarge(let actual, let maximum):
@@ -71,6 +75,8 @@ public enum DatabaseJobRuntimeError: Error, CustomStringConvertible, Equatable {
             return "Persistent job work unit counter overflowed"
         case .sliceExceededBudget(let actual, let maximum):
             return "Job slice exceeded its work budget: \(actual) > \(maximum)"
+        case .sliceMadeNoProgress:
+            return "Job slice cannot execute with a zero work budget"
         case .responseTooLarge(let actual, let maximum):
             return "Job response is too large: \(actual) > \(maximum)"
         case .duplicateJobIdentifier(let jobID):

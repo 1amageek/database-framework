@@ -6,12 +6,19 @@ import StorageKit
 /// Persistent authoritative RDF graph store backed by six canonical quad
 /// indexes and an explicit empty-named-graph catalog.
 public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
-    /// Database-wide v1 RDF graph-store namespace. This tuple prefix is part
-    /// of the physical database format and therefore does not require an
-    /// asynchronous directory lookup inside a caller-owned transaction.
-    public static let defaultRootSubspace = Subspace(
-        prefix: Tuple(["_database-framework", "rdf-graph-store", Int64(1)]).pack()
-    )
+    /// Returns the authoritative RDF root owned by one Base.
+    ///
+    /// Production database execution must use this root instead of the legacy
+    /// database-wide default. Keeping the transformation here makes the
+    /// physical layout identical for reads and mutations without a directory
+    /// lookup on the hot path.
+    public static func rootSubspace(forBaseRoot baseRoot: Subspace) -> Subspace {
+        baseRoot
+            .subspace("data")
+            .subspace("_database-framework")
+            .subspace("rdf-graph-store")
+            .subspace(Int64(1))
+    }
 
     private enum ScanControl: Error {
         case logicalLimitReached
@@ -37,10 +44,6 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     private let catalogCodec: RDFGraphCatalogCodec
 
     public let datasetSource: RDFDatasetSource
-
-    public init() {
-        self.init(rootSubspace: Self.defaultRootSubspace)
-    }
 
     public init(rootSubspace: Subspace) {
         let quadSubspace = rootSubspace.subspace(Int64(1))

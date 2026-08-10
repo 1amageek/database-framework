@@ -9,6 +9,7 @@ public struct DatabaseServerServiceContext: Sendable {
     public let wireLimits: DatabaseWireLimits
     public let clock: AnyDatabaseWallClock
     public let hostServices: DatabaseServerHostServices
+    public let schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory?
     #if DATABASE_SERVER_GRAPH_INDEXES
     public let graphOperationLimits: GraphOperationLimits
     #endif
@@ -20,6 +21,7 @@ public struct DatabaseServerServiceContext: Sendable {
         runtimeLimits: DatabaseRuntimeLimits,
         wireLimits: DatabaseWireLimits,
         clock: AnyDatabaseWallClock,
+        schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory? = nil,
         hostServices: DatabaseServerHostServices = .none
     ) {
         self.container = container
@@ -28,6 +30,7 @@ public struct DatabaseServerServiceContext: Sendable {
         self.runtimeLimits = runtimeLimits
         self.wireLimits = wireLimits
         self.clock = clock
+        self.schemaRuntimeFactory = schemaRuntimeFactory
         self.hostServices = hostServices
         #if DATABASE_SERVER_GRAPH_INDEXES
         self.graphOperationLimits = .default
@@ -43,6 +46,7 @@ public struct DatabaseServerServiceContext: Sendable {
         wireLimits: DatabaseWireLimits,
         clock: AnyDatabaseWallClock,
         graphOperationLimits: GraphOperationLimits,
+        schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory? = nil,
         hostServices: DatabaseServerHostServices = .none
     ) {
         self.container = container
@@ -51,6 +55,7 @@ public struct DatabaseServerServiceContext: Sendable {
         self.runtimeLimits = runtimeLimits
         self.wireLimits = wireLimits
         self.clock = clock
+        self.schemaRuntimeFactory = schemaRuntimeFactory
         self.graphOperationLimits = graphOperationLimits
         self.hostServices = hostServices
     }
@@ -68,6 +73,7 @@ public struct DatabaseServerServiceContext: Sendable {
             wireLimits: wireLimits,
             clock: clock,
             graphOperationLimits: graphOperationLimits,
+            schemaRuntimeFactory: schemaRuntimeFactory,
             hostServices: hostServices
         )
         #else
@@ -78,6 +84,7 @@ public struct DatabaseServerServiceContext: Sendable {
             runtimeLimits: runtimeLimits,
             wireLimits: wireLimits,
             clock: clock,
+            schemaRuntimeFactory: schemaRuntimeFactory,
             hostServices: hostServices
         )
         #endif

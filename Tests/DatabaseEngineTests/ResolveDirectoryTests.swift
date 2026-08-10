@@ -67,7 +67,7 @@ struct ResolveDirectoryTests {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]),
-            security: .disabled
+            security: .testingDisabled
             )
     }
 
@@ -87,7 +87,7 @@ struct ResolveDirectoryTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            let subspace = try await container.resolveDirectory(for: DirectoryUser.self)
+            let subspace = try await container.testBaseDirectory(for: DirectoryUser.self)
 
             // Subspace should have a non-empty prefix
             #expect(subspace.prefix.count > 0)
@@ -101,8 +101,8 @@ struct ResolveDirectoryTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            let subspace1 = try await container.resolveDirectory(for: DirectoryUser.self)
-            let subspace2 = try await container.resolveDirectory(for: DirectoryUser.self)
+            let subspace1 = try await container.testBaseDirectory(for: DirectoryUser.self)
+            let subspace2 = try await container.testBaseDirectory(for: DirectoryUser.self)
 
             // Both calls should return the same subspace (cached)
             #expect(subspace1.prefix == subspace2.prefix)
@@ -116,8 +116,8 @@ struct ResolveDirectoryTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            let userSubspace = try await container.resolveDirectory(for: DirectoryUser.self)
-            let productSubspace = try await container.resolveDirectory(for: DirectoryProduct.self)
+            let userSubspace = try await container.testBaseDirectory(for: DirectoryUser.self)
+            let productSubspace = try await container.testBaseDirectory(for: DirectoryProduct.self)
 
             // Different types should have different subspaces
             #expect(userSubspace.prefix != productSubspace.prefix)
@@ -131,7 +131,7 @@ struct ResolveDirectoryTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            let subspace = try await container.resolveDirectory(for: NestedDirectoryItem.self)
+            let subspace = try await container.testBaseDirectory(for: NestedDirectoryItem.self)
 
             // Should resolve deeply nested path successfully
             #expect(subspace.prefix.count > 0)
@@ -147,7 +147,7 @@ struct ResolveDirectoryTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            let subspace = try await container.resolveDirectory(
+            let subspace = try await container.testBaseDirectory(
                 for: DirectoryUser.schemaEntity
             )
 
@@ -162,9 +162,9 @@ struct ResolveDirectoryTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            let genericSubspace = try await container.resolveDirectory(for: DirectoryUser.self)
+            let genericSubspace = try await container.testBaseDirectory(for: DirectoryUser.self)
 
-            let schemaSubspace = try await container.resolveDirectory(
+            let schemaSubspace = try await container.testBaseDirectory(
                 for: DirectoryUser.schemaEntity
             )
 
@@ -182,10 +182,10 @@ struct ResolveDirectoryTests {
             try await cleanup(container: container)
 
             // First call resolves directory
-            let subspace1 = try await container.resolveDirectory(for: DirectoryUser.self)
+            let subspace1 = try await container.testBaseDirectory(for: DirectoryUser.self)
 
             // Second call should hit cache and return same result
-            let subspace2 = try await container.resolveDirectory(for: DirectoryUser.self)
+            let subspace2 = try await container.testBaseDirectory(for: DirectoryUser.self)
 
             // Verify same subspace
             #expect(subspace1.prefix == subspace2.prefix)
@@ -201,7 +201,7 @@ struct ResolveDirectoryTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            let subspace = try await container.resolveDirectory(for: DirectoryUser.self)
+            let subspace = try await container.testBaseDirectory(for: DirectoryUser.self)
 
             // Write test data
             let testKey = subspace.pack(Tuple("test", "key"))
@@ -240,11 +240,11 @@ struct ResolveDirectoryTests {
 
             let schema = try Schema(entities: [try DirectoryUser.schemaEntity], version: Schema.Version(1, 0, 0))
 
-            let container1 = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]), security: .disabled)
-            let container2 = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]), security: .disabled)
+            let container1 = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]), security: .testingDisabled)
+            let container2 = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryUser.self), try DatabaseFrameworkRuntime.entity(DirectoryProduct.self), try DatabaseFrameworkRuntime.entity(NestedDirectoryItem.self)]), security: .testingDisabled)
 
-            let subspace1 = try await container1.resolveDirectory(for: DirectoryUser.self)
-            let subspace2 = try await container2.resolveDirectory(for: DirectoryUser.self)
+            let subspace1 = try await container1.testBaseDirectory(for: DirectoryUser.self)
+            let subspace2 = try await container2.testBaseDirectory(for: DirectoryUser.self)
 
             // Same type should resolve to same directory across containers
             #expect(subspace1.prefix == subspace2.prefix)
@@ -266,10 +266,10 @@ struct ResolveDirectoryTests {
             // Clean up at START of test
             try await cleanup(container: container)
 
-            let expectedSubspace = try await container.resolveDirectory(
+            let expectedSubspace = try await container.testBaseDirectory(
                 for: DirectoryUser.self
             )
-            let store = try await container.store(for: DirectoryUser.self)
+            let store = try await container.testBaseStore(for: DirectoryUser.self)
 
             #expect(store.subspace.prefix == expectedSubspace.prefix)
         }

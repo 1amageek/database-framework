@@ -25,7 +25,7 @@ For example, a consuming package selects a graph composition with:
 ```swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0731.3",
+    from: "26.0809.2",
     traits: ["GraphIndexes"]
 )
 ```
@@ -43,10 +43,12 @@ Backend facade availability is both trait- and platform-dependent:
 | SQLite | `SQLite` | macOS, iOS, Linux |
 | PostgreSQL | `PostgreSQL` | macOS, iOS, Linux |
 
-Every facade ultimately creates an engine and passes it to the
-backend-neutral `DBConfiguration(storageEngine:)` contract. The resulting
-container owns that engine. Opening failure, `DBContainer.shutdown()`, and
-deinitialization share one exactly-once shutdown path.
+Every facade ultimately creates an engine, wraps it in a validated one-domain
+`DatabaseStorageTopology`, and passes that topology to the backend-neutral
+`DBConfiguration(storageTopology:)` contract. A multi-domain host constructs
+the topology directly. The resulting container owns every engine. Opening
+failure, `DBContainer.shutdown()`, and deinitialization share one exactly-once
+shutdown path.
 
 ## SQL Query Execution
 

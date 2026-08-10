@@ -34,14 +34,14 @@ struct RoundTripDemoTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DemoItem.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
     @Test("Create -> Read -> Update -> Delete round-trip")
     func roundTrip() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let itemId = "demo-\(UUID().uuidString.prefix(8))"
 

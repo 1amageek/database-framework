@@ -342,7 +342,11 @@ struct PropertyGraphDefinitionCatalogTests {
     func rdfGraphNamespaceIsIndependent() async throws {
         let engine = InMemoryEngine()
         let catalog = CanonicalPropertyGraphDefinitionCatalog()
-        let rdfStore = CanonicalRDFGraphStore()
+        let rdfStore = CanonicalRDFGraphStore(
+            rootSubspace: Subspace(
+                prefix: Tuple(["test", "rdf-graph-store"]).pack()
+            )
+        )
         let sharedName = "https://example.com/graphs/calendar"
         let definition = makeDefinition(named: sharedName)
         let rdfGraph = try RDFGraphName(iri: sharedName)

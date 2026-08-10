@@ -15,35 +15,39 @@ struct DatabasePartitionCatalogTests {
 
         var firstPath = DirectoryPath<CatalogPartitionedEntity>()
         firstPath.set(CatalogPartitionedEntity.fields.tenantID, to: "tenant-a")
-        _ = try await firstContainer.resolveDirectory(
+        _ = try await firstContainer.testBaseDirectory(
             for: CatalogPartitionedEntity.self,
             path: firstPath
         )
-        _ = try await firstContainer.resolveDirectory(
+        _ = try await firstContainer.testBaseDirectory(
             for: CatalogPartitionedEntity.self,
             path: firstPath
         )
 
         var secondPath = DirectoryPath<CatalogPartitionedEntity>()
         secondPath.set(CatalogPartitionedEntity.fields.tenantID, to: "tenant-b")
-        _ = try await firstContainer.resolveDirectory(
+        _ = try await firstContainer.testBaseDirectory(
             for: CatalogPartitionedEntity.self,
             path: secondPath
         )
 
-        let firstPage = try await firstContainer.partitionCatalogPage(
-            entity: CatalogPartitionedEntity.persistableType,
-            limit: 1
-        )
+        let firstPage = try await firstContainer.withTestBaseOperation {
+            try await firstContainer.partitionCatalogPage(
+                entity: CatalogPartitionedEntity.persistableType,
+                limit: 1
+            )
+        }
         #expect(firstPage.entries.count == 1)
         let continuation = try #require(firstPage.continuation)
 
         let recreatedContainer = try await makeContainer(engine: engine)
-        let secondPage = try await recreatedContainer.partitionCatalogPage(
-            entity: CatalogPartitionedEntity.persistableType,
-            continuation: continuation,
-            limit: 1
-        )
+        let secondPage = try await recreatedContainer.withTestBaseOperation {
+            try await recreatedContainer.partitionCatalogPage(
+                entity: CatalogPartitionedEntity.persistableType,
+                continuation: continuation,
+                limit: 1
+            )
+        }
         #expect(secondPage.entries.count == 1)
         #expect(secondPage.continuation == nil)
 
@@ -87,20 +91,24 @@ struct DatabasePartitionCatalogTests {
         for tenant in ["tenant-a", "tenant-b"] {
             var path = DirectoryPath<CatalogPartitionedEntity>()
             path.set(CatalogPartitionedEntity.fields.tenantID, to: tenant)
-            _ = try await container.resolveDirectory(
+            _ = try await container.testBaseDirectory(
                 for: CatalogPartitionedEntity.self,
                 path: path
             )
         }
-        let page = try await container.partitionCatalogPage(limit: 1)
+        let page = try await container.withTestBaseOperation {
+            try await container.partitionCatalogPage(limit: 1)
+        }
         let continuation = try #require(page.continuation)
 
         await #expect(throws: DatabasePartitionCatalogError.self) {
-            try await container.partitionCatalogPage(
-                entity: CatalogPartitionedEntity.persistableType,
-                continuation: continuation,
-                limit: 1
-            )
+            try await container.withTestBaseOperation {
+                try await container.partitionCatalogPage(
+                    entity: CatalogPartitionedEntity.persistableType,
+                    continuation: continuation,
+                    limit: 1
+                )
+            }
         }
     }
 
@@ -114,7 +122,7 @@ struct DatabasePartitionCatalogTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 }

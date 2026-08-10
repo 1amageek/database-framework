@@ -83,9 +83,9 @@ struct CanonicalAggregationReducerTests {
             for: schema,
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         try context.insert(EmptyGlobalAggregationEntity(value: 4))
         try await context.save()
 
@@ -1035,9 +1035,9 @@ struct CanonicalAggregationReducerTests {
             for: schema,
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
-        return container.newContext()
+        return container.testBaseContext()
     }
 
     private func makeGlobalSketchQueryContext() async throws -> DatabaseContext {
@@ -1050,9 +1050,9 @@ struct CanonicalAggregationReducerTests {
             for: schema,
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
-        return container.newContext()
+        return container.testBaseContext()
     }
 
     private func assertCanonicalEmptyGlobalResult(

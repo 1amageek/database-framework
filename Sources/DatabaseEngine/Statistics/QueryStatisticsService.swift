@@ -27,7 +27,7 @@ import Synchronization
 ///
 /// **Thread Safety**:
 /// Uses `final class` + `Mutex` pattern per CLAUDE.md guidelines.
-public final class QueryStatisticsService: StatisticsProvider, Sendable {
+package final class QueryStatisticsService: StatisticsProvider, Sendable {
 
     private struct IndexCardinality: Sendable {
         let entryCount: Int64

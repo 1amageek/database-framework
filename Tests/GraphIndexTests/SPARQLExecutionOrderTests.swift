@@ -89,7 +89,7 @@ struct SPARQLExecutionOrderTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(ExecOrderEdge.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
@@ -118,7 +118,7 @@ struct SPARQLExecutionOrderTests {
     func testOrderByAscending() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let agePred = try predicate(uniqueID("age"))
         let edges = [
@@ -147,7 +147,7 @@ struct SPARQLExecutionOrderTests {
     func testOrderByDescending() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let scorePred = try predicate(uniqueID("score"))
         let edges = [
@@ -175,7 +175,7 @@ struct SPARQLExecutionOrderTests {
     func testOrderByWithLimit() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let rankPred = try predicate(uniqueID("rank"))
         // Create numeric ranks for consistent ordering
@@ -208,7 +208,7 @@ struct SPARQLExecutionOrderTests {
     func testOrderByMultipleKeys() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let deptPred = try predicate(uniqueID("department"))
         let namePred = try predicate(uniqueID("name"))
@@ -246,7 +246,7 @@ struct SPARQLExecutionOrderTests {
     func testMinusExecution() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let typePred = try predicate(uniqueID("type"))
         let bannedPred = try predicate(uniqueID("banned"))
@@ -308,7 +308,7 @@ struct SPARQLExecutionOrderTests {
     func testMinusNoSharedVariables() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let predA = try predicate(uniqueID("hasA"))
         let predB = try predicate(uniqueID("hasB"))
@@ -350,7 +350,7 @@ struct SPARQLExecutionOrderTests {
     func testMinusRemovesAllCompatible() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let typePred = try predicate(uniqueID("type"))
         let flagPred = try predicate(uniqueID("flag"))
@@ -528,7 +528,7 @@ struct SPARQLExecutionOrderTests {
     func testGroupByOrderByAggregate() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let memberPred = try predicate(uniqueID("hasMember"))
         var edges: [ExecOrderEdge] = []
@@ -594,7 +594,7 @@ struct SPARQLExecutionOrderTests {
     func testFilterOnJoinedVariable() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let knowsPred = try predicate(uniqueID("knows"))
         let namePred = try predicate(uniqueID("name"))

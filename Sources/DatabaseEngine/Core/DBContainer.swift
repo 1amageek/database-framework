@@ -28,9 +28,9 @@ import Synchronization
 /// **Architecture**:
 /// ```
 /// DBContainer (Resource Manager)
-///     ├── engine: StorageEngine (for system operations only)
-///     ├── schema: Schema
-///     └── newContext() → DatabaseContext (owns transactions + cache)
+///     ├── control domain: schema, Base, Composition, Grant, and job metadata
+///     ├── data domains: Base-local entities, indexes, graph, RDF, and ontology
+///     └── session(authorization:) → target-bound data sources
 /// ```
 ///
 /// **Context-Centric Design**:
@@ -58,20 +58,31 @@ import Synchronization
 /// )
 /// let container = try await DBContainer.open(
 ///     for: schema,
-///     configuration: DBConfiguration(storageEngine: engine),
+///     configuration: DBConfiguration(
+///         storageTopology: topology,
+///         monotonicClock: applicationMonotonicClock,
+///         wallClock: applicationWallClock
+///     ),
 ///     runtimeConfiguration: runtime
 /// )
 ///
-/// // 3. Use context
-/// let context = container.newContext()
+/// // 3. Select an authorized Base before creating a context
+/// let session = container.session(authorization: authorization)
+/// let context = session.base(baseID).newContext()
 /// try context.insert(user)
 /// try await context.save()
 /// ```
 public final class DBContainer: Sendable {
     private struct PreparedStorage: Sendable {
+        let topology: DatabaseStorageRuntimeTopology
         let engine: any StorageEngine
         let format: DatabaseFormatDescriptor
-        let partitionCatalog: DatabasePartitionCatalog
+        let baseCatalog: DatabaseBaseCatalog
+        let compositionCatalog: DatabaseCompositionCatalog
+        let databaseGrantStore: DatabaseGrantStore
+        let layoutCatalog: DatabaseLayoutCatalog
+        let layoutStatus: DatabaseLayoutStatus
+        let baseGenerations: [DatabaseBaseGeneration]
         let metadataSubspace: Subspace
         let schemaGeneration: UInt64
         let transactionCapabilities: TransactionCapabilities
@@ -84,16 +95,41 @@ public final class DBContainer: Sendable {
     /// Thread-safe: storage engines handle thread safety internally.
     /// Used for system operations (DirectoryLayer, Migration).
     /// Application transactions should use DatabaseContext.withTransaction().
-    public let engine: any StorageEngine
+    private let controlEngine: any StorageEngine
+
+    /// Storage selected by the current target lease, or the control domain
+    /// while executing an explicitly database-scoped operation.
+    package var engine: any StorageEngine {
+        ActiveDatabaseBaseContext.lease?.generation.domain.engine
+            ?? controlEngine
+    }
+
+    /// Logical identity of the domain currently hosting control metadata.
+    public let controlDomainID: DatabaseStorageDomain.ID
+
+    /// Prepared storage roots retained for the complete container lifetime.
+    package let storageTopology: DatabaseStorageRuntimeTopology
 
     /// Typed transaction execution over the dynamically selected storage engine.
     ///
     /// This concrete boundary avoids invoking generic protocol-extension methods
     /// on an existential engine in Embedded Swift.
-    public let transactionExecutor: StorageTransactionExecutor
+    package let controlTransactionExecutor: StorageTransactionExecutor
+
+    /// Transaction execution selected by the current target lease.
+    package var transactionExecutor: StorageTransactionExecutor {
+        ActiveDatabaseBaseContext.lease?.transactionExecutor
+            ?? controlTransactionExecutor
+    }
 
     /// Optional transaction semantics guaranteed by the selected backend.
-    public let transactionCapabilities: TransactionCapabilities
+    private let controlTransactionCapabilities: TransactionCapabilities
+
+    package var transactionCapabilities: TransactionCapabilities {
+        ActiveDatabaseBaseContext.lease?
+            .generation.domain.transactionCapabilities
+            ?? controlTransactionCapabilities
+    }
 
     /// Schema (version, entities, indexes) from the request's retained
     /// generation, or the currently published generation outside a request.
@@ -143,8 +179,25 @@ public final class DBContainer: Sendable {
     /// Database event logger selected by the container configuration.
     private let logger: DatabaseLogger
 
-    /// Persistent catalog of every resolved dynamic partition.
-    private let partitionCatalog: DatabasePartitionCatalog
+    /// Durable Base definitions in the control domain.
+    package let baseCatalog: DatabaseBaseCatalog
+
+    /// Durable named Composition definitions in the control domain.
+    package let compositionCatalog: DatabaseCompositionCatalog
+
+    /// Database-scoped Grants stored in the control transaction domain.
+    package let databaseGrantStore: DatabaseGrantStore
+
+    /// Durable v2 layout marker and atomically published admission state.
+    package let layoutCatalog: DatabaseLayoutCatalog
+    package let layoutStatusStorage: Mutex<DatabaseLayoutStatus>
+
+    package var layoutStatus: DatabaseLayoutStatus {
+        layoutStatusStorage.withLock { $0 }
+    }
+
+    /// Immutable Base placement generations and operation admission leases.
+    private let baseGenerationStore: DatabaseBaseGenerationStore
 
     /// Stable metadata namespace used by schema lifecycle operations.
     package let metadataSubspace: Subspace
@@ -200,7 +253,8 @@ public final class DBContainer: Sendable {
         persistSchemaCatalog: Bool,
         initializeIndexes: Bool
     ) async throws -> DBContainer {
-        let storageEngine = try configuration.claimStorageEngine()
+        let storageTopology = try configuration.claimStorageTopology()
+        let storageEngine = storageTopology.controlDomain.engine
         do {
             try runtimeConfiguration.validate(schema: schema)
             try IndexRuntimeConfigurationValidator.validate(
@@ -218,6 +272,7 @@ public final class DBContainer: Sendable {
             )
 
             let preparedStorage = try await prepareStorage(
+                storageTopology: storageTopology,
                 storageEngine: storageEngine,
                 configuration: configuration,
                 transactionCapabilities: transactionCapabilities
@@ -234,21 +289,22 @@ public final class DBContainer: Sendable {
                 preparedStorage: preparedStorage
             )
 
-            if initializeIndexes {
-                try await container.ensureIndexesReady()
+            try await container.prepareTestingBaseIfConfigured()
+
+            if initializeIndexes, container.layoutStatus == .current {
+                try await container.ensureIndexesReadyForAllActiveBases()
             }
 
             if persistSchemaCatalog {
-                let registry = SchemaRegistry(
-                    database: container.engine,
-                    clock: container.monotonicClock
+                try await container.initializeSchemaCatalogIfNeeded(
+                    schema,
+                    fingerprint: schemaFingerprint
                 )
-                try await registry.persist(schema)
             }
-            try configuration.finishOpeningStorageEngine()
+            try configuration.finishOpeningStorageTopology()
             return container
         } catch {
-            await configuration.shutdownStorageEngine()
+            await configuration.shutdownStorageTopology()
             throw error
         }
     }
@@ -263,15 +319,28 @@ public final class DBContainer: Sendable {
             Schema
         ) async throws -> DatabaseRuntimeConfiguration
     ) async throws -> DBContainer {
-        let storageEngine = try configuration.claimStorageEngine()
+        let storageTopology = try configuration.claimStorageTopology()
+        let storageEngine = storageTopology.controlDomain.engine
         do {
             let preparedStorage = try await prepareStorage(
+                storageTopology: storageTopology,
                 storageEngine: storageEngine,
                 configuration: configuration
             )
+            let schemaRoot: Subspace
+            let schemaMetadataSubspace: Subspace
+            if preparedStorage.layoutStatus == .migrationRequired {
+                schemaRoot = Subspace()
+                schemaMetadataSubspace = try await storageEngine
+                    .resolveExistingNamespace(path: ["_metadata"])
+            } else {
+                schemaRoot = preparedStorage.topology.controlDomain.root
+                schemaMetadataSubspace = preparedStorage.metadataSubspace
+            }
             let restored = try await restoreSchemaState(
                 storageEngine: storageEngine,
-                metadataSubspace: preparedStorage.metadataSubspace,
+                root: schemaRoot,
+                metadataSubspace: schemaMetadataSubspace,
                 clock: configuration.monotonicClock
             )
             let runtimeConfiguration = try await runtimeFactory(restored.schema)
@@ -294,51 +363,93 @@ public final class DBContainer: Sendable {
                 security: security,
                 preparedStorage: preparedStorage
             )
-            try await container.ensureIndexesReady()
-            try configuration.finishOpeningStorageEngine()
+            if container.layoutStatus == .migrationRequired {
+                try await SchemaRegistry(
+                    database: container.engine,
+                    root: container.storageTopology.controlDomain.root,
+                    clock: container.monotonicClock
+                ).persist(restored.schema)
+            }
+            try await container.prepareTestingBaseIfConfigured()
+            if container.layoutStatus == .current {
+                try await container.ensureIndexesReadyForAllActiveBases()
+            }
+            try configuration.finishOpeningStorageTopology()
             return container
         } catch {
-            await configuration.shutdownStorageEngine()
+            await configuration.shutdownStorageTopology()
             throw error
         }
     }
 
     /// Opens DBContainer with schema and configuration.
     ///
-    /// Prepares the injected storage engine, then initializes all indexes to
-    /// `readable` state.
+    /// Prepares the injected storage topology, then initializes all Base-local
+    /// indexes to `readable` state.
     ///
     /// **Example**:
     /// ```swift
-    /// // Explicit storage engine
+    /// // Explicit storage topology
     /// let container = try await DBContainer.open(
     ///     for: schema,
-    ///     configuration: .init(storageEngine: engine)
+    ///     configuration: .init(
+    ///         storageTopology: topology,
+    ///         monotonicClock: applicationMonotonicClock,
+    ///         wallClock: applicationWallClock
+    ///     ),
+    ///     runtimeConfiguration: runtime
     /// )
     ///
-    /// // With security
-    /// let container = try await DBContainer.open(
-    ///     for: schema,
-    ///     configuration: .init(storageEngine: engine),
-    ///     security: .enabled(adminRoles: ["admin"])
-    /// )
+    /// let session = container.session(authorization: authorization)
+    /// let context = session.base(baseID).newContext()
     /// ```
     ///
     /// - Parameters:
     ///   - schema: The schema defining all entities
     ///   - configuration: Database configuration
     ///   - security: Security configuration (default: enabled)
-    /// - Throws: Error if engine creation or index initialization fails
+    /// - Throws: Error if topology preparation, catalog restoration, or index
+    ///   initialization fails
     ///
     /// - Note: Opening performs two side effects:
     ///   1. **Index validation** — initializes index metadata only for empty stores and rejects incomplete indexes
     ///   2. **Schema persistence** — writes `Schema.Entity` via `SchemaRegistry.persist()`,
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
     private static func prepareStorage(
+        storageTopology: ClaimedDatabaseStorageTopology,
         storageEngine: any StorageEngine,
         configuration: DBConfiguration,
         transactionCapabilities: TransactionCapabilities? = nil
     ) async throws -> PreparedStorage {
+        var preparedDomains: [
+            DatabaseStorageDomain.ID: DatabaseStorageDomainRuntime
+        ] = [:]
+        preparedDomains.reserveCapacity(storageTopology.domains.count)
+        for claimedDomain in storageTopology.domains.values {
+            let capabilities = try await inspectTransactionCapabilities(
+                storageEngine: claimedDomain.engine
+            )
+            let root = try await claimedDomain.engine.resolveOrCreateNamespace(
+                path: claimedDomain.namespacePath
+            )
+            preparedDomains[claimedDomain.id] = DatabaseStorageDomainRuntime(
+                id: claimedDomain.id,
+                namespacePath: claimedDomain.namespacePath,
+                engine: claimedDomain.engine,
+                transactionExecutor: StorageTransactionExecutor(
+                    engine: claimedDomain.engine
+                ),
+                root: root,
+                transactionCapabilities: capabilities
+            )
+        }
+        let preparedTopology = DatabaseStorageRuntimeTopology(
+            controlDomainID: storageTopology.controlDomainID,
+            domains: preparedDomains,
+            placements: storageTopology.placements,
+            defaultPlacementID: storageTopology.defaultPlacementID
+        )
+
         let resolvedTransactionCapabilities: TransactionCapabilities
         if let transactionCapabilities {
             resolvedTransactionCapabilities = transactionCapabilities
@@ -350,26 +461,132 @@ public final class DBContainer: Sendable {
         let expectedFormat = DatabaseFormatDescriptor.v1(
             itemStorage: configuration.itemStorage
         )
+        let layoutCatalog = DatabaseLayoutCatalog(
+            engine: storageEngine,
+            controlRoot: preparedTopology.controlDomain.root,
+            clock: configuration.monotonicClock
+        )
+        let existingLayoutStatus = try await layoutCatalog.load()
+        let initialLayoutStatus: DatabaseLayoutStatus
+        if let existingLayoutStatus {
+            initialLayoutStatus = existingLayoutStatus
+        } else if let legacyFormat = try await layoutCatalog.legacyFormat() {
+            guard legacyFormat == expectedFormat else {
+                throw DatabaseFormatCatalogError.descriptorMismatch(
+                    stored: legacyFormat,
+                    expected: expectedFormat
+                )
+            }
+            guard !preparedTopology.controlDomain.root.prefix.isEmpty else {
+                throw DatabaseRuntimeError.internalError(
+                    "Legacy migration requires a distinct non-empty control namespace"
+                )
+            }
+            initialLayoutStatus = .migrationRequired
+        } else {
+            initialLayoutStatus = .current
+        }
+        let databaseGrantStore = DatabaseGrantStore(
+            resource: .database,
+            root: preparedTopology.controlDomain.root
+        )
+        let bootstrapMarkerKey = preparedTopology.controlDomain.root
+            .subspace("_metadata")
+            .pack(Tuple("security-bootstrap-v1"))
         let persistedFormat = try await DatabaseFormatCatalog(
             database: storageEngine,
+            root: preparedTopology.controlDomain.root,
             clock: configuration.monotonicClock
-        ).installIfEmptyOrValidate(expectedFormat)
-        let partitionCatalog = try await DatabasePartitionCatalog(
-            engine: storageEngine,
-            clock: configuration.monotonicClock
+        ).installIfEmptyOrValidate(
+            expectedFormat,
+            initializeEmptyDatabase: { transaction in
+                try await databaseGrantStore.installInitial(
+                    [
+                        Security.Grant(
+                            subject: .principalRole("admin"),
+                            resource: .database,
+                            access: .all
+                        ),
+                    ],
+                    transaction: transaction
+                )
+                try transaction.setValue(
+                    Tuple(UInt64(1)).pack(),
+                    for: bootstrapMarkerKey
+                )
+                try await layoutCatalog.storeInitial(
+                    initialLayoutStatus,
+                    transaction: transaction
+                )
+            }
         )
-        let metadataSubspace = try await storageEngine.resolveOrCreateNamespace(
-            path: ["_metadata"]
-        )
+        guard let persistedLayoutStatus = try await layoutCatalog.load() else {
+            throw DatabaseRuntimeError.internalError(
+                "Base layout marker is missing"
+            )
+        }
+        guard persistedLayoutStatus == initialLayoutStatus else {
+            throw DatabaseRuntimeError.internalError(
+                "Base layout marker changed during storage preparation"
+            )
+        }
+        let metadataSubspace = preparedTopology.controlDomain.root
+            .subspace("_metadata")
         let schemaGeneration = try await loadSchemaGeneration(
             storageEngine: storageEngine,
             metadataSubspace: metadataSubspace,
             clock: configuration.monotonicClock
         )
+        let baseCatalog = DatabaseBaseCatalog(
+            controlDomain: preparedTopology.controlDomain,
+            clock: configuration.monotonicClock
+        )
+        let compositionCatalog = DatabaseCompositionCatalog(
+            controlDomain: preparedTopology.controlDomain,
+            clock: configuration.monotonicClock
+        )
+        let baseRecords = try await baseCatalog.loadAll()
+        var baseGenerations: [DatabaseBaseGeneration] = []
+        baseGenerations.reserveCapacity(baseRecords.count)
+        for record in baseRecords {
+            switch record.lifecycle {
+            case .provisioning, .tombstone:
+                continue
+            case .active, .retiring, .retired, .moving, .deleting:
+                guard let domain = preparedTopology.domain(
+                    identifiedBy: record.domainID
+                ) else {
+                    throw DatabaseBaseCatalogError.storageDomainNotFound(
+                        record.domainID
+                    )
+                }
+                let root: Subspace
+                do {
+                    root = try await domain.engine.resolveExistingNamespace(
+                        path: record.namespacePath
+                    )
+                } catch {
+                    throw DatabaseBaseCatalogError.corruptedRecord(record.id)
+                }
+                baseGenerations.append(
+                    DatabaseBaseGeneration(
+                        record: record,
+                        domain: domain,
+                        root: root
+                    )
+                )
+            }
+        }
         return PreparedStorage(
+            topology: preparedTopology,
             engine: storageEngine,
             format: persistedFormat,
-            partitionCatalog: partitionCatalog,
+            baseCatalog: baseCatalog,
+            compositionCatalog: compositionCatalog,
+            databaseGrantStore: databaseGrantStore,
+            layoutCatalog: layoutCatalog,
+            layoutStatus: persistedLayoutStatus,
+            baseGenerations: baseGenerations,
             metadataSubspace: metadataSubspace,
             schemaGeneration: schemaGeneration,
             transactionCapabilities: resolvedTransactionCapabilities
@@ -397,7 +614,7 @@ public final class DBContainer: Sendable {
                     for: schemaGenerationKey(metadataSubspace: metadataSubspace),
                     snapshot: true
                 ) else {
-                    return 0
+                    return UInt64(0)
                 }
                 let tuple = try Tuple(packed: bytes)
                 guard tuple.count == 1 else {
@@ -427,23 +644,30 @@ public final class DBContainer: Sendable {
         security: SecurityConfiguration,
         preparedStorage: PreparedStorage
     ) {
-        self.engine = preparedStorage.engine
-        self.transactionExecutor = StorageTransactionExecutor(
+        self.controlEngine = preparedStorage.engine
+        self.controlDomainID = preparedStorage.topology.controlDomainID
+        self.storageTopology = preparedStorage.topology
+        self.controlTransactionExecutor = StorageTransactionExecutor(
             engine: preparedStorage.engine
         )
-        self.transactionCapabilities = preparedStorage.transactionCapabilities
+        self.controlTransactionCapabilities =
+            preparedStorage.transactionCapabilities
         self.configuration = configuration
         self.itemStorageFactory = ItemStorageFactory(
             configuration: preparedStorage.format.itemStorage
         )
         self.databaseFormat = preparedStorage.format
         self.securityConfiguration = security
-        let securityDelegate: (any DataStoreSecurityDelegate)? = security.isEnabled
-            ? RequestSecurityPolicyDelegate(
-                configuration: security,
-                policies: runtimeConfiguration.authorizationPolicies
+        let securityDelegate: (any DataStoreSecurityDelegate)?
+        switch security.policyEvaluation {
+        case .enabled:
+            securityDelegate = RequestSecurityPolicyDelegate(
+                policies: runtimeConfiguration.authorizationPolicies,
+                schema: schema
             )
-            : nil
+        case .disabledForTesting:
+            securityDelegate = nil
+        }
         self.schemaGenerationStore = DatabaseSchemaGenerationStore(
             initial: DatabaseSchemaGeneration(
                 identifier: schemaGeneration ?? preparedStorage.schemaGeneration,
@@ -465,12 +689,169 @@ public final class DBContainer: Sendable {
             label: "com.database.framework.container"
         )
         self.migrationPlanStorage = Mutex(nil)
-        self.partitionCatalog = preparedStorage.partitionCatalog
+        self.baseCatalog = preparedStorage.baseCatalog
+        self.compositionCatalog = preparedStorage.compositionCatalog
+        self.databaseGrantStore = preparedStorage.databaseGrantStore
+        self.layoutCatalog = preparedStorage.layoutCatalog
+        self.layoutStatusStorage = Mutex(preparedStorage.layoutStatus)
+        self.baseGenerationStore = DatabaseBaseGenerationStore(
+            generations: preparedStorage.baseGenerations
+        )
         self.metadataSubspace = preparedStorage.metadataSubspace
     }
 
     private var activeSchemaLease: DatabaseSchemaLease {
         DatabaseSchemaExecutionScope.lease ?? schemaGenerationStore.acquire()
+    }
+
+    private func prepareTestingBaseIfConfigured() async throws {
+        guard layoutStatus == .current else { return }
+        guard let bootstrap = configuration.testingBootstrap else {
+            return
+        }
+        try await withControlMetadataTransaction(
+            configuration: .batch
+        ) { transaction in
+            let current = try await self.databaseGrantStore.direct(
+                subject: .principal(bootstrap.principal.identifier),
+                transaction: transaction.storageAccess
+            )
+            let granted = current.grants.reduce(into: Security.Access()) {
+                $0.formUnion($1.access)
+            }
+            let missing = Security.Access.all.subtracting(granted)
+            if !missing.isEmpty {
+                _ = try await self.databaseGrantStore.grant(
+                    Security.Grant(
+                        subject: .principal(bootstrap.principal.identifier),
+                        resource: .database,
+                        access: missing
+                    ),
+                    expectedRevision: current.revision,
+                    transaction: transaction.storageAccess
+                )
+            }
+        }
+        _ = try await provisionBase(
+            bootstrap.baseID,
+            placementID: storageTopology.defaultPlacementID,
+            initialGrants: [
+                Security.Grant(
+                    subject: .principal(bootstrap.principal.identifier),
+                    resource: .base(bootstrap.baseID),
+                    access: .all
+                ),
+            ],
+            expectedRevision: 0
+        )
+    }
+
+    package func acquireBaseLease(
+        _ id: Base.ID
+    ) throws -> DatabaseBaseLease {
+        try baseGenerationStore.acquire(id)
+    }
+
+    package func acquireBaseAdministrationLease(
+        _ id: Base.ID
+    ) throws -> DatabaseBaseLease {
+        try baseGenerationStore.acquireAdministration(id)
+    }
+
+    package func acquireBaseSchemaMaintenanceLease(
+        _ id: Base.ID
+    ) throws -> DatabaseBaseLease {
+        try baseGenerationStore.acquireSchemaMaintenance(id)
+    }
+
+    package func withBaseLease<Result: Sendable>(
+        _ lease: DatabaseBaseLease,
+        _ operation: @Sendable () async throws -> Result
+    ) async rethrows -> Result {
+        try await ActiveDatabaseBaseContext.$lease.withValue(lease) {
+            try await operation()
+        }
+    }
+
+    package func publishBaseGeneration(
+        _ record: DatabaseBaseRecord,
+        root: Subspace
+    ) throws {
+        guard let domain = storageTopology.domain(
+            identifiedBy: record.domainID
+        ) else {
+            throw DatabaseBaseExecutionError.storageDomainUnavailable(
+                record.domainID
+            )
+        }
+        baseGenerationStore.publish(
+            DatabaseBaseGeneration(
+                record: record,
+                domain: domain,
+                root: root
+            )
+        )
+    }
+
+    package func stopBaseAdmissionAndDrain(_ id: Base.ID) async throws {
+        try await baseGenerationStore.stopAdmissionAndDrain(id)
+    }
+
+    package func requireActiveBaseLease() throws -> DatabaseBaseLease {
+        let lease = try requireBoundBaseLease()
+        guard lease.permitsDataOperations,
+              lease.generation.record.lifecycle == .active
+                || lease.permitsInactiveMaintenance else {
+            throw DatabaseBaseExecutionError.baseTargetRequired
+        }
+        return lease
+    }
+
+    package func requireBoundBaseLease() throws -> DatabaseBaseLease {
+        guard let lease = ActiveDatabaseBaseContext.lease else {
+            throw DatabaseBaseExecutionError.baseTargetRequired
+        }
+        return lease
+    }
+
+    /// Storage root for operation metadata that must commit atomically with
+    /// the selected target. Base operation state lives beside Base data;
+    /// database operation state remains in the control domain.
+    package func operationStateRoot(
+        for target: DatabaseOperationTarget
+    ) throws -> Subspace {
+        switch target {
+        case .database:
+            return metadataSubspace.subspace("operation-state")
+        case .base(let baseID):
+            let lease = try requireBoundBaseLease()
+            guard lease.baseID == baseID else {
+                throw DatabaseBaseExecutionError.baseTargetRequired
+            }
+            return lease.root.subspace("operation-state")
+        case .composition:
+            throw DatabaseBaseExecutionError.baseTargetRequired
+        }
+    }
+
+    package func activeDataSubspace(
+        relativePath: [String]
+    ) throws -> Subspace {
+        var subspace = try requireActiveBaseLease().root
+            .subspace("data")
+        for component in relativePath {
+            subspace = subspace.subspace(component)
+        }
+        return subspace
+    }
+
+    private func activePartitionCatalog() throws -> DatabasePartitionCatalog {
+        let lease = try requireActiveBaseLease()
+        return DatabasePartitionCatalog(
+            engine: lease.generation.domain.engine,
+            root: lease.root.subspace("data"),
+            clock: monotonicClock
+        )
     }
 
     /// Returns the latest atomically published generation even when the
@@ -492,6 +873,17 @@ public final class DBContainer: Sendable {
         }
     }
 
+    /// Retains an enclosing request generation or acquires one for a local
+    /// data operation that does not already have a request scope.
+    package func withOperationSchemaLease<Result: Sendable>(
+        _ operation: @Sendable (DatabaseSchemaLease) async throws -> Result
+    ) async rethrows -> Result {
+        if let lease = DatabaseSchemaExecutionScope.lease {
+            return try await operation(lease)
+        }
+        return try await withSchemaLease(operation)
+    }
+
     /// The generation bound to the current request, or the currently published
     /// generation when called outside a request.
     public var schemaGeneration: UInt64 {
@@ -511,13 +903,16 @@ public final class DBContainer: Sendable {
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         generation: UInt64
     ) {
-        let securityDelegate: (any DataStoreSecurityDelegate)? =
-            securityConfiguration.isEnabled
-            ? RequestSecurityPolicyDelegate(
-                configuration: securityConfiguration,
-                policies: runtimeConfiguration.authorizationPolicies
+        let securityDelegate: (any DataStoreSecurityDelegate)?
+        switch securityConfiguration.policyEvaluation {
+        case .enabled:
+            securityDelegate = RequestSecurityPolicyDelegate(
+                policies: runtimeConfiguration.authorizationPolicies,
+                schema: schema
             )
-            : nil
+        case .disabledForTesting:
+            securityDelegate = nil
+        }
         schemaGenerationStore.publish(
             DatabaseSchemaGeneration(
                 identifier: generation,
@@ -534,11 +929,11 @@ public final class DBContainer: Sendable {
     /// Shutdown is thread-safe and idempotent. It rejects new operations, waits
     /// for admitted operations to finish, and then releases the storage engine.
     public func shutdown() async {
-        await configuration.shutdownStorageEngine()
+        await configuration.shutdownStorageTopology()
     }
 
     deinit {
-        configuration.requestStorageEngineShutdown()
+        configuration.requestStorageTopologyShutdown()
     }
 
     // MARK: - Index Initialization
@@ -547,7 +942,7 @@ public final class DBContainer: Sendable {
     ///
     /// Existing incomplete states fail fast. A missing state is initialized
     /// only when its source entity range is empty in the same transaction.
-    public func ensureIndexesReady() async throws {
+    package func ensureIndexesReady() async throws {
         for entity in schema.entities {
             guard !entity.indexDescriptors.isEmpty else { continue }
             guard !entity.hasDynamicDirectory else { continue }
@@ -592,22 +987,24 @@ public final class DBContainer: Sendable {
         }
     }
 
-    // MARK: - Context Management
+    private func ensureIndexesReadyForAllActiveBases() async throws {
+        for generation in baseGenerationStore.snapshot()
+        where generation.record.lifecycle == .active {
+            let lease = try acquireBaseLease(generation.record.id)
+            try await withBaseLease(lease) {
+                try await self.ensureIndexesReady()
+            }
+        }
+    }
 
-    /// Create a new context for data operations
-    ///
-    /// **Example**:
-    /// ```swift
-    /// let context = container.newContext()
-    /// try context.insert(user)
-    /// try context.insert(order)
-    /// try await context.save()
-    /// ```
-    ///
-    /// - Parameter autosaveEnabled: Whether to automatically save after operations (default: false)
-    /// - Returns: New DatabaseContext instance
-    public func newContext(autosaveEnabled: Bool = false) -> DatabaseContext {
-        return DatabaseContext(container: self, autosaveEnabled: autosaveEnabled)
+    // MARK: - Session Management
+
+    /// Creates an explicit local authorization session. Target selection is a
+    /// separate synchronous operation on the returned session.
+    public func session(
+        authorization: AuthorizationContext
+    ) -> DatabaseSession {
+        DatabaseSession(container: self, authorization: authorization)
     }
 
     // MARK: - Directory Resolution
@@ -631,7 +1028,7 @@ public final class DBContainer: Sendable {
     /// // From model instance
     /// let subspace = try await container.resolveDirectory(for: Order.self, path: .from(order))
     /// ```
-    public func resolveDirectory<T: Persistable>(
+    package func resolveDirectory<T: Persistable>(
         for type: T.Type,
         path: DirectoryPath<T> = DirectoryPath()
     ) async throws -> Subspace {
@@ -641,11 +1038,12 @@ public final class DBContainer: Sendable {
         )
     }
 
-    public func resolveDirectory(
+    package func resolveDirectory(
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil
     ) async throws -> Subspace {
-        try await transactionExecutor.withTransaction(
+        let lease = try requireActiveBaseLease()
+        return try await lease.transactionExecutor.withTransaction(
             configuration: .default,
             clock: monotonicClock
         ) { transaction in
@@ -688,14 +1086,13 @@ public final class DBContainer: Sendable {
         }
         try directoryPath.validate()
 
-        let subspace = try await engine.namespaceResolver.resolveOrCreate(
-            path: directoryPath.resolve(),
-            transaction: transaction
+        let subspace = try activeDataSubspace(
+            relativePath: directoryPath.resolve()
         )
 
         let partitions = directoryPath.canonicalPartitions()
         if !partitions.isEmpty {
-            try await partitionCatalog.register(
+            try await activePartitionCatalog().register(
                 entity: entity.name,
                 partitions: partitions,
                 transaction: transaction
@@ -720,10 +1117,7 @@ public final class DBContainer: Sendable {
             directoryPath = try AnyDirectoryPath(for: entity)
         }
         try directoryPath.validate()
-        return try await engine.namespaceResolver.resolveExisting(
-            path: directoryPath.resolve(),
-            transaction: transaction
-        )
+        return try activeDataSubspace(relativePath: directoryPath.resolve())
     }
 
     /// Resolves one declared index in the caller's read transaction.
@@ -762,7 +1156,7 @@ public final class DBContainer: Sendable {
         let components = directoryPath.resolve()
         let partitions = directoryPath.canonicalPartitions()
         if entity.hasDynamicDirectory {
-            guard try await partitionCatalog.contains(
+            guard try await activePartitionCatalog().contains(
                 entity: entity.name,
                 partitions: partitions,
                 transaction: transaction
@@ -770,19 +1164,7 @@ public final class DBContainer: Sendable {
                 return nil
             }
         }
-        guard try await engine.namespaceResolver.namespaceExists(
-            path: components,
-            transaction: transaction
-        ) else {
-            throw IndexQueryContextError.missingDirectory(
-                entityName: entity.name
-            )
-        }
-
-        let subspace = try await engine.namespaceResolver.resolveExisting(
-            path: components,
-            transaction: transaction
-        )
+        let subspace = try activeDataSubspace(relativePath: components)
         let lifecycleStore = IndexLifecycleStore(
             container: self,
             subspace: subspace
@@ -801,7 +1183,7 @@ public final class DBContainer: Sendable {
         continuation: ByteString? = nil,
         limit: Int
     ) async throws -> DatabasePartitionCatalogPage {
-        try await partitionCatalog.page(
+        return try await activePartitionCatalog().page(
             entity: entity,
             continuation: continuation,
             limit: limit
@@ -814,7 +1196,7 @@ public final class DBContainer: Sendable {
         limit: Int,
         transaction: any TransactionAccess
     ) async throws -> DatabasePartitionCatalogPage {
-        try await partitionCatalog.page(
+        try await activePartitionCatalog().page(
             entity: entity,
             continuation: continuation,
             limit: limit,
@@ -850,6 +1232,20 @@ public final class DBContainer: Sendable {
             entity: entity,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
+        )
+    }
+
+    /// Build a typed store whose directory and index state participate in the
+    /// caller's transaction.
+    package func store<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T> = DirectoryPath(),
+        transaction: any TransactionAccess
+    ) async throws -> DatabaseDataStore {
+        try await store(
+            for: schemaEntity(named: T.persistableType),
+            path: try AnyDirectoryPath(path),
+            transaction: transaction
         )
     }
 
@@ -1003,7 +1399,7 @@ public final class DBContainer: Sendable {
     /// - Parameter protocolType: The Polymorphable protocol
     /// - Returns: The resolved subspace
     /// - Throws: Error if protocol has Field path components (not allowed)
-    public func resolvePolymorphicDirectory<P: Polymorphable>(for protocolType: P.Type) async throws -> Subspace {
+    package func resolvePolymorphicDirectory<P: Polymorphable>(for protocolType: P.Type) async throws -> Subspace {
         let pathComponents = P.polymorphicDirectoryPathComponents
         var path: [String] = []
 
@@ -1019,7 +1415,7 @@ public final class DBContainer: Sendable {
             }
         }
 
-        return try await engine.resolveOrCreateNamespace(path: path)
+        return try activeDataSubspace(relativePath: path)
     }
 
     /// Resolve a polymorphic group by its logical identifier.
@@ -1033,10 +1429,10 @@ public final class DBContainer: Sendable {
     }
 
     /// Resolve the directory for a polymorphic group identifier.
-    public func resolvePolymorphicDirectory(for identifier: String) async throws -> Subspace {
+    package func resolvePolymorphicDirectory(for identifier: String) async throws -> Subspace {
         let group = try polymorphicGroup(identifier: identifier)
         let path = try group.resolvedDirectoryPath()
-        return try await engine.resolveOrCreateNamespace(path: path)
+        return try activeDataSubspace(relativePath: path)
     }
 
     /// Resolves a polymorphic projection directory in the caller-owned
@@ -1046,9 +1442,8 @@ public final class DBContainer: Sendable {
         transaction: any TransactionAccess
     ) async throws -> Subspace {
         let group = try polymorphicGroup(identifier: identifier)
-        return try await engine.namespaceResolver.resolveOrCreate(
-            path: group.resolvedDirectoryPath(),
-            transaction: transaction
+        return try activeDataSubspace(
+            relativePath: group.resolvedDirectoryPath()
         )
     }
 
@@ -1059,16 +1454,8 @@ public final class DBContainer: Sendable {
         transaction: any TransactionAccess
     ) async throws -> Subspace? {
         let group = try polymorphicGroup(identifier: identifier)
-        let path = try group.resolvedDirectoryPath()
-        guard try await engine.namespaceResolver.namespaceExists(
-            path: path,
-            transaction: transaction
-        ) else {
-            return nil
-        }
-        return try await engine.namespaceResolver.resolveExisting(
-            path: path,
-            transaction: transaction
+        return try activeDataSubspace(
+            relativePath: group.resolvedDirectoryPath()
         )
     }
 
@@ -1132,13 +1519,15 @@ public final class DBContainer: Sendable {
 // MARK: - Migration Support
 
 extension DBContainer {
-    /// Get metadata directory for schema versioning
+    /// Returns schema-version metadata for the currently bound Base.
+    /// Global schema catalog metadata remains in the control domain and is
+    /// never used as a Base migration checkpoint.
     private func getMetadataSubspace() async throws -> Subspace {
-        metadataSubspace
+        try requireBoundBaseLease().root.subspace("metadata")
     }
 
     /// Get the current schema version from storage
-    public func getCurrentSchemaVersion() async throws -> Schema.Version? {
+    package func getCurrentSchemaVersion() async throws -> Schema.Version? {
         return try await transactionExecutor.withTransaction(
             configuration: .default,
             clock: monotonicClock
@@ -1150,6 +1539,8 @@ extension DBContainer {
     package func getCurrentSchemaVersion(
         transaction: any TransactionAccess
     ) async throws -> Schema.Version? {
+        let metadataSubspace = try requireBoundBaseLease().root
+            .subspace("metadata")
         let versionKey = metadataSubspace
             .subspace("schema")
             .pack(Tuple("version"))
@@ -1182,9 +1573,9 @@ extension DBContainer {
     ) async throws {
         let installedSchema = try schemaDefinition(for: version)
         let metadataSubspace = try await getMetadataSubspace()
-        try await transactionExecutor.withTransaction(
+        try await withActiveBaseTransaction(
+            requiredAccess: .administer,
             configuration: .batch,
-            clock: monotonicClock
         ) { transaction in
             try Self.setCurrentSchemaSnapshot(
                 installedSchema,
@@ -1283,6 +1674,11 @@ extension DBContainer {
 
 // MARK: - VersionedSchema Support
 
+private enum DatabaseBaseSchemaBootstrapAuthority: Sendable {
+    case request
+    case provisioning
+}
+
 extension DBContainer {
     /// Opens an application-compiled schema and attaches its migration plan.
     public static func open<P: SchemaMigrationPlan>(
@@ -1295,7 +1691,7 @@ extension DBContainer {
         do {
             try P.validate()
         } catch {
-            await configuration.shutdownStorageEngineIfUnclaimed()
+            await configuration.shutdownStorageTopologyIfUnclaimed()
             throw error
         }
         let container = try await open(
@@ -1326,7 +1722,7 @@ extension DBContainer {
             try P.validate()
             schemaInstance = try S.makeSchema()
         } catch {
-            await configuration.shutdownStorageEngineIfUnclaimed()
+            await configuration.shutdownStorageTopologyIfUnclaimed()
             throw error
         }
         let container = try await open(
@@ -1342,13 +1738,13 @@ extension DBContainer {
     }
 
     /// Return exact pending migration identifiers for the compiled schema.
-    public func migrationStatus(
+    package func migrationStatus(
         targetVersion requestedTarget: Schema.Version? = nil
     ) async throws -> DatabaseMigrationStatus {
         let targetVersion = try migrationTarget(requestedTarget)
-        return try await transactionExecutor.withTransaction(
-            configuration: .readOnly,
-            clock: monotonicClock
+        return try await withActiveBaseTransaction(
+            requiredAccess: .administer,
+            configuration: .readOnly
         ) { transaction in
             try await self.migrationStatus(
                 targetVersion: targetVersion,
@@ -1417,7 +1813,7 @@ extension DBContainer {
     }
 
     /// Execute at most `maximumStageCount` persisted migration transitions.
-    public func runMigrations(
+    package func runMigrations(
         targetVersion requestedTarget: Schema.Version? = nil,
         maximumStageCount: UInt64
     ) async throws -> DatabaseMigrationExecutionResult {
@@ -1430,10 +1826,6 @@ extension DBContainer {
             )
         }
         let targetVersion = try migrationTarget(requestedTarget)
-        let registry = SchemaRegistry(
-            database: engine,
-            clock: monotonicClock
-        )
         var completedStageCount: UInt64 = 0
 
         while completedStageCount < maximumStageCount {
@@ -1441,8 +1833,8 @@ extension DBContainer {
                 targetVersion: targetVersion
             )
             guard !status.pendingMigrationIdentifiers.isEmpty else {
-                try await registry.persist(schema)
                 try await ensureIndexesReady()
+                try await publishSchemaCatalogIfAllActiveBasesMatch(schema)
                 return DatabaseMigrationExecutionResult(
                     completedStageCount: completedStageCount,
                     isComplete: true
@@ -1451,8 +1843,7 @@ extension DBContainer {
 
             if status.currentVersion == nil {
                 let bootstrapped = try await bootstrapInitialSchemaIfNeeded(
-                    targetVersion: targetVersion,
-                    registry: registry
+                    targetVersion: targetVersion
                 )
                 if bootstrapped {
                     completedStageCount += 1
@@ -1461,8 +1852,19 @@ extension DBContainer {
                 continue
             }
 
-            guard let currentVersion = status.currentVersion,
-                  let plan = migrationPlanStorage.withLock({ $0 }),
+            guard let currentVersion = status.currentVersion else {
+                throw DatabaseRuntimeError.internalError(
+                    "Migration status lost its current schema version"
+                )
+            }
+            // A data-domain commit can precede control-domain publication when
+            // those domains are physically independent. Repair that durable
+            // boundary before admitting the next migration stage.
+            try await publishSchemaCatalogIfAllActiveBasesMatch(
+                schemaDefinition(for: currentVersion)
+            )
+
+            guard let plan = migrationPlanStorage.withLock({ $0 }),
                   let stage = try plan.findPath(
                     from: currentVersion,
                     to: targetVersion
@@ -1480,6 +1882,7 @@ extension DBContainer {
         ).pendingMigrationIdentifiers.isEmpty
         if isComplete {
             try await ensureIndexesReady()
+            try await publishSchemaCatalogIfAllActiveBasesMatch(schema)
             logger.info("Migration complete: now at version \(targetVersion)")
         }
         return DatabaseMigrationExecutionResult(
@@ -1489,8 +1892,153 @@ extension DBContainer {
     }
 
     /// Migrate to the current compiled schema version if needed.
-    public func migrateIfNeeded() async throws {
+    package func migrateIfNeeded() async throws {
         _ = try await runMigrations(maximumStageCount: .max)
+    }
+
+    /// Publishes one committed migration boundary only after every active Base
+    /// has reached that exact version. Base migration checkpoints remain in
+    /// their data domains; the discoverable schema remains database-wide.
+    private func publishSchemaCatalogIfAllActiveBasesMatch(
+        _ candidateSchema: Schema
+    )
+        async throws
+    {
+        let activeBases = try await withControlMetadataTransaction(
+            configuration: .readOnly
+        ) { transaction in
+            let records = try await self.baseCatalog.loadAll(
+                transaction: transaction.storageAccess
+            )
+            return records.filter { $0.lifecycle == .active }
+        }
+        for record in activeBases {
+            let lease = try acquireBaseLease(record.id)
+            let currentVersion = try await withBaseLease(lease) {
+                try await self.getCurrentSchemaVersion()
+            }
+            guard currentVersion == candidateSchema.version else {
+                return
+            }
+        }
+        let registry = SchemaRegistry(
+            database: controlEngine,
+            root: storageTopology.controlDomain.root,
+            clock: monotonicClock
+        )
+        let targetFingerprint = try SchemaManifest(schema: candidateSchema)
+            .fingerprint()
+        let nextGeneration = try await controlTransactionExecutor
+            .withTransaction(
+                configuration: .batch,
+                clock: monotonicClock
+            ) { transaction in
+                let persistedEntities = try await registry.loadAll(
+                    transaction: transaction
+                )
+                let persistedVersion = try await Self.loadSchemaVersion(
+                    metadataSubspace: self.metadataSubspace,
+                    transaction: transaction
+                )
+                let persistedFingerprint = try await Self
+                    .loadActiveSchemaFingerprint(
+                        metadataSubspace: self.metadataSubspace,
+                        transaction: transaction
+                    )
+                let persistedGeneration = try await Self
+                    .loadPersistedSchemaGeneration(
+                        metadataSubspace: self.metadataSubspace,
+                        transaction: transaction
+                    )
+
+                if persistedEntities.isEmpty,
+                   persistedVersion == nil,
+                   persistedFingerprint == nil,
+                   persistedGeneration == nil {
+                    try await registry.persistInitialSchema(
+                        candidateSchema,
+                        transaction: transaction
+                    )
+                    try Self.setCurrentSchemaSnapshot(
+                        candidateSchema,
+                        metadataSubspace: self.metadataSubspace,
+                        transaction: transaction
+                    )
+                    try transaction.setValue(
+                        targetFingerprint.bytes,
+                        for: Self.activeSchemaFingerprintKey(
+                            metadataSubspace: self.metadataSubspace
+                        )
+                    )
+                    try transaction.setValue(
+                        Tuple(UInt64(0)).pack(),
+                        for: Self.schemaGenerationKey(
+                            metadataSubspace: self.metadataSubspace
+                        )
+                    )
+                    return UInt64(0)
+                }
+
+                guard let persistedVersion,
+                      let persistedFingerprint,
+                      let persistedGeneration else {
+                    throw DatabaseSchemaRestorationError.missingFingerprint
+                }
+                let persistedSchema = try Schema(
+                    entities: persistedEntities,
+                    version: persistedVersion
+                )
+                guard try SchemaManifest(schema: persistedSchema)
+                    .fingerprint() == persistedFingerprint else {
+                    throw DatabaseSchemaRestorationError.fingerprintMismatch
+                }
+                if persistedFingerprint == targetFingerprint {
+                    return persistedGeneration
+                }
+
+                let incremented = persistedGeneration
+                    .addingReportingOverflow(1)
+                guard !incremented.overflow else {
+                    throw DatabaseSchemaPublicationError.generationOverflow
+                }
+                try await registry.persist(
+                    candidateSchema,
+                    mode: .allowBreakingChanges(
+                        entityNames: Set(
+                            candidateSchema.entities.map { $0.name }
+                        )
+                    ),
+                    transaction: transaction
+                )
+                try Self.setCurrentSchemaSnapshot(
+                    candidateSchema,
+                    metadataSubspace: self.metadataSubspace,
+                    transaction: transaction
+                )
+                try transaction.setValue(
+                    targetFingerprint.bytes,
+                    for: Self.activeSchemaFingerprintKey(
+                        metadataSubspace: self.metadataSubspace
+                    )
+                )
+                try transaction.setValue(
+                    Tuple(incremented.partialValue).pack(),
+                    for: Self.schemaGenerationKey(
+                        metadataSubspace: self.metadataSubspace
+                    )
+                )
+                return incremented.partialValue
+            }
+        let compiledFingerprint = try SchemaManifest(schema: schema)
+            .fingerprint()
+        if targetFingerprint == compiledFingerprint {
+            publishSchemaGeneration(
+                schema,
+                fingerprint: targetFingerprint,
+                runtimeConfiguration: runtimeConfiguration,
+                generation: nextGeneration
+            )
+        }
     }
 
     private func migrationTarget(
@@ -1513,7 +2061,7 @@ extension DBContainer {
         return targetVersion
     }
 
-    private func schemaDefinition(
+    package func schemaDefinition(
         for version: Schema.Version
     ) throws -> Schema {
         if schema.version == version {
@@ -1532,6 +2080,8 @@ extension DBContainer {
         _ expectedSchema: Schema,
         transaction: any TransactionAccess
     ) async throws {
+        let metadataSubspace = try requireBoundBaseLease().root
+            .subspace("metadata")
         let fingerprintKey = metadataSubspace
             .subspace("schema")
             .pack(Tuple("fingerprint"))
@@ -1555,7 +2105,7 @@ extension DBContainer {
 
     private func bootstrapInitialSchemaIfNeeded(
         targetVersion: Schema.Version,
-        registry: SchemaRegistry
+        authority: DatabaseBaseSchemaBootstrapAuthority = .request
     ) async throws -> Bool {
         let metadataSubspace = try await getMetadataSubspace()
         let versionKey = metadataSubspace
@@ -1593,10 +2143,8 @@ extension DBContainer {
         }
         let stores = staticStores
 
-        return try await transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: monotonicClock
-        ) { transaction in
+        let bootstrap: @Sendable (any TransactionAccess) async throws -> Bool = {
+            transaction in
             guard try await transaction.getValue(
                 for: versionKey,
                 snapshot: false
@@ -1623,10 +2171,6 @@ extension DBContainer {
                     transaction: transaction
                 )
             }
-            try await registry.persistInitialSchema(
-                self.schema,
-                transaction: transaction
-            )
             try Self.setCurrentSchemaSnapshot(
                 self.schema,
                 metadataSubspace: metadataSubspace,
@@ -1634,6 +2178,48 @@ extension DBContainer {
             )
             return true
         }
+        switch authority {
+        case .request:
+            return try await withActiveBaseTransaction(
+                requiredAccess: .administer,
+                configuration: .batch,
+                bootstrap
+            )
+        case .provisioning:
+            let lease = try requireActiveBaseLease()
+            return try await lease.transactionExecutor.withTransaction(
+                configuration: .batch,
+                clock: monotonicClock,
+                bootstrap
+            )
+        }
+    }
+
+    /// Initializes a newly allocated Base before its provisioning record is
+    /// published as active. This is a narrowly scoped system transition: the
+    /// caller has already persisted the Base's initial Grants, but no user
+    /// request is allowed to enter the Base until this method completes.
+    package func bootstrapProvisionedBase() async throws {
+        _ = try await bootstrapInitialSchemaIfNeeded(
+            targetVersion: schema.version,
+            authority: .provisioning
+        )
+        let lease = try requireActiveBaseLease()
+        let installedVersion = try await lease.transactionExecutor
+            .withTransaction(
+                configuration: .readOnly,
+                clock: monotonicClock
+            ) { transaction in
+                try await self.getCurrentSchemaVersion(
+                    transaction: transaction
+                )
+            }
+        guard installedVersion == schema.version else {
+            throw DatabaseRuntimeError.internalError(
+                "Provisioned Base schema does not match the active generation"
+            )
+        }
+        try await ensureIndexesReady()
     }
 
     private func executeStage(_ stage: MigrationStage) async throws {
@@ -1685,9 +2271,9 @@ extension DBContainer {
         )
         let expectedFrom = stage.fromVersionIdentifier
         let expectedTo = stage.toVersionIdentifier
-        try await transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: monotonicClock
+        try await withActiveBaseTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
         ) { transaction in
             if let markerBytes = try await transaction.getValue(
                 for: stageMarkerKey,
@@ -1770,26 +2356,10 @@ extension DBContainer {
             try await didMigrate(context)
         }
 
-        let registry = SchemaRegistry(
-            database: engine,
-            clock: monotonicClock
-        )
-        let persistMode: SchemaRegistryPersistMode = if stage.isLightweight {
-            .strict
-        } else {
-            .allowBreakingChanges(
-                entityNames: try stage.entitiesRequiringCustomMigration
-            )
-        }
-        try await transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: monotonicClock
+        try await withActiveBaseTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
         ) { transaction in
-            try await registry.persist(
-                targetSchema,
-                mode: persistMode,
-                transaction: transaction
-            )
             try Self.setCurrentSchemaSnapshot(
                 targetSchema,
                 metadataSubspace: metadataSubspace,
@@ -1797,6 +2367,7 @@ extension DBContainer {
             )
             try transaction.clear(key: stageMarkerKey)
         }
+        try await publishSchemaCatalogIfAllActiveBasesMatch(targetSchema)
         logger.info("Updated schema version to \(stage.toVersionIdentifier)")
     }
 
@@ -1813,9 +2384,9 @@ extension DBContainer {
             // Use resolveDirectory to respect #Directory definitions declared
             // by *this schema's* Swift type — V1 and V2 with the same entity
             // name may point to different directories.
-            let subspace = try await transactionExecutor.withTransaction(
-                configuration: .default,
-                clock: monotonicClock
+            let subspace = try await withActiveBaseTransaction(
+                requiredAccess: .administer,
+                configuration: .default
             ) { transaction in
                 try await self.resolveDirectory(
                     for: entity,
@@ -1832,29 +2403,5 @@ extension DBContainer {
         }
 
         return registry
-    }
-}
-
-// MARK: - Admin Context
-
-extension DBContainer {
-    /// Create a new admin context for management operations
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let admin = container.newAdminContext()
-    ///
-    /// // Get collection statistics
-    /// let stats = try await admin.collectionStatistics(User.self)
-    ///
-    /// // Explain query plan
-    /// let plan = try await admin.explain(
-    ///     Query<User>().where(User.fields.age > 18)
-    /// )
-    /// ```
-    ///
-    /// - Returns: New AdminContext instance
-    public func newAdminContext() -> AdminContext {
-        AdminContext(container: self)
     }
 }

@@ -5,15 +5,17 @@ database-framework service.
 
 ## Architecture
 
-- Select one StorageKit backend deliberately.
+- Define the control domain, data domains, and named Base placements
+  deliberately. A single backend remains a valid one-domain topology.
 - Select runtime/index capabilities through consuming-package traits; do not
   rely on the default full-host profile for a size-constrained runtime.
 - Confirm the backend transaction and isolation semantics.
 - Create one long-lived DBContainer per service process or Durable Object
   instance.
-- Transfer one initialized engine into that container and register
+- Transfer the complete initialized storage topology into that container and register
   `container.shutdown()` with the host's shutdown lifecycle.
-- Create a context per request or unit of work.
+- Create one authorization-bound `DatabaseSession` and select a Base or
+  Composition explicitly for each request or unit of work.
 - Keep web host and database adapter dependencies separate.
 
 ## Schema And Indexes
@@ -29,6 +31,10 @@ database-framework service.
 ## Security
 
 - Establish AuthorizationContext at the request boundary.
+- Persist database and Base Grants; role names are authenticated claims, not
+  an administrative bypass.
+- Require explicit `.read`, `.write`, and `.administer` access independently.
+- Authorize every member Base before emitting any Composition result.
 - Register every enabled entity policy through AuthorizationPolicyHandler.
 - Keep SecurityPolicy evaluation enabled in production.
 - Test create, read, update, delete, list, and cross-tenant move paths.
@@ -59,7 +65,7 @@ export TOOLCHAINS=org.swift.64202607231a
 scripts/xcode-test-harness \
   --traits SQLite,AllRuntimeFeatures \
   --only-testing SQLiteTests \
-  --expected-count 101 \
+  --expected-count 119 \
   --require-zero-skips \
   --require-zero-expected-failures \
   --require-zero-runtime-warnings
@@ -72,7 +78,7 @@ POSTGRES_TEST_DB=database_framework_test \
 scripts/xcode-test-harness \
   --traits PostgreSQL,AllRuntimeFeatures \
   --only-testing PostgreSQLTests \
-  --expected-count 71 \
+  --expected-count 72 \
   --require-zero-skips \
   --require-zero-expected-failures \
   --require-zero-runtime-warnings
@@ -82,7 +88,7 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3910 \
+    --expected-count 3964 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -113,13 +119,14 @@ successfully. Do not replace these invocations with a direct package-wide
 the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
-The FoundationDB release gate was last executed against the published
-dependency graph on 2026-08-08: database-kit 26.0808.0, storage-kit 26.0807.0,
-and swift-hnsw 1.1.4. It passed 3,910 tests with zero failures, skips, expected
-failures, or runtime warnings. The SQLite and PostgreSQL gates last passed 101
-and 71 tests respectively on 2026-08-07 with the same storage-kit and
-swift-hnsw releases. Standard WASM and Embedded WASM last compiled and linked
-in release mode on 2026-08-07.
+The FoundationDB release gate was last executed on 2026-08-10 with
+database-kit 26.0809.8, storage-kit 26.0807.0, and swift-hnsw 1.1.4. It passed
+3,964 tests with zero failures, skips, expected failures, or runtime warnings.
+The SQLite gate passed 119 tests, and the PostgreSQL gate passed 72 tests
+against an isolated PostgreSQL 16.14 process with the same zero-result
+contract. Standard WASM and Embedded WASM both compiled and linked this exact
+source revision with the pinned Swift 6.4 snapshot SDKs before publication of
+the 26.0809.2 tag.
 
 Command-line portability and process verification belong to the independent
 [`database-cli`](https://github.com/1amageek/database-cli) package. This

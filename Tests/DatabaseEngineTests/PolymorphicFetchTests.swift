@@ -98,21 +98,12 @@ struct PolymorphicFetchTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicFetchArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicFetchReport.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        for path in [
-            ["polymorphic_fetch_tests_articles"],
-            ["polymorphic_fetch_tests_reports"],
-            ["polymorphic_fetch_tests_shared"],
-        ] {
-            if try await container.engine.namespaceExists(path: path) {
-                try await container.engine.removeNamespace(path: path)
-            }
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
     }
 
     private func countPolymorphicIndexEntries(
@@ -121,7 +112,7 @@ struct PolymorphicFetchTests {
         valuePrefix: String? = nil
     ) async throws -> Int {
         let group = try container.polymorphicGroup(identifier: PolymorphicFetchArticle.polymorphableType)
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
         var indexSubspace = groupSubspace
             .subspace(SubspaceKey.indexes)
             .subspace(indexName)
@@ -157,7 +148,7 @@ struct PolymorphicFetchTests {
         }
         #expect(try await container.engine.namespaceExists(path: path) == false)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let scanned = try await context.fetchPolymorphic(
             PolymorphicFetchArticle.self
         )
@@ -175,7 +166,7 @@ struct PolymorphicFetchTests {
     func callerOwnedFetchObservesProjectionWrite() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let article = PolymorphicFetchArticle(
             title: "Read your writes",
             body: "Same transaction"
@@ -195,7 +186,7 @@ struct PolymorphicFetchTests {
             identifier: PolymorphicFetchArticle.polymorphableType
         )
 
-        try await container.engine.withTransaction { transaction in
+        try await container.withTestBaseTransaction { transaction in
             try await PolymorphicProjectionMaintainer(container: container)
                 .update(
                     PersistableWriteResult(
@@ -231,7 +222,7 @@ struct PolymorphicFetchTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = PolymorphicFetchArticle(title: "Hello", body: "World")
         let report = PolymorphicFetchReport(title: "Quarterly", pageCount: 42)
@@ -261,7 +252,7 @@ struct PolymorphicFetchTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = PolymorphicFetchArticle(title: "Headline", body: "Body text")
         let report = PolymorphicFetchReport(title: "Audit", pageCount: 7)
@@ -292,7 +283,7 @@ struct PolymorphicFetchTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         for i in 1...3 {
             try context.insert(PolymorphicFetchArticle(title: "A\(i)", body: "content \(i)"))
@@ -327,7 +318,7 @@ struct PolymorphicFetchTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let gamma = PolymorphicFetchArticle(title: "Gamma", body: "third")
         let alpha = PolymorphicFetchReport(title: "Alpha", pageCount: 1)
@@ -366,7 +357,7 @@ struct PolymorphicFetchTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = PolymorphicFetchArticle(title: "Indexed Article", body: "Body")
         let report = PolymorphicFetchReport(title: "Indexed Report", pageCount: 4)
@@ -400,7 +391,7 @@ struct PolymorphicFetchTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var article = PolymorphicFetchArticle(title: "Direct Indexed", body: "Saved directly")
         try context.upsert(article)
@@ -453,7 +444,7 @@ struct PolymorphicFetchTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = PolymorphicFetchArticle(title: "Needle Article", body: "Body")
         var report = PolymorphicFetchReport(title: "Needle Report", pageCount: 4)
@@ -516,7 +507,7 @@ struct PolymorphicFetchTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = PolymorphicFetchArticle(title: "Direct", body: "Saved via staged upsert")
         try context.upsert(article)
@@ -543,7 +534,7 @@ struct PolymorphicFetchTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = PolymorphicFetchArticle(title: "Doomed", body: "Delete me")
         try context.upsert(article)
@@ -567,7 +558,7 @@ struct PolymorphicFetchTests {
         let container = try await setupContainer()
         try await cleanup(container: container)
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let article = PolymorphicFetchArticle(title: "Keep reports", body: "Remove article")
         let report = PolymorphicFetchReport(title: "Survivor", pageCount: 9)

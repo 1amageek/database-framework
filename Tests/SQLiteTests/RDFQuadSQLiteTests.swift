@@ -3,6 +3,7 @@ import Database
 import DatabaseRuntime
 import DatabaseTypes
 import Foundation
+import TestSupport
 import TestHeartbeat
 import Testing
 
@@ -131,9 +132,9 @@ struct RDFQuadSQLiteTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteRDFQuadStatement.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
         try context.insert(
             statement(
                 event: "first",

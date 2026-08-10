@@ -55,15 +55,11 @@ struct GraphQueryBuilderTests {
             ],
             version: Schema.Version(1, 0, 0)
         )
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(GraphQueryEdge.self)]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(GraphQueryEdge.self)]), security: .testingDisabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
-        let path = ["test", "graphquerybuilder", "edges"]
-        if try await container.engine.namespaceExists(path: path) {
-            try await container.engine.removeNamespace(path: path)
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
     }
 
     private func makeEdge(source: String, predicate: String, target: String) -> GraphQueryEdge {
@@ -83,7 +79,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = DatabaseContext(container: container)
+            let context = container.testBaseContext()
 
             let alice = uniqueID("Alice")
             let edge1 = makeEdge(source: alice, predicate: "knows", target: uniqueID("Bob"))
@@ -120,7 +116,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = DatabaseContext(container: container)
+            let context = container.testBaseContext()
 
             let alice = uniqueID("Alice")
             let bob = uniqueID("Bob")
@@ -153,7 +149,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = DatabaseContext(container: container)
+            let context = container.testBaseContext()
 
             let alice = uniqueID("Alice")
             let bob = uniqueID("Bob")
@@ -187,7 +183,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = DatabaseContext(container: container)
+            let context = container.testBaseContext()
 
             let alice = uniqueID("Alice")
             let bob = uniqueID("Bob")
@@ -218,7 +214,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = DatabaseContext(container: container)
+            let context = container.testBaseContext()
 
             let alice = uniqueID("Alice")
             let nonExistent = uniqueID("NonExistent")
@@ -245,7 +241,7 @@ struct GraphQueryBuilderTests {
             try await cleanup(container: container)
 
 
-            let context = DatabaseContext(container: container)
+            let context = container.testBaseContext()
 
             let alice = uniqueID("Alice")
 
@@ -275,7 +271,7 @@ struct GraphQueryBuilderTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = DatabaseContext(container: container)
+            let context = container.testBaseContext()
 
             // Test: Using field combination that doesn't have an index should throw
             // The actual index is defined on (source, predicate, target), not (id, source, target)

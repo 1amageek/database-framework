@@ -5,10 +5,10 @@ import DatabaseTypes
 
 /// Performs bounded inverse lookups through the canonical relationship catalog.
 public struct InverseRelationshipResolver: Sendable {
-    private let container: DBContainer
+    private let context: DatabaseContext
 
-    public init(container: DBContainer) {
-        self.container = container
+    public init(context: DatabaseContext) {
+        self.context = context
     }
 
     public func referencedBy<Target: Persistable, Owner: Persistable>(
@@ -88,13 +88,16 @@ public struct InverseRelationshipResolver: Sendable {
             )
         }
 
-        let context = container.newContext()
-        return try await context.withTransaction { transaction in
+        return try await context.withTransaction(
+            requiredAccess: .read
+        ) { transaction in
+            let baseRoot = try context.requireOperationBaseLease().root
             let page = try await RelationshipReferenceCatalog.referrerPage(
                 of: target.persistableIdentity,
                 descriptor: descriptor,
                 continuation: continuation,
                 limit: limit,
+                baseRoot: baseRoot,
                 transaction: transaction.storageAccess
             )
             var entities: [Owner] = []
@@ -123,6 +126,6 @@ public struct InverseRelationshipResolver: Sendable {
 
 extension DatabaseContext {
     public func inverseRelationshipResolver() -> InverseRelationshipResolver {
-        InverseRelationshipResolver(container: container)
+        InverseRelationshipResolver(context: self)
     }
 }

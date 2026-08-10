@@ -51,18 +51,11 @@ struct SPARQLIntegrationTests {
             entities: [try SPARQLQueryStatement.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLQueryStatement.self)]), security: .disabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLQueryStatement.self)]), security: .testingDisabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
-        if try await container.engine.namespaceExists(
-            path: ["test", "sparql", "statements"]
-        ) {
-            try await container.engine.removeNamespace(
-                path: ["test", "sparql", "statements"]
-            )
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
     }
 
     private func insertStatements(_ statements: [SPARQLQueryStatement], context: DatabaseContext) async throws {
@@ -146,7 +139,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Insert test data: Alice knows Bob, Carol, Dave
             try await insertStatements([
@@ -181,7 +174,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
@@ -214,7 +207,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob")
@@ -239,7 +232,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob")
@@ -289,7 +282,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
@@ -325,7 +318,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Graph: Alice -> Bob -> Carol -> Dave
             //              \-> Eve
@@ -364,7 +357,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             var statements: [SPARQLQueryStatement] = []
             for i in 0..<80 {
@@ -396,7 +389,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             var statements: [SPARQLQueryStatement] = []
             for i in 0..<80 {
@@ -428,7 +421,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "type", object: "User"),
@@ -474,7 +467,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "likes", object: "Tea"),
@@ -525,7 +518,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
@@ -561,7 +554,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Graph with cycle: Alice -> Bob -> Alice (and others)
             try await insertStatements([
@@ -599,7 +592,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await insertStatements([
                 try makeLiteralStatement(subject: "Alice", predicate: "name", object: "Alice Smith"),
@@ -631,7 +624,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "type", object: "User"),
@@ -667,7 +660,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Multiple triples with same predicate
             try await insertStatements([
@@ -698,7 +691,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Insert 10 triples
             var statements: [SPARQLQueryStatement] = []
@@ -739,7 +732,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob")
@@ -771,7 +764,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             let results = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
@@ -792,7 +785,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Insert 100 edges: Person1 -> Person2 -> ... -> Person100
             var statements: [SPARQLQueryStatement] = []
@@ -835,7 +828,7 @@ struct SPARQLIntegrationTests {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            let context = container.newContext()
+            let context = container.testBaseContext()
 
             // Create a cycle: A -> B -> C -> A
             try await insertStatements([

@@ -13,15 +13,31 @@ package struct DatabasePartitionCatalog: Sendable {
 
     package init(
         engine: any StorageEngine,
+        root: Subspace,
         clock: any StorageMonotonicClock,
         storageLimits: StorageFrameLimits = .default
-    ) async throws {
-        let root = try await engine.resolveOrCreateNamespace(
-            path: ["database-framework", "partition-catalog"]
-        )
+    ) {
         self.transactionExecutor = StorageTransactionExecutor(engine: engine)
         self.clock = clock
-        self.entries = root.subspace("entries")
+        self.entries = root
+            .subspace("database-framework")
+            .subspace("partition-catalog")
+            .subspace("entries")
+        self.storageLimits = storageLimits
+    }
+
+    /// Opens the pre-Base partition catalog whose namespace root was resolved
+    /// through the backend namespace service. This exists only for the explicit
+    /// layout-v1 migration path; normal execution always uses the Base data root.
+    package init(
+        legacyEngine engine: any StorageEngine,
+        resolvedCatalogRoot: Subspace,
+        clock: any StorageMonotonicClock,
+        storageLimits: StorageFrameLimits = .default
+    ) {
+        self.transactionExecutor = StorageTransactionExecutor(engine: engine)
+        self.clock = clock
+        self.entries = resolvedCatalogRoot.subspace("entries")
         self.storageLimits = storageLimits
     }
 

@@ -39,8 +39,8 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
         try runtimeLimits.validate(request.budget)
         let requestPayload = context.requestPayload
 
-        let entityMutationExecutor = DatabaseEntityMutationExecutor(
-            container: context.container,
+        let entityMutationExecutor = try context.requireBaseExecutor()
+            .makeEntityMutationExecutor(
             runtimeLimits: runtimeLimits
         )
         switch request.input {
@@ -58,7 +58,7 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
                 prepare: {
                     let workMeter = DatabaseWorkMeter(
                         budget: request.budget,
-                        monotonicClock: context.container.monotonicClock
+                        monotonicClock: context.executor.monotonicClock
                     )
                     let preparedChanges = try entityMutationExecutor.prepare(
                         changes,

@@ -3,6 +3,12 @@
 public protocol DatabaseJobService: Sendable {
     var jobOperations: [JobOperationIdentifier] { get }
 
+    /// Resolves the Base lifecycle admission required by a concrete durable
+    /// operation before the endpoint constructs its target-bound executor.
+    func baseAdmission(
+        for operation: JobOperationIdentifier
+    ) throws -> DatabaseBaseAdmissionKind
+
     func start(
         _ request: JobStartOperation.Request,
         context: DatabaseOperationContext

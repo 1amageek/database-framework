@@ -18,9 +18,9 @@ DatabaseEngine provides the foundation for all database operations, including:
 Application-level resource manager. Does NOT create transactions.
 
 ```swift
-// Inject one already initialized StorageEngine.
+// Inject validated control/data domains and named Base placements.
 let configuration = DBConfiguration(
-    storageEngine: storageEngine,
+    storageTopology: storageTopology,
     monotonicClock: applicationMonotonicClock,
     wallClock: applicationWallClock
 )
@@ -30,40 +30,40 @@ let container = try await DBContainer.open(
     runtimeConfiguration: runtime
 )
 
-// Get a new context (for user operations)
-let context = container.newContext()
-
-// Access the storage engine directly for system operations
-let storage = container.engine
+// Bind the authenticated principal and select one Base.
+let session = container.session(authorization: authorization)
+let context = session.base(baseID).newContext()
 ```
 
 DatabaseEngine does not import, select, or construct a concrete backend. The
-package that creates `storageEngine` owns that adapter choice. Creating
-`DBConfiguration(storageEngine:)` transfers the engine lifecycle to the
-configuration/container owner; the caller must not reuse or shut down that
+package that creates `storageTopology` owns those adapter choices. Creating
+`DBConfiguration(storageTopology:)` transfers every engine lifecycle to the
+configuration/container owner; the caller must not reuse or shut down an
 engine independently.
 
 Opening failure, explicit `container.shutdown()`, and container deinitialization
-all converge on one idempotent shutdown path. The underlying engine is released
-exactly once.
+all converge on one idempotent shutdown path. Every underlying engine is
+released exactly once.
 
 ```text
-initialized StorageEngine
+initialized StorageEngine values
           |
+          | validated DatabaseStorageTopology
           | ownership transfer
           v
 DBConfiguration -> DBContainer.open
-                        |-- failure --------> shutdown once
-                        |-- shutdown() -----> shutdown once
-                        `-- deinit ----------> shutdown once
+                        |-- failure --------> all shut down once
+                        |-- shutdown() -----> all shut down once
+                        `-- deinit ----------> all shut down once
 ```
 
 ### DatabaseContext
 
-Transaction manager and user-facing API. Owns ReadVersionCache.
+Base-bound transaction manager and user-facing unit of work. Owns its pending
+changes and read-version cache.
 
 ```swift
-let context = container.newContext()
+let context = session.base(baseID).newContext()
 
 // Queue changes
 try context.insert(model)
@@ -131,7 +131,7 @@ Package-scoped (`package final class`) — not part of the public API surface.
 
 ```swift
 // User-facing save operation
-let context = container.newContext()
+let context = session.base(baseID).newContext()
 try context.insert(user)
 try await context.save()
 

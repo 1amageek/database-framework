@@ -52,10 +52,8 @@ struct DBConfigurationTests {
 
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(
+            configuration: try .testing(
                 storageEngine: database,
-                monotonicClock: TestProcessMonotonicClock(),
-                wallClock: FixedTestWallClock(),
                 indexConfigurations: [
                     ContainerEmbeddingConfiguration(
                         fieldName: "embedding",
@@ -65,7 +63,7 @@ struct DBConfigurationTests {
                 ]
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
 
         #expect(container.indexConfigurations.count == 1)
@@ -82,10 +80,8 @@ struct DBConfigurationTests {
 
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(
+            configuration: try .testing(
                 storageEngine: database,
-                monotonicClock: TestProcessMonotonicClock(),
-                wallClock: FixedTestWallClock(),
                 indexConfigurations: [
                     ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "en"),
                     ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "ja"),
@@ -94,7 +90,7 @@ struct DBConfigurationTests {
                 ]
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
 
         #expect(container.indexConfigurations.count == 2)
@@ -113,7 +109,7 @@ struct DBConfigurationTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
 
         #expect(container.indexConfigurations.isEmpty)
@@ -190,10 +186,8 @@ struct DBConfigurationTests {
 
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(
+            configuration: try .testing(
                 storageEngine: database,
-                monotonicClock: TestProcessMonotonicClock(),
-                wallClock: FixedTestWallClock(),
                 indexConfigurations: [
                     ContainerEmbeddingConfiguration(
                         fieldName: "embedding",
@@ -203,7 +197,7 @@ struct DBConfigurationTests {
                 ]
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
 
         let vectorConfig = container.indexConfigurations[
@@ -223,17 +217,15 @@ struct DBConfigurationTests {
 
         let container = try await DBContainer.open(
             testing: schema,
-            configuration: .init(
+            configuration: try .testing(
                 storageEngine: database,
-                monotonicClock: TestProcessMonotonicClock(),
-                wallClock: FixedTestWallClock(),
                 indexConfigurations: [
                     ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "en"),
                     ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "ja")
                 ]
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
 
         let ftConfigs = container.indexConfigurations[

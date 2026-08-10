@@ -41,7 +41,7 @@ struct SHACLPropertyPairTests {
             testing: schema,
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Statement.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 
@@ -60,8 +60,9 @@ struct SHACLPropertyPairTests {
     @Test("lessThan compares RDF literal values without dropping terms")
     func lessThanUsesRDFValueSemantics() async throws {
         let container = try await setupContainer()
+        defer { await container.shutdown() }
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
         for statement in [
             try makeStatement(
                 subject: "ex:Alice",

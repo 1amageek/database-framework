@@ -58,10 +58,10 @@ struct CoveringIndexBenchmark {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(User.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         try await container.ensureIndexesReady()
-        return DatabaseContext(container: container)
+        return container.testBaseContext()
     }
 
     @Test("Covering Index Baseline")

@@ -109,9 +109,9 @@ struct MinMaxAggregationQueryTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MinimumOrder.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert test data
         let orders = [
@@ -167,9 +167,9 @@ struct MinMaxAggregationQueryTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MaximumOrder.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert test data
         let orders = [
@@ -225,9 +225,9 @@ struct MinMaxAggregationQueryTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(MixedAggregationOrder.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert test data
         let orders = [
@@ -312,9 +312,9 @@ struct MinMaxAggregationQueryTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
             entityRuntimes: [try DatabaseFrameworkRuntime.entity(Int64AggregationOrder.self)]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Insert test data
         let orders = [

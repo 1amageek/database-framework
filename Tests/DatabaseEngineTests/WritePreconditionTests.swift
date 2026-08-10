@@ -55,17 +55,17 @@ struct WritePreconditionTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(WPUser.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
     }
 
     private func cleanup(_ container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: WPUser.self)
+        let subspace = try await container.testBaseDirectory(for: WPUser.self)
         let (begin, end) = subspace.range()
         try await container.engine.withTransaction { transaction in
             try transaction.clearRange(beginKey: begin, endKey: end)
         }
-        try await container.ensureIndexesReady()
+        try await container.ensureTestBaseIndexesReady()
     }
 
     private func uniq(_ prefix: String) -> String {
@@ -78,7 +78,7 @@ struct WritePreconditionTests {
     func insertOnEmptyKeySucceeds() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var user = WPUser(email: uniq("e") + "@example.com")
         user.id = uniq("U")
@@ -96,7 +96,7 @@ struct WritePreconditionTests {
     func insertOnExistingKeyThrowsPreconditionFailed() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var user = WPUser(email: uniq("orig") + "@example.com")
         user.id = uniq("U")
@@ -127,7 +127,7 @@ struct WritePreconditionTests {
     func updateOnExistingKeySucceeds() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let oldEmail = uniq("old") + "@example.com"
         let newEmail = uniq("new") + "@example.com"
@@ -156,7 +156,7 @@ struct WritePreconditionTests {
     func updateWithMatchingStoredVersionSucceedsAndStaleVersionFails() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let oldEmail = uniq("old") + "@example.com"
         var user = WPUser(email: oldEmail)
@@ -197,7 +197,7 @@ struct WritePreconditionTests {
     func updateOnMissingKeyThrowsPreconditionFailed() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var ghostOld = WPUser(email: uniq("g-old") + "@example.com")
         ghostOld.id = uniq("U")
@@ -223,7 +223,7 @@ struct WritePreconditionTests {
     func deleteExistsOnMissingKeyThrowsPreconditionFailed() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var ghost = WPUser(email: uniq("ghost") + "@example.com")
         ghost.id = uniq("U")
@@ -239,7 +239,7 @@ struct WritePreconditionTests {
     func deleteDefaultExistsOnMissingKeyFails() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var ghost = WPUser(email: uniq("ghost") + "@example.com")
         ghost.id = uniq("U")
@@ -254,7 +254,7 @@ struct WritePreconditionTests {
     func deleteOnExistingKeySucceeds() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let email = uniq("e") + "@example.com"
         var user = WPUser(email: email)
@@ -277,7 +277,7 @@ struct WritePreconditionTests {
     func upsertWritesRegardlessOfExistence() async throws {
         let container = try await makeContainer()
         try await cleanup(container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let email1 = uniq("v1") + "@example.com"
         let email2 = uniq("v2") + "@example.com"

@@ -2,16 +2,13 @@ import DatabaseTypes
 import DatabaseKit
 import StorageKit
 
-/// Canonical container-wide inverse-reference catalog.
+/// Canonical Base-local inverse-reference catalog.
 public enum RelationshipReferenceCatalog {
-    private static let root = Subspace(
-        prefix: Tuple(["_database_framework", "relationship_reference"]).pack()
-    )
-
     public static func set(
         target: EntityReference,
         owner: EntityReference,
         descriptor: RelationshipDescriptor,
+        baseRoot: Subspace,
         transaction: any TransactionAccess
     ) throws {
         let ownerBytes = try RelationshipIdentityCodec.encode(owner)
@@ -20,7 +17,8 @@ public enum RelationshipReferenceCatalog {
             for: try entryKey(
                 target: target,
                 ownerBytes: ownerBytes,
-                descriptor: descriptor
+                descriptor: descriptor,
+                baseRoot: baseRoot
             )
         )
     }
@@ -29,6 +27,7 @@ public enum RelationshipReferenceCatalog {
         target: EntityReference,
         owner: EntityReference,
         descriptor: RelationshipDescriptor,
+        baseRoot: Subspace,
         transaction: any TransactionAccess
     ) throws {
         let ownerBytes = try RelationshipIdentityCodec.encode(owner)
@@ -36,7 +35,8 @@ public enum RelationshipReferenceCatalog {
             key: try entryKey(
                 target: target,
                 ownerBytes: ownerBytes,
-                descriptor: descriptor
+                descriptor: descriptor,
+                baseRoot: baseRoot
             )
         )
     }
@@ -45,6 +45,7 @@ public enum RelationshipReferenceCatalog {
         of target: EntityReference,
         descriptor: RelationshipDescriptor,
         limit: Int,
+        baseRoot: Subspace,
         transaction: any TransactionAccess
     ) async throws -> [EntityReference] {
         guard limit > 0 else {
@@ -59,6 +60,7 @@ public enum RelationshipReferenceCatalog {
                 descriptor: descriptor,
                 continuation: continuation,
                 limit: min(256, limit - identities.count),
+                baseRoot: baseRoot,
                 transaction: transaction
             )
             identities.append(contentsOf: page.identities)
@@ -75,6 +77,7 @@ public enum RelationshipReferenceCatalog {
         descriptor: RelationshipDescriptor,
         continuation: ByteString?,
         limit: Int,
+        baseRoot: Subspace,
         transaction: any TransactionAccess
     ) async throws -> RelationshipReferenceIdentityPage {
         guard limit > 0, limit <= 256 else {
@@ -82,7 +85,8 @@ public enum RelationshipReferenceCatalog {
         }
         let prefix = try referenceSubspace(
             target: target,
-            descriptor: descriptor
+            descriptor: descriptor,
+            baseRoot: baseRoot
         )
         let (begin, end) = prefix.range()
         let beginSelector: KeySelector
@@ -115,17 +119,26 @@ public enum RelationshipReferenceCatalog {
     private static func entryKey(
         target: EntityReference,
         ownerBytes: ByteString,
-        descriptor: RelationshipDescriptor
+        descriptor: RelationshipDescriptor,
+        baseRoot: Subspace
     ) throws -> ByteString {
-        try referenceSubspace(target: target, descriptor: descriptor)
+        try referenceSubspace(
+            target: target,
+            descriptor: descriptor,
+            baseRoot: baseRoot
+        )
             .pack(Tuple([ownerBytes]))
     }
 
     private static func referenceSubspace(
         target: EntityReference,
-        descriptor: RelationshipDescriptor
+        descriptor: RelationshipDescriptor,
+        baseRoot: Subspace
     ) throws -> Subspace {
-        root
+        baseRoot
+            .subspace("data")
+            .subspace("_database_framework")
+            .subspace("relationship_reference")
             .subspace(descriptor.name)
             .subspace(try RelationshipIdentityCodec.encode(target))
     }

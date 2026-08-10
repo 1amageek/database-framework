@@ -1,0 +1,60 @@
+import DatabaseKit
+import StorageKit
+import Synchronization
+
+/// Retains one immutable Base generation and its admission lease.
+public final class DatabaseBaseLease: Sendable {
+    private let token: DatabaseBaseLeaseToken
+    package let generation: DatabaseBaseGeneration
+    package let permitsDataOperations: Bool
+    package let permitsInactiveMaintenance: Bool
+
+    package init(
+        generation: DatabaseBaseGeneration,
+        token: DatabaseBaseLeaseToken,
+        permitsDataOperations: Bool = true,
+        permitsInactiveMaintenance: Bool = false
+    ) {
+        self.generation = generation
+        self.token = token
+        self.permitsDataOperations = permitsDataOperations
+        self.permitsInactiveMaintenance = permitsInactiveMaintenance
+    }
+
+    public var baseID: Base.ID { generation.record.id }
+    public var placementID: Base.Placement.ID {
+        generation.record.placementID
+    }
+    public var placementGeneration: UInt64 {
+        generation.record.placementGeneration
+    }
+    public var domainID: String { generation.domain.id.value }
+    package var root: Subspace { generation.root }
+    package var transactionExecutor: StorageTransactionExecutor {
+        generation.domain.transactionExecutor
+    }
+}
+
+package final class DatabaseBaseLeaseToken: Sendable {
+    private let didFinish = Mutex(false)
+    private let finishOperation: @Sendable () -> Void
+
+    package init(finishOperation: @escaping @Sendable () -> Void) {
+        self.finishOperation = finishOperation
+    }
+
+    package func finish() {
+        let shouldFinish = didFinish.withLock { didFinish in
+            guard !didFinish else { return false }
+            didFinish = true
+            return true
+        }
+        if shouldFinish {
+            finishOperation()
+        }
+    }
+
+    deinit {
+        finish()
+    }
+}

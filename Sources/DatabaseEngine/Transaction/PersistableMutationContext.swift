@@ -14,18 +14,21 @@ public struct PersistableMutationContext: ~Copyable, Sendable {
     private let transaction: DatabaseTransaction
     private let operationID: UInt64
     private let operationGate: TransactionOperationGate
+    package let baseRoot: Subspace
     package let storageAccess: any TransactionAccess
 
     package init(
         schema: Schema,
         transaction: DatabaseTransaction,
         operationID: UInt64,
+        baseRoot: Subspace,
         storageAccess: any TransactionAccess
     ) {
         self.schema = schema
         self.transaction = transaction
         self.operationID = operationID
         self.operationGate = TransactionOperationGate()
+        self.baseRoot = baseRoot
         self.storageAccess = storageAccess
     }
 

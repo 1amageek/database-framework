@@ -50,9 +50,9 @@ private struct IndexStateContext {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexedUser.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
-        let dataStore = try await container.store(for: IndexedUser.self)
+        let dataStore = try await container.testBaseStore(for: IndexedUser.self)
 
         self.database = database
         self.subspace = dataStore.subspace
@@ -93,9 +93,10 @@ struct IndexStateBehaviorTests {
     func testDisabledIndexNotMaintainedOnInsert() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
+            try await ctx.container.withTestBaseOperation {
 
-            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-            let indexName = "IndexedUser_email"
+                let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
+                let indexName = "IndexedUser_email"
 
             try await ctx.dataStore.indexLifecycleStore.disable(indexName)
             let initialState = try await indexLifecycleStore.state(of: indexName)
@@ -110,7 +111,8 @@ struct IndexStateBehaviorTests {
             #expect(indexEntryCount == 0, "Disabled index should not have entries after insert")
 
             // Cleanup
-            try await ctx.cleanup()
+                try await ctx.cleanup()
+            }
         }
     }
 
@@ -118,9 +120,10 @@ struct IndexStateBehaviorTests {
     func testDisabledIndexNoUniqueConstraint() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
+            try await ctx.container.withTestBaseOperation {
 
-            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-            let indexName = "IndexedUser_email"
+                let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
+                let indexName = "IndexedUser_email"
 
             try await ctx.dataStore.indexLifecycleStore.disable(indexName)
             let state = try await indexLifecycleStore.state(of: indexName)
@@ -141,7 +144,8 @@ struct IndexStateBehaviorTests {
             #expect(fetchedUser2 != nil)
 
             // Cleanup
-            try await ctx.cleanup()
+                try await ctx.cleanup()
+            }
         }
     }
 
@@ -151,9 +155,10 @@ struct IndexStateBehaviorTests {
     func testWriteOnlyIndexMaintainedOnInsert() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
+            try await ctx.container.withTestBaseOperation {
 
-            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-            let indexName = "IndexedUser_email"
+                let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
+                let indexName = "IndexedUser_email"
 
             try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
@@ -169,7 +174,8 @@ struct IndexStateBehaviorTests {
             #expect(indexEntryCount == 1, "WriteOnly index should have entry after insert")
 
             // Cleanup
-            try await ctx.cleanup()
+                try await ctx.cleanup()
+            }
         }
     }
 
@@ -177,9 +183,10 @@ struct IndexStateBehaviorTests {
     func testWriteOnlyIndexTracksUniqueConstraintViolations() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
+            try await ctx.container.withTestBaseOperation {
 
-            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-            let indexName = "IndexedUser_email"
+                let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
+                let indexName = "IndexedUser_email"
 
             try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
@@ -198,7 +205,8 @@ struct IndexStateBehaviorTests {
             // continue building the index and resolve violations later
 
             // Cleanup
-            try await ctx.cleanup()
+                try await ctx.cleanup()
+            }
         }
     }
 
@@ -206,9 +214,10 @@ struct IndexStateBehaviorTests {
     func testReadableIndexEnforcesUniqueConstraint() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
+            try await ctx.container.withTestBaseOperation {
 
-            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-            let indexName = "IndexedUser_email"
+                let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
+                let indexName = "IndexedUser_email"
 
             try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
@@ -226,7 +235,8 @@ struct IndexStateBehaviorTests {
             }
 
             // Cleanup
-            try await ctx.cleanup()
+                try await ctx.cleanup()
+            }
         }
     }
 
@@ -236,9 +246,10 @@ struct IndexStateBehaviorTests {
     func testReadableIndexMaintainedOnInsert() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
+            try await ctx.container.withTestBaseOperation {
 
-            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-            let indexName = "IndexedUser_email"
+                let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
+                let indexName = "IndexedUser_email"
 
             try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
@@ -255,7 +266,8 @@ struct IndexStateBehaviorTests {
             #expect(indexEntryCount == 1, "Readable index should have entry after insert")
 
             // Cleanup
-            try await ctx.cleanup()
+                try await ctx.cleanup()
+            }
         }
     }
 
@@ -265,9 +277,10 @@ struct IndexStateBehaviorTests {
     func testDisabledIndexNotUpdatedOnDelete() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
+            try await ctx.container.withTestBaseOperation {
 
-            let dataStore = ctx.dataStore
-            let indexName = "IndexedUser_email"
+                let dataStore = ctx.dataStore
+                let indexName = "IndexedUser_email"
 
             try await dataStore.indexLifecycleStore.disable(indexName)
             try await dataStore.indexLifecycleStore.enable(indexName)
@@ -292,7 +305,8 @@ struct IndexStateBehaviorTests {
             #expect(countAfter == 1, "Stale index entry should remain when index is disabled during delete")
 
             // Cleanup
-            try await ctx.cleanup()
+                try await ctx.cleanup()
+            }
         }
     }
 
@@ -302,9 +316,10 @@ struct IndexStateBehaviorTests {
     func testStateTransitions() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
+            try await ctx.container.withTestBaseOperation {
 
-            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-            let indexName = "test_index"
+                let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
+                let indexName = "test_index"
 
             try await indexLifecycleStore.disable(indexName)
             let state1 = try await indexLifecycleStore.state(of: indexName)
@@ -326,7 +341,8 @@ struct IndexStateBehaviorTests {
             #expect(state4 == .disabled)
 
             // Cleanup
-            try await ctx.cleanup()
+                try await ctx.cleanup()
+            }
         }
     }
 
@@ -334,9 +350,10 @@ struct IndexStateBehaviorTests {
     func testInvalidStateTransitions() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
+            try await ctx.container.withTestBaseOperation {
 
-            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-            let indexName = "test_invalid"
+                let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
+                let indexName = "test_invalid"
 
             try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
@@ -351,7 +368,8 @@ struct IndexStateBehaviorTests {
             }
 
             // Cleanup
-            try await ctx.cleanup()
+                try await ctx.cleanup()
+            }
         }
     }
 
@@ -361,9 +379,10 @@ struct IndexStateBehaviorTests {
     func testBatchOperationsRespectIndexState() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let ctx = try await IndexStateContext()
+            try await ctx.container.withTestBaseOperation {
 
-            let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-            let indexName = "IndexedUser_email"
+                let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
+                let indexName = "IndexedUser_email"
 
             try await indexLifecycleStore.disable(indexName)
             let state = try await indexLifecycleStore.state(of: indexName)
@@ -386,7 +405,8 @@ struct IndexStateBehaviorTests {
             #expect(allUsers.count == 3)
 
             // Cleanup
-            try await ctx.cleanup()
+                try await ctx.cleanup()
+            }
         }
     }
 }

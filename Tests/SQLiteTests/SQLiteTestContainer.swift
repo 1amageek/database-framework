@@ -40,14 +40,15 @@ extension DBContainer {
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
-        try await open(
+        let engine = try SQLiteStorageEngine(configuration: configuration)
+        return try await open(
             for: schema,
-            configuration: configuration,
-            monotonicClock: TestProcessMonotonicClock(),
-            wallClock: FixedTestWallClock(),
+            configuration: try .testing(
+                storageEngine: engine,
+                indexConfigurations: indexConfigurations
+            ),
             runtimeConfiguration: runtimeConfiguration,
-            security: security,
-            indexConfigurations: indexConfigurations
+            security: security
         )
     }
 
@@ -59,15 +60,16 @@ extension DBContainer {
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
-        try await open(
+        let engine = try SQLiteStorageEngine(configuration: configuration)
+        return try await open(
             for: schema,
             migrationPlan: migrationPlan,
-            configuration: configuration,
-            monotonicClock: TestProcessMonotonicClock(),
-            wallClock: FixedTestWallClock(),
+            configuration: try .testing(
+                storageEngine: engine,
+                indexConfigurations: indexConfigurations
+            ),
             runtimeConfiguration: runtimeConfiguration,
-            security: security,
-            indexConfigurations: indexConfigurations
+            security: security
         )
     }
 
@@ -77,13 +79,15 @@ extension DBContainer {
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
-        try await inMemory(
+        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        return try await open(
             for: schema,
-            monotonicClock: TestProcessMonotonicClock(),
-            wallClock: FixedTestWallClock(),
+            configuration: try .testing(
+                storageEngine: engine,
+                indexConfigurations: indexConfigurations
+            ),
             runtimeConfiguration: runtimeConfiguration,
-            security: security,
-            indexConfigurations: indexConfigurations
+            security: security
         )
     }
 
@@ -94,14 +98,15 @@ extension DBContainer {
         security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) async throws -> DBContainer {
-        try await sqlite(
+        let engine = try SQLiteStorageEngine(configuration: .file(path))
+        return try await open(
             for: schema,
-            path: path,
-            monotonicClock: TestProcessMonotonicClock(),
-            wallClock: FixedTestWallClock(),
+            configuration: try .testing(
+                storageEngine: engine,
+                indexConfigurations: indexConfigurations
+            ),
             runtimeConfiguration: runtimeConfiguration,
-            security: security,
-            indexConfigurations: indexConfigurations
+            security: security
         )
     }
 }

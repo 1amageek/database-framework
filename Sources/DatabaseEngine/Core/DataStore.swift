@@ -22,7 +22,7 @@ import DatabaseKit
 /// ```swift
 /// // Set auth context per request
 /// try await AuthContextKey.$current.withValue(userAuth) {
-///     let context = container.newContext()
+///     let context = session.base(baseID).newContext()
 ///     try await context.save()  // Security evaluated via delegate
 /// }
 /// ```

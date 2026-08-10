@@ -30,10 +30,12 @@ enum DatabasePersistentJobDigest {
 
     static func result(
         operation: JobOperationIdentifier,
+        target: DatabaseOperationTarget,
         payload: ByteString
     ) -> JobResultDigest {
         var accumulator = JobResultDigestAccumulator(
-            operation: operation
+            operation: operation,
+            target: target
         )
         accumulator.update(payload)
         return accumulator.finalize()

@@ -6,6 +6,7 @@ import DatabaseServerFoundation
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
+import TestSupport
 import Testing
 
 @Persistable
@@ -126,7 +127,7 @@ struct SchemaExecuteHandlerTests {
         #expect(plan.compatibility == .initial)
         #expect(plan.issues.isEmpty)
 
-        let applied = try await container.withSchemaLease { lease in
+        let accepted = try await container.withSchemaLease { lease in
             #expect(lease.schema == initialSchema)
             let response = try await invoke(
                 DatabaseOperations.schemaExecute,
@@ -143,12 +144,24 @@ struct SchemaExecuteHandlerTests {
             #expect(container.schema == initialSchema)
             return response
         }
-        guard case .applied(let firstPublication) = applied else {
-            Issue.record("Expected an applied schema response")
+        guard case .accepted(let job) = accepted else {
+            Issue.record("Expected an accepted schema transition job")
             return
         }
+        #expect(container.schema == initialSchema)
+        let status = try await runUntilTerminal(
+            job,
+            runtime: runtime,
+            firstRequestID: 4
+        )
+        #expect(status.state == .succeeded)
+        let publication = try await schemaApplyResult(
+            job,
+            runtime: runtime,
+            requestID: 80
+        )
         #expect(container.schema == targetSchema)
-        #expect(container.schemaGeneration == firstPublication.generation)
+        #expect(container.schemaGeneration == publication.generation)
 
         let replay = try await invoke(
             DatabaseOperations.schemaExecute,
@@ -159,23 +172,23 @@ struct SchemaExecuteHandlerTests {
                     idempotencyKey: "schema-apply-1"
                 )
             ),
-            requestID: 4,
+            requestID: 81,
             runtime: runtime
         )
-        #expect(replay == applied)
+        #expect(replay == accepted)
 
         let description = try await invoke(
             DatabaseOperations.schemaDescribe,
             request: EmptyOperationPayload(),
-            requestID: 5,
+            requestID: 82,
             runtime: runtime
         )
         #expect(description.version == targetSchema.version)
         #expect(description.entities.map(\.name) == [SchemaExecuteAccount.persistableType])
     }
 
-    @Test("Schema publication uses the latest generation behind a stale request lease")
-    func publicationBypassesStaleRequestLease() async throws {
+    @Test("Schema publication preserves an already acquired generation lease")
+    func publicationPreservesStaleRequestLease() async throws {
         let initialSchema = try Schema(
             entities: [],
             version: Schema.Version(0, 0, 0)
@@ -187,53 +200,78 @@ struct SchemaExecuteHandlerTests {
         let secondSchema = try schemaAddingOptionalField(to: firstSchema)
         let container = try await makeContainer(schema: initialSchema)
         defer { await container.shutdown() }
-        let coordinator = DatabaseSchemaCoordinator(
-            container: container,
-            runtimeFactory: AnyDatabaseSchemaRuntimeFactory(
-                SchemaDrivenDatabaseRuntimeFactory()
-            )
-        )
+        let runtime = try await makePersistentRuntime(container: container)
         let initialFingerprint = container.schemaFingerprint.detached()
         let firstManifest = SchemaManifest(schema: firstSchema)
         let firstFingerprint = try firstManifest.fingerprint()
         let secondManifest = SchemaManifest(schema: secondSchema)
 
-        let publication = try await container.withSchemaLease { lease in
+        let firstPublication = try await container.withSchemaLease { lease in
             #expect(lease.schema == initialSchema)
-            _ = try await coordinator.apply(
-                manifest: firstManifest,
-                expectedFingerprint: initialFingerprint,
-                idempotencyKey: "stale-lease-first",
-                context: DatabaseOperationContext(
-                    container: container,
-                    requestID: 6,
-                    metadata: OperationRequestMetadata(
+            let response = try await invoke(
+                DatabaseOperations.schemaExecute,
+                request: SchemaExecuteOperation.Request(
+                    invocation: .apply(
+                        manifest: firstManifest,
+                        expectedFingerprint: initialFingerprint,
                         idempotencyKey: "stale-lease-first"
-                    ),
-                    requestPayload: ByteString()
-                )
+                    )
+                ),
+                requestID: 6,
+                runtime: runtime
             )
+            guard case .accepted(let job) = response else {
+                throw SchemaExecuteHandlerTestError.expectedAcceptedJob
+            }
             #expect(container.schema == initialSchema)
-            let second = try await coordinator.apply(
-                manifest: secondManifest,
-                expectedFingerprint: firstFingerprint,
-                idempotencyKey: "stale-lease-second",
-                context: DatabaseOperationContext(
-                    container: container,
-                    requestID: 7,
-                    metadata: OperationRequestMetadata(
-                        idempotencyKey: "stale-lease-second"
-                    ),
-                    requestPayload: ByteString()
-                )
+            let status = try await runUntilTerminal(
+                job,
+                runtime: runtime,
+                firstRequestID: 90
             )
+            #expect(status.state == .succeeded)
+            #expect(lease.schema == initialSchema)
             #expect(container.schema == initialSchema)
-            return second
+            return try await schemaApplyResult(
+                job,
+                runtime: runtime,
+                requestID: 91
+            )
         }
+        #expect(container.schema == firstSchema)
+
+        let secondResponse = try await invoke(
+            DatabaseOperations.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: secondManifest,
+                    expectedFingerprint: firstFingerprint,
+                    idempotencyKey: "stale-lease-second"
+                )
+            ),
+            requestID: 7,
+            runtime: runtime
+        )
+        guard case .accepted(let secondJob) = secondResponse else {
+            Issue.record("Expected the second schema transition job")
+            return
+        }
+        let secondStatus = try await runUntilTerminal(
+            secondJob,
+            runtime: runtime,
+            firstRequestID: 92
+        )
+        #expect(secondStatus.state == .succeeded)
+        let secondPublication = try await schemaApplyResult(
+            secondJob,
+            runtime: runtime,
+            requestID: 93
+        )
 
         #expect(container.schema == secondSchema)
-        #expect(container.schemaFingerprint == publication.fingerprint)
-        #expect(publication.previousFingerprint == firstFingerprint)
+        #expect(container.schemaFingerprint == secondPublication.fingerprint)
+        #expect(firstPublication.fingerprint == firstFingerprint)
+        #expect(secondPublication.previousFingerprint == firstFingerprint)
     }
 
     @Test("An old idempotency replay never republishes an obsolete generation")
@@ -268,6 +306,22 @@ struct SchemaExecuteHandlerTests {
             requestID: 8,
             runtime: runtime
         )
+        guard case .accepted(let firstJob) = firstResponse else {
+            Issue.record("Expected the first schema transition job")
+            return
+        }
+        #expect(
+            try await runUntilTerminal(
+                firstJob,
+                runtime: runtime,
+                firstRequestID: 100
+            ).state == .succeeded
+        )
+        let first = try await schemaApplyResult(
+            firstJob,
+            runtime: runtime,
+            requestID: 101
+        )
         let secondResponse = try await invoke(
             DatabaseOperations.schemaExecute,
             request: SchemaExecuteOperation.Request(
@@ -279,6 +333,22 @@ struct SchemaExecuteHandlerTests {
             ),
             requestID: 9,
             runtime: runtime
+        )
+        guard case .accepted(let secondJob) = secondResponse else {
+            Issue.record("Expected the second schema transition job")
+            return
+        }
+        #expect(
+            try await runUntilTerminal(
+                secondJob,
+                runtime: runtime,
+                firstRequestID: 102
+            ).state == .succeeded
+        )
+        let second = try await schemaApplyResult(
+            secondJob,
+            runtime: runtime,
+            requestID: 103
         )
         let replayResponse = try await invoke(
             DatabaseOperations.schemaExecute,
@@ -292,14 +362,8 @@ struct SchemaExecuteHandlerTests {
             requestID: 10,
             runtime: runtime
         )
-        guard case .applied(let first) = firstResponse,
-              case .applied(let second) = secondResponse,
-              case .applied(let replay) = replayResponse else {
-            Issue.record("Expected applied schema responses")
-            return
-        }
 
-        #expect(replay == first)
+        #expect(replayResponse == firstResponse)
         #expect(container.schema == secondSchema)
         #expect(container.schemaFingerprint == secondFingerprint)
         #expect(container.schemaGeneration == second.generation)
@@ -386,11 +450,11 @@ struct SchemaExecuteHandlerTests {
                     ),
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await container.shutdown() }
         let runtime = try await makePersistentRuntime(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
         let first = SchemaBuildAccountV1(
             id: "account-1",
             email: "first@example.com"
@@ -416,28 +480,30 @@ struct SchemaExecuteHandlerTests {
             requestID: 21,
             runtime: runtime
         )
-        guard case .applied(let publication) = response,
-              let job = publication.job else {
-            Issue.record("Expected an applied schema with a persistent job")
+        guard case .accepted(let job) = response else {
+            Issue.record("Expected an accepted schema transition job")
             return
         }
-        #expect(container.schema == targetSchema)
+        #expect(container.schema == initialSchema)
 
+        try await runtime.runScheduledWork()
+        #expect(container.schema == initialSchema)
+        try await runtime.runScheduledWork()
         let building = try await indexStatus(
             container: container,
             entity: SchemaBuildAccountV2.persistableType,
             index: "schema_build_account_email"
         )
         #expect(building.indexState == .writeOnly)
+        #expect(container.schema == targetSchema)
 
-        try await runtime.runScheduledWork()
-        let completed = try await invoke(
-            DatabaseOperations.jobStatus,
-            request: JobStatusOperation.Request(job: job),
-            requestID: 22,
-            runtime: runtime
+        let completed = try await runUntilTerminal(
+            job,
+            runtime: runtime,
+            firstRequestID: 22
         )
         #expect(completed.state == .succeeded)
+        #expect(container.schema == targetSchema)
 
         let ready = try await indexStatus(
             container: container,
@@ -486,11 +552,11 @@ struct SchemaExecuteHandlerTests {
                     ),
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await container.shutdown() }
         let runtime = try await makePersistentRuntime(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
         try context.insert(
             SchemaBuildTenantAccountV1(
                 id: "account-a",
@@ -519,12 +585,16 @@ struct SchemaExecuteHandlerTests {
             requestID: 31,
             runtime: runtime
         )
-        guard case .applied(let publication) = response,
-              let job = publication.job else {
+        guard case .accepted(let job) = response else {
             Issue.record("Expected a dynamic schema index build job")
             return
         }
 
+        #expect(container.schema == initialSchema)
+        try await runtime.runScheduledWork()
+        #expect(container.schema == initialSchema)
+        try await runtime.runScheduledWork()
+        #expect(container.schema == targetSchema)
         let tenantA = try partitions(tenantID: "tenant-a")
         let tenantB = try partitions(tenantID: "tenant-b")
         #expect(
@@ -544,14 +614,13 @@ struct SchemaExecuteHandlerTests {
             ).indexState == .writeOnly
         )
 
-        try await runtime.runScheduledWork()
-        let completed = try await invoke(
-            DatabaseOperations.jobStatus,
-            request: JobStatusOperation.Request(job: job),
-            requestID: 32,
-            runtime: runtime
+        let completed = try await runUntilTerminal(
+            job,
+            runtime: runtime,
+            firstRequestID: 32
         )
         #expect(completed.state == .succeeded)
+        #expect(container.schema == targetSchema)
         for tenant in [tenantA, tenantB] {
             let status = try await indexStatus(
                 container: container,
@@ -586,11 +655,11 @@ struct SchemaExecuteHandlerTests {
                     ),
                 ]
             ),
-            security: .disabled
+            security: .testingDisabled
         )
         defer { await container.shutdown() }
         let runtime = try await makePersistentRuntime(container: container)
-        let context = container.newContext()
+        let context = container.testBaseContext()
         try context.insert(
             SchemaBuildAccountV1(
                 id: "cancelled-account",
@@ -612,8 +681,7 @@ struct SchemaExecuteHandlerTests {
             requestID: 41,
             runtime: runtime
         )
-        guard case .applied(let firstPublication) = first,
-              let firstJob = firstPublication.job else {
+        guard case .accepted(let firstJob) = first else {
             Issue.record("Expected the first schema index build job")
             return
         }
@@ -627,12 +695,10 @@ struct SchemaExecuteHandlerTests {
             )
         )
         #expect(cancellation.accepted)
-        try await runtime.runScheduledWork()
-        let cancelled = try await invoke(
-            DatabaseOperations.jobStatus,
-            request: JobStatusOperation.Request(job: firstJob),
-            requestID: 43,
-            runtime: runtime
+        let cancelled = try await runUntilTerminal(
+            firstJob,
+            runtime: runtime,
+            firstRequestID: 43
         )
         #expect(cancelled.state == .cancelled)
 
@@ -648,19 +714,16 @@ struct SchemaExecuteHandlerTests {
             requestID: 44,
             runtime: runtime
         )
-        guard case .applied(let replacementPublication) = replacement,
-              let replacementJob = replacementPublication.job else {
+        guard case .accepted(let replacementJob) = replacement else {
             Issue.record("Expected a replacement schema index build job")
             return
         }
         #expect(replacementJob != firstJob)
 
-        try await runtime.runScheduledWork()
-        let completed = try await invoke(
-            DatabaseOperations.jobStatus,
-            request: JobStatusOperation.Request(job: replacementJob),
-            requestID: 45,
-            runtime: runtime
+        let completed = try await runUntilTerminal(
+            replacementJob,
+            runtime: runtime,
+            firstRequestID: 45
         )
         #expect(completed.state == .succeeded)
         #expect(
@@ -672,6 +735,129 @@ struct SchemaExecuteHandlerTests {
         )
     }
 
+    @Test("An accepted schema transition blocks Base lifecycle changes")
+    func acceptedTransitionBlocksBaseLifecycle() async throws {
+        let initialSchema = try Schema(
+            entities: [],
+            version: Schema.Version(0, 0, 0)
+        )
+        let targetSchema = try Schema(
+            entities: [try SchemaExecuteAccount.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let container = try await makeContainer(schema: initialSchema)
+        defer { await container.shutdown() }
+        let runtime = try await makePersistentRuntime(container: container)
+        let base = try await baseRecord(container)
+        let response = try await invoke(
+            DatabaseOperations.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: targetSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-blocks-base-lifecycle"
+                )
+            ),
+            requestID: 51,
+            runtime: runtime
+        )
+        guard case .accepted(let job) = response else {
+            Issue.record("Expected an accepted schema transition job")
+            return
+        }
+
+        do {
+            _ = try await container.retireBase(
+                base.id,
+                expectedRevision: base.revision
+            )
+            Issue.record("Expected the Base lifecycle change to be rejected")
+        } catch DatabaseSchemaPublicationError.transitionInProgress(
+            let activeJob
+        ) {
+            #expect(activeJob == job)
+        }
+
+        #expect(
+            try await runUntilTerminal(
+                job,
+                runtime: runtime,
+                firstRequestID: 52
+            ).state == .succeeded
+        )
+    }
+
+    @Test("Schema transition installs the current snapshot into retired Bases")
+    func retiredBaseReceivesSchemaSnapshot() async throws {
+        let initialSchema = try Schema(
+            entities: [try SchemaBuildAccountV1.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let targetSchema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(2, 0, 0)
+        )
+        let container = try await DBContainer.open(
+            for: initialSchema,
+            configuration: DBConfiguration.testing(
+                storageEngine: InMemoryEngine()
+            ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SchemaBuildAccountV1.self
+                    ),
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let current = try await baseRecord(container)
+        let retired = try await container.retireBase(
+            current.id,
+            expectedRevision: current.revision
+        )
+        let runtime = try await makePersistentRuntime(container: container)
+        let response = try await invoke(
+            DatabaseOperations.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: targetSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-retired-base"
+                )
+            ),
+            requestID: 61,
+            runtime: runtime
+        )
+        guard case .accepted(let job) = response else {
+            Issue.record("Expected an accepted schema transition job")
+            return
+        }
+        #expect(
+            try await runUntilTerminal(
+                job,
+                runtime: runtime,
+                firstRequestID: 62
+            ).state == .succeeded
+        )
+
+        let lease = try container.acquireBaseSchemaMaintenanceLease(
+            retired.id
+        )
+        let installedVersion = try await container.withBaseLease(lease) {
+            try await container.getCurrentSchemaVersion()
+        }
+        #expect(installedVersion == targetSchema.version)
+
+        let active = try await container.activateBase(
+            retired.id,
+            expectedRevision: retired.revision,
+            authorization: TestBaseEnvironment.authorization
+        )
+        #expect(active.lifecycle == .active)
+    }
+
     private func makeContainer(schema: Schema) async throws -> DBContainer {
         try await DBContainer.open(
             for: schema,
@@ -681,33 +867,30 @@ struct SchemaExecuteHandlerTests {
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 schema: schema
             ),
-            security: .disabled
+            security: .testingDisabled
         )
+    }
+
+    private func baseRecord(
+        _ container: DBContainer
+    ) async throws -> DatabaseBaseRecord {
+        let id = try TestBaseEnvironment.id()
+        return try await container.withControlMetadataTransaction(
+            configuration: .readOnly
+        ) { transaction in
+            try #require(
+                try await container.baseCatalog.load(
+                    id,
+                    transaction: transaction.storageAccess
+                )
+            )
+        }
     }
 
     private func makeRuntime(
         container: DBContainer
     ) async throws -> DatabaseServerRuntime {
-        let unavailable = UnavailablePlatformServices()
-        return try await DatabaseServerRuntime(
-            container: container,
-            configuration: try DatabaseServerRuntimeConfiguration(
-                identity: DatabaseRuntimeIdentity(version: "schema-test"),
-                serviceFactory: AnyDatabaseServerServiceFactory(
-                    CanonicalDatabaseServerServiceFactory(
-                        maintenanceServiceFactory: unavailable,
-                        jobServiceFactory: unavailable
-                    )
-                ),
-                admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
-                    UnrestrictedDatabaseOperationAdmissionPolicy()
-                ),
-                clock: RealtimeDatabaseWallClock(),
-                schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory(
-                    SchemaDrivenDatabaseRuntimeFactory()
-                )
-            )
-        )
+        try await makePersistentRuntime(container: container)
     }
 
     private func makePersistentRuntime(
@@ -717,11 +900,6 @@ struct SchemaExecuteHandlerTests {
         let identifierGenerator = RandomDatabaseUUIDGenerator()
         let registry = try DatabaseResumableOperationRegistry(
             operations: [
-                try AnyDatabaseResumableOperation(
-                    DatabaseSchemaApplyResumableOperation(
-                        runtimeLimits: runtimeLimits
-                    )
-                ),
                 try AnyDatabaseResumableOperation(
                     DatabaseMaintenanceResumableOperation(
                         runtimeLimits: runtimeLimits
@@ -762,13 +940,68 @@ struct SchemaExecuteHandlerTests {
         )
     }
 
+    private func runUntilTerminal(
+        _ job: JobIdentity,
+        runtime: DatabaseServerRuntime,
+        firstRequestID: UInt64
+    ) async throws -> JobStatusOperation.Response {
+        var requestID = firstRequestID
+        for _ in 0..<128 {
+            try await runtime.runScheduledWork()
+            let status = try await invoke(
+                DatabaseOperations.jobStatus,
+                request: JobStatusOperation.Request(job: job),
+                requestID: requestID,
+                runtime: runtime
+            )
+            switch status.state {
+            case .succeeded, .failed, .cancelled:
+                return status
+            case .pending, .running, .committingUnsuccessfulOutcome:
+                break
+            }
+            requestID += 1
+        }
+        throw SchemaExecuteHandlerTestError.didNotReachTerminalState
+    }
+
+    private func schemaApplyResult(
+        _ job: JobIdentity,
+        runtime: DatabaseServerRuntime,
+        requestID: UInt64
+    ) async throws -> SchemaExecuteOperation.Applied {
+        let result = try await invoke(
+            DatabaseOperations.jobResult,
+            request: JobResultOperation.Request(job: job),
+            requestID: requestID,
+            runtime: runtime
+        )
+        guard case .succeeded(
+            _,
+            let responsePayload,
+            _,
+            _,
+            nil
+        ) = result else {
+            throw SchemaExecuteHandlerTestError.expectedSuccessfulJobResult
+        }
+        let response = try DatabaseWireDecoder().decodeResponsePayload(
+            DatabaseOperations.schemaExecute,
+            from: responsePayload
+        )
+        guard case .applied(let publication) = response else {
+            throw SchemaExecuteHandlerTestError.expectedAppliedResult
+        }
+        return publication
+    }
+
     private func indexStatus(
         container: DBContainer,
         entity: String,
         index: String,
         partitions: FieldObject = FieldObject()
     ) async throws -> DatabaseIndexMaintenanceStatus {
-        try await container.newContext().withTransaction { transaction in
+        try await container.testBaseContext().withTransaction { transaction in
             try await DatabaseIndexMaintenanceRuntime(
                 container: container
             ).status(
@@ -864,13 +1097,14 @@ struct SchemaExecuteHandlerTests {
         let bytes = try DatabaseWireEncoder().encodeRequest(
             operation,
             requestID: requestID,
+            target: .database,
             metadata: metadata,
             request: request
         )
         return try await runtime.execute(
             bytes,
             context: DatabaseRequestExecutionContext(
-                authorization: .anonymous
+                authorization: TestBaseEnvironment.authorization
             )
         )
     }
@@ -908,77 +1142,9 @@ private actor SchemaTestJobScheduler: DatabaseJobScheduler {
     }
 }
 
-private struct UnavailablePlatformServices:
-    DatabaseMaintenanceServiceFactory,
-    DatabaseMaintenanceService,
-    DatabaseJobServiceFactory,
-    DatabaseJobService {
-    var jobOperations: [JobOperationIdentifier] { [] }
-
-    func makeMaintenanceService(
-        context: DatabaseServerServiceContext
-    ) async throws -> AnyDatabaseMaintenanceService {
-        _ = context
-        return AnyDatabaseMaintenanceService(self)
-    }
-
-    func makeJobService(
-        context: DatabaseServerServiceContext
-    ) async throws -> AnyDatabaseJobService {
-        _ = context
-        return AnyDatabaseJobService(self)
-    }
-
-    func execute(
-        _ request: MaintenanceExecuteOperation.Request,
-        context: DatabaseOperationContext
-    ) async throws -> MaintenanceExecutionResult {
-        _ = request
-        _ = context
-        throw UnavailablePlatformServiceError.unavailable
-    }
-
-    func start(
-        _ request: JobStartOperation.Request,
-        context: DatabaseOperationContext
-    ) async throws -> JobStartExecutionResult {
-        _ = request
-        _ = context
-        throw UnavailablePlatformServiceError.unavailable
-    }
-
-    func status(
-        _ request: JobStatusOperation.Request,
-        context: DatabaseOperationContext
-    ) async throws -> JobStatusOperation.Response {
-        _ = request
-        _ = context
-        throw UnavailablePlatformServiceError.unavailable
-    }
-
-    func result(
-        _ request: JobResultOperation.Request,
-        context: DatabaseOperationContext
-    ) async throws -> JobResultOperation.Response {
-        _ = request
-        _ = context
-        throw UnavailablePlatformServiceError.unavailable
-    }
-
-    func cancel(
-        _ request: JobCancelOperation.Request,
-        context: DatabaseOperationContext
-    ) async throws -> JobCancellationExecutionResult {
-        _ = request
-        _ = context
-        throw UnavailablePlatformServiceError.unavailable
-    }
-
-    func runScheduledWork() async throws {
-        throw UnavailablePlatformServiceError.unavailable
-    }
-}
-
-private enum UnavailablePlatformServiceError: Error {
-    case unavailable
+private enum SchemaExecuteHandlerTestError: Error {
+    case didNotReachTerminalState
+    case expectedAcceptedJob
+    case expectedSuccessfulJobResult
+    case expectedAppliedResult
 }

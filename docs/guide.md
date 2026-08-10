@@ -102,7 +102,7 @@ maintenance.
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0807.0",
+    from: "26.0809.2",
     traits: ["GraphIndexes"]
 )
 ~~~
@@ -113,7 +113,8 @@ A context is a unit of work. Stage mutations first, then save them in one
 transaction:
 
 ~~~swift
-let context = container.newContext()
+let session = container.session(authorization: authorization)
+let context = session.base(baseID).newContext()
 
 try context.insert(User(id: "alice", email: "alice@example.com", name: "Alice"))
 try context.insert(User(id: "bob", email: "bob@example.com", name: "Bob"))
@@ -121,15 +122,16 @@ try context.insert(User(id: "bob", email: "bob@example.com", name: "Bob"))
 try await context.save()
 ~~~
 
-DBContainer owns the storage engine, schema, and runtime configuration.
-DatabaseContext is the backend-neutral user-facing unit of work.
+DBContainer owns the storage topology, Schema and target catalogs, and runtime
+configuration. `DatabaseSession` binds authorization, and DatabaseContext is a
+backend-neutral unit of work fixed to one Base.
 
-Engine ownership transfers when it is passed to
-`DBConfiguration(storageEngine:)`, whether the application constructs that
-configuration directly or a facade creates it from backend configuration.
-Opening failure shuts the engine down. An opened container exposes idempotent
-`shutdown()`, and deinitialization uses the same exactly-once path. Do not
-retain a second operational owner for the injected engine.
+Engine ownership transfers when a `DatabaseStorageTopology` is passed to
+`DBConfiguration(storageTopology:)`. Backend facades create a one-domain
+topology with the same contract. Opening failure shuts every transferred
+engine down. An opened container exposes idempotent `shutdown()`, and
+deinitialization uses the same exactly-once path. Do not retain a second
+operational owner for an injected engine.
 
 ## 4. Queries
 

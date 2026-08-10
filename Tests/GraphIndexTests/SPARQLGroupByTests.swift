@@ -87,12 +87,9 @@ struct SPARQLGroupByTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdgeForGroupBy.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
-        if try await database.namespaceExists(path: ["sparql_group_by_tests"]) {
-            try await database.removeNamespace(path: ["sparql_group_by_tests"])
-        }
-        try await container.ensureIndexesReady()
+        try await container.resetTestBaseData()
         return container
     }
 
@@ -133,7 +130,7 @@ struct SPARQLGroupByTests {
     func testGroupByCount() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let p1 = uniqueID("P1")
         let p2 = uniqueID("P2")
@@ -180,7 +177,7 @@ struct SPARQLGroupByTests {
     func testGroupByMultipleAggregates() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let team1 = uniqueID("T1")
         let team2 = uniqueID("T2")
@@ -230,7 +227,7 @@ struct SPARQLGroupByTests {
     func testGroupByWithHaving() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let p1 = uniqueID("P1")
         let p2 = uniqueID("P2")
@@ -274,7 +271,7 @@ struct SPARQLGroupByTests {
     func testCountAll() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let person = uniqueID("P")
         let edges = [
@@ -300,7 +297,7 @@ struct SPARQLGroupByTests {
     func testGroupConcat() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let person = uniqueID("P")
         let predicate = uniqueID("likes")  // Use unique predicate to avoid interference
@@ -334,7 +331,7 @@ struct SPARQLGroupByTests {
     func testSampleAggregate() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let person = uniqueID("P")
         let edges = [
@@ -363,7 +360,7 @@ struct SPARQLGroupByTests {
     func testCountDistinct() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Test COUNT DISTINCT by grouping by tag and counting photos
         // Multiple photos use the same tags
@@ -418,7 +415,7 @@ struct SPARQLGroupByTests {
     func testEmptyGroupResults() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Query with no matching data
         let result = try await context.sparql(SocialEdgeForGroupBy.self)
@@ -439,7 +436,7 @@ struct SPARQLGroupByTests {
     func testGroupByWithLimit() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         // Create 5 different persons with varying friend counts
         var edges: [SocialEdgeForGroupBy] = []
@@ -469,7 +466,7 @@ struct SPARQLGroupByTests {
     func testSumAggregateInteger() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let team1 = uniqueID("T1")
         let team2 = uniqueID("T2")
@@ -514,7 +511,7 @@ struct SPARQLGroupByTests {
     func testSumAggregateDecimal() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let account = uniqueID("A")
         let predicate = uniqueID("hasAmount")
@@ -552,7 +549,7 @@ struct SPARQLGroupByTests {
     func testSumAggregateMixedValues() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let group = uniqueID("G")
         let predicate = uniqueID("hasValue")
@@ -585,7 +582,7 @@ struct SPARQLGroupByTests {
     func testAvgAggregateInteger() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let class1 = uniqueID("C1")
         let class2 = uniqueID("C2")
@@ -641,7 +638,7 @@ struct SPARQLGroupByTests {
     func testAvgAggregateDecimal() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let sensor = uniqueID("S")
         let predicate = uniqueID("hasReading")
@@ -679,7 +676,7 @@ struct SPARQLGroupByTests {
     func testAvgAggregateSingleValue() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let item = uniqueID("I")
         let predicate = uniqueID("hasValue")
@@ -715,7 +712,7 @@ struct SPARQLGroupByTests {
     func testAvgAggregateNonNumeric() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let group = uniqueID("G")
         let predicate = uniqueID("hasLabel")
@@ -750,7 +747,7 @@ struct SPARQLGroupByTests {
     func testSumAndAvgCombined() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let dept = uniqueID("D")
         let predicate = uniqueID("hasSalary")
@@ -796,7 +793,7 @@ struct SPARQLGroupByTests {
     func testSumAggregateNegative() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let account = uniqueID("A")
         let predicate = uniqueID("hasBalance")
@@ -827,7 +824,7 @@ struct SPARQLGroupByTests {
     func testAvgAggregateWithZeros() async throws {
         let container = try await setupContainer()
 
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let group = uniqueID("G")
         let predicate = uniqueID("hasValue")

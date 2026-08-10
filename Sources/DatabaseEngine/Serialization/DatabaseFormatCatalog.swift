@@ -3,25 +3,39 @@ import StorageKit
 
 /// Database-wide source of truth for the immutable physical storage format.
 public struct DatabaseFormatCatalog: Sendable {
-    private static let descriptorKey = Tuple([
-        "_database-framework",
-        "format"
-    ]).pack()
-
     private let transactionExecutor: StorageTransactionExecutor
     private let clock: any StorageMonotonicClock
+    private let root: Subspace
+    private let descriptorKey: ByteString
 
     public init(
         database: any StorageEngine,
+        root: Subspace,
         clock: any StorageMonotonicClock
     ) {
         self.transactionExecutor = StorageTransactionExecutor(engine: database)
         self.clock = clock
+        self.root = root
+        self.descriptorKey = root
+            .subspace("_database-framework")
+            .pack(Tuple("format"))
     }
 
     /// Installs a descriptor only in an empty database, or validates it exactly.
     package func installIfEmptyOrValidate(
         _ expected: DatabaseFormatDescriptor
+    ) async throws -> DatabaseFormatDescriptor {
+        try await installIfEmptyOrValidate(expected) { _ in }
+    }
+
+    /// Installs database-wide metadata in the same transaction as the initial
+    /// physical format. This is the only safe bootstrap point: a crash cannot
+    /// leave a formatted database without its mandatory security root.
+    package func installIfEmptyOrValidate(
+        _ expected: DatabaseFormatDescriptor,
+        initializeEmptyDatabase: @Sendable @escaping (
+            any TransactionAccess
+        ) async throws -> Void
     ) async throws -> DatabaseFormatDescriptor {
         try await transactionExecutor.withTransaction(
             configuration: .default,
@@ -29,7 +43,7 @@ public struct DatabaseFormatCatalog: Sendable {
         ) {
             transaction in
             if let bytes = try await transaction.getValue(
-                for: Self.descriptorKey,
+                for: descriptorKey,
                 snapshot: false
             ) {
                 let stored = try DatabaseFormatDescriptor.deserialize(bytes)
@@ -42,9 +56,10 @@ public struct DatabaseFormatCatalog: Sendable {
                 return stored
             }
 
+            let range = root.range()
             let existing = try await TransactionRangeCollection.collect(using: transaction,
-                from: .firstGreaterOrEqual(ByteString()),
-                to: .firstGreaterOrEqual([0xFF]),
+                from: .firstGreaterOrEqual(range.begin),
+                to: .firstGreaterOrEqual(range.end),
                 limit: 1,
                 reverse: false,
                 snapshot: false,
@@ -55,9 +70,10 @@ public struct DatabaseFormatCatalog: Sendable {
                     .descriptorMissingInNonEmptyDatabase
             }
 
+            try await initializeEmptyDatabase(transaction)
             try transaction.setValue(
                 expected.serialize(),
-                for: Self.descriptorKey
+                for: descriptorKey
             )
             return expected
         }
@@ -71,7 +87,7 @@ public struct DatabaseFormatCatalog: Sendable {
         ) {
             transaction in
             guard let bytes = try await transaction.getValue(
-                for: Self.descriptorKey,
+                for: descriptorKey,
                 snapshot: true
             ) else {
                 throw DatabaseFormatCatalogError.missingDescriptor

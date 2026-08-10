@@ -1,3 +1,4 @@
+import DatabaseEngine
 @_spi(DatabaseServer) import DatabaseWire
 
 public struct CapabilitiesDescribeHandler: DatabaseOperationHandler {
@@ -34,10 +35,16 @@ public struct CapabilitiesDescribeHandler: DatabaseOperationHandler {
         _ request: EmptyOperationPayload,
         context: DatabaseOperationContext
     ) async throws -> CapabilitiesDescribeOperation.Response {
-        CapabilitiesDescribeOperation.Response(
-            runtimeVersion: identity.version,
-            features: features,
-            jobOperations: jobOperations
-        )
+        _ = request
+        return try await context.requireControlExecutor().withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
+        ) { _ in
+            CapabilitiesDescribeOperation.Response(
+                runtimeVersion: identity.version,
+                features: features,
+                jobOperations: jobOperations
+            )
+        }
     }
 }

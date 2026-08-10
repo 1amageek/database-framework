@@ -7,7 +7,8 @@ import StorageKit
 public struct DatabaseRDFDocumentStore: Sendable {
     private static let metadataFormatVersion: UInt16 = 1
 
-    private let root: Subspace
+    private let container: DBContainer
+    private let namespace: String
     private let wireLimits: DatabaseWireLimits
 
     public init(
@@ -18,9 +19,8 @@ public struct DatabaseRDFDocumentStore: Sendable {
         guard !namespace.isEmpty else {
             throw DatabaseRDFDocumentStoreError.emptyIdentifier
         }
-        self.root = try await container.engine.resolveOrCreateNamespace(
-            path: ["database-framework", "rdf-documents", namespace]
-        )
+        self.container = container
+        self.namespace = namespace
         self.wireLimits = wireLimits
     }
 
@@ -97,7 +97,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         )
         let canonicalQuads = try canonicalize(quads)
         let canonicalAuxiliary = canonicalize(auxiliaryIdentifiers)
-        let document = documentSubspace(identifier)
+        let document = try documentSubspace(identifier)
         try clear(document.subspace("auxiliary"), transaction: transaction)
         try clear(document.subspace("quads"), transaction: transaction)
 
@@ -122,7 +122,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         )
         try transaction.setValue(
             try encode(metadata),
-            for: metadataKey(identifier)
+            for: try metadataKey(identifier)
         )
         return revision
     }
@@ -147,7 +147,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
             current.revision,
             identifier: identifier
         )
-        let document = documentSubspace(identifier)
+        let document = try documentSubspace(identifier)
         try clear(document.subspace("auxiliary"), transaction: transaction)
         try clear(document.subspace("quads"), transaction: transaction)
         try transaction.setValue(
@@ -160,7 +160,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
                     quadCount: 0
                 )
             ),
-            for: metadataKey(identifier)
+            for: try metadataKey(identifier)
         )
         return revision
     }
@@ -170,7 +170,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         transaction: any TransactionAccess
     ) async throws -> Metadata? {
         guard let bytes = try await transaction.getValue(
-            for: metadataKey(identifier),
+            for: try metadataKey(identifier),
             snapshot: false
         ) else {
             return nil
@@ -202,7 +202,8 @@ public struct DatabaseRDFDocumentStore: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [String] {
         guard count > 0 else { return [] }
-        let range = documentSubspace(identifier).subspace("auxiliary").range()
+        let range = try documentSubspace(identifier)
+            .subspace("auxiliary").range()
         var values: [String] = []
         values.reserveCapacity(count)
         let rows = try await TransactionRangeCollection.collect(
@@ -243,7 +244,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
                 limit: limit
             )
         }
-        let quads = documentSubspace(identifier).subspace("quads")
+        let quads = try documentSubspace(identifier).subspace("quads")
         let end = quads.range().end
         var values: [RDFQuad] = []
         values.reserveCapacity(min(limit, totalCount - offset))
@@ -365,12 +366,17 @@ public struct DatabaseRDFDocumentStore: Sendable {
         }
     }
 
-    private func documentSubspace(_ identifier: String) -> Subspace {
-        root.subspace(identifier)
+    private func documentSubspace(_ identifier: String) throws -> Subspace {
+        try container.requireActiveBaseLease().root
+            .subspace("data")
+            .subspace("database-framework")
+            .subspace("rdf-documents")
+            .subspace(namespace)
+            .subspace(identifier)
     }
 
-    private func metadataKey(_ identifier: String) -> ByteString {
-        documentSubspace(identifier).pack(Tuple("metadata"))
+    private func metadataKey(_ identifier: String) throws -> ByteString {
+        try documentSubspace(identifier).pack(Tuple("metadata"))
     }
 
     private func clear(

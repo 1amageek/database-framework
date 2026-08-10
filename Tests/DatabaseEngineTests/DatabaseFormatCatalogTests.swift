@@ -10,6 +10,7 @@ struct DatabaseFormatCatalogTests {
         let engine = InMemoryEngine()
         let catalog = DatabaseFormatCatalog(
             database: engine,
+            root: Subspace(),
             clock: SystemStorageClock()
         )
         let expected = DatabaseFormatDescriptor.v1(itemStorage: .v1)
@@ -31,6 +32,7 @@ struct DatabaseFormatCatalogTests {
         }
         let catalog = DatabaseFormatCatalog(
             database: engine,
+            root: Subspace(),
             clock: SystemStorageClock()
         )
 
@@ -52,6 +54,7 @@ struct DatabaseFormatCatalogTests {
         let engine = InMemoryEngine()
         let catalog = DatabaseFormatCatalog(
             database: engine,
+            root: Subspace(),
             clock: SystemStorageClock()
         )
         let stored = DatabaseFormatDescriptor.v1(itemStorage: .v1)
@@ -89,6 +92,7 @@ struct DatabaseFormatCatalogTests {
         }
         let catalog = DatabaseFormatCatalog(
             database: engine,
+            root: Subspace(),
             clock: SystemStorageClock()
         )
 

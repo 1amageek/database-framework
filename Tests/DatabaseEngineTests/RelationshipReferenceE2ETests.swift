@@ -17,7 +17,7 @@ struct RelationshipReferenceE2ETests {
     func sameBatchReferenceValidation() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             var target = RelationshipTarget(name: "Target")
             target.id = uniqueID("target")
             var owner = RelationshipOptionalOwner(
@@ -42,7 +42,7 @@ struct RelationshipReferenceE2ETests {
     func cyclicReferences() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let firstID = uniqueID("cycle-a")
             let secondID = uniqueID("cycle-b")
             let firstReference = try RelationshipReferenceFactory.make(
@@ -81,7 +81,7 @@ struct RelationshipReferenceE2ETests {
     func missingTargetRollsBack() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let ownerID = uniqueID("missing-owner")
             var owner = RelationshipOptionalOwner(
                 name: "Invalid",
@@ -97,7 +97,7 @@ struct RelationshipReferenceE2ETests {
                 try await context.save()
             }
 
-            let verification = container.newContext()
+            let verification = container.testBaseContext()
             #expect(
                 try await verification.model(
                     for: ownerID,
@@ -111,7 +111,7 @@ struct RelationshipReferenceE2ETests {
     func joinAndInversePagination() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             var target = RelationshipTarget(name: "Paged")
             target.id = uniqueID("paged-target")
             let targetReference = try context.reference(to: target)
@@ -183,7 +183,7 @@ struct RelationshipReferenceE2ETests {
     func nullifyDeleteRule() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             var retained = RelationshipTarget(name: "Retained")
             retained.id = uniqueID("retained")
             var removed = RelationshipTarget(name: "Removed")
@@ -228,7 +228,7 @@ struct RelationshipReferenceE2ETests {
     func denyDeleteRule() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             var target = RelationshipTarget(name: "Protected")
             target.id = uniqueID("deny-target")
             var owner = RelationshipDenyOwner(
@@ -244,7 +244,7 @@ struct RelationshipReferenceE2ETests {
                 try await context.save()
             }
 
-            let verification = container.newContext()
+            let verification = container.testBaseContext()
             #expect(
                 try await verification.model(
                     for: target.id,
@@ -264,7 +264,7 @@ struct RelationshipReferenceE2ETests {
     func denyPermitsExplicitCoDeletion() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             var target = RelationshipTarget(name: "Co-deleted")
             target.id = uniqueID("co-delete-target")
             var owner = RelationshipDenyOwner(
@@ -279,7 +279,7 @@ struct RelationshipReferenceE2ETests {
             try context.delete(target, precondition: .exists)
             try await context.save()
 
-            let verification = container.newContext()
+            let verification = container.testBaseContext()
             #expect(
                 try await verification.model(
                     for: owner.id,
@@ -299,7 +299,7 @@ struct RelationshipReferenceE2ETests {
     func cascadeDeleteRule() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             var target = RelationshipTarget(name: "Root")
             target.id = uniqueID("cascade-target")
             var owner = RelationshipCascadeOwner(
@@ -313,7 +313,7 @@ struct RelationshipReferenceE2ETests {
             try context.delete(target)
             try await context.save()
 
-            let verification = container.newContext()
+            let verification = container.testBaseContext()
             #expect(
                 try await verification.model(
                     for: target.id,
@@ -333,7 +333,7 @@ struct RelationshipReferenceE2ETests {
     func partitionIdentity() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await makeContainer()
-            let context = container.newContext()
+            let context = container.testBaseContext()
             let sharedID = uniqueID("partitioned-target")
             var first = RelationshipPartitionedTarget(
                 tenantID: "tenant-a",
@@ -387,7 +387,7 @@ struct RelationshipReferenceE2ETests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(RelationshipTarget.self), try DatabaseFrameworkRuntime.entity(RelationshipOptionalOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipArrayOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipDenyOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipCascadeOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipCycleNode.self), try DatabaseFrameworkRuntime.entity(RelationshipPartitionedTarget.self), try DatabaseFrameworkRuntime.entity(RelationshipPartitionedOwner.self)]),
-            security: .disabled
+            security: .testingDisabled
         )
     }
 

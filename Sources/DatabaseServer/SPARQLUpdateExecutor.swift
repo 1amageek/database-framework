@@ -403,10 +403,8 @@ struct SPARQLUpdateExecutor: Sendable {
         workMeter: DatabaseWorkMeter
     ) async throws -> [VariableBinding] {
         let detectionLimit = try mutationDetectionLimit()
-        let executor = SPARQLQueryExecutor(
-            database: context.container.engine,
-            monotonicClock: context.container.monotonicClock,
-            wallClock: context.container.wallClock,
+        let executor = try context.requireBaseExecutor()
+            .makeSPARQLQueryExecutor(
             datasetScanner: graphStore,
             readMode: .serializable,
             dataset: try SPARQLExecutionDataset(dataset),

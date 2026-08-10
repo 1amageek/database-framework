@@ -92,19 +92,54 @@ struct DBConfigurationOwnershipTests {
     }
 
     @Test("Configuration stores its runtime policies")
-    func storesRuntimePolicies() {
+    func storesRuntimePolicies() throws {
         let engine = ShutdownRecordingEngine()
-        let configuration = DBConfiguration(
+        let configuration = try DBConfiguration.testing(
             name: "test-configuration",
             storageEngine: engine,
-            monotonicClock: TestProcessMonotonicClock(),
-            wallClock: FixedTestWallClock(),
             indexConfigurations: [RuntimeIndexConfiguration()]
         )
 
         #expect(configuration.name == "test-configuration")
         #expect(configuration.indexConfigurations.count == 1)
         #expect(configuration.debugDescription.contains("indexConfigs: 1"))
+    }
+
+    @Test("Topology rejects assigning one engine to multiple domains")
+    func topologyRejectsDuplicateEngineOwnership() throws {
+        let engine = ShutdownRecordingEngine()
+        let firstDomainID = try DatabaseStorageDomain.ID("primary")
+        let secondDomainID = try DatabaseStorageDomain.ID("secondary")
+        let placementID = try Base.Placement.ID("default")
+        let firstDomain = try DatabaseStorageDomain(
+            id: firstDomainID,
+            namespacePath: ["database", "primary"],
+            storageEngine: engine
+        )
+        let secondDomain = try DatabaseStorageDomain(
+            id: secondDomainID,
+            namespacePath: ["database", "secondary"],
+            storageEngine: engine
+        )
+        let placement = try DatabaseStoragePlacement(
+            id: placementID,
+            domainID: firstDomainID,
+            path: ["bases"]
+        )
+
+        #expect(
+            throws: DatabaseStorageTopologyError.duplicateStorageEngine(
+                first: firstDomainID,
+                second: secondDomainID
+            )
+        ) {
+            _ = try DatabaseStorageTopology(
+                controlDomainID: firstDomainID,
+                domains: [firstDomain, secondDomain],
+                placements: [placement],
+                defaultPlacementID: placementID
+            )
+        }
     }
 
     @Test("Container shutdown releases its engine exactly once")
@@ -124,7 +159,7 @@ struct DBConfigurationOwnershipTests {
             testing: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: runtime,
-            security: .disabled,
+            security: .testingDisabled,
             initializeIndexes: false
         )
 
@@ -148,7 +183,7 @@ struct DBConfigurationOwnershipTests {
                 testing: schema,
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: runtime,
-                security: .disabled,
+                security: .testingDisabled,
                 initializeIndexes: false
             )
             Issue.record("Expected a missing entity runtime to fail")
@@ -298,7 +333,7 @@ struct DBConfigurationOwnershipTests {
             testing: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: runtime,
-            security: .disabled,
+            security: .testingDisabled,
             initializeIndexes: false
         )
     }

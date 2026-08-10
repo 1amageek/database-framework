@@ -6,5 +6,4 @@ package struct DatabaseSchemaPublicationResult: Sendable {
     package let fingerprint: SchemaFingerprint
     package let schemaVersion: Schema.Version
     package let generation: UInt64
-    package let job: JobIdentity?
 }

@@ -33,80 +33,99 @@ public actor DatabaseSchemaCoordinator {
         expectedFingerprint: SchemaFingerprint,
         idempotencyKey: String,
         context: DatabaseOperationContext
-    ) async throws -> SchemaExecuteOperation.Applied {
+    ) async throws -> JobIdentity {
+        let executor = try context.requireControlExecutor()
         let targetFingerprint = try manifest.fingerprint()
-        if let stored = try await container.storedSchemaPublication(
-            idempotencyKey: idempotencyKey,
-            matching: targetFingerprint
+        if let existing = try await executor.withTransaction(
+            requiredAccess: .administer,
+            configuration: .readOnly,
+            { transaction in
+                try await executor.schemaApplication(
+                    idempotencyKey: idempotencyKey,
+                    transaction: transaction
+                )
+            }
         ) {
-            return try await appliedResponse(for: stored)
+            try validate(
+                existing,
+                expectedFingerprint: expectedFingerprint,
+                targetFingerprint: targetFingerprint
+            )
+            try await jobService?.recoverPersistentJobSchedule()
+            return existing.job
         }
         let prepared = try await prepare(
             manifest: manifest,
-            expectedFingerprint: nil
+            expectedFingerprint: expectedFingerprint
         )
         guard prepared.plan.compatibility != .requiresMigration else {
             throw DatabaseSchemaExecutionError.migrationRequired(
                 prepared.plan.issues
             )
         }
-        let jobStartRequest: JobStartOperation.Request?
-        if prepared.requiresIndexBuildJob {
-            jobStartRequest = try DatabaseSchemaApplyResumableOperation.job()
-                .makeStartRequest(
-                    SchemaExecuteOperation.Request(
-                        invocation: .apply(
-                            manifest: manifest,
-                            expectedFingerprint: expectedFingerprint,
-                            idempotencyKey: idempotencyKey
-                        )
-                    ),
-                    maximumSliceWorkUnits:
-                        DatabaseIndexMaintenanceRuntime.maximumSliceWorkUnits
-                )
-        } else {
-            jobStartRequest = nil
+        _ = prepared.runtimeConfiguration
+        guard let persistentJobService = jobService else {
+            throw DatabaseSchemaExecutionError.persistentJobServiceUnavailable
         }
-        let persistentJobService = jobService
-        let publication = try await container.publishSchema(
-            manifest.schema,
-            fingerprint: prepared.plan.targetFingerprint,
-            expectedFingerprint: expectedFingerprint,
-            idempotencyKey: idempotencyKey,
-            runtimeConfiguration: prepared.runtimeConfiguration,
-            prepareIndexBuildJob: { transaction in
-                guard let jobStartRequest else { return nil }
-                guard let persistentJobService else {
-                    throw DatabaseSchemaExecutionError
-                        .persistentJobServiceUnavailable
-                }
-                return try await persistentJobService.createPersistentJob(
-                    jobStartRequest,
-                    context: context,
-                    transaction: transaction
+        let startRequest = try DatabaseSchemaApplyResumableOperation.job()
+            .makeStartRequest(
+                SchemaExecuteOperation.Request(
+                    invocation: .apply(
+                        manifest: manifest,
+                        expectedFingerprint: expectedFingerprint,
+                        idempotencyKey: idempotencyKey
+                    )
+                ),
+                target: .database,
+                maximumSliceWorkUnits:
+                    DatabaseIndexMaintenanceRuntime.maximumSliceWorkUnits
+            )
+        let job = try await executor.withTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            if let existing = try await executor.schemaApplication(
+                idempotencyKey: idempotencyKey,
+                transaction: transaction
+            ) {
+                try self.validate(
+                    existing,
+                    expectedFingerprint: expectedFingerprint,
+                    targetFingerprint: targetFingerprint
                 )
+                return existing.job
             }
-        )
-        return try await appliedResponse(for: publication)
+            let job = try await persistentJobService.createPersistentJob(
+                startRequest,
+                context: context,
+                transaction: transaction
+            )
+            try await executor.insertSchemaApplication(
+                DatabaseSchemaApplicationRecord(
+                    idempotencyKey: idempotencyKey,
+                    expectedFingerprint: expectedFingerprint,
+                    targetFingerprint: targetFingerprint,
+                    job: job
+                ),
+                transaction: transaction
+            )
+            return job
+        }
+        try await persistentJobService.recoverPersistentJobSchedule()
+        return job
     }
 
-    private func appliedResponse(
-        for publication: DatabaseSchemaPublicationResult
-    ) async throws -> SchemaExecuteOperation.Applied {
-        if publication.job != nil {
-            guard let persistentJobService = jobService else {
-                throw DatabaseSchemaExecutionError
-                    .persistentJobServiceUnavailable
-            }
-            try await persistentJobService.recoverPersistentJobSchedule()
+    private nonisolated func validate(
+        _ application: DatabaseSchemaApplicationRecord,
+        expectedFingerprint: SchemaFingerprint,
+        targetFingerprint: SchemaFingerprint
+    ) throws {
+        guard application.expectedFingerprint == expectedFingerprint,
+              application.targetFingerprint == targetFingerprint else {
+            throw DatabaseSchemaPublicationError.idempotencyKeyReused(
+                application.idempotencyKey
+            )
         }
-        return SchemaExecuteOperation.Applied(
-            previousFingerprint: publication.previousFingerprint,
-            fingerprint: publication.fingerprint,
-            schemaVersion: publication.schemaVersion,
-            generation: publication.generation,
-            job: publication.job
-        )
     }
 
     private func prepare(
@@ -127,14 +146,6 @@ public actor DatabaseSchemaCoordinator {
         let analysis = DatabaseSchemaChangeAnalysis.analyze(
             current: currentSchema,
             target: manifest.schema
-        )
-        let pending = try await container.pendingSchemaIndexBuilds(
-            in: manifest.schema
-        )
-        let indexBuilds = DatabaseSchemaChangeAnalysis.mergedIndexBuilds(
-            analyzed: analysis.indexBuilds,
-            pending: pending,
-            schema: manifest.schema
         )
         let runtimeConfiguration: DatabaseRuntimeConfiguration
         do {
@@ -176,8 +187,7 @@ public actor DatabaseSchemaCoordinator {
                 compatibility: analysis.compatibility,
                 issues: analysis.issues
             ),
-            runtimeConfiguration: runtimeConfiguration,
-            requiresIndexBuildJob: !indexBuilds.isEmpty
+            runtimeConfiguration: runtimeConfiguration
         )
     }
 }
@@ -185,5 +195,4 @@ public actor DatabaseSchemaCoordinator {
 private struct PreparedSchemaChange: Sendable {
     let plan: SchemaExecuteOperation.Plan
     let runtimeConfiguration: DatabaseRuntimeConfiguration
-    let requiresIndexBuildJob: Bool
 }

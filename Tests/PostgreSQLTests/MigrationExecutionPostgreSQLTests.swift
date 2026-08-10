@@ -118,7 +118,7 @@ enum PGStageBoundaryMigrationPlan: SchemaMigrationPlan {
     }
 
     static func migrateUsers(context: MigrationContext) async throws {
-        let currentVersion = try await context.container.getCurrentSchemaVersion()
+        let currentVersion = try await context.container.testBaseCurrentSchemaVersion()
         await pgMigrationEventRecorder.record("will:\(pgVersionLabel(currentVersion))")
 
         var migratedUsers: [PGStageBoundaryUserV3] = []
@@ -140,7 +140,7 @@ enum PGStageBoundaryMigrationPlan: SchemaMigrationPlan {
     }
 
     static func auditStage(context: MigrationContext) async throws {
-        let currentVersion = try await context.container.getCurrentSchemaVersion()
+        let currentVersion = try await context.container.testBaseCurrentSchemaVersion()
         await pgMigrationEventRecorder.record("did:\(pgVersionLabel(currentVersion))")
     }
 }
@@ -222,7 +222,7 @@ enum PGStageFailureMigrationPlan: SchemaMigrationPlan {
     }
 
     static func failStage(context: MigrationContext) async throws {
-        let currentVersion = try await context.container.getCurrentSchemaVersion()
+        let currentVersion = try await context.container.testBaseCurrentSchemaVersion()
         await pgMigrationEventRecorder.record("fail:\(pgVersionLabel(currentVersion))")
         throw PGMigrationExecutionError.expectedFailure
     }
@@ -240,13 +240,13 @@ struct MigrationExecutionPostgreSQLTests {
                 schema: PGStageBoundarySchemaV1.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV1.self)]
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var user = PGStageBoundaryUserV1(name: "Alice", email: "alice@example.com")
             user.id = "pg-stage-boundary-user"
             try initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: PGStageBoundarySchemaV3.self,
@@ -254,16 +254,16 @@ struct MigrationExecutionPostgreSQLTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let events = await pgMigrationEventRecorder.snapshot()
-            let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
+            let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGStageBoundarySchemaV3.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)]
             )
-            let migratedUsers = try await verificationContainer.newContext()
+            let migratedUsers = try await verificationContainer.testBaseContext()
                 .fetch(PGStageBoundaryUserV3.self)
                 .execute()
             let migratedUser = migratedUsers.first { $0.id == "pg-stage-boundary-user" }
@@ -286,13 +286,13 @@ struct MigrationExecutionPostgreSQLTests {
                 schema: PGStageFailureSchemaV1.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageFailureUserV1.self)]
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var user = PGStageFailureUserV1(name: "Alice", email: "alice@example.com")
             user.id = "pg-stage-failure-user"
             try initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: PGStageFailureSchemaV3.self,
@@ -302,25 +302,23 @@ struct MigrationExecutionPostgreSQLTests {
             )
 
             do {
-                try await migratedContainer.migrateIfNeeded()
+                try await migratedContainer.testBaseAdmin().migrateIfNeeded()
                 Issue.record("Expected migration failure")
             } catch let error as PGMigrationExecutionError {
                 #expect(error == .expectedFailure)
             }
 
             let events = await pgMigrationEventRecorder.snapshot()
-            let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
-            let registry = SchemaRegistry(
-                database: migratedContainer.engine,
-                clock: TestProcessMonotonicClock()
-            )
-            let entity = try await registry.load(typeName: PGStageFailureUserV1.persistableType)
+            let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
+            let entity = try await migratedContainer
+                .testBaseSchemaDefinition()?
+                .entity(named: PGStageFailureUserV1.persistableType)
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGStageFailureSchemaV2.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageFailureUserV2.self)]
             )
-            let migratedUsers = try await verificationContainer.newContext()
+            let migratedUsers = try await verificationContainer.testBaseContext()
                 .fetch(PGStageFailureUserV2.self)
                 .execute()
             let migratedUser = migratedUsers.first { $0.id == "pg-stage-failure-user" }
@@ -346,15 +344,13 @@ struct MigrationExecutionPostgreSQLTests {
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
             )
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
             let events = await pgMigrationEventRecorder.snapshot()
-            let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
-            let registry = SchemaRegistry(
-                database: migratedContainer.engine,
-                clock: TestProcessMonotonicClock()
-            )
-            let entity = try await registry.load(typeName: PGStageBoundaryUserV1.persistableType)
+            let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
+            let entity = try await migratedContainer
+                .testBaseSchemaDefinition()?
+                .entity(named: PGStageBoundaryUserV1.persistableType)
 
             #expect(events.isEmpty)
             #expect(currentVersion == Schema.Version(3, 0, 0))
@@ -373,13 +369,13 @@ struct MigrationExecutionPostgreSQLTests {
                 schema: PGStageBoundarySchemaV1.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV1.self)]
             )
-            let initialContext = initialContainer.newContext()
+            let initialContext = initialContainer.testBaseContext()
 
             var user = PGStageBoundaryUserV1(name: "Alice", email: "alice@example.com")
             user.id = "pg-reentrant-user"
             try initialContext.insert(user)
             try await initialContext.save()
-            try await initialContainer.installSchemaSnapshot(for: Schema.Version(1, 0, 0))
+            try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer.open(
                 for: PGStageBoundarySchemaV3.self,
@@ -388,19 +384,19 @@ struct MigrationExecutionPostgreSQLTests {
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
             )
 
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
             let eventsAfterFirst = await pgMigrationEventRecorder.snapshot()
 
-            try await migratedContainer.migrateIfNeeded()
+            try await migratedContainer.testBaseAdmin().migrateIfNeeded()
             let eventsAfterSecond = await pgMigrationEventRecorder.snapshot()
 
-            let currentVersion = try await migratedContainer.getCurrentSchemaVersion()
+            let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
 
             let verificationContainer = try await PostgreSQLScenarioCoordinator.shared.makeContainer(
                 schema: PGStageBoundarySchemaV3.makeSchema(),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)]
             )
-            let migratedUsers = try await verificationContainer.newContext()
+            let migratedUsers = try await verificationContainer.testBaseContext()
                 .fetch(PGStageBoundaryUserV3.self)
                 .execute()
             let migratedUser = migratedUsers.first { $0.id == "pg-reentrant-user" }

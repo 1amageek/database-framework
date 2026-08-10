@@ -98,11 +98,11 @@ struct ArrayFieldUniquenessTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(TaggedDocument.self), try DatabaseFrameworkRuntime.entity(UniqueEmail.self), try DatabaseFrameworkRuntime.entity(UUIDTaggedDocument.self), try DatabaseFrameworkRuntime.entity(Int64TaggedDocument.self)]),
-            security: .disabled,
+            security: .testingDisabled,
         )
 
         // Make indexes readable via store
-        let tagStore = try await container.store(for: TaggedDocument.self)
+        let tagStore = try await container.testBaseStore(for: TaggedDocument.self)
         let tagState = try await tagStore.indexLifecycleStore.state(
             of: "TaggedDocument_tags"
         )
@@ -113,7 +113,7 @@ struct ArrayFieldUniquenessTests {
             try await tagStore.indexLifecycleStore.makeReadable("TaggedDocument_tags")
         }
 
-        let emailStore = try await container.store(for: UniqueEmail.self)
+        let emailStore = try await container.testBaseStore(for: UniqueEmail.self)
         let emailState = try await emailStore.indexLifecycleStore.state(
             of: "UniqueEmail_email"
         )
@@ -125,7 +125,7 @@ struct ArrayFieldUniquenessTests {
         }
 
         // UUID ID model index
-        let uuidStore = try await container.store(for: UUIDTaggedDocument.self)
+        let uuidStore = try await container.testBaseStore(for: UUIDTaggedDocument.self)
         let uuidState = try await uuidStore.indexLifecycleStore.state(
             of: "UUIDTaggedDocument_tags"
         )
@@ -137,7 +137,7 @@ struct ArrayFieldUniquenessTests {
         }
 
         // Int64 ID model index
-        let int64Store = try await container.store(for: Int64TaggedDocument.self)
+        let int64Store = try await container.testBaseStore(for: Int64TaggedDocument.self)
         let int64State = try await int64Store.indexLifecycleStore.state(
             of: "Int64TaggedDocument_tags"
         )
@@ -156,7 +156,7 @@ struct ArrayFieldUniquenessTests {
     @Test("Scalar unique constraint: duplicate value throws error")
     func scalarDuplicateThrows() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let email = "unique-\(UUID().uuidString.prefix(8))@test.com"
 
@@ -186,7 +186,7 @@ struct ArrayFieldUniquenessTests {
     @Test("Scalar unique constraint: different values allowed")
     func scalarDifferentValuesAllowed() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let email1 = "alice-\(UUID().uuidString.prefix(8))@test.com"
         let email2 = "bob-\(UUID().uuidString.prefix(8))@test.com"
@@ -218,7 +218,7 @@ struct ArrayFieldUniquenessTests {
     @Test("Array field unique constraint: duplicate element throws error")
     func arrayDuplicateElementThrows() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let sharedTag = "shared-tag-\(UUID().uuidString.prefix(8))"
 
@@ -248,7 +248,7 @@ struct ArrayFieldUniquenessTests {
     @Test("Array field unique constraint: different elements allowed")
     func arrayDifferentElementsAllowed() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let tag1 = "tag1-\(UUID().uuidString.prefix(8))"
         let tag2 = "tag2-\(UUID().uuidString.prefix(8))"
@@ -269,7 +269,7 @@ struct ArrayFieldUniquenessTests {
     @Test("Array field unique constraint: multiple elements all checked")
     func arrayMultipleElementsChecked() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let tag1 = "tagA-\(UUID().uuidString.prefix(8))"
         let tag2 = "tagB-\(UUID().uuidString.prefix(8))"
@@ -302,7 +302,7 @@ struct ArrayFieldUniquenessTests {
     @Test("Array field update: cannot add element that exists elsewhere")
     func arrayUpdateAddDuplicateThrows() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let takenTag = "taken-\(UUID().uuidString.prefix(8))"
         let myTag = "mine-\(UUID().uuidString.prefix(8))"
@@ -341,7 +341,7 @@ struct ArrayFieldUniquenessTests {
     @Test("Array field: completely different tags allowed")
     func arrayDifferentTagsAllowed() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         var doc1 = TaggedDocument(title: "Doc 1", tags: ["unique1-\(UUID().uuidString.prefix(8))"])
         doc1.id = uniqueID("D1")
@@ -358,7 +358,7 @@ struct ArrayFieldUniquenessTests {
     @Test("Array field: single element array works like scalar")
     func arraySingleElementLikeScalar() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let singleTag = "single-\(UUID().uuidString.prefix(8))"
 
@@ -390,7 +390,7 @@ struct ArrayFieldUniquenessTests {
     @Test("UUID ID: self-update with same tags allowed")
     func uuidSelfUpdateAllowed() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let tag = "unique-tag-\(UUID().uuidString.prefix(8))"
 
@@ -418,7 +418,7 @@ struct ArrayFieldUniquenessTests {
     @Test("UUID ID: cannot add element that exists in another document")
     func uuidUpdateAddDuplicateThrows() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let takenTag = "taken-\(UUID().uuidString.prefix(8))"
         let myTag = "mine-\(UUID().uuidString.prefix(8))"
@@ -453,7 +453,7 @@ struct ArrayFieldUniquenessTests {
     @Test("UUID ID: different documents with different tags allowed")
     func uuidDifferentDocumentsAllowed() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let tag1 = "tag1-\(UUID().uuidString.prefix(8))"
         let tag2 = "tag2-\(UUID().uuidString.prefix(8))"
@@ -473,7 +473,7 @@ struct ArrayFieldUniquenessTests {
     @Test("Int64 ID: self-update with same tags allowed")
     func int64SelfUpdateAllowed() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let tag = "unique-tag-\(UUID().uuidString.prefix(8))"
 
@@ -499,7 +499,7 @@ struct ArrayFieldUniquenessTests {
     @Test("Int64 ID: cannot add element that exists in another document")
     func int64UpdateAddDuplicateThrows() async throws {
         let container = try await setupContainer()
-        let context = container.newContext()
+        let context = container.testBaseContext()
 
         let takenTag = "taken-\(UUID().uuidString.prefix(8))"
         let myTag = "mine-\(UUID().uuidString.prefix(8))"

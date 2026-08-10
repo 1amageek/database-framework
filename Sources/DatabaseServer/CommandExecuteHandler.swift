@@ -35,10 +35,11 @@ public struct CommandExecuteHandler: DatabaseOperationEndpointHandler {
             )
             let result = try await DatabaseExecutionTimeout.run(
                 milliseconds: request.budget.timeoutMilliseconds,
-                clock: context.container.monotonicClock
+                clock: context.executor.monotonicClock
             ) {
-                let databaseContext = context.container.newContext()
+                let databaseContext = try context.requireBaseContext()
                 return try await databaseContext.withTransaction(
+                    requiredAccess: .read,
                     configuration: .readOnly
                 ) { transactionContext in
                     try await command.execute(
