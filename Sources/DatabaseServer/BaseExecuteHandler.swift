@@ -156,9 +156,13 @@ public struct BaseExecuteHandler: DatabaseOperationEndpointHandler {
             }
             try executor.requirePlacement(placementID)
             let existing = try await executor.loadBase(baseID)
-            guard existing == nil else {
-                throw DatabaseLegacyLayoutMigrationError
-                    .destinationBaseExists(baseID)
+            if let existing {
+                guard existing.lifecycle == .provisioning,
+                      existing.placementID == placementID,
+                      existing.revision == 1 else {
+                    throw DatabaseLegacyLayoutMigrationError
+                        .destinationBaseExists(baseID)
+                }
             }
             let inventory = try await executor.legacyLayoutInventory()
             let actualFingerprint = try await executor

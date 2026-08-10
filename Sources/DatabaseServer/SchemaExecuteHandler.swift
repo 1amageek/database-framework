@@ -1,3 +1,5 @@
+import DatabaseEngine
+import DatabaseKit
 @_spi(DatabaseServer) import DatabaseWire
 
 public struct SchemaExecuteHandler: DatabaseOperationHandler {

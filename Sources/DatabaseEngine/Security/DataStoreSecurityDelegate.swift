@@ -35,15 +35,6 @@ public protocol DataStoreSecurityDelegate: Sendable {
 
 }
 
-extension DataStoreSecurityDelegate {
-    /// A typed model read observes its complete canonical value.
-    public func evaluateGet(
-        _ resource: borrowing PersistedModel
-    ) throws {
-        try evaluateGet(resource, fields: nil)
-    }
-}
-
 /// Request-scoped authorization state supplied by the authenticated
 /// application boundary.
 public enum RequestAuthorization {

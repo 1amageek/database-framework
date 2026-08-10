@@ -2037,7 +2037,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         guard let securityDelegate else { return }
         for index in resources.indices {
             try securityDelegate.evaluateGet(
-                try PersistedModel(resources[index])
+                try PersistedModel(resources[index]),
+                fields: nil
             )
         }
     }

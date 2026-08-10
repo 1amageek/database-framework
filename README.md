@@ -216,7 +216,7 @@ or WASI.
         --traits FoundationDB,AllRuntimeFeatures \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3964 \
+        --expected-count 3965 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
@@ -248,7 +248,7 @@ For local testing, the repository includes an isolated cluster wrapper:
         --traits FoundationDB,AllRuntimeFeatures \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3964 \
+        --expected-count 3965 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings

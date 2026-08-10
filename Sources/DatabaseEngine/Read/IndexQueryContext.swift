@@ -584,7 +584,8 @@ public struct IndexQueryContext: Sendable {
         // Security: Evaluate GET for each fetched item
         for item in items {
             try context.container.securityDelegate?.evaluateGet(
-                try PersistedModel(item)
+                try PersistedModel(item),
+                fields: nil
             )
         }
 

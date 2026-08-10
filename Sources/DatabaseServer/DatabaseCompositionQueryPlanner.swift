@@ -2,6 +2,7 @@ import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 @_spi(DatabaseServer) import DatabaseWire
+import StorageKit
 import Synchronization
 
 /// Plans and executes only those relational Composition reads whose global
@@ -706,9 +707,11 @@ struct DatabaseCompositionQueryPlanner {
              (.average, .numeric(var accumulator)):
             do {
                 try accumulator.add(value)
-            } catch {
+            } catch let failure {
                 throw DatabaseQueryExecutionError
-                    .compositionAggregateFailure(String(describing: error))
+                    .compositionAggregateFailure(
+                        aggregateFailureMessage(failure)
+                    )
             }
             state = .numeric(accumulator)
         case (.minimum, .extremum(let current)),
@@ -746,15 +749,19 @@ struct DatabaseCompositionQueryPlanner {
             return .int64(value)
         case (.sum, .numeric(let accumulator)):
             do { return try accumulator.sum() ?? .null }
-            catch {
+            catch let failure {
                 throw DatabaseQueryExecutionError
-                    .compositionAggregateFailure(String(describing: error))
+                    .compositionAggregateFailure(
+                        aggregateFailureMessage(failure)
+                    )
             }
         case (.average, .numeric(let accumulator)):
             do { return try accumulator.average() ?? .null }
-            catch {
+            catch let failure {
                 throw DatabaseQueryExecutionError
-                    .compositionAggregateFailure(String(describing: error))
+                    .compositionAggregateFailure(
+                        aggregateFailureMessage(failure)
+                    )
             }
         case (.minimum, .extremum(let value)),
              (.maximum, .extremum(let value)):
@@ -776,6 +783,23 @@ struct DatabaseCompositionQueryPlanner {
             )
         }
         return result.partialValue
+    }
+
+    private static func aggregateFailureMessage(
+        _ failure: DatabaseNumericAggregateAccumulator.Failure
+    ) -> String {
+        switch failure {
+        case .incompatibleNumericKinds:
+            return "Aggregate values use incompatible numeric kinds"
+        case .nonNumericValue:
+            return "Aggregate operand is not numeric"
+        case .nonFiniteValue:
+            return "Aggregate operand is not finite"
+        case .numericOverflow:
+            return "Aggregate numeric result overflowed"
+        case .resultNotRepresentable:
+            return "Aggregate result cannot be represented"
+        }
     }
 
     private func localExecution(

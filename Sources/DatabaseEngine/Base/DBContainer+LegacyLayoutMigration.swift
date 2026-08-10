@@ -4,7 +4,7 @@ import StorageKit
 import Synchronization
 
 extension DBContainer {
-    private static let legacyTransferBatchSize = 16
+    private static let legacyTransferBatchSize = 256
     private static let legacyDigestByteCount = 32
 
     /// Discovers every authoritative layout-v1 range without creating legacy
@@ -154,7 +154,28 @@ extension DBContainer {
                 sourceChild: SubspaceKey.blobs,
                 destinationComponents: directory.path + [SubspaceKey.blobs]
             )
+            try await appendNamespaceRange(
+                identifier: "\(directory.identifier).indexes",
+                sourcePath: directory.path,
+                sourceChild: SubspaceKey.indexes,
+                destinationComponents: directory.path + [SubspaceKey.indexes]
+            )
+            try await appendNamespaceRange(
+                identifier: "\(directory.identifier).index-state",
+                sourcePath: directory.path,
+                sourceChild: "state",
+                destinationComponents: directory.path + ["state"]
+            )
         }
+
+        try await appendNamespaceRange(
+            identifier: "base-schema-metadata",
+            sourcePath: ["_metadata"],
+            sourceChild: "schema",
+            destinationSuffix: Subspace()
+                .subspace("metadata")
+                .subspace("schema").prefix
+        )
 
         try await appendNamespaceRange(
             identifier: "operation-state",

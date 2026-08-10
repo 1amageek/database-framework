@@ -223,6 +223,41 @@ struct DatabaseCompositionQueryTests {
         #expect(try origins.next() == nil)
     }
 
+    @Test("non-numeric Composition aggregates remain typed failures")
+    func nonNumericAggregateFailure() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        try await seed(fixture)
+        let title: Expression = .column(ColumnRef(column: "title"))
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(
+                    .aggregate(.sum(title, distinct: false)),
+                    alias: "sum"
+                )
+            ]),
+            source: .table(
+                TableRef(DatabaseEndpointEntity.persistableType)
+            )
+        )
+
+        let error = try await remoteFailure(
+            QueryExecuteOperation.Request(
+                input: .ir(.select(query)),
+                page: QueryExecuteOperation.Page(limit: 10)
+            ),
+            requestID: 26,
+            fixture: fixture
+        )
+
+        #expect(error.category == .constraint)
+        #expect(error.code == "COMPOSITION_AGGREGATE_FAILED")
+        #expect(
+            error.message
+                == "Composition aggregate failed: Aggregate operand is not numeric"
+        )
+    }
+
     @Test("durable paging stays within a bounded intermediate row budget")
     func durablePagingUsesBoundedMemory() async throws {
         let fixture = try await makeFixture()

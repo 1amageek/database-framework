@@ -882,7 +882,8 @@ public final class DatabaseContext: Sendable {
             try await requireAccess(.read)
             // Evaluate GET security for pending insert (not via DataStore)
             try container.securityDelegate?.evaluateGet(
-                try PersistedModel(inserted)
+                try PersistedModel(inserted),
+                fields: nil
             )
             return inserted
         }
@@ -960,7 +961,8 @@ public final class DatabaseContext: Sendable {
         if let inserted = pendingResult.inserted {
             try await requireAccess(.read)
             try container.securityDelegate?.evaluateGet(
-                try PersistedModel(inserted)
+                try PersistedModel(inserted),
+                fields: nil
             )
             return inserted
         }
@@ -1019,7 +1021,8 @@ public final class DatabaseContext: Sendable {
         )
         if let inserted = pendingResult.inserted {
             try container.securityDelegate?.evaluateGet(
-                try PersistedModel(inserted)
+                try PersistedModel(inserted),
+                fields: nil
             )
             return inserted
         }
@@ -1101,7 +1104,8 @@ public final class DatabaseContext: Sendable {
             try await requireAccess(.read)
             // Evaluate GET security for pending insert (not via DataStore)
             try container.securityDelegate?.evaluateGet(
-                try PersistedModel(inserted)
+                try PersistedModel(inserted),
+                fields: nil
             )
             return inserted
         }
@@ -1171,7 +1175,8 @@ public final class DatabaseContext: Sendable {
         if let inserted = pendingResult.inserted {
             try await requireAccess(.read)
             try container.securityDelegate?.evaluateGet(
-                try PersistedModel(inserted)
+                try PersistedModel(inserted),
+                fields: nil
             )
             return inserted
         }

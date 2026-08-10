@@ -133,8 +133,8 @@ struct RequestAuthorizationPolicyTests {
         )
 
         try RequestAuthorization.$context.withValue(principal("alice")) {
-            try security.evaluateGet(try PersistedModel(owned))
-            try security.evaluateGet(try PersistedModel(published))
+            try security.evaluateGet(try PersistedModel(owned), fields: nil)
+            try security.evaluateGet(try PersistedModel(published), fields: nil)
         }
     }
 
@@ -145,7 +145,10 @@ struct RequestAuthorizationPolicyTests {
 
         do {
             try RequestAuthorization.$context.withValue(principal("alice")) {
-                try security.evaluateGet(try PersistedModel(record))
+                try security.evaluateGet(
+                    try PersistedModel(record),
+                    fields: nil
+                )
             }
             Issue.record("Expected read denial")
         } catch let error as SecurityError {
@@ -247,7 +250,10 @@ struct RequestAuthorizationPolicyTests {
             try RequestAuthorization.$context.withValue(
                 principal("operator", roles: ["admin"])
             ) {
-                try security.evaluateGet(try PersistedModel(foreign))
+                try security.evaluateGet(
+                    try PersistedModel(foreign),
+                    fields: nil
+                )
             }
         }
     }
@@ -270,13 +276,13 @@ struct RequestAuthorizationPolicyTests {
             try RequestAuthorization.$context.withValue(
                 principal("employee")
             ) {
-                try security.evaluateGet(persisted)
+                try security.evaluateGet(persisted, fields: nil)
             }
         }
         try RequestAuthorization.$context.withValue(
             principal("security", roles: ["security"])
         ) {
-            try security.evaluateGet(persisted)
+            try security.evaluateGet(persisted, fields: nil)
         }
     }
 
@@ -320,7 +326,10 @@ struct RequestAuthorizationPolicyTests {
         let security = DisabledSecurityDelegate()
         let foreign = SecuredRecord(ownerID: "bob", title: "Private")
 
-        try security.evaluateGet(try PersistedModel(foreign))
+        try security.evaluateGet(
+            try PersistedModel(foreign),
+            fields: nil
+        )
         try security.evaluateList(
             entity: UnregisteredRecord.persistableType,
             limit: nil,

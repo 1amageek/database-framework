@@ -461,8 +461,8 @@ if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
     "$ROOT_DIR/Package.resolved" > "$locked_pins"
 fi
 
-if [[ "$manifest_reused" == true && "$resolved_file_reused" == true ]]; then
-  echo "Reusing unchanged SwiftPM dependency graph."
+if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
+  echo "Using the repository's pinned SwiftPM dependency graph."
 else
   (
     cd "$source_copy"
