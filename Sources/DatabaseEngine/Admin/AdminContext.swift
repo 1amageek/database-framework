@@ -55,7 +55,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             requiredAccess: .administer,
             configuration: .readOnly
         ) { _ in () }
-        return try await context.withBaseOperation {
+        return try await context.withDataOperation {
             try await self.container.runMigrations(
                 targetVersion: targetVersion,
                 maximumStageCount: maximumStageCount
@@ -99,7 +99,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     public func collectionStatistics<T: Persistable>(
         _ type: T.Type
     ) async throws -> AdminCollectionStatistics {
-        try await context.withBaseOperation { [self] in
+        try await context.withDataOperation { [self] in
         let subspace = try await container.resolveDirectory(for: type)
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(T.persistableType)
         let (begin, end) = itemSubspace.range()
@@ -147,7 +147,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     public func indexStatistics(
         _ indexName: String
     ) async throws -> AdminIndexStatistics {
-        try await context.withBaseOperation { [self] in
+        try await context.withDataOperation { [self] in
         // Find index descriptor from schema
         guard let indexDescriptor = findIndexDescriptor(name: indexName) else {
             throw AdminError.indexNotFound(indexName)
@@ -294,7 +294,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     ///   - indexName: Name of the index to rebuild
     ///   - progress: Optional progress reporting action (0.0 to 1.0)
     public func rebuildIndex(_ indexName: String, progress: (@Sendable (Double) -> Void)?) async throws {
-        try await context.withBaseOperation { [self] in
+        try await context.withDataOperation { [self] in
         // Find the index and its owning entity
         guard let (entity, indexDescriptor) = findEntityAndIndex(name: indexName) else {
             throw AdminError.indexNotFound(indexName)
@@ -392,7 +392,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     /// `updateStatistics(for: Type.self)` for each type. This bulk method
     /// only collects index-level statistics due to type erasure limitations.
     public func updateStatistics() async throws {
-        try await context.withBaseOperation { [self] in
+        try await context.withDataOperation { [self] in
         try await requireAdministerAccess()
         // Get statistics subspace from metadata
         let statisticsSubspace = try await getStatisticsSubspace()
@@ -428,7 +428,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     ///
     /// - Parameter type: The Persistable type to analyze
     public func updateStatistics<T: Persistable>(for type: T.Type) async throws {
-        try await context.withBaseOperation { [self] in
+        try await context.withDataOperation { [self] in
         try await requireAdministerAccess()
         // Get statistics subspace from metadata
         let statisticsSubspace = try await getStatisticsSubspace()
@@ -453,7 +453,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
     /// Get statistics subspace from DirectoryLayer
     private func getStatisticsSubspace() async throws -> Subspace {
-        let lease = try context.requireOperationBaseLease()
+        let lease = try context.requireOperationDataRoot()
         return lease.root
             .subspace("data")
             .subspace("statistics")
@@ -472,7 +472,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     }
 
     public func estimatedStorageSize<T: Persistable>(for type: T.Type) async throws -> Int64 {
-        try await context.withBaseOperation { [self] in
+        try await context.withDataOperation { [self] in
         let subspace = try await container.resolveDirectory(for: type)
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(T.persistableType)
         let (begin, end) = itemSubspace.range()

@@ -415,7 +415,11 @@ normalized_package="$(mktemp "$XCODE_HARNESS_WORK_ROOT/Package.swift.XXXXXX")"
 cp "$ROOT_DIR/Package.swift" "$normalized_package"
 TRAIT_LITERAL="$traits_literal" perl -0pi -e '
   my $count = s/\.default\(enabledTraits:\s*\[[^\]]*\]\)/.default(enabledTraits: $ENV{TRAIT_LITERAL})/s;
-  die "expected exactly one default trait declaration\n" unless $count == 1;
+  die "expected at most one default trait declaration\n" if $count > 1;
+  if ($count == 0) {
+    my $insertions = s/(\n    traits: \[\n)/$1        .default(enabledTraits: $ENV{TRAIT_LITERAL}),\n/s;
+    die "package trait list was not found\n" unless $insertions == 1;
+  }
 ' "$normalized_package"
 
 rsync_arguments=(

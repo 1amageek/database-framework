@@ -7,6 +7,9 @@ extension DatabaseContext {
         entity: Schema.Entity,
         partitions: FieldObject,
         limit: Int,
+        offset: Int = 0,
+        startingAfterIdentifier: ByteString? = nil,
+        workMeter: DatabaseWorkMeter? = nil,
         configuration: TransactionConfiguration,
         transaction: (any TransactionAccess)?
     ) async throws -> [PersistedModel] {
@@ -15,7 +18,7 @@ extension DatabaseContext {
             partitions: partitions
         )
         if let transaction {
-            _ = try requireOperationBaseLease()
+            _ = try requireOperationDataRoot()
             let databaseTransaction = DatabaseTransaction(
                 storageAccess: transaction,
                 container: container
@@ -23,7 +26,10 @@ extension DatabaseContext {
             return try await databaseTransaction.scanPersistedModels(
                 entity: entity.name,
                 partition: partition,
-                limit: limit
+                limit: limit,
+                offset: offset,
+                startingAfterIdentifier: startingAfterIdentifier,
+                workMeter: workMeter
             )
         }
         return try await withTransaction(
@@ -34,7 +40,10 @@ extension DatabaseContext {
             try await transaction.scanPersistedModels(
                 entity: entity.name,
                 partition: partition,
-                limit: limit
+                limit: limit,
+                offset: offset,
+                startingAfterIdentifier: startingAfterIdentifier,
+                workMeter: workMeter
             )
         }
     }
@@ -46,9 +55,10 @@ extension DatabaseContext {
         entity: Schema.Entity,
         primaryKeys: [Tuple],
         partitions: FieldObject,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter
     ) async throws -> [PersistedModel?] {
-        _ = try requireOperationBaseLease()
+        _ = try requireOperationDataRoot()
         let partition = try CanonicalPartitionBinding.makeAnyBinding(
             for: entity,
             partitions: partitions
@@ -57,15 +67,29 @@ extension DatabaseContext {
             storageAccess: transaction,
             container: container
         )
-        var models: [PersistedModel?] = []
-        models.reserveCapacity(primaryKeys.count)
-        for primaryKey in primaryKeys {
-            models.append(
-                try await databaseTransaction.loadPersistedModel(
-                    entity: entity.name,
-                    id: primaryKey,
-                    partition: partition
+        let reservation = try workMeter.reserveIntermediate(
+            rows: UInt64(primaryKeys.count),
+            bytes: try DatabaseIntermediateFootprint(
+                bytes: UInt64(
+                    max(1, MemoryLayout<PersistedModel?>.stride + 16)
                 )
+            ).multiplied(by: UInt64(primaryKeys.count)).bytes,
+            at: .storageRow
+        )
+        defer { reservation.release() }
+        var models = [PersistedModel?](
+            repeating: nil,
+            count: primaryKeys.count
+        )
+        for index in primaryKeys.indices {
+            // DatabaseTransaction deliberately rejects overlapping operations.
+            // Preserve one serial transaction snapshot until StorageKit owns a
+            // backend-neutral batch-read contract.
+            try workMeter.consume(at: .storageRow)
+            models[index] = try await databaseTransaction.loadPersistedModel(
+                entity: entity.name,
+                id: primaryKeys[index],
+                partition: partition
             )
         }
         return models

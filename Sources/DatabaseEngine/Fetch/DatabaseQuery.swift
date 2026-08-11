@@ -69,6 +69,13 @@ public struct Query<T: Persistable>: Sendable {
     /// explicitly supplies a bounded execution context.
     var executionWorkMeter: DatabaseWorkMeter?
 
+    /// Storage-key position used only by the canonical stable-snapshot pager.
+    /// The value is the packed entity identifier, not an externally visible
+    /// continuation token.
+    var executionStartAfterIdentifier: ByteString?
+    var executionStorageOffset: Int
+    var executionWindowIsPushed: Bool
+
     /// Initialize an empty query
     public init() {
         self.predicates = []
@@ -79,6 +86,9 @@ public struct Query<T: Persistable>: Sendable {
         self.cachePolicy = .server
         self.forcedIndex = nil
         self.executionWorkMeter = nil
+        self.executionStartAfterIdentifier = nil
+        self.executionStorageOffset = 0
+        self.executionWindowIsPushed = false
     }
 
     // MARK: - Fluent API

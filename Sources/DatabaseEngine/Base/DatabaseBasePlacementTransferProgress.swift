@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseTypes
 
 /// One durable checkpoint produced by a bounded placement-transfer scan.
@@ -9,3 +10,5 @@ package struct DatabaseBasePlacementTransferProgress: Sendable, Hashable {
 
     package var isComplete: Bool { continuation == nil }
 }
+
+#endif

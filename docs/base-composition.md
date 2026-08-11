@@ -1,14 +1,23 @@
 # Base and Composition
 
-Status: implemented; production verification in progress.
+Status: implemented behind the non-default `MultipleBases` SwiftPM trait;
+production verification in progress.
 
 The package ownership, runtime state, Wire contract, transaction boundaries,
 implementation order, and verification gates are defined in
 [Base and Composition Implementation Design](base-composition-implementation-design.md).
 
-This document defines the implemented contract for isolating and composing data
-inside one logical database. It is a breaking storage and API revision: there
-is no Base-less compatibility surface or implicit default Base.
+This document defines the optional contract for isolating and composing data
+inside one logical database. The standard build retains one database data root.
+Enabling `MultipleBases` adds Base and Composition execution without replacing
+that root or changing the schema model.
+
+| Trait selection | Available data targets |
+|---|---|
+| standard / `AllRuntimeFeatures` | `.database` |
+| `MultipleBases` | `.database`, `.base(Base.ID)`, `.composition(Base.Composition.ID)` |
+
+`AllRuntimeFeatures` does not imply `MultipleBases`.
 
 ## Design Conclusion
 
@@ -97,7 +106,8 @@ operations retain the generation acquired at operation start.
 
 ## Public Operation Surface
 
-An authenticated local session selects one Base explicitly:
+When `MultipleBases` is enabled, an authenticated local session selects one
+Base explicitly:
 
 ~~~swift
 let session = container.session(authorization: authorization)
@@ -493,7 +503,8 @@ must not silently present a federated read as transactionally atomic.
 
 ## Implementation Invariants
 
-- A Base is the only mutation target; a Composition is never writable.
+- The database root or one Base can be a mutation target; a Composition is
+  never writable.
 - Base selection is explicit and never inferred from model data.
 - `#Directory` remains relative to a Base.
 - A Composition stores a canonical set of Base identities, not recursive

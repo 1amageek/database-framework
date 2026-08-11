@@ -167,6 +167,7 @@ struct FieldSecuritySQLiteTests {
 
     private func makeContainer() async throws -> DBContainer {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        #if MultipleBases
         let baseID = try Base.ID("field-security")
         let configuration = DBConfiguration(
             testingName: "field-security",
@@ -179,6 +180,14 @@ struct FieldSecuritySQLiteTests {
                 roles: ["security"]
             )
         )
+        #else
+        let configuration = DBConfiguration(
+            name: "field-security",
+            storageTopology: try .testing(storageEngine: engine),
+            monotonicClock: TestProcessMonotonicClock(),
+            wallClock: FixedTestWallClock()
+        )
+        #endif
         return try await DBContainer.open(
             for: try Schema(
                 entities: [try FieldSecuritySQLiteRecord.schemaEntity],
@@ -204,8 +213,12 @@ struct FieldSecuritySQLiteTests {
         roles: Set<String> = []
     ) -> DatabaseContext {
         let authorization = AuthorizationContext.authenticated(
-            Principal(identifier: principalID, roles: roles)
+            Principal(
+                identifier: principalID,
+                roles: roles.union(["admin"])
+            )
         )
+        #if MultipleBases
         do {
             return container.session(authorization: authorization)
                 .base(try Base.ID("field-security"))
@@ -213,6 +226,9 @@ struct FieldSecuritySQLiteTests {
         } catch {
             preconditionFailure("The fixed test Base identity must be valid")
         }
+        #else
+        return container.newContext(authorization: authorization)
+        #endif
     }
 }
 #endif

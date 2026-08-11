@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 /// Fail-closed target resolution and lifecycle errors for Base operations.
@@ -9,3 +10,5 @@ public enum DatabaseBaseExecutionError: Error, Sendable, Equatable {
     case placementRootMissing(Base.ID)
     case leaseCountOverflow(Base.ID)
 }
+
+#endif

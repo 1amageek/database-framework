@@ -21,7 +21,8 @@ struct FlatVectorIndexReader: Sendable {
     func search(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
@@ -50,6 +51,7 @@ struct FlatVectorIndexReader: Sendable {
         )
 
         try await cursor.consume { key, value in
+            try workMeter?.consume(at: .indexScan)
             let primaryKey: Tuple
             do {
                 primaryKey = try subspace.unpack(key)

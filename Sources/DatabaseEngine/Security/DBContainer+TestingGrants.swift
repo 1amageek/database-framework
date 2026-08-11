@@ -9,7 +9,10 @@ extension DBContainer {
         authorization: AuthorizationContext
     ) async throws {
         guard grant.resource == .database else {
-            throw DatabaseBaseExecutionError.baseTargetRequired
+            throw DatabaseGrantAuthorizationError.resourceMismatch(
+                expected: .database,
+                actual: grant.resource
+            )
         }
         try await withControlTransaction(
             requiredAccess: .administer,
@@ -36,6 +39,7 @@ extension DBContainer {
         }
     }
 
+    #if DATABASE_MULTIPLE_BASES
     /// Installs missing access through the production Base Grant store while
     /// retaining an explicitly authorized administration lease.
     @_spi(Testing)
@@ -77,4 +81,5 @@ extension DBContainer {
             }
         }
     }
+    #endif
 }

@@ -25,6 +25,11 @@ struct SelectQueryPushdownPlan<T: Persistable>: Sendable {
     var limitPushed: Bool
     /// Whether `selectQuery.offset` was pushed into `typedQuery.fetchOffset`.
     var offsetPushed: Bool
+    /// Whether the fetched rows already start at the current continuation
+    /// window and include at most one lookahead row.
+    var pageWindowPushed: Bool
+    var visiblePageSize: Int?
+    var stableSnapshotQueryFingerprint: ByteString?
 }
 
 /// Translates a `SelectQuery` targeting a single `.table` source into
@@ -110,12 +115,81 @@ enum SelectQueryPlanner {
         // type-level doc comment for why pushing with a pushed sort is unsafe.
         var limitPushed = false
         var offsetPushed = false
+        var pageWindowPushed = false
+        var visiblePageSize: Int? = nil
+        var stableSnapshotQueryFingerprint: ByteString? = nil
         let noResidualFilter = residualFilter == nil
         let noOrderBy = selectQuery.orderBy?.isEmpty ?? true
         let resolvedPageSize = try options.resolvePageSize()
-        let noExternalPagination = options.continuation == nil
-            && resolvedPageSize == nil
-        if noResidualFilter && noOrderBy && noExternalPagination {
+        if noResidualFilter,
+           noOrderBy,
+           selectQuery.filter == nil,
+           selectQuery.accessPath == nil,
+           options.options.continuationSnapshotIsStable,
+           !selectQuery.distinct,
+           !isCountProjection(selectQuery.projection),
+           let pageSize = resolvedPageSize {
+            let cursor = try CanonicalQueryPagination
+                .validatedStableSnapshotCursor(
+                    selectQuery: selectQuery,
+                    options: options
+                )
+            stableSnapshotQueryFingerprint = cursor.queryFingerprint
+            let continuationOffset = cursor.offset
+            guard let queryOffset = Int(exactly: selectQuery.offset ?? 0) else {
+                throw CanonicalReadError.unsupportedSelectQuery(
+                    "Query offset exceeds the platform integer range"
+                )
+            }
+            let (fetchOffset, offsetOverflow) = queryOffset
+                .addingReportingOverflow(continuationOffset)
+            guard !offsetOverflow else {
+                throw CanonicalReadError.invalidContinuation
+            }
+            let remainingLimit: Int?
+            if let limit = selectQuery.limit {
+                guard let limit = Int(exactly: limit) else {
+                    throw CanonicalReadError.unsupportedSelectQuery(
+                        "Query limit exceeds the platform integer range"
+                    )
+                }
+                remainingLimit = max(0, limit - continuationOffset)
+            } else {
+                remainingLimit = nil
+            }
+            let visibleCount = min(pageSize, remainingLimit ?? pageSize)
+            let wantsLookahead = remainingLimit.map { $0 > visibleCount } ?? true
+            let (withLookahead, lookaheadOverflow) = visibleCount
+                .addingReportingOverflow(wantsLookahead ? 1 : 0)
+            if options.continuation != nil,
+               cursor.storagePosition == nil {
+                return SelectQueryPushdownPlan(
+                    typedQuery: query,
+                    residualFilter: residualFilter,
+                    residualOrderBy: residualOrderBy,
+                    limitPushed: false,
+                    offsetPushed: false,
+                    pageWindowPushed: false,
+                    visiblePageSize: nil,
+                    stableSnapshotQueryFingerprint: nil
+                )
+            }
+            query.executionStartAfterIdentifier = cursor.storagePosition
+            query.executionStorageOffset = cursor.storagePosition == nil
+                ? fetchOffset
+                : 0
+            query.fetchLimit = max(
+                1,
+                lookaheadOverflow ? Int.max : withLookahead
+            )
+            query.fetchOffset = nil
+            query.executionWindowIsPushed = true
+            pageWindowPushed = true
+            visiblePageSize = visibleCount
+        } else if noResidualFilter
+                    && noOrderBy
+                    && options.continuation == nil
+                    && options.options.pageSize == nil {
             if let limit = selectQuery.limit {
                 guard let limit = Int(exactly: limit) else {
                     throw CanonicalReadError.unsupportedSelectQuery(
@@ -154,8 +228,20 @@ enum SelectQueryPlanner {
             residualFilter: residualFilter,
             residualOrderBy: residualOrderBy,
             limitPushed: limitPushed,
-            offsetPushed: offsetPushed
+            offsetPushed: offsetPushed,
+            pageWindowPushed: pageWindowPushed,
+            visiblePageSize: visiblePageSize,
+            stableSnapshotQueryFingerprint:
+                stableSnapshotQueryFingerprint
         )
+    }
+
+    private static func isCountProjection(_ projection: Projection) -> Bool {
+        guard case .items(let items) = projection, items.count == 1,
+              case .aggregate(.count) = items[0].expression else {
+            return false
+        }
+        return true
     }
 
     /// Apply a canonical `AccessPath` to the typed query.

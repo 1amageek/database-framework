@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 /// Read and mutation source fixed to one Base identity.
@@ -21,7 +22,7 @@ public struct BaseDataSource: Sendable {
     ) -> DatabaseContext {
         DatabaseContext(
             container: container,
-            baseID: id,
+            resource: .base(id),
             authorization: authorization,
             autosaveEnabled: autosaveEnabled
         )
@@ -37,3 +38,5 @@ public struct BaseDataSource: Sendable {
         AdminContext(context: newContext())
     }
 }
+
+#endif

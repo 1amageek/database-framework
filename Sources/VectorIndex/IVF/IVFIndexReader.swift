@@ -31,7 +31,8 @@ struct IVFIndexReader: Sendable {
     func search(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
@@ -63,7 +64,8 @@ struct IVFIndexReader: Sendable {
             return try await exactSearch(
                 queryVector: queryVector,
                 k: k,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: workMeter
             )
         }
         guard !centroids.isEmpty else {
@@ -73,6 +75,7 @@ struct IVFIndexReader: Sendable {
         var centroidDistances: [(index: Int, distance: Double)] = []
         centroidDistances.reserveCapacity(centroids.count)
         for (index, centroid) in centroids.enumerated() {
+            try workMeter?.consume(at: .indexScan)
             centroidDistances.append(
                 (
                     index: index,
@@ -110,6 +113,7 @@ struct IVFIndexReader: Sendable {
             )
 
             try await cursor.consume { key, value in
+                try workMeter?.consume(at: .indexScan)
                 let primaryKey: Tuple
                 do {
                     primaryKey = try listSubspace.unpack(key)
@@ -167,7 +171,8 @@ struct IVFIndexReader: Sendable {
     private func exactSearch(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let listsSubspace = subspace.subspace(IVFIndexStorageKey.lists.rawValue)
         let (begin, end) = listsSubspace.range()
@@ -185,6 +190,7 @@ struct IVFIndexReader: Sendable {
             comparator: { $0.distance > $1.distance }
         )
         try await cursor.consume { key, value in
+            try workMeter?.consume(at: .indexScan)
             let tuple: Tuple
             do {
                 tuple = try listsSubspace.unpack(key)

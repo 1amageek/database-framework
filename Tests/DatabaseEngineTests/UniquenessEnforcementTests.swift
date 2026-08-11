@@ -680,7 +680,7 @@ struct UniquenessEnforcementTests {
         }
     }
 
-    @Test("Uniqueness violation inspection requires Base administration")
+    @Test("Uniqueness violation inspection requires target administration")
     func contextViolationInspectionRequiresAdministration() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
@@ -692,10 +692,15 @@ struct UniquenessEnforcementTests {
             let authorization = AuthorizationContext.authenticated(
                 Principal(identifier: readerID)
             )
+            #if MultipleBases
             let baseID = try TestBaseEnvironment.id()
-            let context = container.session(authorization: authorization)
-                .base(baseID)
-                .newContext()
+            let expectedResource = Security.Resource.base(baseID)
+            #else
+            let expectedResource = Security.Resource.database
+            #endif
+            let context = container.testBaseContext(
+                authorization: authorization
+            )
 
             do {
                 _ = try await context.scanUniquenessViolations(
@@ -706,7 +711,7 @@ struct UniquenessEnforcementTests {
             } catch let error as DatabaseGrantAuthorizationError {
                 #expect(
                     error == .denied(
-                        resource: .base(baseID),
+                        resource: expectedResource,
                         required: .administer
                     )
                 )

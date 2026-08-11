@@ -50,9 +50,14 @@ private struct VersionReadExecutor: IndexReadExecutor {
             entity: entity,
             selectQuery: selectQuery
         )
-        let limit = try parameters.optionalInteger(
+        let requestedLimit = try parameters.optionalInteger(
             named: VersionReadParameter.limit
         )
+        guard requestedLimit.map({ $0 >= 0 }) ?? true else {
+            throw VersionReadError.invalidParameter(VersionReadParameter.limit)
+        }
+        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
         let rawResults = try await context.indexQueryContext.withReadableIndex(
             named: index.name,
             kindIdentifier: kindIdentifier,
@@ -66,7 +71,8 @@ private struct VersionReadExecutor: IndexReadExecutor {
             ).history(
                 primaryKey: primaryKey,
                 limit: limit,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: options.workMeter
             )
         }
 
@@ -76,33 +82,37 @@ private struct VersionReadExecutor: IndexReadExecutor {
                 VersionReadParameter.primaryKey
             )
         }
-        var results: [(version: Version, item: PersistedModel)] = []
-        results.reserveCapacity(rawResults.count)
-        for result in rawResults {
-            guard !result.data.isEmpty else { continue }
-            let persisted = try DataAccess.deserializePersistedModel(
-                result.data,
-                expectedEntity: entity.name
-            )
-            let canonical = try runtime.canonicalized(persisted)
-            try context.container.securityDelegate?.evaluateGet(
-                persisted,
-                fields: nil
-            )
-            results.append((result.version, canonical))
-        }
-
-        let rows = try results.map { result in
-            try IndexReadRow.materializing(
-                result.item,
-                annotations: [
-                    "version": .bytes(
-                        result.version.bytes
+        let historyReservation = try reserveVersionHistory(
+            rawResults,
+            workMeter: options.workMeter
+        )
+        defer { historyReservation.release() }
+        return try IndexReadResult.build(
+            workMeter: options.workMeter,
+            expectedCount: rawResults.count
+        ) { rows in
+            for result in rawResults {
+                try options.workMeter.consume(at: .indexScan)
+                guard !result.data.isEmpty else { continue }
+                let persisted = try DataAccess.deserializePersistedModel(
+                    result.data,
+                    expectedEntity: entity.name
+                )
+                let canonical = try runtime.canonicalized(persisted)
+                try context.container.securityDelegate?.evaluateGet(
+                    persisted,
+                    fields: nil
+                )
+                try rows.append(
+                    try IndexReadRow.materializing(
+                        canonical,
+                        annotations: [
+                            "version": .bytes(result.version.bytes)
+                        ]
                     )
-                ]
-            )
+                )
+            }
         }
-        return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 
 }
@@ -138,10 +148,27 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
             requested: options.consistency,
             default: .snapshot
         )
+        try context.authorizePolymorphicListAccess(
+            group: group,
+            limit: try runtimeInteger(
+                selectQuery.limit,
+                parameter: "limit"
+            ),
+            offset: try runtimeInteger(
+                selectQuery.offset,
+                parameter: "offset"
+            ),
+            orderBy: try selectQuery.requiredOrderByColumnNames()
+        )
 
-        let limit = try parameters.optionalInteger(
+        let requestedLimit = try parameters.optionalInteger(
             named: VersionReadParameter.limit
         )
+        guard requestedLimit.map({ $0 >= 0 }) ?? true else {
+            throw VersionReadError.invalidParameter(VersionReadParameter.limit)
+        }
+        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
         let rawResults = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) {
@@ -159,39 +186,86 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
             ).history(
                 primaryKey: primaryKey,
                 limit: limit,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: options.workMeter
             )
         }
-
-        var results: [(version: Version, item: PersistedModel)] = []
-        results.reserveCapacity(rawResults.count)
-        for result in rawResults {
-            guard !result.data.isEmpty else { continue }
-            let persistedModel = try DataAccess.deserializePersistedModel(
-                result.data,
-                expectedEntity: runtime.entity.name
-            )
-            let item = try runtime.canonicalized(persistedModel)
-            try context.container.securityDelegate?.evaluateGet(
-                persistedModel,
-                fields: nil
-            )
-            results.append((result.version, item))
-        }
-
-        let rows = try results.map { result in
-            try IndexReadRow.materializing(
-                result.item,
-                annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(runtime.entity.name),
-                    PolymorphicRowAnnotation.typeCode: .int64(typeCode),
-                    "version": .bytes(
-                        result.version.bytes
+        let historyReservation = try reserveVersionHistory(
+            rawResults,
+            workMeter: options.workMeter
+        )
+        defer { historyReservation.release() }
+        return try IndexReadResult.build(
+            workMeter: options.workMeter,
+            expectedCount: rawResults.count
+        ) { rows in
+            for result in rawResults {
+                try options.workMeter.consume(at: .indexScan)
+                guard !result.data.isEmpty else { continue }
+                let persistedModel = try DataAccess.deserializePersistedModel(
+                    result.data,
+                    expectedEntity: runtime.entity.name
+                )
+                let item = try runtime.canonicalized(persistedModel)
+                try context.container.securityDelegate?.evaluateGet(
+                    persistedModel,
+                    fields: nil
+                )
+                try rows.append(
+                    try IndexReadRow.materializing(
+                        item,
+                        annotations: [
+                            PolymorphicRowAnnotation.typeName:
+                                .string(runtime.entity.name),
+                            PolymorphicRowAnnotation.typeCode:
+                                .int64(typeCode),
+                            "version": .bytes(result.version.bytes)
+                        ]
                     )
-                ]
-            )
+                )
+            }
         }
-        return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 
+    private func runtimeInteger(
+        _ value: UInt64?,
+        parameter: String
+    ) throws -> Int? {
+        guard let value else { return nil }
+        guard let result = Int(exactly: value) else {
+            throw VersionReadError.invalidParameter(parameter)
+        }
+        return result
+    }
+
+}
+
+private func reserveVersionHistory(
+    _ history: [(version: Version, data: ByteString)],
+    workMeter: DatabaseWorkMeter
+) throws -> DatabaseIntermediateReservation {
+    var footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
+        count: history.count,
+        element: (version: Version, data: ByteString).self
+    )
+    for entry in history {
+        let entryBytes = try DatabaseIntermediateFootprint(
+            bytes: UInt64(entry.version.bytes.count)
+        ).adding(
+            DatabaseIntermediateFootprint(
+                bytes: UInt64(entry.data.count)
+            )
+        )
+        footprint = try footprint.adding(
+            DatabaseIntermediateFootprint(
+                rows: 1,
+                bytes: entryBytes.bytes
+            )
+        )
+    }
+    return try workMeter.reserveIntermediate(
+        rows: footprint.rows,
+        bytes: footprint.bytes,
+        at: .indexScan
+    )
 }

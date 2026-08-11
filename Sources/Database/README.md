@@ -30,10 +30,15 @@ For example, a consuming package selects a graph composition with:
 )
 ```
 
-An explicit trait list without `.defaults` replaces the default full native
-host profile (`FoundationDB` plus `AllRuntimeFeatures`). `GraphIndexes` enables
-`ScalarIndexes`; the umbrella also includes GraphIndex and OntologyIndex for
-that composition. `Relationships` remains an independent choice.
+The package has no default traits. `GraphIndexes` enables `ScalarIndexes`; the
+umbrella also includes GraphIndex and OntologyIndex for that composition.
+`Relationships`, storage backends, and `MultipleBases` remain independent
+choices.
+
+`Database` does not re-export `DatabaseWireRuntime` or `DatabaseFoundation`.
+They are separate optional products for remote operation execution and native
+Foundation adapters. The standalone `database-server` package consumes them;
+an in-process application does not.
 
 Backend facade availability is both trait- and platform-dependent:
 

@@ -266,6 +266,17 @@ package struct DatabaseRetainedBuffer<Element: Sendable>: ~Copyable, Sendable {
         return elements
     }
 
+    /// Moves the Array into an owner that continues to hold its request-memory
+    /// reservation. This is used when a package extension point must return an
+    /// owned collection to the canonical dispatcher without creating an
+    /// unmetered interval between producer and consumer.
+    package consuming func moveRetainingReservation() -> (
+        elements: [Element],
+        reservation: DatabaseIntermediateReservation
+    ) {
+        (elements, reservation)
+    }
+
     /// Reopens a unique retained buffer for additional admitted appends. The
     /// Array and reservation move into the builder without materialization.
     package consuming func resumeBuilding(

@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 /// Explicit authorization boundary for all local database data operations.
@@ -31,3 +32,5 @@ public final class DatabaseSession: Sendable {
         )
     }
 }
+
+#endif

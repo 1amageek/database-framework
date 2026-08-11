@@ -1,4 +1,4 @@
-@_spi(DatabaseServer) import DatabaseWire
+@_spi(DatabaseWireRuntime) import DatabaseWire
 
 public enum DatabaseSchemaPublicationError: Error, Sendable, Equatable,
     CustomStringConvertible {

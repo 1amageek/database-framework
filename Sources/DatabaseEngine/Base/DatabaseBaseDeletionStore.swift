@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -78,3 +79,5 @@ package struct DatabaseBaseDeletionStore: Sendable {
         records.pack(Tuple(id.value))
     }
 }
+
+#endif

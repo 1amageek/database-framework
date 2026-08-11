@@ -25,19 +25,62 @@ public struct ReadExecutionOptions: Sendable, Hashable {
     public let continuation: QueryContinuation?
     public let budget: ExecutionBudget
     public let continuationScope: ByteString
+    /// Indicates that the caller has pinned every page to the same immutable
+    /// storage read point. Only server-owned historical snapshots may enable
+    /// this; local callers keep result-fingerprint validation.
+    package let continuationSnapshotIsStable: Bool
+    /// Controls only the client-facing page window. Nested SQL sources disable
+    /// this while retaining their own logical LIMIT/OFFSET and the request's
+    /// shared work and memory budgets.
+    package let appliesExternalPageWindow: Bool
 
     public init(
         consistency: ReadConsistency? = nil,
         pageSize: Int? = nil,
         continuation: QueryContinuation? = nil,
         budget: ExecutionBudget = ExecutionBudget(),
-        continuationScope: ByteString = []
+        continuationScope: ByteString = [],
+        continuationSnapshotIsStable: Bool = false
+    ) {
+        self.init(
+            consistency: consistency,
+            pageSize: pageSize,
+            continuation: continuation,
+            budget: budget,
+            continuationScope: continuationScope,
+            continuationSnapshotIsStable: continuationSnapshotIsStable,
+            appliesExternalPageWindow: true
+        )
+    }
+
+    private init(
+        consistency: ReadConsistency?,
+        pageSize: Int?,
+        continuation: QueryContinuation?,
+        budget: ExecutionBudget,
+        continuationScope: ByteString,
+        continuationSnapshotIsStable: Bool,
+        appliesExternalPageWindow: Bool
     ) {
         self.consistency = consistency
         self.pageSize = pageSize
         self.continuation = continuation
         self.budget = budget
         self.continuationScope = continuationScope
+        self.continuationSnapshotIsStable = continuationSnapshotIsStable
+        self.appliesExternalPageWindow = appliesExternalPageWindow
+    }
+
+    package func withoutExternalPageWindow() -> Self {
+        Self(
+            consistency: consistency,
+            pageSize: nil,
+            continuation: nil,
+            budget: budget,
+            continuationScope: continuationScope,
+            continuationSnapshotIsStable: false,
+            appliesExternalPageWindow: false
+        )
     }
 
     public static var `default`: ReadExecutionOptions {
@@ -69,6 +112,9 @@ public struct ReadExecutionContext: Sendable {
     public var continuation: QueryContinuation? { options.continuation }
 
     public func resolvePageSize() throws -> Int? {
+        guard options.appliesExternalPageWindow else {
+            return nil
+        }
         if let pageSize = options.pageSize {
             return pageSize
         }

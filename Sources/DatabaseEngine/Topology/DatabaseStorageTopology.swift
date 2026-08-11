@@ -1,12 +1,17 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
+#endif
 
 /// Immutable, validated storage-domain and placement configuration.
 public struct DatabaseStorageTopology: Sendable {
     public let controlDomainID: DatabaseStorageDomain.ID
     public let domains: [DatabaseStorageDomain]
+    #if DATABASE_MULTIPLE_BASES
     public let placements: [DatabaseStoragePlacement]
     public let defaultPlacementID: Base.Placement.ID
+    #endif
 
+    #if DATABASE_MULTIPLE_BASES
     public init(
         controlDomainID: DatabaseStorageDomain.ID,
         domains: [DatabaseStorageDomain],
@@ -72,6 +77,14 @@ public struct DatabaseStorageTopology: Sendable {
         self.placements = placements.sorted { $0.id < $1.id }
         self.defaultPlacementID = defaultPlacementID
     }
+    #else
+    public init(
+        controlDomain: DatabaseStorageDomain
+    ) {
+        self.controlDomainID = controlDomain.id
+        self.domains = [controlDomain]
+    }
+    #endif
 
     public func domain(
         identifiedBy id: DatabaseStorageDomain.ID
@@ -79,9 +92,11 @@ public struct DatabaseStorageTopology: Sendable {
         domains.first { $0.id == id }
     }
 
+    #if DATABASE_MULTIPLE_BASES
     public func placement(
         identifiedBy id: Base.Placement.ID
     ) -> DatabaseStoragePlacement? {
         placements.first { $0.id == id }
     }
+    #endif
 }

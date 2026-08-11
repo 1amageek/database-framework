@@ -144,13 +144,24 @@ extension DatabaseContext {
     package func fetchPolymorphicItemsPreservingOrder(
         group: PolymorphicGroup,
         ids: [Tuple],
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [PolymorphicEntity?] {
+        let reservation = try workMeter?.reserveIntermediate(
+            rows: UInt64(ids.count),
+            bytes: try DatabaseIntermediateFootprint(
+                bytes: UInt64(
+                    max(1, MemoryLayout<PolymorphicEntity?>.stride + 16)
+                )
+            ).multiplied(by: UInt64(ids.count)).bytes,
+            at: .storageRow
+        )
+        defer { reservation?.release() }
         guard let subspace = try await container.openPolymorphicDirectory(
             for: group.identifier,
             transaction: transaction
         ) else {
-            return ids.map { _ in nil }
+            return [PolymorphicEntity?](repeating: nil, count: ids.count)
         }
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
@@ -159,10 +170,9 @@ extension DatabaseContext {
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
-        var items: [PolymorphicEntity?] = []
-        items.reserveCapacity(ids.count)
-
-        for id in ids {
+        func load(
+            _ id: Tuple
+        ) async throws -> PolymorphicEntity? {
             guard id.count > 0 else {
                 throw PolymorphicRuntimeError.invalidRequestedIdentifier
             }
@@ -172,8 +182,7 @@ extension DatabaseContext {
             }
             let key = itemSubspace.pack(id)
             guard let data = try await storage.read(for: key) else {
-                items.append(nil)
-                continue
+                return nil
             }
             guard let runtime = typeMap[typeCode] else {
                 throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
@@ -187,14 +196,23 @@ extension DatabaseContext {
                 persistedModel,
                 fields: nil
             )
-            items.append(
-                PolymorphicEntity(
-                    item: item,
-                    typeName: runtime.entity.name,
-                    typeCode: typeCode,
-                    polymorphicIdentifier: id
-                )
+            return PolymorphicEntity(
+                item: item,
+                typeName: runtime.entity.name,
+                typeCode: typeCode,
+                polymorphicIdentifier: id
             )
+        }
+        var items = [PolymorphicEntity?](
+            repeating: nil,
+            count: ids.count
+        )
+        for index in ids.indices {
+            // TransactionAccess is a serial operation boundary. A true batch
+            // read requires an explicit StorageKit contract; child tasks must
+            // not issue overlapping operations against one transaction.
+            try workMeter?.consume(at: .storageRow)
+            items[index] = try await load(ids[index])
         }
         return items
     }

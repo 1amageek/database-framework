@@ -20,10 +20,12 @@ import DatabaseKit
 /// let container = try await DBContainer.open(for: schema, configuration: config)
 /// ```
 public struct DBConfiguration: Sendable {
+    #if DATABASE_MULTIPLE_BASES
     package struct TestingBootstrap: Sendable {
         package let baseID: Base.ID
         package let principal: Principal
     }
+    #endif
 
     // MARK: - Properties
 
@@ -58,7 +60,9 @@ public struct DBConfiguration: Sendable {
     public let wallClock: any WallClock
 
     /// Explicit test-only Base bootstrap supplied by TestSupport.
+    #if DATABASE_MULTIPLE_BASES
     package let testingBootstrap: TestingBootstrap?
+    #endif
 
     // MARK: - Initialization
 
@@ -88,9 +92,12 @@ public struct DBConfiguration: Sendable {
         self.metrics = metrics
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
+        #if DATABASE_MULTIPLE_BASES
         self.testingBootstrap = nil
+        #endif
     }
 
+    #if DATABASE_MULTIPLE_BASES
     @_spi(Testing)
     public init(
         testingName name: String? = nil,
@@ -119,6 +126,7 @@ public struct DBConfiguration: Sendable {
             principal: testingPrincipal
         )
     }
+    #endif
 
     func claimStorageTopology() throws -> ClaimedDatabaseStorageTopology {
         try storageTopologyLifecycle.claim()

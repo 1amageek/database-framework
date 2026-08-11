@@ -79,55 +79,87 @@ private struct RankReadExecutor: IndexReadExecutor {
             entity: entity,
             selectQuery: selectQuery
         )
-        let results = try await context.indexQueryContext.withReadableIndex(
+        return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
             kindIdentifier: kindIdentifier,
             forEntityName: entity.name,
             partitions: partitions,
             configuration: execution.transactionConfiguration
-        ) { readableIndex, transaction -> [(item: PersistedModel, rank: Int)] in
-            guard let readableIndex else { return [] }
+        ) { readableIndex, transaction -> IndexReadResult in
+            guard let readableIndex else { return .empty }
             let rankedKeys = try await scanRanked(
                 indexSubspace: readableIndex.subspace,
                 transaction: transaction,
-                parameters: parameters
+                parameters: parameters,
+                workMeter: options.workMeter
             )
+            let rankedKeyReservation = try reserveRankedKeys(
+                rankedKeys,
+                workMeter: options.workMeter
+            )
+            defer { rankedKeyReservation.release() }
+            let primaryKeys = rankedKeys.map { $0.primaryKey }
+            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
+                .reserveTuples(
+                    primaryKeys,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { primaryKeyReservation.release() }
             let fetched = try await context.fetchPersistedModelsPreservingOrder(
                 entity: entity,
-                primaryKeys: rankedKeys.map { $0.primaryKey },
+                primaryKeys: primaryKeys,
                 partitions: partitions,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: options.workMeter
             )
-            var results: [(item: PersistedModel, rank: Int)] = []
-            results.reserveCapacity(fetched.count)
-            for (rankedKey, item) in zip(rankedKeys, fetched) {
-                guard let item else {
-                    throw RankReadError.missingFetchedEntity(
-                        primaryKey: rankedKey.primaryKey.pack()
+            let fetchedReservation = try DatabaseIntermediateCollectionMeter
+                .reservePersistedModels(
+                    fetched,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { fetchedReservation.release() }
+            guard fetched.count == rankedKeys.count else {
+                throw RankReadError.fetchedEntityCountMismatch(
+                    expected: rankedKeys.count,
+                    actual: fetched.count
+                )
+            }
+            return try IndexReadResult.build(
+                workMeter: options.workMeter,
+                expectedCount: rankedKeys.count
+            ) { rows in
+                for (rankedKey, item) in zip(rankedKeys, fetched) {
+                    guard let item else {
+                        throw RankReadError.missingFetchedEntity(
+                            primaryKey: rankedKey.primaryKey.pack()
+                        )
+                    }
+                    try rows.append(
+                        try IndexReadRow.materializing(
+                            item,
+                            annotations: [
+                                "rank": .int64(Int64(rankedKey.rank))
+                            ]
+                        )
                     )
                 }
-                results.append((item, rankedKey.rank))
             }
-            return results
         }
-        let rows = try results.map { result in
-            try IndexReadRow.materializing(
-                result.item,
-                annotations: ["rank": .int64(Int64(result.rank))]
-            )
-        }
-        return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 
     private func scanRanked(
         indexSubspace: Subspace,
         transaction: any TransactionAccess,
-        parameters: IndexReadParameters
+        parameters: IndexReadParameters,
+        workMeter: DatabaseWorkMeter
     ) async throws -> [(primaryKey: Tuple, rank: Int)] {
         let scoresSubspace = indexSubspace.subspace("scores")
         let scanner = RankScanner(
             scoresSubspace: scoresSubspace,
-            transaction: transaction
+            transaction: transaction,
+            workMeter: workMeter
         )
         let mode = try parameters.requireString(named: RankReadParameter.mode)
         switch mode {
@@ -236,7 +268,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             orderBy: orderByFields
         )
 
-        let orderedResults: [(entity: PolymorphicEntity, rank: Int)] = try await context
+        return try await context
             .executeCanonicalRead(
                 configuration: execution.transactionConfiguration
             ) { transaction in
@@ -246,44 +278,85 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
                     in: group,
                     transaction: transaction
                 ) else {
-                return []
+                return .empty
             }
             let rankedKeys = try await scanRanked(
                 indexSubspace: readableIndex.subspace,
                 transaction: transaction,
-                parameters: parameters
+                parameters: parameters,
+                workMeter: options.workMeter
             )
+            let rankedKeyReservation = try reserveRankedKeys(
+                rankedKeys,
+                workMeter: options.workMeter
+            )
+            defer { rankedKeyReservation.release() }
+            let primaryKeys = rankedKeys.map { $0.primaryKey }
+            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
+                .reserveTuples(
+                    primaryKeys,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { primaryKeyReservation.release() }
             let entities = try await context.fetchPolymorphicItemsPreservingOrder(
                 group: group,
-                ids: rankedKeys.map { $0.primaryKey },
-                transaction: transaction
+                ids: primaryKeys,
+                transaction: transaction,
+                workMeter: options.workMeter
             )
-            return try RankReadResultAssembler.assemble(
-                rankedKeys: rankedKeys,
-                entities: entities
-            )
+            let entityReservation = try DatabaseIntermediateCollectionMeter
+                .reservePolymorphicEntities(
+                    entities,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { entityReservation.release() }
+            guard rankedKeys.count == entities.count else {
+                throw RankReadError.fetchedEntityCountMismatch(
+                    expected: rankedKeys.count,
+                    actual: entities.count
+                )
+            }
+            return try IndexReadResult.build(
+                workMeter: options.workMeter,
+                expectedCount: rankedKeys.count
+            ) { rows in
+                for (rankedKey, entity) in zip(rankedKeys, entities) {
+                    guard let entity else {
+                        throw RankReadError.missingFetchedEntity(
+                            primaryKey: rankedKey.primaryKey.pack()
+                        )
+                    }
+                    try rows.append(
+                        try IndexReadRow.materializing(
+                            entity.item,
+                            annotations: [
+                                PolymorphicRowAnnotation.typeName:
+                                    .string(entity.typeName),
+                                PolymorphicRowAnnotation.typeCode:
+                                    .int64(entity.typeCode),
+                                "rank": .int64(Int64(rankedKey.rank))
+                            ]
+                        )
+                    )
+                }
+            }
         }
-
-        let rows = try orderedResults.map { result in
-            try IndexReadRow.materializing(
-                result.entity.item,
-                annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(result.entity.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(result.entity.typeCode),
-                    "rank": .int64(Int64(result.rank))
-                ]
-            )
-        }
-        return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 
     private func scanRanked(
         indexSubspace: Subspace,
         transaction: any TransactionAccess,
-        parameters: IndexReadParameters
+        parameters: IndexReadParameters,
+        workMeter: DatabaseWorkMeter
     ) async throws -> [(primaryKey: Tuple, rank: Int)] {
         let scoresSubspace = indexSubspace.subspace("scores")
-        let scanner = RankScanner(scoresSubspace: scoresSubspace, transaction: transaction)
+        let scanner = RankScanner(
+            scoresSubspace: scoresSubspace,
+            transaction: transaction,
+            workMeter: workMeter
+        )
         let mode = try parameters.requireString(named: RankReadParameter.mode)
 
         switch mode {
@@ -362,4 +435,27 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
         return result
     }
 
+}
+
+private func reserveRankedKeys(
+    _ rankedKeys: [(primaryKey: Tuple, rank: Int)],
+    workMeter: DatabaseWorkMeter
+) throws -> DatabaseIntermediateReservation {
+    var footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
+        count: rankedKeys.count,
+        element: (primaryKey: Tuple, rank: Int).self
+    )
+    for rankedKey in rankedKeys {
+        footprint = try footprint.adding(
+            DatabaseIntermediateFootprint(
+                rows: 1,
+                bytes: UInt64(rankedKey.primaryKey.pack().count)
+            )
+        )
+    }
+    return try workMeter.reserveIntermediate(
+        rows: footprint.rows,
+        bytes: footprint.bytes,
+        at: .indexScan
+    )
 }

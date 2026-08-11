@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import StorageKit
 
@@ -210,3 +211,5 @@ extension DBContainer {
         return next
     }
 }
+
+#endif

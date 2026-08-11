@@ -1,3 +1,4 @@
+#if MultipleBases
 import DatabaseKit
 import DatabaseRuntime
 import StorageKit
@@ -254,3 +255,4 @@ struct CompositionQueryExecutorTests {
         try await context.save()
     }
 }
+#endif

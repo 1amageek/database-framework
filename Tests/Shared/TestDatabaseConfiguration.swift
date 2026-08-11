@@ -54,12 +54,13 @@ public extension DBConfiguration {
         metrics: DatabaseMetricsConfiguration = .disabled
     ) throws -> DBConfiguration {
         let domainID = try DatabaseStorageDomain.ID("test-primary")
-        let placementID = try Base.Placement.ID("test-default")
         let domain = try DatabaseStorageDomain(
             id: domainID,
             namespacePath: ["database", databaseIdentifier],
             storageEngine: storageEngine
         )
+        #if MultipleBases
+        let placementID = try Base.Placement.ID("test-default")
         let placement = try DatabaseStoragePlacement(
             id: placementID,
             domainID: domainID,
@@ -74,7 +75,7 @@ public extension DBConfiguration {
         let baseID = try Base.ID("test")
         let principal = Principal(
             identifier: "test-runner",
-            roles: ["test-runner"]
+            roles: ["test-runner", "admin"]
         )
         return DBConfiguration(
             testingName: name,
@@ -88,6 +89,19 @@ public extension DBConfiguration {
             logging: logging,
             metrics: metrics
         )
+        #else
+        let topology = DatabaseStorageTopology(controlDomain: domain)
+        return DBConfiguration(
+            name: name,
+            storageTopology: topology,
+            monotonicClock: TestProcessMonotonicClock(),
+            wallClock: FixedTestWallClock(),
+            indexConfigurations: indexConfigurations,
+            itemStorage: itemStorage,
+            logging: logging,
+            metrics: metrics
+        )
+        #endif
     }
 }
 
@@ -98,6 +112,7 @@ public extension DatabaseStorageTopology {
         storageEngine: any StorageEngine
     ) throws -> DatabaseStorageTopology {
         let domainID = try DatabaseStorageDomain.ID("test-primary")
+        #if MultipleBases
         let placementID = try Base.Placement.ID("test-default")
         return try DatabaseStorageTopology(
             controlDomainID: domainID,
@@ -117,6 +132,15 @@ public extension DatabaseStorageTopology {
             ],
             defaultPlacementID: placementID
         )
+        #else
+        return DatabaseStorageTopology(
+            controlDomain: try DatabaseStorageDomain(
+                id: domainID,
+                namespacePath: ["database", "test"],
+                storageEngine: storageEngine
+            )
+        )
+        #endif
     }
 }
 
@@ -129,7 +153,10 @@ public enum TestBaseEnvironment {
 
     public static var authorization: AuthorizationContext {
         .authenticated(
-            Principal(identifier: "test-runner", roles: ["test-runner"])
+            Principal(
+                identifier: "test-runner",
+                roles: ["test-runner", "admin"]
+            )
         )
     }
 }
@@ -150,6 +177,7 @@ public extension DBContainer {
         authorization: AuthorizationContext = TestBaseEnvironment.authorization,
         autosaveEnabled: Bool = false
     ) -> DatabaseContext {
+        #if MultipleBases
         do {
             return session(authorization: authorization)
                 .base(try TestBaseEnvironment.id())
@@ -157,6 +185,12 @@ public extension DBContainer {
         } catch {
             preconditionFailure("The fixed test Base identity must be valid")
         }
+        #else
+        newContext(
+            authorization: authorization,
+            autosaveEnabled: autosaveEnabled
+        )
+        #endif
     }
 
     /// Persists access for one test subject through the same Base-local Grant
@@ -165,6 +199,7 @@ public extension DBContainer {
         to subject: Security.Subject,
         access: Security.Access
     ) async throws {
+        #if MultipleBases
         let baseID = try TestBaseEnvironment.id()
         try await grantBaseAccessForTesting(
             Security.Grant(
@@ -174,6 +209,9 @@ public extension DBContainer {
             ),
             authorization: TestBaseEnvironment.authorization
         )
+        #else
+        try await grantTestDatabaseAccess(to: subject, access: access)
+        #endif
     }
 
     /// Persists database access for one test subject through the production
@@ -195,6 +233,7 @@ public extension DBContainer {
     /// Returns administrative APIs bound to the explicitly bootstrapped test
     /// Base and test principal.
     func testBaseAdmin() -> AdminContext {
+        #if MultipleBases
         do {
             return session(authorization: TestBaseEnvironment.authorization)
                 .base(try TestBaseEnvironment.id())
@@ -202,6 +241,9 @@ public extension DBContainer {
         } catch {
             preconditionFailure("The fixed test Base identity must be valid")
         }
+        #else
+        return admin(authorization: TestBaseEnvironment.authorization)
+        #endif
     }
 
     /// Executes a test-only operation while retaining the explicit test Base
@@ -210,7 +252,7 @@ public extension DBContainer {
     func withTestBaseOperation<Result: Sendable>(
         _ operation: @Sendable () async throws -> Result
     ) async throws -> Result {
-        try await testBaseContext().withBaseOperation(operation)
+        try await testBaseContext().withDataOperation(operation)
     }
 
     /// Clears the complete Base-local data root while preserving the control
@@ -292,7 +334,7 @@ public extension DBContainer {
         for version: Schema.Version
     ) async throws {
         let context = testBaseContext()
-        try await context.withBaseOperation {
+        try await context.withDataOperation {
             try await self.installSchemaSnapshot(for: version)
         }
     }

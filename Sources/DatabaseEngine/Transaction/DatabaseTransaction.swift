@@ -350,13 +350,19 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     package func scanPersistedModels(
         entity: String,
         partition: AnyDirectoryPath?,
-        limit: Int
+        limit: Int,
+        offset: Int = 0,
+        startingAfterIdentifier: ByteString? = nil,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [PersistedModel] {
         try await performOperation { _ in
             try await scanPersistedModelsUnchecked(
                 entity: entity,
                 partition: partition,
-                limit: limit
+                limit: limit,
+                offset: offset,
+                startingAfterIdentifier: startingAfterIdentifier,
+                workMeter: workMeter
             )
         }
     }
@@ -756,10 +762,16 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     private func scanPersistedModelsUnchecked(
         entity: String,
         partition: AnyDirectoryPath?,
-        limit: Int
+        limit: Int,
+        offset: Int,
+        startingAfterIdentifier: ByteString?,
+        workMeter: DatabaseWorkMeter?
     ) async throws -> [PersistedModel] {
         guard limit > 0 else {
             throw DatabaseTransactionError.invalidLimit(limit)
+        }
+        guard offset >= 0 else {
+            throw DatabaseTransactionError.invalidLimit(offset)
         }
         let runtime = try entityRuntime(named: entity)
         if runtime.entity.hasDynamicDirectory, partition == nil {
@@ -781,19 +793,32 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             return []
         }
         let (begin, end) = subspaces.items.subspace(entity).range()
+        let entitySubspace = subspaces.items.subspace(entity)
+        let startingAfter = try startingAfterIdentifier.map {
+            entitySubspace.pack(try Tuple(packed: $0))
+        }
         let storage = container.itemStorageFactory.make(
             transaction: storageAccess,
             blobsSubspace: subspaces.blobs
         )
         var models: [PersistedModel] = []
         models.reserveCapacity(limit)
+        let (requestedScanLimit, scanLimitOverflow) = limit
+            .addingReportingOverflow(offset)
         var iterator = storage.scan(
             begin: begin,
             end: end,
+            startingAfter: startingAfter,
             snapshot: false,
-            limit: limit
+            limit: scanLimitOverflow ? Int.max : requestedScanLimit
         ).makeAsyncIterator()
+        var skipped = 0
         while let (_, data) = try await iterator.next() {
+            try workMeter?.consume(at: .storageRow)
+            if skipped < offset {
+                skipped += 1
+                continue
+            }
             let persistedModel = try DataAccess.deserializePersistedModel(
                 data,
                 expectedEntity: entity
@@ -889,7 +914,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             schema: container.schema,
             transaction: self,
             operationID: operationID,
-            baseRoot: container.requireActiveBaseLease().root,
+            baseRoot: container.requireActiveDataRoot().root,
             storageAccess: storageAccess
         )
     }
@@ -931,9 +956,9 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let path = try partition ?? AnyDirectoryPath(for: entity)
         try path.validate()
         let partitionPath = path.resolve()
-        let lease = try container.requireActiveBaseLease()
+        let lease = try container.requireActiveDataRoot()
         let cacheKey = DatabaseStoreCacheKey(
-            basePlacementGeneration: lease.generation.record.placementGeneration,
+            basePlacementGeneration: lease.generation,
             entity: entity.name,
             components: partitionPath
         )

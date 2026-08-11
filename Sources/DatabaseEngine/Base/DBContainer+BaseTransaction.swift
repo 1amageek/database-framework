@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import StorageKit
 
@@ -46,33 +47,6 @@ extension DBContainer {
         }
     }
 
-    /// Executes one Base-local storage attempt after evaluating the persisted
-    /// Grant in that same transaction. The current Base lease and request
-    /// authorization must already be bound by the operation coordinator.
-    package func withActiveBaseTransaction<Result: Sendable>(
-        requiredAccess: Security.Access,
-        configuration: TransactionConfiguration = .default,
-        executionDeadline: TransactionExecutionDeadline? = nil,
-        _ operation: @Sendable @escaping (
-            any TransactionAccess
-        ) async throws -> Result
-    ) async throws -> Result {
-        let lease = try requireActiveBaseLease()
-        let authorization = RequestAuthorization.context
-        return try await lease.transactionExecutor.withTransaction(
-            configuration: configuration,
-            clock: monotonicClock,
-            executionDeadline: executionDeadline
-        ) { transaction in
-            try await DatabaseGrantStore(
-                resource: .base(lease.baseID),
-                root: lease.root
-            ).require(
-                requiredAccess,
-                authorization: authorization,
-                transaction: transaction
-            )
-            return try await operation(transaction)
-        }
-    }
 }
+
+#endif

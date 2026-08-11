@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import StorageKit
 
@@ -60,3 +61,5 @@ package struct DatabaseCompositionReadSnapshot: Sendable {
         capturedReadPoints
     }
 }
+
+#endif

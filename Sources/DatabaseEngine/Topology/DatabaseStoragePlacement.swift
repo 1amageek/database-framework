@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 /// A named placement maps newly provisioned Bases to one storage domain path.
@@ -24,3 +25,4 @@ public struct DatabaseStoragePlacement: Sendable, Hashable {
         self.path = path
     }
 }
+#endif

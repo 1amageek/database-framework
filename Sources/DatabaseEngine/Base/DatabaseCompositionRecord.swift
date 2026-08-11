@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import StorageKit
 
@@ -54,3 +55,5 @@ package struct DatabaseCompositionRecord: Sendable, Hashable, StorageFrameValue 
         }
     }
 }
+
+#endif

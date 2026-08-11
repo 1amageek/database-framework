@@ -57,17 +57,17 @@ let package = Package(
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
         .library(name: "BenchmarkFramework", targets: ["BenchmarkFramework"]),
-        .library(name: "DatabaseServer", targets: ["DatabaseServer"]),
+        .library(name: "DatabaseWireRuntime", targets: ["DatabaseWireRuntime"]),
         .library(
-            name: "DatabaseServerFoundation",
-            targets: ["DatabaseServerFoundation"]
+            name: "DatabaseFoundation",
+            targets: ["DatabaseFoundation"]
         ),
     ],
     traits: [
-        .default(enabledTraits: ["FoundationDB", "AllRuntimeFeatures"]),
         .trait(name: "FoundationDB"),
         .trait(name: "SQLite"),
         .trait(name: "PostgreSQL"),
+        .trait(name: "MultipleBases"),
         .trait(
             name: "AllRuntimeFeatures",
             enabledTraits: [
@@ -105,7 +105,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0809.8"
+            from: "26.0811.0"
         ),
         .package(
             url: "https://github.com/1amageek/swift-hnsw.git",
@@ -130,7 +130,13 @@ let package = Package(
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
-            exclude: ["README.md"]
+            exclude: ["README.md"],
+            swiftSettings: [
+                .define(
+                    "DATABASE_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+            ]
         ),
         .target(
             name: "SwiftLogDatabaseLogging",
@@ -525,6 +531,10 @@ let package = Package(
                     "DATABASE_RELATIONSHIPS",
                     .when(traits: ["Relationships"])
                 ),
+                .define(
+                    "DATABASE_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
             ]
         ),
         // BenchmarkFramework - Performance benchmarking infrastructure
@@ -536,9 +546,9 @@ let package = Package(
                 .product(name: "StorageKit", package: "storage-kit"),
             ]
         ),
-        // DatabaseServer - Remote client endpoint library
+        // DatabaseWireRuntime - Host-independent DatabaseWire execution
         .target(
-            name: "DatabaseServer",
+            name: "DatabaseWireRuntime",
             dependencies: [
                 "DatabaseMath",
                 "DatabaseEngine",
@@ -563,23 +573,27 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_GRAPH_INDEXES",
+                    "DATABASE_WIRE_RUNTIME_GRAPH_INDEXES",
                     .when(traits: ["GraphIndexes"])
                 ),
                 .define(
-                    "DATABASE_SERVER_RELATIONSHIPS",
+                    "DATABASE_WIRE_RUNTIME_RELATIONSHIPS",
                     .when(traits: ["Relationships"])
                 ),
                 .define(
-                    "DATABASE_SERVER_VECTOR_INDEXES",
+                    "DATABASE_WIRE_RUNTIME_VECTOR_INDEXES",
                     .when(traits: ["VectorIndexes"])
+                ),
+                .define(
+                    "DATABASE_WIRE_RUNTIME_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
                 ),
             ]
         ),
         .target(
-            name: "DatabaseServerFoundation",
+            name: "DatabaseFoundation",
             dependencies: [
-                "DatabaseServer",
+                "DatabaseEngine",
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(
                     name: "DatabaseTypesFoundation",
@@ -654,6 +668,23 @@ let package = Package(
                 .product(name: "StorageKitSystemClock", package: "storage-kit"),
             ],
             linkerSettings: foundationDBClientLinkerSettings
+        ),
+        .testTarget(
+            name: "DatabaseSingleRootTests",
+            dependencies: [
+                "DatabaseEngine",
+                "DatabaseRuntime",
+                "DatabaseWireRuntime",
+                "DatabaseFoundation",
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "StorageKit", package: "storage-kit"),
+                .product(
+                    name: "StorageKitSystemClock",
+                    package: "storage-kit"
+                ),
+            ]
         ),
         .testTarget(
             name: "DatabaseRuntimeTests",
@@ -862,12 +893,12 @@ let package = Package(
             ],
             linkerSettings: foundationDBClientLinkerSettings
         ),
-        // DatabaseServer tests
+        // DatabaseWireRuntime tests
         .testTarget(
-            name: "DatabaseServerTests",
+            name: "DatabaseWireRuntimeTests",
             dependencies: [
-                "DatabaseServer",
-                "DatabaseServerFoundation",
+                "DatabaseWireRuntime",
+                "DatabaseFoundation",
                 "DatabaseRuntime",
                 "DatabaseEngine",
                 "GraphIndex",
@@ -880,11 +911,11 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_TEST_GRAPH_INDEXES",
+                    "DATABASE_WIRE_RUNTIME_TEST_GRAPH_INDEXES",
                     .when(traits: ["GraphIndexes"])
                 ),
                 .define(
-                    "DATABASE_SERVER_TEST_VECTOR_INDEXES",
+                    "DATABASE_WIRE_RUNTIME_TEST_VECTOR_INDEXES",
                     .when(traits: ["VectorIndexes"])
                 ),
             ],
@@ -986,16 +1017,15 @@ let package = Package(
                 .define("POSTGRESQL", .when(traits: ["PostgreSQL"])),
             ]
         ),
-        // SQLite backend tests. The package's default FoundationDB trait keeps
-        // the compiled adapter reachable through Database, so its client
-        // library remains a link-time dependency unless default traits are disabled.
+        // SQLite backend tests. The harness enables the SQLite trait in an
+        // isolated package copy; the package itself has no default backend.
         .testTarget(
             name: "SQLiteTests",
             dependencies: [
                 "Database",
                 "DatabaseRuntime",
-                "DatabaseServer",
-                "DatabaseServerFoundation",
+                "DatabaseWireRuntime",
+                "DatabaseFoundation",
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(
                     name: "DatabaseKitFoundation",

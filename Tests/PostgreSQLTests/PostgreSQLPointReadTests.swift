@@ -113,7 +113,7 @@ struct PostgreSQLPointReadTests {
             try context.insert(item)
             try await context.save()
 
-            let (fetched, missing) = try await context.withBaseOperation {
+            let (fetched, missing) = try await context.withDataOperation {
                 let store = try await container.store(
                     for: PGPointReadItem.self
                 )
@@ -147,7 +147,7 @@ struct PostgreSQLPointReadTests {
             item.name = "created"
             item.value = 1
             let created = item
-            try await context.withBaseOperation {
+            try await context.withDataOperation {
                 let store = try await container.store(
                     for: PGPointReadItem.self
                 )
@@ -197,7 +197,7 @@ struct PostgreSQLPointReadTests {
             try context.insert(order)
             try await context.save()
 
-            let (fetched, missing) = try await context.withBaseOperation {
+            let (fetched, missing) = try await context.withDataOperation {
                 var path = DirectoryPath<TenantOrder>()
                 path.set(TenantOrder.fields.tenantID, to: tenantID)
                 let store = try await container.store(
@@ -256,7 +256,7 @@ struct PostgreSQLPointReadTests {
             try ownerContext.insert(item)
             try await ownerContext.save()
 
-            let authorized = try await ownerContext.withBaseOperation {
+            let authorized = try await ownerContext.withDataOperation {
                 let store = try await container.store(
                     for: PGSecuredPointReadItem.self
                 )
@@ -274,7 +274,7 @@ struct PostgreSQLPointReadTests {
                 let intruderContext = container.testBaseContext(
                     authorization: intruder
                 )
-                try await intruderContext.withBaseOperation {
+                try await intruderContext.withDataOperation {
                     let store = try await container.store(
                         for: PGSecuredPointReadItem.self
                     )

@@ -1,4 +1,5 @@
 import DatabaseWire
+import DatabaseKit
 import StorageKit
 import Synchronization
 import Testing
@@ -115,17 +116,51 @@ struct DatabaseWorkMeterTests {
         #expect(meter.consumedWorkUnits == 50)
     }
 
-    @Test("storage sentinel is positive and overflow safe")
+    @Test("storage sentinel is positive, overflow safe, and memory bounded")
     func storageSentinelIsSafe() throws {
+        let budget = ExecutionBudget(
+            maximumRows: 1,
+            maximumWorkUnits: UInt64.max,
+            timeoutMilliseconds: 30_000
+        )
+        let meter = makeWorkMeter(
+            budget: budget
+        )
+
+        #expect(
+            try meter.storageReadLimitWithSentinel()
+                == Int(budget.maximumIntermediateRows) + 1
+        )
+    }
+
+    @Test("relational footprint measurement remains independent of the memory budget")
+    func relationalFootprintUsesTypedMemoryLimit() throws {
         let meter = makeWorkMeter(
             budget: ExecutionBudget(
                 maximumRows: 1,
-                maximumWorkUnits: UInt64.max,
+                maximumWorkUnits: 1,
+                maximumIntermediateRows: 1,
+                maximumIntermediateBytes: 0,
                 timeoutMilliseconds: 30_000
             )
         )
+        let footprint = try CanonicalRelationalFootprintMeter.footprint(
+            of: QueryRow(fields: ["value": .string("payload")]),
+            workMeter: meter
+        )
 
-        #expect(try meter.storageReadLimitWithSentinel() == Int.max)
+        #expect(footprint.bytes > 0)
+        #expect {
+            try meter.reserveIntermediate(
+                rows: footprint.rows,
+                bytes: footprint.bytes,
+                at: .projection
+            )
+        } throws: { error in
+            guard case DatabaseWorkLimitError.maximumIntermediateBytes = error
+            else { return false }
+            return true
+        }
     }
 
     @Test("an expired deadline fails deterministically")

@@ -80,28 +80,31 @@ let container = try await DBContainer.open(
 The delegate evaluates reads and writes immediately before the operation is
 accepted. Failed checks throw a typed security error.
 
-## Base Isolation
+## Database Root and Optional Base Isolation
 
 Tenant isolation has two independent parts:
 
 | Concern | Mechanism |
 |---|---|
-| Physical/logical boundary | explicit Base target and retained Base root |
+| Physical/logical boundary | database root, plus explicit Base roots with `MultipleBases` |
 | Resource authorization | persisted direct and role Grants |
 | Entity and field authorization | SecurityPolicy and `@Restricted` |
 
-Every data operation names a Base or a read-only Composition. `#Directory` and
-dynamic partitions are relative paths inside that Base and are not credentials.
-The runtime opens the selected Base transaction, unions matching direct and
-role Grants, requires the exact access bits, and only then executes entity and
-field policy. A Composition read requires `.read` on every retained member and
+The standard runtime binds data operations to the database resource and its
+single data root. The `MultipleBases` trait additionally accepts one exact Base
+or a read-only Composition. `#Directory` and dynamic partitions are relative
+paths inside the selected data root and are not credentials. The runtime opens
+the selected transaction, unions matching direct and role Grants, requires the
+exact access bits, and only then executes entity and field policy. A
+Composition read requires `.read` on every retained member and
 fails as a whole when any member is unavailable or unauthorized.
 
 ## Production Rules
 
-- Establish `AuthorizationContext` at the request boundary and bind it to a
-  `DatabaseSession`.
-- Require an explicit Base or Composition target for every data operation.
+- Establish `AuthorizationContext` at the request boundary and bind it to the
+  database root or a `DatabaseSession` selector.
+- Use `.database` by default; when `MultipleBases` is enabled, select a Base or
+  Composition explicitly when crossing that boundary.
 - Manage access through persisted Grants; role names are claims, not bypasses.
 - Register each AuthorizationPolicyHandler in DatabaseRuntimeConfiguration.
 - Keep the security configuration enabled in production.

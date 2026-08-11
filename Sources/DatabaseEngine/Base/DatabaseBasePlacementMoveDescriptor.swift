@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import DatabaseTypes
 
@@ -44,3 +45,5 @@ package struct DatabaseBasePlacementMoveDescriptor: Sendable, Hashable {
         self.destinationRootPrefix = destinationRootPrefix
     }
 }
+
+#endif

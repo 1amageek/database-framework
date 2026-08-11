@@ -1,0 +1,1168 @@
+import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
+@_spi(DatabaseWireRuntime) import DatabaseWire
+import StorageKit
+
+public actor DatabasePersistentJobRunner {
+    private struct LeasedJob: Sendable {
+        enum Action: Sendable {
+            case execute
+            case commitUnsuccessfulOutcome
+        }
+
+        let snapshot: DatabasePersistentJobSnapshot
+        let action: Action
+    }
+
+    private let container: DBContainer
+    private let store: DatabasePersistentJobStore
+    private let registry: DatabaseResumableOperationRegistry
+    private let scheduler: AnyDatabaseJobScheduler
+    private let clock: AnyDatabaseWallClock
+    private let identifierGenerator: AnyDatabaseUUIDGenerator
+    private let errorMapper: AnyDatabaseErrorMapper
+    private let configuration: DatabaseJobRuntimeConfiguration
+    private let wireLimits: DatabaseWireLimits
+    private let storageLimits: DatabasePersistentJobStorageLimits
+    private let failureStoragePolicy: DatabasePersistentJobFailureStoragePolicy
+    private let authorizationValidator: AnyDatabaseJobAuthorizationValidator
+    private let runnerID: DatabaseTypes.UUID
+
+    init(
+        container: DBContainer,
+        store: DatabasePersistentJobStore,
+        registry: DatabaseResumableOperationRegistry,
+        scheduler: AnyDatabaseJobScheduler,
+        clock: AnyDatabaseWallClock,
+        identifierGenerator: AnyDatabaseUUIDGenerator,
+        errorMapper: AnyDatabaseErrorMapper,
+        configuration: DatabaseJobRuntimeConfiguration,
+        wireLimits: DatabaseWireLimits,
+        storageLimits: DatabasePersistentJobStorageLimits,
+        failureStoragePolicy: DatabasePersistentJobFailureStoragePolicy,
+        authorizationValidator: AnyDatabaseJobAuthorizationValidator,
+        runnerID: DatabaseTypes.UUID
+    ) {
+        self.container = container
+        self.store = store
+        self.registry = registry
+        self.scheduler = scheduler
+        self.clock = clock
+        self.identifierGenerator = identifierGenerator
+        self.errorMapper = errorMapper
+        self.configuration = configuration
+        self.wireLimits = wireLimits
+        self.storageLimits = storageLimits
+        self.failureStoragePolicy = failureStoragePolicy
+        self.authorizationValidator = authorizationValidator
+        self.runnerID = runnerID
+    }
+
+    public func recoverSchedule() async throws {
+        try await scheduleNext()
+    }
+
+    public func notifyWorkAvailable(at timestamp: Timestamp) async throws {
+        try await scheduler.ensureWakeUp(noLaterThan: timestamp)
+    }
+
+    public func runScheduledWork() async throws {
+        try await executePersistentJobScheduledWork(
+            loadDueJobs: {
+                try await self.store.dueJobs(
+                    through: clock.now,
+                    limit: configuration.maximumJobsPerRun
+                )
+            },
+            processJob: { dueJob in
+                try await run(dueJob)
+            },
+            scheduleNextWakeUp: {
+                try await scheduleNext()
+            }
+        )
+    }
+
+    private func run(_ dueJob: DatabasePersistentJobDueEntry) async throws {
+        guard let leasedJob = try await acquireLease(for: dueJob) else {
+            return
+        }
+        let leasedSnapshot = leasedJob.snapshot
+        let authorization: AuthorizationContext
+        let authorizationFailure: DatabaseJobAuthorizationError?
+        switch leasedJob.action {
+        case .execute:
+            do {
+                let current = try await authorizationValidator.revalidate(
+                    leasedSnapshot.specification.authorizationReference
+                )
+                guard current.principal?.identifier
+                        == leasedSnapshot.specification.principalIdentifier else {
+                    authorization = .anonymous
+                    authorizationFailure = .principalChanged
+                    break
+                }
+                authorization = current
+                authorizationFailure = nil
+            } catch let error as DatabaseJobAuthorizationError {
+                authorization = .anonymous
+                authorizationFailure = error
+            } catch {
+                authorization = .anonymous
+                authorizationFailure = .revalidationFailed
+            }
+        case .commitUnsuccessfulOutcome:
+            // Cleanup is authorized by the operation-owned job marker and must
+            // never revive roles or claims captured by an earlier request.
+            authorization = .anonymous
+            authorizationFailure = nil
+        }
+        let baseAdmission: DatabaseBaseAdmissionKind
+        do {
+            baseAdmission = try registry.resolve(
+                leasedSnapshot.specification.operation
+            ).baseAdmission
+        } catch {
+            // Missing operation implementations still enter the lifecycle-safe
+            // path so `run` can publish the typed registry failure without
+            // granting data access.
+            baseAdmission = .lifecycleJob
+        }
+        switch leasedSnapshot.specification.target {
+        case .database:
+            let operationContext = DatabasePersistentJobService.operationContext(
+                for: leasedSnapshot,
+                container: container,
+                baseContext: nil,
+                baseAdmission: baseAdmission,
+                authorization: authorization,
+                wireLimits: wireLimits
+            )
+            try await container.withDatabaseDataRoot {
+                try await self.runBound(
+                    leasedJob,
+                    snapshot: leasedSnapshot,
+                    operationContext: operationContext,
+                    authorizationFailure: authorizationFailure
+                )
+            }
+        case .base(let baseID):
+            #if DATABASE_WIRE_RUNTIME_MULTIPLE_BASES
+            do {
+                let lease: DatabaseBaseLease
+                switch baseAdmission {
+                case .activeData:
+                    lease = try container.acquireBaseLease(baseID)
+                case .administration, .lifecycleJob:
+                    lease = try container.acquireBaseAdministrationLease(baseID)
+                }
+                try await container.withBaseLease(lease) {
+                    let baseContext = container.session(
+                        authorization: authorization
+                    ).base(baseID).newContext()
+                    let operationContext = DatabasePersistentJobService
+                        .operationContext(
+                            for: leasedSnapshot,
+                            container: container,
+                            baseContext: baseContext,
+                            baseAdmission: baseAdmission,
+                            authorization: authorization,
+                            wireLimits: wireLimits
+                        )
+                    try await runBound(
+                        leasedJob,
+                        snapshot: leasedSnapshot,
+                        operationContext: operationContext,
+                        authorizationFailure: authorizationFailure
+                    )
+                }
+            } catch let leaseError as DatabaseBaseExecutionError {
+                let owner = ByteString(leasedSnapshot.specification.jobID.bytes)
+                guard try await container.permitsBaseDeletionFinalization(
+                    baseID,
+                    owner: owner
+                ) else {
+                    throw leaseError
+                }
+                let operationContext = DatabasePersistentJobService
+                    .operationContext(
+                    for: leasedSnapshot,
+                    container: container,
+                    baseContext: nil,
+                    baseAdmission: baseAdmission,
+                    authorization: authorization,
+                    wireLimits: wireLimits
+                    )
+                try await runBound(
+                    leasedJob,
+                    snapshot: leasedSnapshot,
+                    operationContext: operationContext,
+                    authorizationFailure: authorizationFailure
+                )
+            }
+            #else
+            _ = baseID
+            throw DatabaseJobRuntimeError.invalidTarget
+            #endif
+        case .composition:
+            throw DatabaseJobRuntimeError.invalidTarget
+        }
+    }
+
+    private func runBound(
+        _ leasedJob: LeasedJob,
+        snapshot: DatabasePersistentJobSnapshot,
+        operationContext: DatabaseOperationContext,
+        authorizationFailure: DatabaseJobAuthorizationError?
+    ) async throws {
+        try await container.withSchemaLease { _ in
+            try await RequestAuthorization.$context.withValue(
+                operationContext.authorization
+            ) {
+                if let authorizationFailure {
+                    try await handleFailure(
+                        authorizationFailure,
+                        snapshot: snapshot,
+                        operationContext: operationContext
+                    )
+                    return
+                }
+                try await run(
+                    leasedJob,
+                    snapshot: snapshot,
+                    operationContext: operationContext
+                )
+            }
+        }
+    }
+
+    private func run(
+        _ leasedJob: LeasedJob,
+        snapshot leasedSnapshot: DatabasePersistentJobSnapshot,
+        operationContext: DatabaseOperationContext
+    ) async throws {
+        switch leasedJob.action {
+        case .execute:
+            let operation: AnyDatabaseResumableOperation
+            do {
+                operation = try registry.resolve(
+                    leasedSnapshot.specification.operation
+                )
+            } catch {
+                try await handleFailure(
+                    error,
+                    snapshot: leasedSnapshot,
+                    operationContext: operationContext
+                )
+                return
+            }
+            do {
+                try await authorizeTarget(
+                    operationContext,
+                    snapshot: leasedSnapshot
+                )
+                switch try operation.commitModel(
+                    planPayload: leasedSnapshot.plan.payload,
+                    limits: wireLimits,
+                    storageLimits: storageLimits
+                ) {
+                case .atomicWithJobState:
+                    try await execute(
+                        operation,
+                        snapshot: leasedSnapshot,
+                        operationContext: operationContext
+                    )
+                case .operationCheckpointed:
+                    try await executeCheckpointed(
+                        operation,
+                        snapshot: leasedSnapshot,
+                        operationContext: operationContext
+                    )
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try await handleFailure(
+                    error,
+                    snapshot: leasedSnapshot,
+                    operationContext: operationContext
+                )
+            }
+        case .commitUnsuccessfulOutcome:
+            guard let outcome = leasedSnapshot.state.pendingUnsuccessfulOutcome else {
+                throw DatabaseJobRuntimeError.corruptedState
+            }
+            let operation: AnyDatabaseResumableOperation
+            do {
+                operation = try registry.resolve(
+                    leasedSnapshot.specification.operation
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let commitError = DatabaseJobUnsuccessfulOutcomeCommitError(
+                    jobID: leasedSnapshot.specification.jobID,
+                    outcome: outcome,
+                    underlyingError: error
+                )
+                try await recordUnsuccessfulOutcomeCommitFailure(
+                    commitError,
+                    snapshot: leasedSnapshot
+                )
+                throw commitError
+            }
+            do {
+                try await commitUnsuccessfulOutcome(
+                    outcome,
+                    operation: operation,
+                    snapshot: leasedSnapshot,
+                    operationContext: operationContext
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as DatabaseJobUnsuccessfulOutcomeCommitError {
+                try await recordUnsuccessfulOutcomeCommitFailure(
+                    error,
+                    snapshot: leasedSnapshot
+                )
+                throw error
+            }
+        }
+    }
+
+    private func acquireLease(
+        for dueJob: DatabasePersistentJobDueEntry
+    ) async throws -> LeasedJob? {
+        let leaseToken = identifierGenerator.generate()
+        let store = self.store
+        let runnerID = self.runnerID
+        let maximumSliceAttempts = configuration.maximumSliceAttempts
+        let leaseDurationMilliseconds = configuration.leaseDurationMilliseconds
+        let clock = self.clock
+        let container = self.container
+
+        return try await container.withControlMetadataTransaction(
+            configuration: .batch
+        ) { transactionContext in
+            let observedNow = clock.now
+            let transaction = transactionContext.storageAccess
+            guard let snapshot = try await store.load(
+                dueJob.jobID,
+                transaction: transaction
+            ) else {
+                throw DatabaseJobRuntimeError.jobNotFound(dueJob.jobID)
+            }
+            let state = snapshot.state
+            guard state.revision == dueJob.stateRevision else {
+                return nil
+            }
+            guard let scheduledAt = state.scheduledAt,
+                  scheduledAt <= observedNow else {
+                return nil
+            }
+            let transitionAt = max(observedNow, state.updatedAt)
+            let leaseExpiresAt = try Self.adding(
+                milliseconds: leaseDurationMilliseconds,
+                to: transitionAt
+            )
+            let allowedAttempts = min(
+                snapshot.specification.retryPolicy.maximumAttempts,
+                maximumSliceAttempts
+            )
+            let action: LeasedJob.Action
+            if state.status == .committingUnsuccessfulOutcome {
+                action = .commitUnsuccessfulOutcome
+            } else {
+                if state.cancellationRequested {
+                    let committing = try state.schedulingUnsuccessfulOutcomeCommit(
+                        .cancelled,
+                        nextAttemptAt: transitionAt,
+                        updatedAt: transitionAt
+                    )
+                    try store.storeState(
+                        committing,
+                        replacing: state,
+                        transaction: transaction
+                    )
+                    return nil
+                }
+                if state.currentSliceAttempt >= allowedAttempts {
+                    let committing = try state.schedulingUnsuccessfulOutcomeCommit(
+                        .failed(RemoteOperationError(
+                            category: .internalFailure,
+                            code: "JOB_ATTEMPTS_EXHAUSTED",
+                            message: "Job exhausted its configured attempts",
+                            retryability: .never
+                        )),
+                        nextAttemptAt: transitionAt,
+                        updatedAt: transitionAt
+                    )
+                    try store.storeState(
+                        committing,
+                        replacing: state,
+                        transaction: transaction
+                    )
+                    return nil
+                }
+                action = .execute
+            }
+            let leased = try state.acquiringLease(
+                owner: runnerID,
+                token: leaseToken,
+                expiresAt: leaseExpiresAt,
+                updatedAt: transitionAt
+            )
+            try store.storeState(
+                leased,
+                replacing: state,
+                transaction: transaction
+            )
+            return LeasedJob(
+                snapshot: DatabasePersistentJobSnapshot(
+                    specification: snapshot.specification,
+                    specificationDigest: snapshot.specificationDigest,
+                    plan: snapshot.plan,
+                    state: leased
+                ),
+                action: action
+            )
+        }
+    }
+
+    private func execute(
+        _ operation: AnyDatabaseResumableOperation,
+        snapshot: DatabasePersistentJobSnapshot,
+        operationContext: DatabaseOperationContext
+    ) async throws {
+        let store = self.store
+        let container = self.container
+        let runnerID = self.runnerID
+        let wireLimits = self.wireLimits
+        let storageLimits = self.storageLimits
+        let clock = self.clock
+        let leasedState = snapshot.state
+        let transactionConfiguration = Self.batchConfiguration(
+            timeoutMilliseconds: snapshot.specification.sliceTimeoutMilliseconds
+        )
+
+        try await container.withControlMetadataTransaction(
+            configuration: transactionConfiguration
+        ) { transactionContext in
+            let transaction = transactionContext.storageAccess
+            try await self.requireTargetGrant(
+                operationContext,
+                transaction: transaction
+            )
+            let currentState = try await store.loadState(
+                snapshot.specification.jobID,
+                specificationDigest: snapshot.specificationDigest,
+                transaction: transaction
+            )
+            try Self.validateOperationLease(
+                currentState,
+                expected: leasedState,
+                runnerID: runnerID,
+                now: clock.now
+            )
+            let current = DatabasePersistentJobSnapshot(
+                specification: snapshot.specification,
+                specificationDigest: snapshot.specificationDigest,
+                plan: snapshot.plan,
+                state: currentState
+            )
+            if currentState.cancellationRequested {
+                let cancellationRequestedAt = max(
+                    clock.now,
+                    current.state.updatedAt
+                )
+                let committing = try current.state.schedulingUnsuccessfulOutcomeCommit(
+                    .cancelled,
+                    nextAttemptAt: cancellationRequestedAt,
+                    updatedAt: cancellationRequestedAt
+                )
+                try store.storeState(
+                    committing,
+                    replacing: current.state,
+                    transaction: transaction
+                )
+                return
+            }
+
+            let slice = try await operation.runSlice(
+                planPayload: current.plan.payload,
+                statePayload: current.state.operationStatePayload,
+                maximumWorkUnits: current.specification.maximumSliceWorkUnits,
+                context: DatabaseResumableOperationContext(
+                    jobID: current.specification.jobID,
+                    completedWorkUnitsBeforeSlice: current.state.completedWorkUnits,
+                    transaction: transactionContext,
+                    operationContext: operationContext
+                ),
+                limits: wireLimits,
+                storageLimits: storageLimits
+            )
+            try Self.validate(
+                slice,
+                maximumWorkUnits: current.specification.maximumSliceWorkUnits
+            )
+            let (cumulativeWorkUnits, overflow) = current.state
+                .completedWorkUnits
+                .addingReportingOverflow(slice.completedWorkUnits)
+            guard !overflow else {
+                throw DatabaseJobRuntimeError.workUnitOverflow
+            }
+            try Self.validateTotalWorkUnits(
+                existing: current.state.totalWorkUnits,
+                reported: slice.totalWorkUnits,
+                completed: cumulativeWorkUnits
+            )
+            let reportedTotalWorkUnits = slice.totalWorkUnits
+            let completedAt = max(clock.now, current.state.updatedAt)
+            let updated: DatabasePersistentJobState
+            switch slice.outcome {
+            case .complete(let responsePayload):
+                try await operation.applySuccessfulOutcome(
+                    planPayload: current.plan.payload,
+                    statePayload: current.state.operationStatePayload,
+                    context: DatabaseResumableOperationContext(
+                        jobID: current.specification.jobID,
+                        completedWorkUnitsBeforeSlice:
+                            current.state.completedWorkUnits,
+                        transaction: transactionContext,
+                        operationContext: operationContext
+                    ),
+                    limits: wireLimits,
+                    storageLimits: storageLimits
+                )
+                let responseDigest = try await store.storeResult(
+                    responsePayload,
+                    snapshot: current,
+                    completedAt: completedAt,
+                    transaction: transaction
+                )
+                updated = try current.state.succeeding(
+                    cumulativeWorkUnits: cumulativeWorkUnits,
+                    totalWorkUnits: reportedTotalWorkUnits ?? cumulativeWorkUnits,
+                    resultDigest: responseDigest,
+                    updatedAt: completedAt
+                )
+            case .incomplete(let operationStatePayload):
+                updated = try current.state.continuing(
+                    operationStatePayload: operationStatePayload,
+                    cumulativeWorkUnits: cumulativeWorkUnits,
+                    totalWorkUnits: reportedTotalWorkUnits
+                        ?? current.state.totalWorkUnits,
+                    nextAttemptAt: completedAt,
+                    updatedAt: completedAt
+                )
+            }
+            try store.storeState(
+                updated,
+                replacing: current.state,
+                transaction: transaction
+            )
+        }
+    }
+
+    private func executeCheckpointed(
+        _ operation: AnyDatabaseResumableOperation,
+        snapshot: DatabasePersistentJobSnapshot,
+        operationContext: DatabaseOperationContext
+    ) async throws {
+        let store = self.store
+        let container = self.container
+        let runnerID = self.runnerID
+        let wireLimits = self.wireLimits
+        let storageLimits = self.storageLimits
+        let clock = self.clock
+        let leasedState = snapshot.state
+
+        let slice = try await operation.runCheckpointedSlice(
+            planPayload: snapshot.plan.payload,
+            statePayload: leasedState.operationStatePayload,
+            maximumWorkUnits: snapshot.specification.maximumSliceWorkUnits,
+            context: DatabaseCheckpointedResumableOperationContext(
+                jobID: snapshot.specification.jobID,
+                completedWorkUnitsBeforeSlice: leasedState.completedWorkUnits,
+                operationContext: operationContext
+            ),
+            limits: wireLimits,
+            storageLimits: storageLimits
+        )
+        try Self.validate(
+            slice,
+            maximumWorkUnits: snapshot.specification.maximumSliceWorkUnits
+        )
+
+        try await container.withControlMetadataTransaction(
+            configuration: Self.batchConfiguration(
+                timeoutMilliseconds: snapshot.specification
+                    .sliceTimeoutMilliseconds
+            )
+        ) { transactionContext in
+            let transaction = transactionContext.storageAccess
+            let currentState = try await store.loadState(
+                snapshot.specification.jobID,
+                specificationDigest: snapshot.specificationDigest,
+                transaction: transaction
+            )
+            try Self.validateOperationLease(
+                currentState,
+                expected: leasedState,
+                runnerID: runnerID,
+                now: clock.now
+            )
+            let current = DatabasePersistentJobSnapshot(
+                specification: snapshot.specification,
+                specificationDigest: snapshot.specificationDigest,
+                plan: snapshot.plan,
+                state: currentState
+            )
+            let (cumulativeWorkUnits, overflow) = current.state
+                .completedWorkUnits
+                .addingReportingOverflow(slice.completedWorkUnits)
+            guard !overflow else {
+                throw DatabaseJobRuntimeError.workUnitOverflow
+            }
+            try Self.validateTotalWorkUnits(
+                existing: current.state.totalWorkUnits,
+                reported: slice.totalWorkUnits,
+                completed: cumulativeWorkUnits
+            )
+            let reportedTotalWorkUnits = slice.totalWorkUnits
+            let completedAt = max(clock.now, current.state.updatedAt)
+            let updated: DatabasePersistentJobState
+            switch slice.outcome {
+            case .complete(let responsePayload):
+                try await operation.applySuccessfulOutcome(
+                    planPayload: current.plan.payload,
+                    statePayload: current.state.operationStatePayload,
+                    context: DatabaseResumableOperationContext(
+                        jobID: current.specification.jobID,
+                        completedWorkUnitsBeforeSlice:
+                            current.state.completedWorkUnits,
+                        transaction: transactionContext,
+                        operationContext: operationContext
+                    ),
+                    limits: wireLimits,
+                    storageLimits: storageLimits
+                )
+                let responseDigest = try await store.storeResult(
+                    responsePayload,
+                    snapshot: current,
+                    completedAt: completedAt,
+                    transaction: transaction
+                )
+                updated = try current.state.succeeding(
+                    cumulativeWorkUnits: cumulativeWorkUnits,
+                    totalWorkUnits: reportedTotalWorkUnits ?? cumulativeWorkUnits,
+                    resultDigest: responseDigest,
+                    updatedAt: completedAt
+                )
+            case .incomplete(let operationStatePayload):
+                let totalWorkUnits = reportedTotalWorkUnits
+                    ?? current.state.totalWorkUnits
+                if current.state.cancellationRequested {
+                    updated = try current.state.schedulingCancellationOutcomeCommitAfterCheckpoint(
+                        operationStatePayload: operationStatePayload,
+                        cumulativeWorkUnits: cumulativeWorkUnits,
+                        totalWorkUnits: totalWorkUnits,
+                        updatedAt: completedAt
+                    )
+                } else {
+                    updated = try current.state.continuing(
+                        operationStatePayload: operationStatePayload,
+                        cumulativeWorkUnits: cumulativeWorkUnits,
+                        totalWorkUnits: totalWorkUnits,
+                        nextAttemptAt: completedAt,
+                        updatedAt: completedAt
+                    )
+                }
+            }
+            try store.storeState(
+                updated,
+                replacing: current.state,
+                transaction: transaction
+            )
+        }
+    }
+
+    private func handleFailure(
+        _ error: any Error,
+        snapshot: DatabasePersistentJobSnapshot,
+        operationContext: DatabaseOperationContext
+    ) async throws {
+        let observedFailureAt = clock.now
+        let remoteError = errorMapper.remoteError(
+            for: error,
+            context: operationContext,
+            limits: wireLimits
+        )
+        let store = self.store
+        let container = self.container
+        let runnerID = self.runnerID
+        let configuration = self.configuration
+        let clock = self.clock
+        let leasedState = snapshot.state
+        let failureStoragePolicy = self.failureStoragePolicy
+
+        try await container.withControlMetadataTransaction(
+            configuration: Self.batchConfiguration(
+                timeoutMilliseconds: snapshot.specification
+                    .sliceTimeoutMilliseconds
+            )
+        ) { transactionContext in
+            let transaction = transactionContext.storageAccess
+            let currentState = try await store.loadState(
+                snapshot.specification.jobID,
+                specificationDigest: snapshot.specificationDigest,
+                transaction: transaction
+            )
+            try Self.validateOperationLease(
+                currentState,
+                expected: leasedState,
+                runnerID: runnerID,
+                now: clock.now
+            )
+            let updated: DatabasePersistentJobState
+            let failedAt = max(observedFailureAt, currentState.updatedAt)
+            if currentState.cancellationRequested {
+                updated = try currentState.schedulingUnsuccessfulOutcomeCommit(
+                    .cancelled,
+                    nextAttemptAt: failedAt,
+                    updatedAt: failedAt
+                )
+            } else {
+                let persistentFailure = try failureStoragePolicy.storableFailure(
+                    for: remoteError
+                )
+                if persistentFailure.retryability != .never,
+                   currentState.currentSliceAttempt
+                    < snapshot.specification.retryPolicy.maximumAttempts,
+                   currentState.currentSliceAttempt
+                    < configuration.maximumSliceAttempts {
+                    let backoff = Self.backoffMilliseconds(
+                        retryability: persistentFailure.retryability,
+                        policy: snapshot.specification.retryPolicy,
+                        currentSliceAttempt: currentState.currentSliceAttempt,
+                        maximum:
+                            configuration.maximumSliceRetryBackoffMilliseconds
+                    )
+                    updated = try currentState.retrying(
+                        at: try Self.adding(
+                            milliseconds: backoff,
+                            to: failedAt
+                        ),
+                        updatedAt: failedAt
+                    )
+                } else {
+                    updated = try currentState.schedulingUnsuccessfulOutcomeCommit(
+                        .failed(persistentFailure),
+                        nextAttemptAt: failedAt,
+                        updatedAt: failedAt
+                    )
+                }
+            }
+            try store.storeState(
+                updated,
+                replacing: currentState,
+                transaction: transaction
+            )
+        }
+    }
+
+    private func commitUnsuccessfulOutcome(
+        _ outcome: DatabaseJobUnsuccessfulOutcome,
+        operation: AnyDatabaseResumableOperation,
+        snapshot: DatabasePersistentJobSnapshot,
+        operationContext: DatabaseOperationContext
+    ) async throws {
+        let store = self.store
+        let container = self.container
+        let runnerID = self.runnerID
+        let wireLimits = self.wireLimits
+        let storageLimits = self.storageLimits
+        let clock = self.clock
+        let leasedState = snapshot.state
+        do {
+            try await container.withControlMetadataTransaction(
+                configuration: .readOnly
+            ) { transactionContext in
+                let currentState = try await store.loadState(
+                    snapshot.specification.jobID,
+                    specificationDigest: snapshot.specificationDigest,
+                    transaction: transactionContext.storageAccess
+                )
+                try Self.validateUnsuccessfulOutcomeLease(
+                    currentState,
+                    expected: leasedState,
+                    runnerID: runnerID,
+                    now: clock.now
+                )
+                guard currentState.pendingUnsuccessfulOutcome == outcome else {
+                    throw DatabaseJobRuntimeError.invalidStateTransition
+                }
+            }
+            try await operation.prepareUnsuccessfulOutcomeCommit(
+                planPayload: snapshot.plan.payload,
+                statePayload: leasedState.operationStatePayload,
+                outcome: outcome,
+                context: DatabaseCheckpointedResumableOperationContext(
+                    jobID: snapshot.specification.jobID,
+                    completedWorkUnitsBeforeSlice:
+                        leasedState.completedWorkUnits,
+                    operationContext: operationContext,
+                    permitsOperationOwnedDataAccess: true
+                ),
+                limits: wireLimits,
+                storageLimits: storageLimits
+            )
+            try await container.withControlMetadataTransaction(
+                configuration: Self.batchConfiguration(
+                    timeoutMilliseconds: snapshot.specification
+                        .sliceTimeoutMilliseconds
+                )
+            ) { transactionContext in
+                let transaction = transactionContext.storageAccess
+                let currentState = try await store.loadState(
+                    snapshot.specification.jobID,
+                    specificationDigest: snapshot.specificationDigest,
+                    transaction: transaction
+                )
+                try Self.validateUnsuccessfulOutcomeLease(
+                    currentState,
+                    expected: leasedState,
+                    runnerID: runnerID,
+                    now: clock.now
+                )
+                guard currentState.pendingUnsuccessfulOutcome == outcome else {
+                    throw DatabaseJobRuntimeError.invalidStateTransition
+                }
+                try await operation.applyUnsuccessfulOutcome(
+                    planPayload: snapshot.plan.payload,
+                    statePayload: currentState.operationStatePayload,
+                    outcome: outcome,
+                    context: DatabaseResumableOperationContext(
+                        jobID: snapshot.specification.jobID,
+                        completedWorkUnitsBeforeSlice:
+                            currentState.completedWorkUnits,
+                        transaction: transactionContext,
+                        operationContext: operationContext
+                    ),
+                    limits: wireLimits,
+                    storageLimits: storageLimits
+                )
+                try store.storeState(
+                    try currentState.completingUnsuccessfulOutcomeCommit(
+                        updatedAt: max(clock.now, currentState.updatedAt)
+                    ),
+                    replacing: currentState,
+                    transaction: transaction
+                )
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw DatabaseJobUnsuccessfulOutcomeCommitError(
+                jobID: snapshot.specification.jobID,
+                outcome: outcome,
+                underlyingError: error
+            )
+        }
+    }
+
+    private func recordUnsuccessfulOutcomeCommitFailure(
+        _ error: DatabaseJobUnsuccessfulOutcomeCommitError,
+        snapshot: DatabasePersistentJobSnapshot
+    ) async throws {
+        let diagnostic = RemoteOperationError(
+            category: .internalFailure,
+            code: "JOB_UNSUCCESSFUL_OUTCOME_COMMIT_FAILED",
+            message: "The operation unsuccessful outcome could not be committed",
+            retryability: .backoff
+        )
+        let observedFailureAt = clock.now
+        let store = self.store
+        let container = self.container
+        let runnerID = self.runnerID
+        let leasedState = snapshot.state
+        let initialBackoffMilliseconds =
+            configuration.unsuccessfulOutcomeCommitInitialBackoffMilliseconds
+        let maximumBackoffMilliseconds =
+            configuration.unsuccessfulOutcomeCommitMaximumBackoffMilliseconds
+        try await container.withControlMetadataTransaction(
+            configuration: Self.batchConfiguration(
+                timeoutMilliseconds: snapshot.specification
+                    .sliceTimeoutMilliseconds
+            )
+        ) { transactionContext in
+            let transaction = transactionContext.storageAccess
+            let currentState = try await store.loadState(
+                snapshot.specification.jobID,
+                specificationDigest: snapshot.specificationDigest,
+                transaction: transaction
+            )
+            try Self.validateUnsuccessfulOutcomeLeaseIdentity(
+                currentState,
+                expected: leasedState,
+                runnerID: runnerID
+            )
+            guard currentState.pendingUnsuccessfulOutcome == error.outcome else {
+                throw DatabaseJobRuntimeError.invalidStateTransition
+            }
+            let failedAt = max(observedFailureAt, currentState.updatedAt)
+            let backoff = Self.unsuccessfulOutcomeCommitBackoffMilliseconds(
+                initial: initialBackoffMilliseconds,
+                commitAttempt: currentState.unsuccessfulOutcomeCommitAttempt,
+                maximum: maximumBackoffMilliseconds
+            )
+            try store.storeState(
+                try currentState.schedulingUnsuccessfulOutcomeCommitRetry(
+                    after: diagnostic,
+                    at: try Self.adding(milliseconds: backoff, to: failedAt),
+                    updatedAt: failedAt
+                ),
+                replacing: currentState,
+                transaction: transaction
+            )
+        }
+    }
+
+    private func scheduleNext() async throws {
+        guard let next = try await store.earliestScheduledAt() else {
+            return
+        }
+        try await scheduler.ensureWakeUp(noLaterThan: next)
+    }
+
+    private func authorizeTarget(
+        _ context: DatabaseOperationContext,
+        snapshot: DatabasePersistentJobSnapshot
+    ) async throws {
+        switch context.target {
+        case .database:
+            try await container.withControlTransaction(
+                requiredAccess: .administer,
+                authorization: context.authorization,
+                configuration: .readOnly
+            ) { _ in () }
+        case .base(let baseID):
+            #if DATABASE_WIRE_RUNTIME_MULTIPLE_BASES
+            do {
+                try await container.withBaseAdministrationTransaction(
+                    requiredAccess: .administer,
+                    authorization: context.authorization,
+                    configuration: .readOnly
+                ) { _ in () }
+            } catch {
+                guard try await container.permitsBaseDeletionFinalization(
+                    baseID,
+                    owner: ByteString(snapshot.specification.jobID.bytes)
+                ) else {
+                    throw error
+                }
+            }
+            #else
+            _ = baseID
+            throw DatabaseJobRuntimeError.invalidTarget
+            #endif
+        case .composition:
+            throw DatabaseJobRuntimeError.invalidTarget
+        }
+    }
+
+    private func requireTargetGrant(
+        _ context: DatabaseOperationContext,
+        transaction: any TransactionAccess
+    ) async throws {
+        switch context.target {
+        case .database:
+            try await container.databaseGrantStore.require(
+                .administer,
+                authorization: context.authorization,
+                transaction: transaction
+            )
+        case .base(let baseID):
+            #if DATABASE_WIRE_RUNTIME_MULTIPLE_BASES
+            let lease = try container.requireBoundBaseLease()
+            guard lease.baseID == baseID,
+                  lease.domainID == container.controlDomainID.value else {
+                throw DatabaseJobRuntimeError.commitModelMismatch
+            }
+            try await DatabaseGrantStore(
+                resource: .base(baseID),
+                root: lease.root
+            ).require(
+                .administer,
+                authorization: context.authorization,
+                transaction: transaction
+            )
+            #else
+            _ = baseID
+            throw DatabaseJobRuntimeError.invalidTarget
+            #endif
+        case .composition:
+            throw DatabaseJobRuntimeError.invalidTarget
+        }
+    }
+
+    private static func validateOperationLease(
+        _ current: DatabasePersistentJobState,
+        expected: DatabasePersistentJobState,
+        runnerID: DatabaseTypes.UUID,
+        now: Timestamp
+    ) throws {
+        guard current.status == .running,
+              expected.status == .running,
+              current.leaseOwner == runnerID,
+              current.leaseToken == expected.leaseToken,
+              current.leaseExpiresAt == expected.leaseExpiresAt,
+              current.revision == expected.revision
+                || current.isCancellationRequest(after: expected),
+              current.leaseExpiresAt.map({ $0 > now }) == true else {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
+    }
+
+    private static func validateUnsuccessfulOutcomeLease(
+        _ current: DatabasePersistentJobState,
+        expected: DatabasePersistentJobState,
+        runnerID: DatabaseTypes.UUID,
+        now: Timestamp
+    ) throws {
+        try validateUnsuccessfulOutcomeLeaseIdentity(
+            current,
+            expected: expected,
+            runnerID: runnerID
+        )
+        guard current.leaseExpiresAt == expected.leaseExpiresAt,
+              current.leaseExpiresAt.map({ $0 > now }) == true else {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
+    }
+
+    private static func validateUnsuccessfulOutcomeLeaseIdentity(
+        _ current: DatabasePersistentJobState,
+        expected: DatabasePersistentJobState,
+        runnerID: DatabaseTypes.UUID
+    ) throws {
+        guard current.status == expected.status,
+              current.status == .committingUnsuccessfulOutcome,
+              current.revision == expected.revision,
+              current.leaseOwner == runnerID,
+              current.leaseToken == expected.leaseToken else {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
+    }
+
+    private static func validate(
+        _ slice: AnyDatabaseResumableOperation.Slice,
+        maximumWorkUnits: UInt64
+    ) throws {
+        guard slice.completedWorkUnits <= maximumWorkUnits else {
+            throw DatabaseJobRuntimeError.sliceExceededBudget(
+                actual: slice.completedWorkUnits,
+                maximum: maximumWorkUnits
+            )
+        }
+        if case .incomplete = slice.outcome,
+           slice.completedWorkUnits == 0 {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
+    }
+
+    private static func validateTotalWorkUnits(
+        existing: UInt64?,
+        reported: UInt64?,
+        completed: UInt64
+    ) throws {
+        if let existing, let reported, existing != reported {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
+        if let total = reported ?? existing, total < completed {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
+    }
+
+    private static func backoffMilliseconds(
+        retryability: OperationRetryability,
+        policy: JobStartOperation.RetryPolicy,
+        currentSliceAttempt: UInt32,
+        maximum: UInt32
+    ) -> UInt32 {
+        guard retryability == .backoff else { return 0 }
+        let configuredMaximum = min(
+            policy.maximumBackoffMilliseconds,
+            maximum
+        )
+        var value = UInt64(policy.initialBackoffMilliseconds)
+        guard value > 0 else { return 0 }
+        var remainingDoublings = currentSliceAttempt > 0
+            ? currentSliceAttempt - 1
+            : 0
+        while remainingDoublings > 0,
+              value < UInt64(configuredMaximum) {
+            value = min(value * 2, UInt64(configuredMaximum))
+            remainingDoublings -= 1
+        }
+        return UInt32(value)
+    }
+
+    private static func unsuccessfulOutcomeCommitBackoffMilliseconds(
+        initial: UInt32,
+        commitAttempt: UInt64,
+        maximum: UInt32
+    ) -> UInt32 {
+        var value = UInt64(initial)
+        var remainingDoublings = commitAttempt > 0
+            ? commitAttempt - 1
+            : 0
+        while remainingDoublings > 0,
+              value < UInt64(maximum) {
+            value = min(value * 2, UInt64(maximum))
+            remainingDoublings -= 1
+        }
+        return UInt32(value)
+    }
+
+    private static func adding(
+        milliseconds: UInt32,
+        to timestamp: Timestamp
+    ) throws -> Timestamp {
+        let additionalSeconds = Int64(milliseconds / 1_000)
+        let additionalNanoseconds = UInt64(milliseconds % 1_000) * 1_000_000
+        let nanoseconds = UInt64(timestamp.nanoseconds) + additionalNanoseconds
+        let carry = Int64(nanoseconds / 1_000_000_000)
+        let (secondsWithDuration, firstOverflow) = timestamp.secondsSinceUnixEpoch
+            .addingReportingOverflow(additionalSeconds)
+        let (seconds, secondOverflow) = secondsWithDuration
+            .addingReportingOverflow(carry)
+        guard !firstOverflow, !secondOverflow else {
+            throw DatabaseJobRuntimeError.invalidConfiguration(
+                "timestamp overflow"
+            )
+        }
+        return try Timestamp(
+            secondsSinceUnixEpoch: seconds,
+            nanoseconds: UInt32(nanoseconds % 1_000_000_000)
+        )
+    }
+
+    private static func batchConfiguration(
+        timeoutMilliseconds: UInt32
+    ) -> TransactionConfiguration {
+        let batch = TransactionConfiguration.batch
+        return TransactionConfiguration(
+            timeout: Int(timeoutMilliseconds),
+            maximumAttempts: batch.maximumAttempts,
+            maxRetryDelay: batch.maxRetryDelay,
+            initialRetryDelay: batch.initialRetryDelay,
+            priority: batch.priority,
+            readPriority: batch.readPriority,
+            disableReadCache: batch.disableReadCache,
+            cachePolicy: batch.cachePolicy,
+            tracing: batch.tracing
+        )
+    }
+}

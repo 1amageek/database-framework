@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 /// Durable control-domain description of one Base placement and lifecycle.
@@ -78,3 +79,5 @@ package struct DatabaseBaseRecord: Sendable, Hashable, StorageFrameValue {
         self.lifecycle = lifecycle
     }
 }
+
+#endif

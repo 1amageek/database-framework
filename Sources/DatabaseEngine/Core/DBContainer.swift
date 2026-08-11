@@ -1,7 +1,7 @@
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
-@_spi(DatabaseServer) import DatabaseWire
+@_spi(DatabaseWireRuntime) import DatabaseWire
 import Synchronization
 
 /// DBContainer - Application resource manager for database persistence
@@ -28,9 +28,9 @@ import Synchronization
 /// **Architecture**:
 /// ```
 /// DBContainer (Resource Manager)
-///     ├── control domain: schema, Base, Composition, Grant, and job metadata
-///     ├── data domains: Base-local entities, indexes, graph, RDF, and ontology
-///     └── session(authorization:) → target-bound data sources
+///     ├── single-root: schema, database Grants, and application data
+///     └── MultipleBases trait:
+///           control domain + Base roots + read-only Compositions
 /// ```
 ///
 /// **Context-Centric Design**:
@@ -66,23 +66,27 @@ import Synchronization
 ///     runtimeConfiguration: runtime
 /// )
 ///
-/// // 3. Select an authorized Base before creating a context
-/// let session = container.session(authorization: authorization)
-/// let context = session.base(baseID).newContext()
+/// // 3. Bind authorization to the database data root
+/// let context = container.newContext(authorization: authorization)
 /// try context.insert(user)
 /// try await context.save()
 /// ```
+/// With the `MultipleBases` trait, use
+/// `container.session(authorization:).base(baseID).newContext()` instead.
 public final class DBContainer: Sendable {
     private struct PreparedStorage: Sendable {
         let topology: DatabaseStorageRuntimeTopology
         let engine: any StorageEngine
         let format: DatabaseFormatDescriptor
+        let databaseDataRoot: DatabaseDataRootLease
+        #if DATABASE_MULTIPLE_BASES
         let baseCatalog: DatabaseBaseCatalog
         let compositionCatalog: DatabaseCompositionCatalog
-        let databaseGrantStore: DatabaseGrantStore
         let layoutCatalog: DatabaseLayoutCatalog
         let layoutStatus: DatabaseLayoutStatus
         let baseGenerations: [DatabaseBaseGeneration]
+        #endif
+        let databaseGrantStore: DatabaseGrantStore
         let metadataSubspace: Subspace
         let schemaGeneration: UInt64
         let transactionCapabilities: TransactionCapabilities
@@ -100,7 +104,7 @@ public final class DBContainer: Sendable {
     /// Storage selected by the current target lease, or the control domain
     /// while executing an explicitly database-scoped operation.
     package var engine: any StorageEngine {
-        ActiveDatabaseBaseContext.lease?.generation.domain.engine
+        ActiveDatabaseDataRootContext.lease?.domain.engine
             ?? controlEngine
     }
 
@@ -118,7 +122,7 @@ public final class DBContainer: Sendable {
 
     /// Transaction execution selected by the current target lease.
     package var transactionExecutor: StorageTransactionExecutor {
-        ActiveDatabaseBaseContext.lease?.transactionExecutor
+        ActiveDatabaseDataRootContext.lease?.transactionExecutor
             ?? controlTransactionExecutor
     }
 
@@ -126,8 +130,8 @@ public final class DBContainer: Sendable {
     private let controlTransactionCapabilities: TransactionCapabilities
 
     package var transactionCapabilities: TransactionCapabilities {
-        ActiveDatabaseBaseContext.lease?
-            .generation.domain.transactionCapabilities
+        ActiveDatabaseDataRootContext.lease?
+            .domain.transactionCapabilities
             ?? controlTransactionCapabilities
     }
 
@@ -179,14 +183,19 @@ public final class DBContainer: Sendable {
     /// Database event logger selected by the container configuration.
     private let logger: DatabaseLogger
 
+    /// Database-owned data root used when `MultipleBases` is not enabled and
+    /// for explicitly database-scoped data operations.
+    private let databaseDataRoot: DatabaseDataRootLease
+
+    /// Database-scoped Grants stored in the control transaction domain.
+    package let databaseGrantStore: DatabaseGrantStore
+
+    #if DATABASE_MULTIPLE_BASES
     /// Durable Base definitions in the control domain.
     package let baseCatalog: DatabaseBaseCatalog
 
     /// Durable named Composition definitions in the control domain.
     package let compositionCatalog: DatabaseCompositionCatalog
-
-    /// Database-scoped Grants stored in the control transaction domain.
-    package let databaseGrantStore: DatabaseGrantStore
 
     /// Durable v2 layout marker and atomically published admission state.
     package let layoutCatalog: DatabaseLayoutCatalog
@@ -198,6 +207,7 @@ public final class DBContainer: Sendable {
 
     /// Immutable Base placement generations and operation admission leases.
     private let baseGenerationStore: DatabaseBaseGenerationStore
+    #endif
 
     /// Stable metadata namespace used by schema lifecycle operations.
     package let metadataSubspace: Subspace
@@ -289,11 +299,18 @@ public final class DBContainer: Sendable {
                 preparedStorage: preparedStorage
             )
 
+            #if DATABASE_MULTIPLE_BASES
             try await container.prepareTestingBaseIfConfigured()
-
             if initializeIndexes, container.layoutStatus == .current {
                 try await container.ensureIndexesReadyForAllActiveBases()
             }
+            #else
+            if initializeIndexes {
+                try await container.withDatabaseDataRoot {
+                    try await container.ensureIndexesReady()
+                }
+            }
+            #endif
 
             if persistSchemaCatalog {
                 try await container.initializeSchemaCatalogIfNeeded(
@@ -329,6 +346,7 @@ public final class DBContainer: Sendable {
             )
             let schemaRoot: Subspace
             let schemaMetadataSubspace: Subspace
+            #if DATABASE_MULTIPLE_BASES
             if preparedStorage.layoutStatus == .migrationRequired {
                 schemaRoot = Subspace()
                 schemaMetadataSubspace = try await storageEngine
@@ -337,6 +355,10 @@ public final class DBContainer: Sendable {
                 schemaRoot = preparedStorage.topology.controlDomain.root
                 schemaMetadataSubspace = preparedStorage.metadataSubspace
             }
+            #else
+            schemaRoot = preparedStorage.topology.controlDomain.root
+            schemaMetadataSubspace = preparedStorage.metadataSubspace
+            #endif
             let restored = try await restoreSchemaState(
                 storageEngine: storageEngine,
                 root: schemaRoot,
@@ -363,6 +385,7 @@ public final class DBContainer: Sendable {
                 security: security,
                 preparedStorage: preparedStorage
             )
+            #if DATABASE_MULTIPLE_BASES
             if container.layoutStatus == .migrationRequired {
                 try await SchemaRegistry(
                     database: container.engine,
@@ -374,6 +397,11 @@ public final class DBContainer: Sendable {
             if container.layoutStatus == .current {
                 try await container.ensureIndexesReadyForAllActiveBases()
             }
+            #else
+            try await container.withDatabaseDataRoot {
+                try await container.ensureIndexesReady()
+            }
+            #endif
             try configuration.finishOpeningStorageTopology()
             return container
         } catch {
@@ -443,12 +471,19 @@ public final class DBContainer: Sendable {
                 transactionCapabilities: capabilities
             )
         }
+        #if DATABASE_MULTIPLE_BASES
         let preparedTopology = DatabaseStorageRuntimeTopology(
             controlDomainID: storageTopology.controlDomainID,
             domains: preparedDomains,
             placements: storageTopology.placements,
             defaultPlacementID: storageTopology.defaultPlacementID
         )
+        #else
+        let preparedTopology = DatabaseStorageRuntimeTopology(
+            controlDomainID: storageTopology.controlDomainID,
+            domains: preparedDomains
+        )
+        #endif
 
         let resolvedTransactionCapabilities: TransactionCapabilities
         if let transactionCapabilities {
@@ -461,6 +496,13 @@ public final class DBContainer: Sendable {
         let expectedFormat = DatabaseFormatDescriptor.v1(
             itemStorage: configuration.itemStorage
         )
+        let databaseDataRoot = DatabaseDataRootLease(
+            resource: .database,
+            domain: preparedTopology.controlDomain,
+            root: preparedTopology.controlDomain.root,
+            generation: 0
+        )
+        #if DATABASE_MULTIPLE_BASES
         let layoutCatalog = DatabaseLayoutCatalog(
             engine: storageEngine,
             controlRoot: preparedTopology.controlDomain.root,
@@ -486,6 +528,7 @@ public final class DBContainer: Sendable {
         } else {
             initialLayoutStatus = .current
         }
+        #endif
         let databaseGrantStore = DatabaseGrantStore(
             resource: .database,
             root: preparedTopology.controlDomain.root
@@ -514,12 +557,15 @@ public final class DBContainer: Sendable {
                     Tuple(UInt64(1)).pack(),
                     for: bootstrapMarkerKey
                 )
+                #if DATABASE_MULTIPLE_BASES
                 try await layoutCatalog.storeInitial(
                     initialLayoutStatus,
                     transaction: transaction
                 )
+                #endif
             }
         )
+        #if DATABASE_MULTIPLE_BASES
         guard let persistedLayoutStatus = try await layoutCatalog.load() else {
             throw DatabaseRuntimeError.internalError(
                 "Base layout marker is missing"
@@ -530,13 +576,6 @@ public final class DBContainer: Sendable {
                 "Base layout marker changed during storage preparation"
             )
         }
-        let metadataSubspace = preparedTopology.controlDomain.root
-            .subspace("_metadata")
-        let schemaGeneration = try await loadSchemaGeneration(
-            storageEngine: storageEngine,
-            metadataSubspace: metadataSubspace,
-            clock: configuration.monotonicClock
-        )
         let baseCatalog = DatabaseBaseCatalog(
             controlDomain: preparedTopology.controlDomain,
             clock: configuration.monotonicClock
@@ -577,20 +616,42 @@ public final class DBContainer: Sendable {
                 )
             }
         }
+        #endif
+        let metadataSubspace = preparedTopology.controlDomain.root
+            .subspace("_metadata")
+        let schemaGeneration = try await loadSchemaGeneration(
+            storageEngine: storageEngine,
+            metadataSubspace: metadataSubspace,
+            clock: configuration.monotonicClock
+        )
+        #if DATABASE_MULTIPLE_BASES
         return PreparedStorage(
             topology: preparedTopology,
             engine: storageEngine,
             format: persistedFormat,
+            databaseDataRoot: databaseDataRoot,
             baseCatalog: baseCatalog,
             compositionCatalog: compositionCatalog,
-            databaseGrantStore: databaseGrantStore,
             layoutCatalog: layoutCatalog,
             layoutStatus: persistedLayoutStatus,
             baseGenerations: baseGenerations,
+            databaseGrantStore: databaseGrantStore,
             metadataSubspace: metadataSubspace,
             schemaGeneration: schemaGeneration,
             transactionCapabilities: resolvedTransactionCapabilities
         )
+        #else
+        return PreparedStorage(
+            topology: preparedTopology,
+            engine: storageEngine,
+            format: persistedFormat,
+            databaseDataRoot: databaseDataRoot,
+            databaseGrantStore: databaseGrantStore,
+            metadataSubspace: metadataSubspace,
+            schemaGeneration: schemaGeneration,
+            transactionCapabilities: resolvedTransactionCapabilities
+        )
+        #endif
     }
 
     private static func inspectTransactionCapabilities(
@@ -689,14 +750,17 @@ public final class DBContainer: Sendable {
             label: "com.database.framework.container"
         )
         self.migrationPlanStorage = Mutex(nil)
+        self.databaseDataRoot = preparedStorage.databaseDataRoot
+        self.databaseGrantStore = preparedStorage.databaseGrantStore
+        #if DATABASE_MULTIPLE_BASES
         self.baseCatalog = preparedStorage.baseCatalog
         self.compositionCatalog = preparedStorage.compositionCatalog
-        self.databaseGrantStore = preparedStorage.databaseGrantStore
         self.layoutCatalog = preparedStorage.layoutCatalog
         self.layoutStatusStorage = Mutex(preparedStorage.layoutStatus)
         self.baseGenerationStore = DatabaseBaseGenerationStore(
             generations: preparedStorage.baseGenerations
         )
+        #endif
         self.metadataSubspace = preparedStorage.metadataSubspace
     }
 
@@ -704,6 +768,7 @@ public final class DBContainer: Sendable {
         DatabaseSchemaExecutionScope.lease ?? schemaGenerationStore.acquire()
     }
 
+    #if DATABASE_MULTIPLE_BASES
     private func prepareTestingBaseIfConfigured() async throws {
         guard layoutStatus == .current else { return }
         guard let bootstrap = configuration.testingBootstrap else {
@@ -768,8 +833,12 @@ public final class DBContainer: Sendable {
         _ lease: DatabaseBaseLease,
         _ operation: @Sendable () async throws -> Result
     ) async rethrows -> Result {
-        try await ActiveDatabaseBaseContext.$lease.withValue(lease) {
-            try await operation()
+        try await ActiveDatabaseDataRootContext.$lease.withValue(
+            lease.dataRoot
+        ) {
+            try await ActiveDatabaseBaseContext.$lease.withValue(lease) {
+                try await operation()
+            }
         }
     }
 
@@ -813,6 +882,26 @@ public final class DBContainer: Sendable {
         }
         return lease
     }
+    #endif
+
+    package func withDatabaseDataRoot<Result: Sendable>(
+        _ operation: @Sendable () async throws -> Result
+    ) async rethrows -> Result {
+        try await ActiveDatabaseDataRootContext.$lease.withValue(
+            databaseDataRoot
+        ) {
+            try await operation()
+        }
+    }
+
+    package func requireActiveDataRoot() throws -> DatabaseDataRootLease {
+        guard let lease = ActiveDatabaseDataRootContext.lease else {
+            throw DatabaseRuntimeError.internalError(
+                "A target-bound data root is required"
+            )
+        }
+        return lease
+    }
 
     /// Storage root for operation metadata that must commit atomically with
     /// the selected target. Base operation state lives beside Base data;
@@ -824,20 +913,29 @@ public final class DBContainer: Sendable {
         case .database:
             return metadataSubspace.subspace("operation-state")
         case .base(let baseID):
+            #if DATABASE_MULTIPLE_BASES
             let lease = try requireBoundBaseLease()
             guard lease.baseID == baseID else {
                 throw DatabaseBaseExecutionError.baseTargetRequired
             }
             return lease.root.subspace("operation-state")
+            #else
+            _ = baseID
+            throw DatabaseRuntimeError.internalError(
+                "MultipleBases is not enabled"
+            )
+            #endif
         case .composition:
-            throw DatabaseBaseExecutionError.baseTargetRequired
+            throw DatabaseRuntimeError.internalError(
+                "A Composition cannot own operation state"
+            )
         }
     }
 
     package func activeDataSubspace(
         relativePath: [String]
     ) throws -> Subspace {
-        var subspace = try requireActiveBaseLease().root
+        var subspace = try requireActiveDataRoot().root
             .subspace("data")
         for component in relativePath {
             subspace = subspace.subspace(component)
@@ -846,9 +944,9 @@ public final class DBContainer: Sendable {
     }
 
     private func activePartitionCatalog() throws -> DatabasePartitionCatalog {
-        let lease = try requireActiveBaseLease()
+        let lease = try requireActiveDataRoot()
         return DatabasePartitionCatalog(
-            engine: lease.generation.domain.engine,
+            engine: lease.domain.engine,
             root: lease.root.subspace("data"),
             clock: monotonicClock
         )
@@ -987,6 +1085,7 @@ public final class DBContainer: Sendable {
         }
     }
 
+    #if DATABASE_MULTIPLE_BASES
     private func ensureIndexesReadyForAllActiveBases() async throws {
         for generation in baseGenerationStore.snapshot()
         where generation.record.lifecycle == .active {
@@ -1005,6 +1104,50 @@ public final class DBContainer: Sendable {
         authorization: AuthorizationContext
     ) -> DatabaseSession {
         DatabaseSession(container: self, authorization: authorization)
+    }
+    #else
+    /// Creates a context bound to the database's single data root.
+    public func newContext(
+        authorization: AuthorizationContext,
+        autosaveEnabled: Bool = false
+    ) -> DatabaseContext {
+        makeDatabaseContext(
+            authorization: authorization,
+            autosaveEnabled: autosaveEnabled
+        )
+    }
+
+    /// Creates administrative APIs bound to the database's single data root.
+    public func admin(
+        authorization: AuthorizationContext
+    ) -> AdminContext {
+        AdminContext(context: newContext(authorization: authorization))
+    }
+    #endif
+
+    package func makeDatabaseContext(
+        authorization: AuthorizationContext,
+        autosaveEnabled: Bool = false
+    ) -> DatabaseContext {
+        DatabaseContext(
+            container: self,
+            resource: .database,
+            authorization: authorization,
+            autosaveEnabled: autosaveEnabled
+        )
+    }
+
+    package func makeActiveDataContext(
+        authorization: AuthorizationContext,
+        autosaveEnabled: Bool = false
+    ) throws -> DatabaseContext {
+        let resource = try requireActiveDataRoot().resource
+        return DatabaseContext(
+            container: self,
+            resource: resource,
+            authorization: authorization,
+            autosaveEnabled: autosaveEnabled
+        )
     }
 
     // MARK: - Directory Resolution
@@ -1042,7 +1185,7 @@ public final class DBContainer: Sendable {
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil
     ) async throws -> Subspace {
-        let lease = try requireActiveBaseLease()
+        let lease = try requireActiveDataRoot()
         return try await lease.transactionExecutor.withTransaction(
             configuration: .default,
             clock: monotonicClock
@@ -1523,7 +1666,7 @@ extension DBContainer {
     /// Global schema catalog metadata remains in the control domain and is
     /// never used as a Base migration checkpoint.
     private func getMetadataSubspace() async throws -> Subspace {
-        try requireBoundBaseLease().root.subspace("metadata")
+        try requireActiveDataRoot().root.subspace("metadata")
     }
 
     /// Get the current schema version from storage
@@ -1539,7 +1682,7 @@ extension DBContainer {
     package func getCurrentSchemaVersion(
         transaction: any TransactionAccess
     ) async throws -> Schema.Version? {
-        let metadataSubspace = try requireBoundBaseLease().root
+        let metadataSubspace = try requireActiveDataRoot().root
             .subspace("metadata")
         let versionKey = metadataSubspace
             .subspace("schema")
@@ -1573,7 +1716,7 @@ extension DBContainer {
     ) async throws {
         let installedSchema = try schemaDefinition(for: version)
         let metadataSubspace = try await getMetadataSubspace()
-        try await withActiveBaseTransaction(
+        try await withActiveDataRootTransaction(
             requiredAccess: .administer,
             configuration: .batch,
         ) { transaction in
@@ -1674,9 +1817,11 @@ extension DBContainer {
 
 // MARK: - VersionedSchema Support
 
-private enum DatabaseBaseSchemaBootstrapAuthority: Sendable {
+private enum DatabaseDataRootSchemaBootstrapAuthority: Sendable {
     case request
+    #if DATABASE_MULTIPLE_BASES
     case provisioning
+    #endif
 }
 
 extension DBContainer {
@@ -1742,7 +1887,7 @@ extension DBContainer {
         targetVersion requestedTarget: Schema.Version? = nil
     ) async throws -> DatabaseMigrationStatus {
         let targetVersion = try migrationTarget(requestedTarget)
-        return try await withActiveBaseTransaction(
+        return try await withActiveDataRootTransaction(
             requiredAccess: .administer,
             configuration: .readOnly
         ) { transaction in
@@ -1904,6 +2049,7 @@ extension DBContainer {
     )
         async throws
     {
+        #if DATABASE_MULTIPLE_BASES
         let activeBases = try await withControlMetadataTransaction(
             configuration: .readOnly
         ) { transaction in
@@ -1921,6 +2067,7 @@ extension DBContainer {
                 return
             }
         }
+        #endif
         let registry = SchemaRegistry(
             database: controlEngine,
             root: storageTopology.controlDomain.root,
@@ -2080,7 +2227,7 @@ extension DBContainer {
         _ expectedSchema: Schema,
         transaction: any TransactionAccess
     ) async throws {
-        let metadataSubspace = try requireBoundBaseLease().root
+        let metadataSubspace = try requireActiveDataRoot().root
             .subspace("metadata")
         let fingerprintKey = metadataSubspace
             .subspace("schema")
@@ -2105,7 +2252,7 @@ extension DBContainer {
 
     private func bootstrapInitialSchemaIfNeeded(
         targetVersion: Schema.Version,
-        authority: DatabaseBaseSchemaBootstrapAuthority = .request
+        authority: DatabaseDataRootSchemaBootstrapAuthority = .request
     ) async throws -> Bool {
         let metadataSubspace = try await getMetadataSubspace()
         let versionKey = metadataSubspace
@@ -2180,11 +2327,12 @@ extension DBContainer {
         }
         switch authority {
         case .request:
-            return try await withActiveBaseTransaction(
+            return try await withActiveDataRootTransaction(
                 requiredAccess: .administer,
                 configuration: .batch,
                 bootstrap
             )
+        #if DATABASE_MULTIPLE_BASES
         case .provisioning:
             let lease = try requireActiveBaseLease()
             return try await lease.transactionExecutor.withTransaction(
@@ -2192,9 +2340,11 @@ extension DBContainer {
                 clock: monotonicClock,
                 bootstrap
             )
+        #endif
         }
     }
 
+    #if DATABASE_MULTIPLE_BASES
     /// Initializes a newly allocated Base before its provisioning record is
     /// published as active. This is a narrowly scoped system transition: the
     /// caller has already persisted the Base's initial Grants, but no user
@@ -2221,6 +2371,7 @@ extension DBContainer {
         }
         try await ensureIndexesReady()
     }
+    #endif
 
     private func executeStage(_ stage: MigrationStage) async throws {
         logger.info("Executing \(stage.migrationDescription)")
@@ -2271,7 +2422,7 @@ extension DBContainer {
         )
         let expectedFrom = stage.fromVersionIdentifier
         let expectedTo = stage.toVersionIdentifier
-        try await withActiveBaseTransaction(
+        try await withActiveDataRootTransaction(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -2356,7 +2507,7 @@ extension DBContainer {
             try await didMigrate(context)
         }
 
-        try await withActiveBaseTransaction(
+        try await withActiveDataRootTransaction(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -2384,7 +2535,7 @@ extension DBContainer {
             // Use resolveDirectory to respect #Directory definitions declared
             // by *this schema's* Swift type — V1 and V2 with the same entity
             // name may point to different directories.
-            let subspace = try await withActiveBaseTransaction(
+            let subspace = try await withActiveDataRootTransaction(
                 requiredAccess: .administer,
                 configuration: .default
             ) { transaction in

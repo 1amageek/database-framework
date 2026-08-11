@@ -74,8 +74,8 @@ public struct SHACLContextAPI: Sendable {
         ) async throws -> Result
     ) async throws -> Result {
         let context = self.context
-        return try await context.withBaseOperation {
-            let baseSubspace = try context.requireOperationBaseLease().root
+        return try await context.withDataOperation {
+            let baseSubspace = try context.requireOperationDataRoot().root
                 .subspace("data")
                 .subspace(Self.shaclPrefix)
             return try await operation(

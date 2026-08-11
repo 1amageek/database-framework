@@ -1,6 +1,7 @@
 # Base and Composition Implementation Design
 
-Status: implemented; production verification in progress.
+Status: implemented behind the non-default `MultipleBases` trait; production
+verification in progress. The standard build uses one database data root.
 
 This document translates the semantic contract in
 [Base and Composition](base-composition.md) into package ownership, public API,
@@ -12,10 +13,9 @@ tree unless a paragraph explicitly describes optional future work.
 
 Base isolation must be an execution boundary, not a query predicate. Every data
 operation enters the runtime with one explicit target, acquires immutable
-Schema and Base or Composition leases, proves the required Grant in the data
-transaction, and receives only a target-bound executor. A handler must not be
-able to construct a Base-less `DatabaseContext` or access an unrestricted
-`DBContainer`.
+Schema and data-root leases, proves the required Grant in the data transaction,
+and receives only a target-bound executor. A handler must not be able to
+construct an unscoped `DatabaseContext` or access an unrestricted `DBContainer`.
 
 ```mermaid
 flowchart LR
@@ -34,11 +34,11 @@ query or mutation never receives an API capable of selecting another Base.
 
 | Current fact | Evidence | Enforced consequence |
 |---|---|---|
-| Every Wire request carries a required `DatabaseOperationTarget`. | `database-kit/Sources/DatabaseWire/DatabaseWireRequestEnvelope.swift` | No Base-less decode path or implicit target exists. |
-| A handler prepares the typed payload and exact access/transaction requirement before execution. | `Sources/DatabaseServer/AnyDatabaseOperationHandler.swift`; `DatabaseOperationRequirement.swift` | Target compatibility and access are checked before handler invocation. |
-| `DatabaseOperationContext` contains a narrow executor and never exposes a raw container. | `Sources/DatabaseServer/DatabaseOperationContext.swift`; `DatabaseOperationExecutor.swift` | Data handlers cannot select a second Base. |
+| Every Wire request carries a required `DatabaseOperationTarget`. | `database-kit/Sources/DatabaseWire/DatabaseWireRequestEnvelope.swift` | No targetless decode path exists. |
+| A handler prepares the typed payload and exact access/transaction requirement before execution. | `Sources/DatabaseWireRuntime/AnyDatabaseOperationHandler.swift`; `DatabaseOperationRequirement.swift` | Target compatibility and access are checked before handler invocation. |
+| `DatabaseOperationContext` contains a narrow executor and never exposes a raw container. | `Sources/DatabaseWireRuntime/DatabaseOperationContext.swift`; `DatabaseOperationExecutor.swift` | Data handlers cannot select a second Base. |
 | `DBContainer` claims a control domain and every data domain exactly once. | `Sources/DatabaseEngine/Topology`; `Sources/DatabaseEngine/Core/DBContainer.swift` | Catalog and Base storage lifecycles have one owner and one shutdown path. |
-| Local operations start from `DatabaseSession` and a Base or Composition selector. | `Sources/DatabaseEngine/Base/DatabaseSession.swift`; `BaseDataSource.swift`; `CompositionDataSource.swift` | A public Base-less `newContext()` does not exist. |
+| Local operations use a database-bound context, or `DatabaseSession` with a Base or Composition selector when `MultipleBases` is enabled. | `Sources/DatabaseEngine/Core/DBContainer.swift`; `Sources/DatabaseEngine/Base/DatabaseSession.swift` | A public unscoped context does not exist. |
 | Base, Composition, placement, Grant, and layout records are persisted catalogs with immutable generations and leases. | `Sources/DatabaseEngine/Base`; `Sources/DatabaseEngine/Security` | Existence and lifecycle come from catalogs rather than backend namespace probes. |
 | Direct and role Grants are unioned in the Base transaction; role-name administration bypasses are absent. | `DatabaseGrantStore.swift`; `DataStoreSecurityDelegate.swift` | Authentication claims alone never grant data access. |
 | Composition reads hold one transaction per physical domain, authorize all members, and retain origin. | `CompositionDataSource.swift`; `DatabaseCompositionQueryPlanner.swift` | Partial authorization and silent member omission are impossible. |
@@ -208,7 +208,7 @@ flowchart TB
     Client --> Wire["DatabaseWire<br/>target and operations"]
     Wire --> Kit["DatabaseKit<br/>semantic values"]
 
-    Host["database-server<br/>auth and transport"] --> Server["DatabaseServer target<br/>operation preparation"]
+    Host["database-server<br/>auth and transport"] --> Server["DatabaseWireRuntime target<br/>operation preparation"]
     Server --> Engine["DatabaseEngine<br/>catalogs, leases, execution"]
     Engine --> Kit
     Engine --> Storage["storage-kit<br/>transactions and namespaces"]
@@ -221,7 +221,7 @@ flowchart TB
 | `EntityAddress`, `BaseResult` | `database-kit / DatabaseKit` | Database identity/provenance semantics change. |
 | `DatabaseOperationTarget`, Base/Composition/Grant operations, codecs | `database-kit / DatabaseWire` | Canonical protocol changes. |
 | Session, data-source interfaces, catalogs, generation leases, placement, planners | `database-framework / DatabaseEngine` | Execution and lifecycle behavior changes. |
-| Operation requirement resolution and target-bound handler context | `database-framework / DatabaseServer` | Canonical operation dispatch changes. |
+| Operation requirement resolution and target-bound handler context | `database-framework / DatabaseWireRuntime` | Canonical operation dispatch changes. |
 | Namespace resolution and backend transaction behavior | `storage-kit` | Storage semantics or backend behavior changes. |
 | Credentials, TLS, database routing, process lifecycle | `database-server` | Native hosting changes. |
 | Typed target facade and transport | `database-client` | Client invocation behavior changes. |
@@ -237,7 +237,8 @@ and must not enter `database-kit`.
 ### 6.1 Target belongs in the envelope
 
 The request envelope receives a required semantic target. It is not metadata
-and has no optional or implicit default.
+and has no optional encoding. Client UX may select `.database` by default, but
+the encoded target always remains explicit.
 
 ```swift
 public enum DatabaseOperationTarget: Sendable, Hashable {
@@ -256,7 +257,7 @@ public struct DatabaseWireRequestEnvelope: Sendable, Hashable {
 ```
 
 This is a breaking canonical Wire change. All golden vectors and protocol
-frames are regenerated together; no legacy decoder or Base-less default is
+frames are regenerated together; no legacy decoder or targetless default is
 retained.
 
 `DatabaseClient.execute` requires the target explicitly. Higher-level client
@@ -448,9 +449,10 @@ second transaction inside `MutationExecuteHandler`.
 
 ### 7.3 Data context versus control transaction
 
-`DatabaseContext` is bound immutably to one `ResolvedBaseLease` when created.
-All store cache keys, pending identities, transactions, relationship work, and
-index work are relative to that Base. There is no public Base-less initializer.
+`DatabaseContext` is bound immutably to one `DatabaseDataRootLease` when an
+operation begins. All store cache keys, pending identities, transactions,
+relationship work, and index work are relative to that database or Base root.
+There is no public unscoped initializer.
 
 Schema, Base, Composition, Grant, migration, and catalog work uses a separate
 package-internal `DatabaseControlTransactionExecutor`. It cannot create an
@@ -729,7 +731,7 @@ ownership violations are internal failures, not missing-resource results.
 - Extend result pages and continuation contracts with provenance and generation
   binding.
 - Qualify idempotency digesting and persistence by operation target.
-- Update all golden vectors; retain no Base-less compatibility decoder.
+- Update all golden vectors; retain no targetless compatibility decoder.
 
 ### `database-framework`
 
@@ -810,7 +812,7 @@ flowchart LR
 |---|---|---|
 | A | Canonical semantic types, target envelope, operations, golden vectors | Native, WASM, and Embedded encode/decode identity and rejection tests pass. |
 | B | Durable catalogs, lifecycle recovery, Base root leases | Create/restart/conflict/cancel/recovery tests pass on SQLite and FDB. |
-| C | Prepared operation and target-bound context | No handler or middleware can access a Base-less data context. |
+| C | Prepared operation and target-bound context | No handler or middleware can access an unscoped data context. |
 | D | Every entity and derived-data path is Base-local | Differential success/failure/results/index state match legacy single-Base behavior. |
 | E | Explicit Grants plus entity and field policy | Every public and Wire path denies missing access and proves principal isolation. |
 | F | Composition read planner and continuations | Supported plans match a reference global evaluation within budgets; unsupported plans fail. |
@@ -859,7 +861,7 @@ and page latency for one Base and representative Composition sizes. Merely using
 The feature is not production-ready until all of the following are true:
 
 - no production data operation can obtain an unrestricted `DBContainer` or
-  create a Base-less `DatabaseContext`;
+  create an unscoped `DatabaseContext`;
 - no global partition, index, graph, ontology, SHACL, relationship, or job path
   remains for Base-aware data;
 - no configured role bypasses Grants, entity policy, or field policy;

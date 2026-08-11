@@ -1,4 +1,4 @@
-#if SQLITE
+#if SQLITE && MultipleBases
 import Database
 import DatabaseRuntime
 import TestHeartbeat

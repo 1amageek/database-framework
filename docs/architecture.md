@@ -41,6 +41,32 @@ storage engine or transport.
 storage-kit owns the physical storage contract and backend adapters. It does not
 interpret models, QueryIR, graph semantics, or application commands.
 
+### Framework And Native Server Are Different Layers
+
+The default customization boundary is `database-framework`. A product owns its
+schema, runtime feature traits, commands, policy, clocks, and injected
+`StorageEngine`, then opens `DBContainer` in the application process. The
+framework does not depend on `database-server` and this path does not create a
+listener or process boundary.
+
+`database-server` is needed only for the native standalone deployment form. It
+owns transport, TLS, credential validation, routing, signals, and process
+lifecycle, then delegates every database operation to the same framework
+runtime. Server hosting does not become a second execution implementation.
+
+~~~mermaid
+flowchart TB
+    Definition["Application definition<br/>schema / commands / policy"] --> Runtime["database-framework<br/>DBContainer + execution"]
+    Runtime --> Engine["Injected StorageEngine"]
+    NativeHost["database-server<br/>optional standalone host"] --> Runtime
+    Remote["CLI / DatabaseClient"] --> NativeHost
+~~~
+
+| Owner | Must not own |
+|---|---|
+| Application + `database-framework` | HTTP/WS listener, token files, native signals |
+| `database-server` | query planning, index semantics, application schema meaning |
+
 ### Storage Injection And Ownership
 
 `DatabaseEngine` depends on `StorageEngine` only. It does not import, select,
@@ -75,7 +101,7 @@ Native and Embedded WASI builds use the same database-framework sources and the
 same synchronization, transaction, and error contracts. A full Cloudflare
 database runtime links the application-specific schema and database-framework
 into a Swift 6.4 Embedded WASM reactor. `DatabaseTypesFoundation`,
-`DatabaseKitFoundation`, and `DatabaseServerFoundation` are adapter products and
+`DatabaseKitFoundation`, and `DatabaseFoundation` are adapter products and
 do not enter that reactor dependency graph.
 
 An Embedded application, such as Calendar, remains a separate WASM artifact. It
@@ -122,14 +148,14 @@ The same trait conditions control `DatabaseRuntime` provider registration.
 Therefore an implementation cannot be re-exported without being registered, or
 registered without being part of the selected dependency graph.
 
-`DatabaseServer` uses the same composition. Its operation registry and
+`DatabaseWireRuntime` uses the same composition. Its operation registry and
 `capabilities.describe` response contain graph, ontology, and SHACL operations
 only when `GraphIndexes` is active. A request for an operation outside the
 compiled composition fails with the typed `OPERATION_UNAVAILABLE` error; it
 never falls back to a partial implementation.
 
 Graph algorithm, ontology, SHACL, RDF document storage, graph query paging, and
-SPARQL mutation services are compiled out of `DatabaseServer` when
+SPARQL mutation services are compiled out of `DatabaseWireRuntime` when
 `GraphIndexes` is absent. DatabaseWire's closed query and operation algebra
 remains available so a smaller runtime can decode a request and reject an
 unavailable operation or statement deterministically.
@@ -140,7 +166,7 @@ only in a `GraphIndexes` composition and is passed from runtime configuration
 through the service context into the graph-capable statement executor.
 
 The service composition type follows the selected traits. Without
-`GraphIndexes`, `DatabaseServerServices` requires a statement executor. With
+`GraphIndexes`, `DatabaseOperationServices` requires a statement executor. With
 `GraphIndexes`, it instead requires one non-optional `GraphOperationServices`
 value containing that executor together with the graph algorithm, ontology,
 and SHACL services. The graph-enabled build has no initializer that can create
@@ -148,7 +174,7 @@ a partial service composition, so missing graph services are rejected by the
 compiler rather than by a runtime capability assertion.
 
 When an application adds commands, it uses
-`DatabaseServerServices.replacingCommandRegistries(read:write:)`; this preserves
+`DatabaseOperationServices.replacingCommandRegistries(read:write:)`; this preserves
 the trait-specific service composition, maintenance service, and job service
 instead of disassembling and reconstructing feature state.
 
@@ -166,11 +192,15 @@ instead of disassembling and reconstructing feature state.
 | `AggregationIndexes` | count, numeric, distinct, and percentile indexes |
 | `LeaderboardIndexes` | time-window leaderboard indexes |
 | `Relationships` | relationship mutation maintenance and typed remote error mapping |
-| `AllRuntimeFeatures` | every runtime capability above |
+| `MultipleBases` | Base lifecycle, placement, Base-local Grants, and read-only Composition execution |
+| `AllRuntimeFeatures` | every index and relationship capability above; excludes `MultipleBases` |
 
-The default full native host profile enables `FoundationDB` and
-`AllRuntimeFeatures`. Applications that provide an explicit trait set without
-`.defaults` replace that profile. For example, a graph application can select
+The framework package has no default traits. Every backend, runtime feature,
+and `MultipleBases` is selected explicitly by the consuming package. The
+independent native `database-server` package currently defaults its own
+standalone composition to SQLite and all runtime features, but that host
+default does not change the framework dependency graph for in-process or
+Embedded applications. For example, a graph application can select
 `GraphIndexes` without linking FoundationDB, relationship, vector, full-text,
 aggregation, or leaderboard implementations.
 

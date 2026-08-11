@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -909,3 +910,5 @@ extension DBContainer {
         return result.partialValue
     }
 }
+
+#endif

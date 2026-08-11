@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseTypes
 import StorageKit
 
@@ -101,3 +102,5 @@ package struct DatabaseLayoutCatalog: Sendable {
         )
     }
 }
+
+#endif

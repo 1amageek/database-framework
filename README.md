@@ -8,11 +8,58 @@ persistence, migrations, and index maintenance. Storage is supplied through
 the backend-neutral protocols in
 [storage-kit](https://github.com/1amageek/storage-kit).
 
-The default SwiftPM trait set is the full native host profile:
-`FoundationDB` plus `AllRuntimeFeatures`. FoundationDB is one storage adapter,
-not a dependency of the execution engine. The same execution layer can run
-with FoundationDB, SQLite, PostgreSQL, an in-memory engine, or another
-`StorageEngine` implementation.
+The package has no default SwiftPM traits. A plain `Database` dependency links
+the backend-neutral execution contracts only. Backends, index families, graph
+execution, relationships, and `MultipleBases` are explicit opt-ins.
+FoundationDB is one storage adapter, not a dependency of the execution engine.
+The same execution layer can run with FoundationDB, SQLite, PostgreSQL, an
+in-memory engine, or another `StorageEngine` implementation.
+
+## Use the framework first
+
+`database-framework` is the primary application API. An application can import
+the `Database` umbrella, select only the backend and feature traits it uses,
+define its schema and commands, and own `DBContainer` directly. This is the
+lightweight path for an embedded database, an in-process service, or a custom
+database product. It does not require the `database-server` package, an HTTP
+listener, authentication files, or a child process.
+
+`database-server` is an optional native deployment host. Add it only when the
+same framework runtime must run as a standalone process and be reached through
+HTTP, WebSocket, or private stdio DatabaseWire transports.
+
+```mermaid
+flowchart LR
+    App["Application schema + policy + commands"] --> Framework["Database umbrella<br/>selected traits only"]
+    Framework --> Container["DBContainer<br/>in-process execution"]
+    Container --> Storage["Injected StorageEngine"]
+
+    CLI["database CLI / remote client"] --> Server["database-server<br/>optional native host"]
+    Server --> WireRuntime["DatabaseWireRuntime<br/>optional operation execution"]
+    Cloudflare["Cloudflare Durable Object host"] --> WireRuntime
+    WireRuntime --> Framework
+```
+
+| Requirement | Use |
+|---|---|
+| Lightweight in-process or Embedded customization | `database-framework` / `Database` |
+| Application-specific schema, indexes, commands, or policy | `database-framework` / `Database` |
+| Standalone native process or remote DatabaseWire endpoint | add `database-server` |
+| Cloudflare deployment | add `database-framework-cloudflare`, not `database-server` |
+
+The host-independent `DatabaseWireRuntime` product belongs to this package
+because both native and Cloudflare hosts execute the same canonical operations.
+It is not re-exported by `Database`, is not a default dependency, and owns no
+listener, TLS, credential store, process, signal, stdio, or Cloudflare lifecycle.
+Those concerns remain in their host packages.
+
+| Product | Responsibility | Included by `Database` |
+|---|---|---|
+| `DatabaseEngine` | transactions, persistence, planning, schema and security execution | yes |
+| `DatabaseRuntime` | trait-selected runtime registrations | yes |
+| `DatabaseWireRuntime` | host-independent DatabaseWire operation execution | no |
+| `DatabaseFoundation` | optional native clock and UUID adapters | no |
+| `database-server` package | native listener, TLS, auth, stdio, signals and shutdown | separate package |
 
 ## Architecture
 
@@ -63,7 +110,7 @@ initialized engine and clocks that one container owns.
 
 | Backend | Trait | Supported package platforms | Storage engine |
 |---|---|---|---|
-| FoundationDB | `FoundationDB` (default profile) | macOS, Linux | `FDBStorageEngine` |
+| FoundationDB | `FoundationDB` | macOS, Linux | `FDBStorageEngine` |
 | SQLite | `SQLite` | macOS, iOS, Linux | `SQLiteStorageEngine` |
 | PostgreSQL | `PostgreSQL` | macOS, iOS, Linux | `PostgreSQLStorageEngine` |
 | Custom | none in database-framework | where the implementation is available | any `StorageEngine` |
@@ -98,7 +145,7 @@ documented semantic mapping.
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0809.2"
+            from: "26.0812.0"
         )
     ]
 
@@ -112,21 +159,21 @@ The package that consumes database-framework selects that composition:
 
     .package(
         url: "https://github.com/1amageek/database-framework.git",
-        from: "26.0809.2",
+        from: "26.0812.0",
         traits: ["GraphIndexes"]
     )
 
-Omitting `.defaults` from an explicit dependency trait set prevents
-`FoundationDB` and `AllRuntimeFeatures` from being enabled. Individual products
-such as DatabaseEngine and VectorIndex remain available when an application
-does not want the umbrella import. SwiftPM unifies traits requested through
-different dependency paths, so the final composition is the union requested by
-the complete package graph.
+With no traits, no concrete backend or optional index implementation enters the
+`Database` dependency graph. Individual products such as `DatabaseEngine` and
+`VectorIndex` remain available when an application does not want the umbrella
+import. SwiftPM unifies traits requested through different dependency paths,
+so the final composition is the union requested by the complete package graph.
 
 DatabaseRuntime selects its index and relationship capabilities with SwiftPM
-traits. The default full-host profile includes `AllRuntimeFeatures` and
-`FoundationDB`. Embedded applications should pass an explicit trait set so
-unused implementations never enter the target dependency graph.
+traits. Applications enable `MultipleBases` only when they need Base lifecycle,
+placement, Base-local Grants, or read-only Composition execution. Embedded
+applications should pass only the traits they use so unused implementations
+never enter the target dependency graph.
 `GraphIndexes`, for example, includes the scalar support required by graph
 execution without linking vector, full-text, aggregation, or leaderboard
 indexes. `Relationships` is independent and is needed only when the application
@@ -174,8 +221,7 @@ The model and application code are backend-neutral:
         runtimeConfiguration: runtime
     )
 
-    let session = container.session(authorization: authorization)
-    let context = session.base(baseID).newContext()
+    let context = container.newContext(authorization: authorization)
     try context.insert(
         User(id: "alice", email: "alice@example.com", name: "Alice")
     )
@@ -206,17 +252,16 @@ zero-copy physical cursor share the caller's transaction.
 
 ### FoundationDB
 
-FoundationDB is part of the default full-host profile on macOS and Linux. It
-provides distributed transactions, native versionstamps, and the dynamic
-FoundationDB DirectoryLayer. The FoundationDB adapter is not compiled for iOS
-or WASI.
+FoundationDB is an explicit opt-in on macOS and Linux. It provides distributed
+transactions, native versionstamps, and the dynamic FoundationDB DirectoryLayer.
+The FoundationDB adapter is not compiled for iOS or WASI.
 
     scripts/fdb-test-env run --clean -- \
       scripts/xcode-test-harness \
         --traits FoundationDB,AllRuntimeFeatures \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3965 \
+        --expected-count 3977 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
@@ -248,7 +293,7 @@ For local testing, the repository includes an isolated cluster wrapper:
         --traits FoundationDB,AllRuntimeFeatures \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3965 \
+        --expected-count 3977 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
@@ -389,22 +434,21 @@ The same injection path is used for a custom remote or host-provided engine:
 
 ## Transaction and Context Model
 
-DBContainer owns the control domain and the configured data domains. It does
-not create an unscoped application transaction. A session binds the authenticated
-principal, a Base selector binds the data and Grant boundary, and a context
-owns unit-of-work state within that one Base.
+DBContainer owns the control domain and the configured data domains. Without
+`MultipleBases`, one context binds the authenticated principal to the database
+data root. With `MultipleBases`, a session can additionally select one Base or
+a read-only Composition. Both paths use the same target-bound executor and
+never infer a Base from model data.
 
     DBContainer
       owns: control domain, data domains, schema and target catalogs
            |
-           +--> session(authorization:)
+           +--> newContext(authorization:) --------> database root
+           |
+           `--> session(authorization:)             [MultipleBases]
                     |
-                    +--> base(Base.ID)
-                              |
-                              v
-                         DatabaseContext
-                           owns: one Base, pending changes,
-                                 read-version/cache state and transaction orchestration
+                    +--> base(Base.ID) ------------> Base root
+                    `--> composition(ID) ----------> read-only members
 
 Creating `DBConfiguration(storageTopology:)` transfers every domain engine
 lifecycle to a shared owner carried by that configuration. Backend-specific
@@ -415,8 +459,7 @@ the public terminal operation and deinitialization invokes the same path as a
 safety net. Repeated shutdown paths release every engine exactly once. The
 caller must not reuse or shut down a transferred engine independently.
 
-    let session = container.session(authorization: authorization)
-    let context = session.base(baseID).newContext()
+    let context = container.newContext(authorization: authorization)
 
     try context.insert(user)
     try context.insert(order)
@@ -424,6 +467,11 @@ caller must not reuse or shut down a transferred engine independently.
 
     // All staged mutations are committed as one transaction.
     try await context.save()
+
+With `MultipleBases`, select the Base explicitly instead:
+
+    let session = container.session(authorization: authorization)
+    let context = session.base(baseID).newContext()
 
 For direct transactional work:
 
@@ -508,12 +556,13 @@ The framework supports two explicit composition models:
 | Compiled application | Swift application and `SchemaMigrationPlan` | Redeploy the application with its registered migration plan |
 | Schema-driven application | Durable schema catalog | `schemaExecute.plan` and compare-and-swap `schemaExecute.apply` |
 
-`SchemaDrivenDatabaseApplication` restores an empty database as schema version
-`0.0.0`, builds `PersistedModel` runtime registrations directly from canonical
-schema metadata, and advertises `schema.execute` version 1. It does not create a
-synthetic `Persistable` type. A typed application converts its model to
-`PersistedModel` once at the persistence boundary and uses the same canonical
-index core.
+`SchemaDrivenDatabaseRuntimeFactory` restores an empty database as schema
+version `0.0.0` and builds `PersistedModel` runtime registrations directly from
+canonical schema metadata. It does not create a synthetic `Persistable` type.
+The native `StandaloneDatabaseApplication` that pairs this factory with a
+storage-owned catalog belongs to the separate `database-server` package. A
+typed application converts its model to `PersistedModel` once at the persistence
+boundary and uses the same canonical index core.
 
 ```text
 DatabaseWire request
@@ -534,7 +583,7 @@ schemaExecute.apply
 Schema apply requires the caller's expected fingerprint and an idempotency key.
 Compatible additions publish atomically. Added indexes over existing rows are
 kept non-readable and rebuilt by a persistent resumable job while mutations
-continue maintaining them. A schema-driven server rejects incompatible changes
+continue maintaining them. A schema-driven runtime rejects incompatible changes
 with a typed migration-required error; it never invents a data migration or
 silently substitutes an index implementation. Compiled applications continue
 to use their application-owned `SchemaMigrationPlan` through the maintenance
@@ -552,16 +601,17 @@ and OWLObjectProperty add ontology metadata.
 See [Sources/GraphIndex/README.md](Sources/GraphIndex/README.md) for graph
 query and reasoning APIs.
 
-### Database Server
+### Remote operation execution
 
-DatabaseServer exposes a DBContainer to
+`DatabaseWireRuntime` exposes a `DBContainer` to
 [database-client](https://github.com/1amageek/database-client) through the
-DatabaseWire protocol. The server layer is separate from the storage engine;
-it can host a container backed by any engine supported by the target.
+DatabaseWire protocol. It is a host-independent optional product, separate from
+the `Database` umbrella and storage engine; it can execute against a container
+backed by any engine supported by the target.
 
-`DatabaseServerApplication` is the single host-independent composition
+`DatabaseApplication` is the single host-independent composition
 contract. It produces a `DatabaseContainerDefinition` and the corresponding
-`DatabaseServerRuntimeConfiguration`. Native HTTP/WebSocket/stdio listeners
+`DatabaseOperationRuntimeConfiguration`. Native HTTP/WebSocket/stdio listeners
 belong to the independent
 [`database-server`](https://github.com/1amageek/database-server) package;
 Cloudflare lifecycle remains in `database-framework-cloudflare`.
@@ -635,7 +685,8 @@ logical key/value model in their own tables and indexes.
 | DatabaseRuntime | runtime assembly for index maintainers |
 | ScalarIndex, VectorIndex, FullTextIndex, ... | individual index modules |
 | QueryAST | SQL/SPARQL parsing and serialization |
-| DatabaseServer | DatabaseWire operation runtime; native listeners are owned by `database-server` |
+| DatabaseWireRuntime | optional, host-independent DatabaseWire operation execution |
+| DatabaseFoundation | optional native clock and UUID adapters |
 
 Import Database for the standard application path, or import individual
 products when compile time and dependency size matter.
@@ -645,7 +696,7 @@ products when compile time and dependency size matter.
 The authenticated command-line client is owned by the independent
 [`database-cli`](https://github.com/1amageek/database-cli) package. It reaches
 this framework through `DatabaseClient`, DatabaseWire, and
-`DatabaseServerRuntime`; it does not bypass runtime authorization or connect a
+`DatabaseOperationRuntime`; it does not bypass runtime authorization or connect a
 `StorageEngine` directly. FoundationDB lifecycle and read-only diagnostics are
 isolated in that package's version-matched `database-fdb` companion.
 
@@ -654,14 +705,17 @@ from this package. No compatibility product or alias remains.
 
 ## Build and Test
 
-    # FoundationDB trait (default)
+    # Lightweight backend-neutral framework (no optional traits)
     swift build
 
-    # SQLite: no FoundationDB process required
-    swift build --disable-default-traits --traits SQLite
+    # FoundationDB
+    swift build --traits FoundationDB
+
+    # SQLite: no FoundationDB client or process required
+    swift build --traits SQLite
 
     # PostgreSQL: requires a reachable PostgreSQL instance
-    swift build --disable-default-traits --traits PostgreSQL
+    swift build --traits PostgreSQL
 
     # Native backend suites use the strict commands shown above. The harness
     # applies an external timeout, injects the snapshot testing runtime, and
@@ -718,7 +772,7 @@ direction. The database core stays independent from web hosts and UI tools.
 | [storage-kit](https://github.com/1amageek/storage-kit) | StorageEngine, Transaction, Tuple, directory abstraction, and backend engines | Direct dependency |
 | [swift-hnsw](https://github.com/1amageek/swift-hnsw) | Swift HNSW graph index used by VectorIndex | Direct dependency |
 | [database-client](https://github.com/1amageek/database-client) | Native client SDK, typed queries, and transport layer | Client of the server layer |
-| [database-server](https://github.com/1amageek/database-server) | Native HTTP, WebSocket, and stdio host lifecycle | Hosts DatabaseServerRuntime |
+| [database-server](https://github.com/1amageek/database-server) | Native HTTP, WebSocket, and stdio host lifecycle | Hosts DatabaseOperationRuntime |
 | [database-cli](https://github.com/1amageek/database-cli) | Authenticated operator commands and standalone UX | Uses database-client; does not link a backend |
 
 ### Deployment And Web Integration

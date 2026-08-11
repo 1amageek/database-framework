@@ -1,6 +1,6 @@
 import DatabaseKit
 import DatabaseTypes
-@_spi(DatabaseServer) import DatabaseWire
+@_spi(DatabaseWireRuntime) import DatabaseWire
 import StorageKit
 
 extension DBContainer {
@@ -417,7 +417,7 @@ extension DBContainer {
         indexes: [String],
         transaction: any TransactionAccess
     ) async throws -> Set<String> {
-        let schemaMetadataSubspace = try baseSchemaMetadataSubspace()
+        let schemaMetadataSubspace = try dataRootSchemaMetadataSubspace()
         var pending = Set<String>()
         pending.reserveCapacity(indexes.count)
         for index in indexes {
@@ -472,7 +472,7 @@ extension DBContainer {
         index: String,
         transaction: any TransactionAccess
     ) throws {
-        let schemaMetadataSubspace = try baseSchemaMetadataSubspace()
+        let schemaMetadataSubspace = try dataRootSchemaMetadataSubspace()
         try transaction.clear(
             key: Self.schemaIndexBuildPendingKey(
                 entity: entity,
@@ -482,13 +482,13 @@ extension DBContainer {
         )
     }
 
-    package func installBaseSchemaSnapshot(
+    package func installDataRootSchemaSnapshot(
         _ schema: Schema,
         transaction: any TransactionAccess
     ) throws {
         try Self.setCurrentSchemaSnapshot(
             schema,
-            metadataSubspace: requireBoundBaseLease().root
+            metadataSubspace: requireActiveDataRoot().root
                 .subspace("metadata"),
             transaction: transaction
         )
@@ -499,7 +499,7 @@ extension DBContainer {
         index: String,
         transaction: any TransactionAccess
     ) throws {
-        let schemaMetadataSubspace = try baseSchemaMetadataSubspace()
+        let schemaMetadataSubspace = try dataRootSchemaMetadataSubspace()
         try transaction.setValue(
             [1],
             for: Self.schemaIndexBuildPendingKey(
@@ -534,8 +534,8 @@ extension DBContainer {
             .pack(Tuple(entity, index))
     }
 
-    private func baseSchemaMetadataSubspace() throws -> Subspace {
-        try requireBoundBaseLease().root.subspace("_metadata")
+    private func dataRootSchemaMetadataSubspace() throws -> Subspace {
+        try requireActiveDataRoot().root.subspace("_metadata")
     }
 
     package static func activeSchemaFingerprintKey(

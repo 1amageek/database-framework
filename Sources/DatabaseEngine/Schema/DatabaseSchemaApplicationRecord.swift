@@ -1,6 +1,6 @@
 import DatabaseKit
 import DatabaseTypes
-@_spi(DatabaseServer) import DatabaseWire
+@_spi(DatabaseWireRuntime) import DatabaseWire
 
 /// Durable identity of one accepted schema transition.
 package struct DatabaseSchemaApplicationRecord:

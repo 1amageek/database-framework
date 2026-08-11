@@ -62,14 +62,23 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             selectQuery: selectQuery
         )
         let operation = try requireString(BitmapReadParameter.operation, from: indexScan.parameters)
-        let models = try await context.indexQueryContext.withReadableIndex(
+        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let requestedLimit = indexScan.parameters[
+            BitmapReadParameter.limit
+        ]?.uint64Value.flatMap { Int(exactly: $0) }
+        if indexScan.parameters[BitmapReadParameter.limit] != nil,
+           requestedLimit == nil {
+            throw BitmapReadError.invalidParameter(BitmapReadParameter.limit)
+        }
+        let resultLimit = min(requestedLimit ?? budgetLimit, budgetLimit)
+        return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
             kindIdentifier: kindIdentifier,
             forEntityName: entity.name,
             partitions: partitions,
             configuration: execution.transactionConfiguration
-        ) { readableIndex, transaction -> [PersistedModel] in
-            guard let readableIndex else { return [] }
+        ) { readableIndex, transaction -> IndexReadResult in
+            guard let readableIndex else { return .empty }
             let reader = BitmapIndexReader(subspace: readableIndex.subspace)
             let bitmap: RoaringBitmap
             switch operation {
@@ -84,7 +93,8 @@ private struct BitmapReadExecutor: IndexReadExecutor {
                 }
                 bitmap = try await reader.bitmap(
                     for: [first],
-                    transaction: transaction
+                    transaction: transaction,
+                    workMeter: options.workMeter
                 )
             case BitmapReadParameter.inOperation:
                 let values = try decodeTupleArray(
@@ -92,14 +102,16 @@ private struct BitmapReadExecutor: IndexReadExecutor {
                 )
                 bitmap = try await reader.union(
                     of: values.map { [$0] as [any TupleElement] },
-                    transaction: transaction
+                    transaction: transaction,
+                    workMeter: options.workMeter
                 )
             case BitmapReadParameter.andOperation:
                 bitmap = try await reader.intersection(
                     of: try decodeTupleMatrix(
                         indexScan.parameters[BitmapReadParameter.valueSets]
                     ).map { $0 as [any TupleElement] },
-                    transaction: transaction
+                    transaction: transaction,
+                    workMeter: options.workMeter
                 )
             default:
                 throw BitmapReadError.invalidParameter(
@@ -108,51 +120,47 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             }
 
             let primaryKeys = try await reader.primaryKeys(
-                for: try limited(bitmap, parameters: indexScan.parameters),
-                transaction: transaction
+                for: bitmap,
+                transaction: transaction,
+                limit: resultLimit,
+                workMeter: options.workMeter
             )
+            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
+                .reserveTuples(
+                    primaryKeys,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { primaryKeyReservation.release() }
             let fetched = try await context.fetchPersistedModelsPreservingOrder(
                 entity: entity,
                 primaryKeys: primaryKeys,
                 partitions: partitions,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: options.workMeter
             )
-            var models: [PersistedModel] = []
-            models.reserveCapacity(fetched.count)
-            for (primaryKey, model) in zip(primaryKeys, fetched) {
-                guard let model else {
-                    throw BitmapReadError.missingFetchedEntity(
-                        primaryKey.pack()
-                    )
+            let fetchedReservation = try DatabaseIntermediateCollectionMeter
+                .reservePersistedModels(
+                    fetched,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { fetchedReservation.release() }
+            return try IndexReadResult.build(
+                workMeter: options.workMeter,
+                ordering: .unordered,
+                expectedCount: fetched.count
+            ) { rows in
+                for (primaryKey, model) in zip(primaryKeys, fetched) {
+                    guard let model else {
+                        throw BitmapReadError.missingFetchedEntity(
+                            primaryKey.pack()
+                        )
+                    }
+                    try rows.append(try IndexReadRow.materializing(model))
                 }
-                models.append(model)
             }
-            return models
         }
-        let rows = try models.map { try IndexReadRow.materializing($0) }
-        // Bitmap iteration order is by internal RoaringBitmap integer ID, which
-        // does not correspond to any domain-meaningful field order. Callers must
-        // supply explicit orderBy if they want deterministic output.
-        return IndexReadResult(rows: rows, ordering: .unordered)
-    }
-
-    private func limited(
-        _ bitmap: RoaringBitmap,
-        parameters: [String: FieldValue]
-    ) throws -> RoaringBitmap {
-        guard let limit = parameters[BitmapReadParameter.limit]?.uint64Value else {
-            return bitmap
-        }
-        guard let integerLimit = Int(exactly: limit) else {
-            throw BitmapReadError.invalidParameter(BitmapReadParameter.limit)
-        }
-        let identifiers = bitmap.toArray()
-        guard identifiers.count > integerLimit else { return bitmap }
-        var result = RoaringBitmap()
-        for identifier in identifiers.prefix(integerLimit) {
-            result.add(identifier)
-        }
-        return result
     }
 
     private func requireString(
@@ -229,16 +237,25 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
         )
 
         let operation = try requireString(BitmapReadParameter.operation, from: indexScan.parameters)
-        let entities = try await context.executeCanonicalRead(
+        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let requestedLimit = indexScan.parameters[
+            BitmapReadParameter.limit
+        ]?.uint64Value.flatMap { Int(exactly: $0) }
+        if indexScan.parameters[BitmapReadParameter.limit] != nil,
+           requestedLimit == nil {
+            throw BitmapReadError.invalidParameter(BitmapReadParameter.limit)
+        }
+        let resultLimit = min(requestedLimit ?? budgetLimit, budgetLimit)
+        return try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction -> [PolymorphicEntity] in
+        ) { transaction -> IndexReadResult in
             guard let readableIndex = try await context.container
                 .readablePolymorphicIndex(
                     index,
                     in: group,
                     transaction: transaction
-                ) else {
-                return []
+            ) else {
+                return .empty
             }
             let reader = BitmapIndexReader(
                 subspace: readableIndex.subspace
@@ -251,71 +268,85 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
                 guard let first = values.first else {
                     throw BitmapReadError.invalidParameter(BitmapReadParameter.values)
                 }
-                bitmap = try await reader.bitmap(for: [first], transaction: transaction)
+                bitmap = try await reader.bitmap(
+                    for: [first],
+                    transaction: transaction,
+                    workMeter: options.workMeter
+                )
 
             case BitmapReadParameter.inOperation:
                 let values = try decodeTupleArray(indexScan.parameters[BitmapReadParameter.values])
                 let valueSets = values.map { [$0] as [any TupleElement] }
-                bitmap = try await reader.union(of: valueSets, transaction: transaction)
+                bitmap = try await reader.union(
+                    of: valueSets,
+                    transaction: transaction,
+                    workMeter: options.workMeter
+                )
 
             case BitmapReadParameter.andOperation:
                 let valueSets = try decodeTupleMatrix(indexScan.parameters[BitmapReadParameter.valueSets])
                 let converted = valueSets.map { $0 as [any TupleElement] }
-                bitmap = try await reader.intersection(of: converted, transaction: transaction)
+                bitmap = try await reader.intersection(
+                    of: converted,
+                    transaction: transaction,
+                    workMeter: options.workMeter
+                )
 
             default:
                 throw BitmapReadError.invalidParameter(BitmapReadParameter.operation)
             }
 
-            let limitedBitmap: RoaringBitmap
-            if let limit = indexScan.parameters[BitmapReadParameter.limit]?.uint64Value {
-                let ids = bitmap.toArray()
-                if UInt64(ids.count) > limit {
-                    var truncated = RoaringBitmap()
-                    for id in ids.prefix(Int(limit)) {
-                        truncated.add(id)
-                    }
-                    limitedBitmap = truncated
-                } else {
-                    limitedBitmap = bitmap
-                }
-            } else {
-                limitedBitmap = bitmap
-            }
             let primaryKeys = try await reader.primaryKeys(
-                for: limitedBitmap,
-                transaction: transaction
+                for: bitmap,
+                transaction: transaction,
+                limit: resultLimit,
+                workMeter: options.workMeter
             )
+            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
+                .reserveTuples(
+                    primaryKeys,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { primaryKeyReservation.release() }
             let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
                 group: group,
                 ids: primaryKeys,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: options.workMeter
             )
-            var entities: [PolymorphicEntity] = []
-            entities.reserveCapacity(fetched.count)
-            for (primaryKey, entity) in zip(primaryKeys, fetched) {
-                guard let entity else {
-                    throw BitmapReadError.missingFetchedEntity(
-                        primaryKey.pack()
+            let fetchedReservation = try DatabaseIntermediateCollectionMeter
+                .reservePolymorphicEntities(
+                    fetched,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { fetchedReservation.release() }
+            return try IndexReadResult.build(
+                workMeter: options.workMeter,
+                ordering: .unordered,
+                expectedCount: fetched.count
+            ) { rows in
+                for (primaryKey, entity) in zip(primaryKeys, fetched) {
+                    guard let entity else {
+                        throw BitmapReadError.missingFetchedEntity(
+                            primaryKey.pack()
+                        )
+                    }
+                    try rows.append(
+                        try IndexReadRow.materializing(
+                            entity.item,
+                            annotations: [
+                                PolymorphicRowAnnotation.typeName:
+                                    .string(entity.typeName),
+                                PolymorphicRowAnnotation.typeCode:
+                                    .int64(entity.typeCode)
+                            ]
+                        )
                     )
                 }
-                entities.append(entity)
             }
-            return entities
         }
-        let rows = try entities.map { entity in
-            try IndexReadRow.materializing(
-                entity.item,
-                annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(entity.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
-                ]
-            )
-        }
-        // Bitmap iteration order is by internal RoaringBitmap integer ID, which
-        // does not correspond to any domain-meaningful field order. Callers must
-        // supply explicit orderBy if they want deterministic output.
-        return IndexReadResult(rows: rows, ordering: .unordered)
     }
 
     private func requireString(

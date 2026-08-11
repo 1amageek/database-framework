@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import StorageKit
 import Synchronization
@@ -33,6 +34,15 @@ public final class DatabaseBaseLease: Sendable {
     package var transactionExecutor: StorageTransactionExecutor {
         generation.domain.transactionExecutor
     }
+
+    package var dataRoot: DatabaseDataRootLease {
+        DatabaseDataRootLease(
+            resource: .base(baseID),
+            domain: generation.domain,
+            root: generation.root,
+            generation: generation.record.placementGeneration
+        )
+    }
 }
 
 package final class DatabaseBaseLeaseToken: Sendable {
@@ -58,3 +68,5 @@ package final class DatabaseBaseLeaseToken: Sendable {
         finish()
     }
 }
+
+#endif

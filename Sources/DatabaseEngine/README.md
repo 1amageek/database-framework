@@ -2,6 +2,12 @@
 
 Core engine for StorageKit-backed persistence with transactional guarantees.
 
+DatabaseEngine is the lightweight in-process execution core. Applications
+normally consume it through the `Database` umbrella and customize the database
+with schema, selected traits, runtime registrations, commands, policy, and an
+injected `StorageEngine`. `database-server` is not required unless the runtime
+must be hosted as a standalone native process with DatabaseWire transports.
+
 ## Overview
 
 DatabaseEngine provides the foundation for all database operations, including:
@@ -18,7 +24,7 @@ DatabaseEngine provides the foundation for all database operations, including:
 Application-level resource manager. Does NOT create transactions.
 
 ```swift
-// Inject validated control/data domains and named Base placements.
+// Inject a validated control/data domain topology.
 let configuration = DBConfiguration(
     storageTopology: storageTopology,
     monotonicClock: applicationMonotonicClock,
@@ -30,9 +36,8 @@ let container = try await DBContainer.open(
     runtimeConfiguration: runtime
 )
 
-// Bind the authenticated principal and select one Base.
-let session = container.session(authorization: authorization)
-let context = session.base(baseID).newContext()
+// Bind the authenticated principal to the database data root.
+let context = container.newContext(authorization: authorization)
 ```
 
 DatabaseEngine does not import, select, or construct a concrete backend. The
@@ -59,11 +64,12 @@ DBConfiguration -> DBContainer.open
 
 ### DatabaseContext
 
-Base-bound transaction manager and user-facing unit of work. Owns its pending
-changes and read-version cache.
+Target-bound transaction manager and user-facing unit of work. It owns pending
+changes and read-version cache for the database root, or for one explicitly
+selected Base when the `MultipleBases` trait is enabled.
 
 ```swift
-let context = session.base(baseID).newContext()
+let context = container.newContext(authorization: authorization)
 
 // Queue changes
 try context.insert(model)

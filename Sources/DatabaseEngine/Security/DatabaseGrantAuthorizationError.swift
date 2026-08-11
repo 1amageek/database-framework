@@ -10,6 +10,7 @@ public enum DatabaseGrantAuthorizationError: Error, Sendable, Equatable {
     )
     case invalidSubject
     case invalidAccessBits(UInt8)
+    case lastAdministrator
     case revisionConflict(expected: UInt64, actual: UInt64)
     case revisionOverflow
     case corruptedGrant

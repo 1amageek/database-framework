@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import Synchronization
 
@@ -202,3 +203,5 @@ package final class DatabaseBaseGenerationStore: Sendable {
         }
     }
 }
+
+#endif

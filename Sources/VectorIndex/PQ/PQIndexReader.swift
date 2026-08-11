@@ -39,7 +39,8 @@ struct PQIndexReader: Sendable {
     func search(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
@@ -71,7 +72,8 @@ struct PQIndexReader: Sendable {
             return try await exactSearch(
                 queryVector: queryVector,
                 k: k,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: workMeter
             )
         }
         guard !codebooks.isEmpty else {
@@ -106,6 +108,7 @@ struct PQIndexReader: Sendable {
         )
 
         try await cursor.consume { key, code in
+            try workMeter?.consume(at: .indexScan)
             let primaryKey: Tuple
             do {
                 primaryKey = try codesSubspace.unpack(key)
@@ -158,7 +161,8 @@ struct PQIndexReader: Sendable {
     private func exactSearch(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let vectorsSubspace = subspace.subspace(PQIndexStorageKey.vectors.rawValue)
         let (begin, end) = vectorsSubspace.range()
@@ -176,6 +180,7 @@ struct PQIndexReader: Sendable {
             comparator: { $0.distance > $1.distance }
         )
         try await cursor.consume { key, value in
+            try workMeter?.consume(at: .indexScan)
             let primaryKey: Tuple
             do {
                 primaryKey = try vectorsSubspace.unpack(key)

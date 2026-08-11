@@ -1,9 +1,10 @@
 #if SQLITE
 import Database
 import DatabaseEngine
+import DatabaseFoundation
 import DatabaseKit
 import DatabaseRuntime
-import DatabaseServer
+import DatabaseWireRuntime
 import DatabaseTypes
 import DatabaseWire
 import TestSupport
@@ -18,8 +19,8 @@ private struct SQLiteContinuationEntity {
 
 @Suite("SQLite query continuation semantics")
 struct DatabaseQueryContinuationSQLiteTests {
-    @Test("SQLite rejects a continuation whose opaque read point cannot be restored")
-    func opaqueReadPointContinuationIsRejected() async throws {
+    @Test("SQLite resumes pagination from one durable fixed-result snapshot")
+    func opaqueReadPointContinuationUsesDurableSnapshot() async throws {
         let container = try await makeContainer()
         defer { await container.shutdown() }
         let endpoint = try makeEndpoint(container: container)
@@ -60,18 +61,31 @@ struct DatabaseQueryContinuationSQLiteTests {
             return
         }
 
+        try context.insert(SQLiteContinuationEntity(id: "third"))
+        try await context.save()
+
         let second = try await execute(
             request(query: query, continuation: continuation),
             requestID: 2,
             endpoint: endpoint
         )
-        guard case .failure(let error) = second else {
-            Issue.record("Expected SQLite to reject the non-restorable continuation")
+        guard case .success(.rows(let secondPage)) = second else {
+            Issue.record(
+                "Expected SQLite to resume the durable query snapshot"
+            )
             return
         }
-        #expect(error.category == .invalidRequest)
-        #expect(error.code == "INVALID_CONTINUATION")
-        #expect(error.retryability == .never)
+        #expect(secondPage.rowCount == 1)
+        #expect(secondPage.continuation == nil)
+        guard case .transactional(let secondReadPoint) = secondPage.consistency
+        else {
+            Issue.record("Expected one transactional SQLite read point")
+            return
+        }
+        guard case .opaque = secondReadPoint.position else {
+            Issue.record("SQLite must advertise its per-page opaque read point")
+            return
+        }
     }
 
     private func makeContainer() async throws -> DBContainer {
@@ -94,8 +108,26 @@ struct DatabaseQueryContinuationSQLiteTests {
     }
 
     private func makeEndpoint(container: DBContainer) throws -> DatabaseEndpoint {
+        let snapshotStore = DatabaseQuerySnapshotStore(
+            container: container,
+            clock: AnyDatabaseWallClock(RealtimeDatabaseWallClock()),
+            identifierGenerator: AnyDatabaseUUIDGenerator(
+                RandomDatabaseUUIDGenerator()
+            ),
+            scheduler: AnyDatabaseJobScheduler(
+                SQLiteQuerySnapshotScheduler()
+            ),
+            wireLimits: .default
+        )
         let registry = try DatabaseOperationRegistry(
-            handlers: [AnyDatabaseOperationHandler(QueryExecuteHandler())],
+            handlers: [
+                AnyDatabaseOperationHandler(
+                    QueryExecuteHandler(
+                        runtimeLimits: .default,
+                        querySnapshotStore: snapshotStore
+                    )
+                ),
+            ],
             requiredOperations: [.queryExecute]
         )
         return DatabaseEndpoint(
@@ -129,7 +161,7 @@ struct DatabaseQueryContinuationSQLiteTests {
         let requestFrame = try encoder.encodeRequest(
             DatabaseOperations.queryExecute,
             requestID: requestID,
-            target: .base(try TestBaseEnvironment.id()),
+            target: operationTarget(),
             metadata: OperationRequestMetadata(),
             request: request
         )
@@ -144,6 +176,20 @@ struct DatabaseQueryContinuationSQLiteTests {
             from: responseFrame,
             matching: requestID
         )
+    }
+
+    private func operationTarget() throws -> DatabaseOperationTarget {
+        #if MultipleBases
+        .base(try TestBaseEnvironment.id())
+        #else
+        .database
+        #endif
+    }
+}
+
+private actor SQLiteQuerySnapshotScheduler: DatabaseJobScheduler {
+    func ensureWakeUp(noLaterThan: Timestamp) async throws {
+        _ = noLaterThan
     }
 }
 #endif

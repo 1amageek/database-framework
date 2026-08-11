@@ -91,13 +91,13 @@ public struct InverseRelationshipResolver: Sendable {
         return try await context.withTransaction(
             requiredAccess: .read
         ) { transaction in
-            let baseRoot = try context.requireOperationBaseLease().root
+            let dataRoot = try context.requireOperationDataRoot().root
             let page = try await RelationshipReferenceCatalog.referrerPage(
                 of: target.persistableIdentity,
                 descriptor: descriptor,
                 continuation: continuation,
                 limit: limit,
-                baseRoot: baseRoot,
+                baseRoot: dataRoot,
                 transaction: transaction.storageAccess
             )
             var entities: [Owner] = []

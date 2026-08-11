@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -114,3 +115,5 @@ package struct DatabaseBasePlacementMoveStore: Sendable {
                 == rhs.destinationPlacementGeneration
     }
 }
+
+#endif

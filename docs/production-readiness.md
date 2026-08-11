@@ -7,8 +7,8 @@ database-framework service.
 
 - Define the control domain, data domains, and named Base placements
   deliberately. A single backend remains a valid one-domain topology.
-- Select runtime/index capabilities through consuming-package traits; do not
-  rely on the default full-host profile for a size-constrained runtime.
+- Select runtime/index capabilities through consuming-package traits. A host
+  package's defaults do not change the framework's explicit trait contract.
 - Confirm the backend transaction and isolation semantics.
 - Create one long-lived DBContainer per service process or Durable Object
   instance.
@@ -64,6 +64,14 @@ export TOOLCHAINS=org.swift.64202607231a
 
 scripts/xcode-test-harness \
   --traits SQLite,AllRuntimeFeatures \
+  --only-testing DatabaseSingleRootTests \
+  --expected-count 5 \
+  --require-zero-skips \
+  --require-zero-expected-failures \
+  --require-zero-runtime-warnings
+
+scripts/xcode-test-harness \
+  --traits SQLite,AllRuntimeFeatures,MultipleBases \
   --only-testing SQLiteTests \
   --expected-count 119 \
   --require-zero-skips \
@@ -76,7 +84,7 @@ POSTGRES_TEST_USER=postgres \
 POSTGRES_TEST_PASSWORD=test \
 POSTGRES_TEST_DB=database_framework_test \
 scripts/xcode-test-harness \
-  --traits PostgreSQL,AllRuntimeFeatures \
+  --traits PostgreSQL,AllRuntimeFeatures,MultipleBases \
   --only-testing PostgreSQLTests \
   --expected-count 72 \
   --require-zero-skips \
@@ -85,10 +93,10 @@ scripts/xcode-test-harness \
 
 scripts/fdb-test-env run --clean -- \
   scripts/xcode-test-harness \
-    --traits FoundationDB,AllRuntimeFeatures \
+    --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3964 \
+    --expected-count 3977 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -97,14 +105,22 @@ swift build \
   --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm \
   --product Database \
   --disable-default-traits \
-  --traits AllRuntimeFeatures \
+  --traits AllRuntimeFeatures,MultipleBases \
   -c release \
   -debug-info-format none
 swift build \
   --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm-embedded \
   --product Database \
   --disable-default-traits \
-  --traits AllRuntimeFeatures \
+  --traits AllRuntimeFeatures,MultipleBases \
+  -c release \
+  -debug-info-format none
+swift build \
+  --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_static-linux-0.1.0 \
+  --triple aarch64-swift-linux-musl \
+  --product Database \
+  --disable-default-traits \
+  --traits AllRuntimeFeatures,MultipleBases \
   -c release \
   -debug-info-format none
 
@@ -119,14 +135,11 @@ successfully. Do not replace these invocations with a direct package-wide
 the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
-The FoundationDB release gate was last executed on 2026-08-10 with
-database-kit 26.0809.8, storage-kit 26.0807.0, and swift-hnsw 1.1.4. It passed
-3,964 tests with zero failures, skips, expected failures, or runtime warnings.
-The SQLite gate passed 119 tests, and the PostgreSQL gate passed 72 tests
-against an isolated PostgreSQL 16.14 process with the same zero-result
-contract. Standard WASM and Embedded WASM both compiled and linked this exact
-source revision with the pinned Swift 6.4 snapshot SDKs before publication of
-the 26.0809.2 tag.
+The release gate uses database-kit tag 26.0811.0 (normalized by SwiftPM as
+26.811.0), storage-kit 26.0807.0, and swift-hnsw 1.1.4. Record the exact
+framework commit, result bundles, backend service identities, and platform
+build logs in the release report; do not preserve a previous release's results
+as evidence for a later source revision.
 
 Command-line portability and process verification belong to the independent
 [`database-cli`](https://github.com/1amageek/database-cli) package. This

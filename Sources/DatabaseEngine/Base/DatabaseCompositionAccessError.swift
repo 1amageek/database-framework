@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 /// Deliberately opaque Composition access failures that do not reveal member
@@ -5,3 +6,5 @@ import DatabaseKit
 public enum DatabaseCompositionAccessError: Error, Sendable, Equatable {
     case unavailable(Base.Composition.ID)
 }
+
+#endif

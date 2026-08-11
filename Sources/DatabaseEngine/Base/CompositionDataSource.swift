@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import StorageKit
 
@@ -252,3 +253,5 @@ public struct CompositionDataSource: Sendable {
         })
     }
 }
+
+#endif

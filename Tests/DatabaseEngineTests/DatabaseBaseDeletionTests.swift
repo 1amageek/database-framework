@@ -1,3 +1,4 @@
+#if MultipleBases
 @testable import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
@@ -205,3 +206,4 @@ struct DatabaseBaseDeletionTests {
         }
     }
 }
+#endif

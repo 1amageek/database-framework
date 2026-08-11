@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 /// Durable lifecycle state controlling admission to one Base.
 package enum DatabaseBaseLifecycleState: UInt8, Sendable, Hashable {
     case provisioning = 0
@@ -20,3 +21,5 @@ package enum DatabaseBaseLifecycleState: UInt8, Sendable, Hashable {
         }
     }
 }
+
+#endif

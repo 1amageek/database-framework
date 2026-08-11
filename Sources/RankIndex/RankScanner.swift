@@ -43,10 +43,16 @@ enum RankScannerError: Error, Sendable, Equatable {
 struct RankScanner {
     let scoresSubspace: Subspace
     let transaction: any TransactionAccess
+    let workMeter: DatabaseWorkMeter?
 
-    init(scoresSubspace: Subspace, transaction: any TransactionAccess) {
+    init(
+        scoresSubspace: Subspace,
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
+    ) {
         self.scoresSubspace = scoresSubspace
         self.transaction = transaction
+        self.workMeter = workMeter
     }
 
     /// Top-K: highest-score entries in descending order. O(K).
@@ -56,8 +62,7 @@ struct RankScanner {
     func top(k: Int) async throws -> [RankScanEntry] {
         guard k >= 0 else { throw RankScannerError.negativeIndex(k) }
         guard k > 0 else { return [] }
-        let sequence = try await collect(limit: k, reverse: true)
-        return try parse(sequence)
+        return try await collectEntries(limit: k, reverse: true)
     }
 
     /// Bottom-K: lowest-score entries in ascending order. O(K).
@@ -67,8 +72,7 @@ struct RankScanner {
     func bottom(k: Int) async throws -> [RankScanEntry] {
         guard k >= 0 else { throw RankScannerError.negativeIndex(k) }
         guard k > 0 else { return [] }
-        let sequence = try await collect(limit: k, reverse: false)
-        return try parse(sequence)
+        return try await collectEntries(limit: k, reverse: false)
     }
 
     /// Rank range [from, to) in descending order. O(to).
@@ -77,9 +81,11 @@ struct RankScanner {
         guard from >= 0, to > from else {
             throw RankScannerError.invalidRange(from: from, to: to)
         }
-        let sequence = try await collect(limit: to, reverse: true)
-        guard sequence.count > from else { return [] }
-        return try parse(sequence.dropFirst(from))
+        return try await collectEntries(
+            limit: to,
+            reverse: true,
+            skipping: from
+        )
     }
 
     /// Read the Nth-highest entry (0-based, 0 = highest). O(N+1).
@@ -88,11 +94,12 @@ struct RankScanner {
         guard n >= 0 else {
             throw RankScannerError.negativeIndex(n)
         }
-        let sequence = try await collect(limit: n + 1, reverse: true)
-        guard sequence.count == n + 1, let key = sequence.last?.0 else {
-            return nil
-        }
-        return try Self.decodeEntry(key: key, scoresSubspace: scoresSubspace)
+        let entries = try await collectEntries(
+            limit: n + 1,
+            reverse: true,
+            skipping: n
+        )
+        return entries.first
     }
 
     /// Returns the descending leaderboard position of the first entry returned
@@ -113,12 +120,13 @@ struct RankScanner {
 
     // MARK: - Parsing
 
-    private func collect(
+    private func collectEntries(
         limit: Int,
-        reverse: Bool
-    ) async throws -> [(ByteString, ByteString)] {
+        reverse: Bool,
+        skipping skippedCount: Int = 0
+    ) async throws -> [RankScanEntry] {
         let range = scoresSubspace.range()
-        return try await TransactionRangeCollection.collect(using: transaction,
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: limit,
@@ -126,18 +134,62 @@ struct RankScanner {
             snapshot: true,
             streamingMode: .iterator
         )
-    }
-
-    private func parse<Entries: Collection>(
-        _ sequence: Entries
-    ) throws -> [RankScanEntry] where Entries.Element == (ByteString, ByteString) {
         var entries: [RankScanEntry] = []
-        entries.reserveCapacity(sequence.count)
-        for (key, _) in sequence {
-            entries.append(
-                try Self.decodeEntry(key: key, scoresSubspace: scoresSubspace)
-            )
+        entries.reserveCapacity(max(0, limit - skippedCount))
+        let retention = try workMeter?.reserveIntermediate(at: .indexScan)
+        defer { retention?.release() }
+        var encounteredCount = 0
+        do {
+            while let row = try await cursor.next() {
+                try workMeter?.consume(at: .indexScan)
+                defer { encounteredCount += 1 }
+                guard encounteredCount >= skippedCount else { continue }
+                let entry = try Self.decodeEntry(
+                    key: row.0,
+                    scoresSubspace: scoresSubspace
+                )
+                let keyBytes = UInt64(row.0.count)
+                let valueBytes = UInt64(row.1.count)
+                let (payloadBytes, payloadOverflow) = keyBytes
+                    .addingReportingOverflow(valueBytes)
+                guard !payloadOverflow else {
+                    throw DatabaseIntermediateFootprintError
+                        .byteAdditionOverflow(
+                            left: keyBytes,
+                            right: valueBytes
+                        )
+                }
+                let (retainedBytes, retainedOverflow) = payloadBytes
+                    .addingReportingOverflow(
+                        UInt64(MemoryLayout<RankScanEntry>.stride)
+                    )
+                guard !retainedOverflow else {
+                    throw DatabaseIntermediateFootprintError
+                        .byteAdditionOverflow(
+                            left: payloadBytes,
+                            right: UInt64(MemoryLayout<RankScanEntry>.stride)
+                        )
+                }
+                try retention?.reserveAdditional(
+                    rows: 1,
+                    bytes: retainedBytes,
+                    at: .indexScan
+                )
+                entries.append(entry)
+            }
+        } catch {
+            let iterationError = error
+            do {
+                try await cursor.finish()
+            } catch {
+                throw StorageRangeCleanupError(
+                    iterationError: iterationError,
+                    cleanupError: error
+                )
+            }
+            throw iterationError
         }
+        try await cursor.finish()
         return entries
     }
 

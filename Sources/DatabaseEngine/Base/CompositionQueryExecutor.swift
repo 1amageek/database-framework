@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import StorageKit
 
@@ -302,3 +303,5 @@ public struct CompositionQueryExecutor<Model: Persistable>: Sendable {
         return left.rowOrdinal < right.rowOrdinal
     }
 }
+
+#endif

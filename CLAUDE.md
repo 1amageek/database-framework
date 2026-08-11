@@ -65,7 +65,7 @@ general-purpose database value type in this package.
 | `VersionIndex` | Model version history |
 | `LeaderboardIndex` | Time-window leaderboard indexes |
 | `QueryAST` | SQL and SPARQL parsing and syntax representation; semantic QueryIR remains in `database-kit` |
-| `DatabaseServer` | Bounded DatabaseWire decoding, typed operation dispatch, limits, jobs, idempotency, and typed response encoding; it is not a network listener |
+| `DatabaseWireRuntime` | Bounded DatabaseWire decoding, typed operation dispatch, limits, jobs, idempotency, and typed response encoding; it is not a network listener |
 | `Database` | Convenience facade that re-exports the selected runtime and storage adapter |
 
 Index modules depend on `DatabaseEngine`, `database-kit`, `database-types`, and
@@ -184,7 +184,7 @@ or error contracts.
 
 ## Server Contract
 
-`DatabaseServer` consumes the canonical `DatabaseWire` protocol declared by
+`DatabaseWireRuntime` consumes the canonical `DatabaseWire` protocol declared by
 `database-kit`. It owns operation routing and execution, not transport framing
 outside DatabaseWire and not storage implementation.
 

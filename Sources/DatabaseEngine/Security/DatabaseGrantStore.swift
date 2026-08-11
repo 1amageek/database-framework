@@ -160,6 +160,14 @@ package struct DatabaseGrantStore: Sendable {
             transaction: transaction
         ) ?? []
         let updated = existing.subtracting(grant.access)
+        if existing.contains(.administer),
+           !updated.contains(.administer),
+           !(try await hasAdministrator(
+                excluding: grant.subject,
+                transaction: transaction
+           )) {
+            throw DatabaseGrantAuthorizationError.lastAdministrator
+        }
         if updated.isEmpty {
             try transaction.clear(key: key(for: grant.subject))
         } else {
@@ -231,6 +239,30 @@ package struct DatabaseGrantStore: Sendable {
             )
         }
         return grants
+    }
+
+    private func hasAdministrator(
+        excluding excludedSubject: Security.Subject,
+        transaction: any TransactionAccess
+    ) async throws -> Bool {
+        let principalGrants = try await scan(
+            subjects: principals,
+            makeSubject: Security.Subject.principal,
+            transaction: transaction
+        )
+        if principalGrants.contains(where: {
+            $0.subject != excludedSubject && $0.access.contains(.administer)
+        }) {
+            return true
+        }
+        let roleGrants = try await scan(
+            subjects: roles,
+            makeSubject: Security.Subject.principalRole,
+            transaction: transaction
+        )
+        return roleGrants.contains(where: {
+            $0.subject != excludedSubject && $0.access.contains(.administer)
+        })
     }
 
     private func loadAccess(

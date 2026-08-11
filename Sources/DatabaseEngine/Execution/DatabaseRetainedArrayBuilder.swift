@@ -52,6 +52,7 @@ package struct DatabaseRetainedArrayBuilder<Element: Sendable>: ~Copyable {
 
     package var count: Int { elements.count }
     package var isEmpty: Bool { elements.isEmpty }
+    package var workMeter: DatabaseWorkMeter { reservation.workMeter }
 
     /// Admits the next element and any required Array growth before the
     /// element is constructed. The returned linear token may live across an

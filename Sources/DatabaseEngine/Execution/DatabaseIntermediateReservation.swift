@@ -8,7 +8,7 @@ public final class DatabaseIntermediateReservation: Sendable {
         var isReleased: Bool
     }
 
-    private let workMeter: DatabaseWorkMeter
+    package let workMeter: DatabaseWorkMeter
     private let state: Mutex<State>
 
     init(

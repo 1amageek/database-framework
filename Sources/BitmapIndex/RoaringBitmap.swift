@@ -493,6 +493,68 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
         containers.isEmpty
     }
 
+    /// Returns the retained storage represented by this bitmap.
+    ///
+    /// The value deliberately models the logical container allocations rather
+    /// than relying on allocator-specific capacity details. Request accounting
+    /// uses it consistently before and after set operations.
+    func retainedStorageByteCount() throws -> UInt64 {
+        func adding(_ left: UInt64, _ right: UInt64) throws -> UInt64 {
+            let (result, overflow) = left.addingReportingOverflow(right)
+            guard !overflow else {
+                throw RoaringBitmapFormatError.encodedSizeOverflow
+            }
+            return result
+        }
+
+        func multiplying(_ left: UInt64, _ right: UInt64) throws -> UInt64 {
+            let (result, overflow) = left.multipliedReportingOverflow(by: right)
+            guard !overflow else {
+                throw RoaringBitmapFormatError.encodedSizeOverflow
+            }
+            return result
+        }
+
+        var byteCount = UInt64(MemoryLayout<RoaringBitmap>.stride)
+        byteCount = try adding(
+            byteCount,
+            UInt64(MemoryLayout<[UInt16: Container]>.stride)
+        )
+        for container in containers.values {
+            byteCount = try adding(byteCount, 64)
+            switch container {
+            case .array(let values):
+                byteCount = try adding(
+                    byteCount,
+                    try multiplying(
+                        UInt64(MemoryLayout<UInt16>.stride),
+                        UInt64(values.count)
+                    )
+                )
+            case .bitmap(let values):
+                byteCount = try adding(
+                    byteCount,
+                    try multiplying(
+                        UInt64(MemoryLayout<UInt64>.stride),
+                        UInt64(values.count)
+                    )
+                )
+            case .run(let values):
+                byteCount = try adding(
+                    byteCount,
+                    try multiplying(
+                        UInt64(
+                            MemoryLayout<(start: UInt16, length: UInt16)>
+                                .stride
+                        ),
+                        UInt64(values.count)
+                    )
+                )
+            }
+        }
+        return byteCount
+    }
+
     // MARK: - Set Operations
 
     /// Intersection (AND)

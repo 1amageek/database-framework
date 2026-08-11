@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -864,3 +865,5 @@ extension DBContainer {
         return Subspace(prefix: prefix)
     }
 }
+
+#endif

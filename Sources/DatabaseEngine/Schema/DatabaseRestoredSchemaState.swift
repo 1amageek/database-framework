@@ -1,5 +1,5 @@
 import DatabaseKit
-@_spi(DatabaseServer) import DatabaseWire
+@_spi(DatabaseWireRuntime) import DatabaseWire
 
 struct DatabaseRestoredSchemaState: Sendable {
     let schema: Schema

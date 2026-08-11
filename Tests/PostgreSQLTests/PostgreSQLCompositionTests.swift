@@ -1,4 +1,4 @@
-#if POSTGRESQL
+#if POSTGRESQL && MultipleBases
 import DatabaseKit
 import DatabaseRuntime
 import PostgreSQLStorage

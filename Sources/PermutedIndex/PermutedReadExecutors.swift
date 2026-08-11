@@ -29,6 +29,7 @@ public enum PermutedReadExecutors {
 private enum PermutedReadError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
+    case fetchedItemCountMismatch(expected: Int, actual: Int)
     case missingFetchedEntity(ByteString)
 }
 
@@ -57,14 +58,18 @@ private struct PermutedReadExecutor: IndexReadExecutor {
             parameters: parameters,
             descriptor: index
         )
-        let models = try await context.indexQueryContext.withReadableIndex(
+        let storageLimit = try boundedStorageLimit(
+            parameters: parameters,
+            options: options
+        )
+        return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
             kindIdentifier: kindIdentifier,
             forEntityName: entity.name,
             partitions: partitions,
             configuration: execution.transactionConfiguration
-        ) { readableIndex, transaction -> [PersistedModel] in
-            guard let readableIndex else { return [] }
+        ) { readableIndex, transaction -> IndexReadResult in
+            guard let readableIndex else { return .empty }
             let reader = PermutedIndexReader(
                 permutation: permutation,
                 subspace: readableIndex.subspace
@@ -77,43 +82,87 @@ private struct PermutedReadExecutor: IndexReadExecutor {
             case PermutedReadParameter.prefixQuery:
                 primaryKeys = try await reader.primaryKeys(
                     prefixedBy: decodeTupleArray(parameters),
-                    transaction: transaction
+                    transaction: transaction,
+                    limit: storageLimit,
+                    workMeter: options.workMeter
                 ).map(Tuple.init)
             case PermutedReadParameter.exactQuery:
                 primaryKeys = try await reader.primaryKeys(
                     matching: decodeTupleArray(parameters),
-                    transaction: transaction
+                    transaction: transaction,
+                    limit: storageLimit,
+                    workMeter: options.workMeter
                 ).map(Tuple.init)
             case PermutedReadParameter.allQuery:
                 primaryKeys = try await reader.entries(
-                    transaction: transaction
+                    transaction: transaction,
+                    limit: storageLimit,
+                    workMeter: options.workMeter
                 ).map { Tuple($0.primaryKey) }
             default:
                 throw PermutedReadError.invalidParameter(
                     PermutedReadParameter.queryType
                 )
             }
-            let limitedKeys = try limit(primaryKeys, parameters: parameters)
+            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
+                .reserveTuples(
+                    primaryKeys,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { primaryKeyReservation.release() }
             let fetched = try await context.fetchPersistedModelsPreservingOrder(
                 entity: entity,
-                primaryKeys: limitedKeys,
+                primaryKeys: primaryKeys,
                 partitions: partitions,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: options.workMeter
             )
-            var models: [PersistedModel] = []
-            models.reserveCapacity(fetched.count)
-            for (primaryKey, model) in zip(limitedKeys, fetched) {
-                guard let model else {
-                    throw PermutedReadError.missingFetchedEntity(
-                        primaryKey.pack()
+            let fetchedReservation = try DatabaseIntermediateCollectionMeter
+                .reservePersistedModels(
+                    fetched,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { fetchedReservation.release() }
+            guard fetched.count == primaryKeys.count else {
+                throw PermutedReadError.fetchedItemCountMismatch(
+                    expected: primaryKeys.count,
+                    actual: fetched.count
+                )
+            }
+            return try IndexReadResult.build(
+                workMeter: options.workMeter,
+                expectedCount: fetched.count
+            ) { rows in
+                for (primaryKey, model) in zip(primaryKeys, fetched) {
+                    guard let model else {
+                        throw PermutedReadError.missingFetchedEntity(
+                            primaryKey.pack()
+                        )
+                    }
+                    try rows.append(
+                        try IndexReadRow.materializing(model)
                     )
                 }
-                models.append(model)
             }
-            return models
         }
-        let rows = try models.map { try IndexReadRow.materializing($0) }
-        return IndexReadResult(rows: rows, ordering: .orderedByIndex)
+    }
+
+    private func boundedStorageLimit(
+        parameters: IndexReadParameters,
+        options: ReadExecutionContext
+    ) throws -> Int {
+        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        guard let requested = try parameters.optionalInteger(
+            named: PermutedReadParameter.limit
+        ) else {
+            return budgetLimit
+        }
+        guard requested >= 0 else {
+            throw PermutedReadError.invalidParameter(PermutedReadParameter.limit)
+        }
+        return min(requested, budgetLimit)
     }
 
     private func resolvePermutation(
@@ -146,25 +195,6 @@ private struct PermutedReadExecutor: IndexReadExecutor {
             )
         }
         return canonical
-    }
-
-    private func limit(
-        _ primaryKeys: [Tuple],
-        parameters: IndexReadParameters
-    ) throws -> [Tuple] {
-        guard let limit = try parameters.optionalInteger(
-            named: PermutedReadParameter.limit
-        ) else {
-            return primaryKeys
-        }
-        guard limit >= 0 else {
-            throw PermutedReadError.invalidParameter(
-                PermutedReadParameter.limit
-            )
-        }
-        return primaryKeys.count > limit
-            ? Array(primaryKeys.prefix(limit))
-            : primaryKeys
     }
 
     private func decodePermutation(
@@ -245,8 +275,16 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
             descriptor: index
         )
         let permutation = resolved.permutation
+        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let requestedLimit = try parameters.optionalInteger(
+            named: PermutedReadParameter.limit
+        )
+        guard requestedLimit.map({ $0 >= 0 }) ?? true else {
+            throw PermutedReadError.invalidParameter(PermutedReadParameter.limit)
+        }
+        let storageLimit = min(requestedLimit ?? budgetLimit, budgetLimit)
 
-        let entities: [PolymorphicEntity] = try await context.executeCanonicalRead(
+        return try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction in
             guard let readableIndex = try await context.container
@@ -255,7 +293,7 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
                     in: group,
                     transaction: transaction
                 ) else {
-                return []
+                return .empty
             }
             let reader = PermutedIndexReader(
                 permutation: permutation,
@@ -270,62 +308,76 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
             case PermutedReadParameter.prefixQuery:
                 primaryKeys = try await reader.primaryKeys(
                     prefixedBy: decodeTupleArray(parameters),
-                    transaction: transaction
+                    transaction: transaction,
+                    limit: storageLimit,
+                    workMeter: options.workMeter
                 ).map(Tuple.init)
             case PermutedReadParameter.exactQuery:
                 primaryKeys = try await reader.primaryKeys(
                     matching: decodeTupleArray(parameters),
-                    transaction: transaction
+                    transaction: transaction,
+                    limit: storageLimit,
+                    workMeter: options.workMeter
                 ).map(Tuple.init)
             case PermutedReadParameter.allQuery:
                 primaryKeys = try await reader.entries(
-                    transaction: transaction
+                    transaction: transaction,
+                    limit: storageLimit,
+                    workMeter: options.workMeter
                 ).map { Tuple($0.primaryKey) }
             default:
                 throw PermutedReadError.invalidParameter(PermutedReadParameter.queryType)
             }
-            let limitedPrimaryKeys: [Tuple]
-            if let limit = try parameters.optionalInteger(
-                named: PermutedReadParameter.limit
-            ) {
-                guard limit >= 0 else {
-                    throw PermutedReadError.invalidParameter(
-                        PermutedReadParameter.limit
-                    )
-                }
-                limitedPrimaryKeys = primaryKeys.count > limit
-                    ? Array(primaryKeys.prefix(limit))
-                    : primaryKeys
-            } else {
-                limitedPrimaryKeys = primaryKeys
-            }
+            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
+                .reserveTuples(
+                    primaryKeys,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { primaryKeyReservation.release() }
             let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
                 group: group,
-                ids: limitedPrimaryKeys,
-                transaction: transaction
+                ids: primaryKeys,
+                transaction: transaction,
+                workMeter: options.workMeter
             )
-            var entities: [PolymorphicEntity] = []
-            entities.reserveCapacity(fetched.count)
-            for (primaryKey, entity) in zip(limitedPrimaryKeys, fetched) {
-                guard let entity else {
-                    throw PermutedReadError.missingFetchedEntity(
-                        primaryKey.pack()
+            let entityReservation = try DatabaseIntermediateCollectionMeter
+                .reservePolymorphicEntities(
+                    fetched,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { entityReservation.release() }
+            guard fetched.count == primaryKeys.count else {
+                throw PermutedReadError.fetchedItemCountMismatch(
+                    expected: primaryKeys.count,
+                    actual: fetched.count
+                )
+            }
+            return try IndexReadResult.build(
+                workMeter: options.workMeter,
+                expectedCount: fetched.count
+            ) { rows in
+                for (primaryKey, entity) in zip(primaryKeys, fetched) {
+                    guard let entity else {
+                        throw PermutedReadError.missingFetchedEntity(
+                            primaryKey.pack()
+                        )
+                    }
+                    try rows.append(
+                        try IndexReadRow.materializing(
+                            entity.item,
+                            annotations: [
+                                PolymorphicRowAnnotation.typeName:
+                                    .string(entity.typeName),
+                                PolymorphicRowAnnotation.typeCode:
+                                    .int64(entity.typeCode)
+                            ]
+                        )
                     )
                 }
-                entities.append(entity)
             }
-            return entities
         }
-        let rows = try entities.map { entity in
-            try IndexReadRow.materializing(
-                entity.item,
-                annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(entity.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
-                ]
-            )
-        }
-        return IndexReadResult(rows: rows, ordering: .orderedByIndex)
     }
 
     private func resolveIndex(

@@ -61,8 +61,18 @@ public final class DatabaseContext: Sendable {
     /// The container that owns this context
     package let container: DBContainer
 
+    /// Security and storage resource selected for every operation.
+    package let resource: Security.Resource
+
+    #if DATABASE_MULTIPLE_BASES
     /// Base identity selected for every operation executed by this context.
-    public let baseID: Base.ID
+    public var baseID: Base.ID {
+        guard case .base(let id) = resource else {
+            preconditionFailure("A MultipleBases context must target a Base")
+        }
+        return id
+    }
+    #endif
 
     package let authorization: AuthorizationContext
 
@@ -138,12 +148,12 @@ public final class DatabaseContext: Sendable {
     ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
     package init(
         container: DBContainer,
-        baseID: Base.ID,
+        resource: Security.Resource,
         authorization: AuthorizationContext,
         autosaveEnabled: Bool = false
     ) {
         self.container = container
-        self.baseID = baseID
+        self.resource = resource
         self.authorization = authorization
         self.readVersionCache = ReadVersionCache(
             monotonicClock: container.monotonicClock
@@ -242,9 +252,9 @@ public final class DatabaseContext: Sendable {
     private func cachedStore<T: Persistable>(
         for type: T.Type
     ) async throws -> DatabaseDataStore {
-        let lease = try requireOperationBaseLease()
+        let lease = try requireOperationDataRoot()
         let storeKey = DatabaseStoreCacheKey(
-            basePlacementGeneration: lease.generation.record.placementGeneration,
+            basePlacementGeneration: lease.generation,
             entity: T.persistableType,
             components: []
         )
@@ -266,7 +276,7 @@ public final class DatabaseContext: Sendable {
     private func pointReadStore<T: Persistable>(
         for type: T.Type
     ) async throws -> DatabaseDataStore {
-        _ = try requireOperationBaseLease()
+        _ = try requireOperationDataRoot()
         return try await container.store(for: type)
     }
 
@@ -274,10 +284,10 @@ public final class DatabaseContext: Sendable {
         for type: T.Type,
         path: DirectoryPath<T>
     ) async throws -> DatabaseDataStore {
-        let lease = try requireOperationBaseLease()
+        let lease = try requireOperationDataRoot()
         let resolvedPath = try AnyDirectoryPath(path).resolve()
         let storeKey = DatabaseStoreCacheKey(
-            basePlacementGeneration: lease.generation.record.placementGeneration,
+            basePlacementGeneration: lease.generation,
             entity: T.persistableType,
             components: resolvedPath
         )
@@ -296,7 +306,7 @@ public final class DatabaseContext: Sendable {
         for type: T.Type,
         path: DirectoryPath<T>
     ) async throws -> DatabaseDataStore {
-        _ = try requireOperationBaseLease()
+        _ = try requireOperationDataRoot()
         return try await container.store(for: type, path: path)
     }
 
@@ -626,7 +636,7 @@ public final class DatabaseContext: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [T] {
         try ensureUsable()
-        _ = try requireOperationBaseLease()
+        _ = try requireOperationDataRoot()
 
         let path: AnyDirectoryPath?
         if T.hasDynamicDirectory {
@@ -665,7 +675,7 @@ public final class DatabaseContext: Sendable {
         transaction: any TransactionAccess
     ) async throws -> Int {
         try ensureUsable()
-        _ = try requireOperationBaseLease()
+        _ = try requireOperationDataRoot()
 
         let path: AnyDirectoryPath?
         if T.hasDynamicDirectory {
@@ -699,7 +709,7 @@ public final class DatabaseContext: Sendable {
     internal func executionPlan<T: Persistable>(
         for query: Query<T>
     ) async throws -> QueryAccessPlan {
-        try await withBaseOperation { [self] in
+        try await withDataOperation { [self] in
         if T.hasDynamicDirectory {
             guard let binding = query.partitionBinding else {
                 throw DirectoryPathError.dynamicFieldsRequired(
@@ -734,7 +744,7 @@ public final class DatabaseContext: Sendable {
             DatabaseTransaction
         ) async throws -> Result
     ) async throws -> Result {
-        return try await withBaseOperation { [self] in
+        return try await withDataOperation { [self] in
         // Check if type requires partition and validate
         if T.hasDynamicDirectory {
             guard let binding = query.partitionBinding else {
@@ -782,7 +792,7 @@ public final class DatabaseContext: Sendable {
     /// - `.cached`: Use cached read version if available (no time limit)
     /// - `.stale(N)`: Use cache only if younger than N seconds
     internal func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
-        return try await withBaseOperation { [self] in
+        return try await withDataOperation { [self] in
         // Check if type requires partition and validate
         if T.hasDynamicDirectory {
             guard let binding = query.partitionBinding else {
@@ -848,7 +858,7 @@ public final class DatabaseContext: Sendable {
         as type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
-        try await withBaseOperation { [self] in
+        try await withDataOperation { [self] in
             try await modelInActiveBase(
                 for: id,
                 as: type,
@@ -925,7 +935,7 @@ public final class DatabaseContext: Sendable {
         as type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
-        try await withBaseOperation { [self] in
+        try await withDataOperation { [self] in
             try await modelInActiveBase(
                 forIdentifierTuple: identifierTuple,
                 as: type,
@@ -1008,7 +1018,7 @@ public final class DatabaseContext: Sendable {
         transaction: any TransactionAccess
     ) async throws -> T? {
         try ensureUsable()
-        _ = try requireOperationBaseLease()
+        _ = try requireOperationDataRoot()
 
         let identifier = try PersistableIdentifierKeyCodec.value(
             from: identifierTuple,
@@ -1076,7 +1086,7 @@ public final class DatabaseContext: Sendable {
         partition path: DirectoryPath<T>,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
-        try await withBaseOperation { [self] in
+        try await withDataOperation { [self] in
             try await modelInActiveBase(
                 for: id,
                 as: type,
@@ -1143,7 +1153,7 @@ public final class DatabaseContext: Sendable {
         partition path: DirectoryPath<T>,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
-        try await withBaseOperation { [self] in
+        try await withDataOperation { [self] in
             try await modelInActiveBase(
                 forIdentifierTuple: identifierTuple,
                 as: type,
@@ -1591,14 +1601,14 @@ extension DatabaseContext {
         ) async throws -> T
     ) async throws -> T {
         try ensureUsable()
-        return try await withBaseOperation {
+        return try await withDataOperation {
             if let binding = ActiveDatabaseTransactionContext.binding {
-                guard binding.baseID == self.baseID,
+                guard binding.resource == self.resource,
                       binding.authorization == self.authorization,
                       binding.grantedAccess.isSuperset(of: requiredAccess)
                 else {
                     throw DatabaseGrantAuthorizationError.denied(
-                        resource: .base(self.baseID),
+                        resource: self.resource,
                         required: requiredAccess
                     )
                 }
@@ -1613,7 +1623,7 @@ extension DatabaseContext {
                     .withValue(
                         DatabaseTransactionExecutionBinding(
                             transaction: binding.transaction,
-                            baseID: binding.baseID,
+                            resource: binding.resource,
                             authorization: binding.authorization,
                             grantedAccess: binding.grantedAccess,
                             databaseTransaction: databaseTransaction
@@ -1631,7 +1641,7 @@ extension DatabaseContext {
                         }
                     }
             }
-            let lease = try self.requireOperationBaseLease()
+            let lease = try self.requireOperationDataRoot()
             let runner = TransactionRunner(
                 transactionExecutor: lease.transactionExecutor,
                 clock: self.container.monotonicClock,
@@ -1660,7 +1670,7 @@ extension DatabaseContext {
                     .withValue(
                         DatabaseTransactionExecutionBinding(
                             transaction: storageAccess,
-                            baseID: self.baseID,
+                            resource: self.resource,
                             authorization: self.authorization,
                             grantedAccess: requiredAccess,
                             databaseTransaction: transaction
@@ -1705,20 +1715,20 @@ extension DatabaseContext {
     ) async throws -> T {
         try ensureUsable()
 
-        return try await withBaseOperation {
+        return try await withDataOperation {
             if let binding = ActiveDatabaseTransactionContext.binding {
-                guard binding.baseID == self.baseID,
+                guard binding.resource == self.resource,
                       binding.authorization == self.authorization,
                       binding.grantedAccess.isSuperset(of: requiredAccess)
                 else {
                     throw DatabaseGrantAuthorizationError.denied(
-                        resource: .base(self.baseID),
+                        resource: self.resource,
                         required: requiredAccess
                     )
                 }
                 return try await operation(binding.transaction)
             }
-            let lease = try self.requireOperationBaseLease()
+            let lease = try self.requireOperationDataRoot()
             let runner = TransactionRunner(
                 transactionExecutor: lease.transactionExecutor,
                 clock: self.container.monotonicClock,
@@ -1743,7 +1753,7 @@ extension DatabaseContext {
                     .withValue(
                         DatabaseTransactionExecutionBinding(
                             transaction: transaction,
-                            baseID: self.baseID,
+                            resource: self.resource,
                             authorization: self.authorization,
                             grantedAccess: requiredAccess,
                             databaseTransaction: nil
@@ -1761,13 +1771,15 @@ extension DatabaseContext {
         try await withStorageAccess(requiredAccess: access) { _ in () }
     }
 
-    package func withBaseOperation<Result: Sendable>(
+    package func withDataOperation<Result: Sendable>(
         _ operation: @Sendable () async throws -> Result
     ) async throws -> Result {
         try await container.withOperationSchemaLease { _ in
-            if let current = ActiveDatabaseBaseContext.lease {
-                guard current.baseID == baseID else {
-                    throw DatabaseBaseExecutionError.baseTargetRequired
+            if let current = ActiveDatabaseDataRootContext.lease {
+                guard current.resource == resource else {
+                    throw DatabaseRuntimeError.internalError(
+                        "The context target does not match the active data root"
+                    )
                 }
                 return try await RequestAuthorization.$context.withValue(
                     authorization
@@ -1775,33 +1787,47 @@ extension DatabaseContext {
                     try await operation()
                 }
             }
-            let lease = try container.acquireBaseLease(baseID)
-            return try await container.withBaseLease(lease) {
+            let execute: @Sendable () async throws -> Result = {
                 try await RequestAuthorization.$context.withValue(
                     self.authorization
                 ) {
                     try await operation()
                 }
             }
+            switch resource {
+            case .database:
+                return try await container.withDatabaseDataRoot(execute)
+            case .base(let baseID):
+                #if DATABASE_MULTIPLE_BASES
+                let lease = try container.acquireBaseLease(baseID)
+                return try await container.withBaseLease(lease, execute)
+                #else
+                _ = baseID
+                throw DatabaseRuntimeError.internalError(
+                    "MultipleBases is not enabled"
+                )
+                #endif
+            }
         }
     }
 
-    package func requireOperationBaseLease() throws -> DatabaseBaseLease {
-        guard let lease = ActiveDatabaseBaseContext.lease,
-              lease.baseID == baseID,
-              lease.permitsDataOperations else {
-            throw DatabaseBaseExecutionError.baseTargetRequired
+    package func requireOperationDataRoot() throws -> DatabaseDataRootLease {
+        guard let lease = ActiveDatabaseDataRootContext.lease,
+              lease.resource == resource else {
+            throw DatabaseRuntimeError.internalError(
+                "The context target does not match the active data root"
+            )
         }
         return lease
     }
 
     private func requireGrant(
         _ access: Security.Access,
-        lease: DatabaseBaseLease,
+        lease: DatabaseDataRootLease,
         transaction: any TransactionAccess
     ) async throws {
         try await DatabaseGrantStore(
-            resource: .base(baseID),
+            resource: resource,
             root: lease.root
         ).require(
             access,

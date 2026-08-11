@@ -114,6 +114,7 @@ public struct ItemStorage: Sendable {
     public func scan(
         begin: ByteString,
         end: ByteString,
+        startingAfter: ByteString? = nil,
         snapshot: Bool = false,
         limit: Int = 0,
         reverse: Bool = false
@@ -125,6 +126,7 @@ public struct ItemStorage: Sendable {
             storage: self,
             begin: begin,
             end: end,
+            startingAfter: startingAfter,
             snapshot: snapshot,
             limit: limit,
             reverse: reverse,
@@ -350,6 +352,7 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
     private let storage: ItemStorage
     private let begin: ByteString
     private let end: ByteString
+    private let startingAfter: ByteString?
     private let snapshot: Bool
     private let limit: Int
     private let reverse: Bool
@@ -359,6 +362,7 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         storage: ItemStorage,
         begin: ByteString,
         end: ByteString,
+        startingAfter: ByteString?,
         snapshot: Bool,
         limit: Int,
         reverse: Bool,
@@ -367,6 +371,7 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         self.storage = storage
         self.begin = begin
         self.end = end
+        self.startingAfter = startingAfter
         self.snapshot = snapshot
         self.limit = limit
         self.reverse = reverse
@@ -385,7 +390,8 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         return AsyncIterator(
             storage: storage,
             cursor: storage.storageAccess.rangeCursor(
-                from: .firstGreaterOrEqual(begin),
+                from: startingAfter.map(KeySelector.firstGreaterThan)
+                    ?? .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 limit: limit,
                 reverse: reverse,

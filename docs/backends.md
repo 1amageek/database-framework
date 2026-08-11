@@ -2,10 +2,10 @@
 
 database-framework executes against StorageKit protocols. `DatabaseEngine`
 never creates or selects a concrete backend. Its storage construction contract
-is a validated `DatabaseStorageTopology` containing a control domain, one or
-more data domains, and named Base placements. Backend facades build a
-one-domain topology from one initialized `StorageEngine`; they do not create an
-implicit Base.
+is a validated `DatabaseStorageTopology` containing a control domain and one or
+more data domains. The `MultipleBases` trait adds named Base placements.
+Backend facades build a one-domain topology from one initialized
+`StorageEngine`; the standard build uses that domain as the database data root.
 
 ## Backend Matrix
 
@@ -20,6 +20,12 @@ All application data access passes through the same conceptual path:
 
 ~~~text
 DBContainer
+    -> database data root
+        -> target-bound executor
+            -> resolved storage domain
+                -> Transaction
+
+DBContainer [MultipleBases]
     -> DatabaseSession
         -> BaseDataSource or CompositionDataSource
             -> target-bound executor
@@ -27,8 +33,9 @@ DBContainer
                     -> Transaction
 ~~~
 
-`DatabaseContext` is Base-bound and backend-neutral. A Composition is read-only
-and uses its planner-backed executor instead of a mutation context. Backend
+`DatabaseContext` is target-bound and backend-neutral. With `MultipleBases`, a
+Composition is read-only and uses its planner-backed executor instead of a
+mutation context. Backend
 traits only decide which facade adapters are available to the consuming
 package. The topology decides which backend owns each Base placement without
 exposing backend credentials through the semantic API.
@@ -41,29 +48,41 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3964 \
+    --expected-count 3977 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
 ~~~
 
-The default full-host profile enables both `FoundationDB` and
-`AllRuntimeFeatures`. A consuming package that specifies an explicit trait set
-without `.defaults` replaces that profile. For example, a graph runtime can
-select `GraphIndexes`; that trait includes `ScalarIndexes` and makes
-GraphIndex/OntologyIndex available without enabling FoundationDB or unrelated
-index implementations. `Relationships` remains independent.
+The framework package has no default traits. A consuming package selects each
+backend and runtime feature explicitly. The independent `database-server`
+package defaults its standalone executable to SQLite and all runtime features,
+but that host choice does not affect an in-process framework dependency. For
+example, a graph runtime can select `GraphIndexes`; that trait includes
+`ScalarIndexes` and makes GraphIndex/OntologyIndex available without enabling
+FoundationDB or unrelated index implementations. `Relationships` remains
+independent.
 
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0809.2",
+    from: "26.0812.0",
     traits: ["SQLite", "GraphIndexes"]
 )
 ~~~
 
 SwiftPM unifies traits from every dependency path, so the effective package
 composition is the union requested by the complete consuming graph.
+
+Enable the data-partitioning feature independently:
+
+~~~swift
+.package(
+    url: "https://github.com/1amageek/database-framework.git",
+    from: "26.0812.0",
+    traits: ["SQLite", "AllRuntimeFeatures", "MultipleBases"]
+)
+~~~
 
 ~~~bash
 scripts/xcode-test-harness \

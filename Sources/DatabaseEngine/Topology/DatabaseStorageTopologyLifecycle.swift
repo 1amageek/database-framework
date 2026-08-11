@@ -1,4 +1,3 @@
-import DatabaseKit
 import StorageKit
 import Synchronization
 
@@ -55,6 +54,7 @@ final class DatabaseStorageTopologyLifecycle: Sendable {
                     engine: try domain.lifecycle.claimStorageEngine()
                 )
             }
+            #if DATABASE_MULTIPLE_BASES
             return ClaimedDatabaseStorageTopology(
                 controlDomainID: topology.controlDomainID,
                 domains: claimed,
@@ -65,6 +65,12 @@ final class DatabaseStorageTopologyLifecycle: Sendable {
                 ),
                 defaultPlacementID: topology.defaultPlacementID
             )
+            #else
+            return ClaimedDatabaseStorageTopology(
+                controlDomainID: topology.controlDomainID,
+                domains: claimed
+            )
+            #endif
         } catch {
             phase.withLock { $0 = .closing }
             for domain in domains {

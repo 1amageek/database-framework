@@ -3,7 +3,7 @@ import StorageKit
 
 package struct DatabaseTransactionExecutionBinding: Sendable {
     package let transaction: any TransactionAccess
-    package let baseID: Base.ID
+    package let resource: Security.Resource
     package let authorization: AuthorizationContext
     package let grantedAccess: Security.Access
     package let databaseTransaction: DatabaseTransaction?

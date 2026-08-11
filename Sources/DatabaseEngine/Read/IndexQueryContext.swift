@@ -146,7 +146,7 @@ public struct IndexQueryContext: Sendable {
         for type: T.Type,
         transaction: any TransactionAccess
     ) async throws -> ReadableIndex? {
-        _ = try context.requireOperationBaseLease()
+        _ = try context.requireOperationDataRoot()
         let descriptor = try indexDescriptor(
             named: indexName,
             kindIdentifier: kindIdentifier,
@@ -182,7 +182,7 @@ public struct IndexQueryContext: Sendable {
         partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> ReadableIndex? {
-        _ = try context.requireOperationBaseLease()
+        _ = try context.requireOperationDataRoot()
         let descriptor = try indexDescriptor(
             named: indexName,
             kindIdentifier: kindIdentifier,
@@ -501,7 +501,7 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         transaction: any TransactionAccess
     ) async throws -> T? {
-        _ = try context.requireOperationBaseLease()
+        _ = try context.requireOperationDataRoot()
         let store: DatabaseDataStore
         if let binding = try partitionBinding(for: type) {
             store = try await context.container.store(for: type, path: binding)
@@ -550,7 +550,7 @@ public struct IndexQueryContext: Sendable {
     ) async throws -> [T] {
         guard !ids.isEmpty else { return [] }
 
-        return try await context.withBaseOperation { [self] in
+        return try await context.withDataOperation { [self] in
 
         // Security: Evaluate LIST before fetching
         try context.container.securityDelegate?.evaluateList(

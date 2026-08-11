@@ -3,8 +3,8 @@ import Database
 import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
-import DatabaseServer
-import DatabaseServerFoundation
+import DatabaseWireRuntime
+import DatabaseFoundation
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
@@ -153,9 +153,9 @@ struct SchemaDrivenSemanticParitySQLiteTests {
 
     private func makeRuntime(
         container: DBContainer
-    ) async throws -> DatabaseServerRuntime {
+    ) async throws -> DatabaseOperationRuntime {
         let identifierGenerator = RandomDatabaseUUIDGenerator()
-        let serviceFactory = CanonicalDatabaseServerServiceFactory(
+        let serviceFactory = CanonicalDatabaseOperationServiceFactory(
             maintenanceServiceFactory: DatabaseMaintenanceOperationServiceFactory(
                 identifierGenerator: identifierGenerator
             ),
@@ -167,18 +167,24 @@ struct SchemaDrivenSemanticParitySQLiteTests {
                 )
             )
         )
-        return try await DatabaseServerRuntime(
+        return try await DatabaseOperationRuntime(
             container: container,
-            configuration: try DatabaseServerRuntimeConfiguration(
+            configuration: try DatabaseOperationRuntimeConfiguration(
                 identity: DatabaseRuntimeIdentity(version: "semantic-parity-test"),
-                serviceFactory: AnyDatabaseServerServiceFactory(serviceFactory),
+                serviceFactory: AnyDatabaseOperationServiceFactory(serviceFactory),
                 admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
                     UnrestrictedDatabaseOperationAdmissionPolicy()
                 ),
                 clock: RealtimeDatabaseWallClock()
             ),
-            hostServices: DatabaseServerHostServices(
-                jobScheduler: SemanticParityJobScheduler()
+            hostServices: DatabaseHostServices(
+                jobScheduler: AnyDatabaseJobScheduler(
+                    SemanticParityJobScheduler()
+                ),
+                jobAuthorizationValidator:
+                    AnyDatabaseJobAuthorizationValidator(
+                        SQLiteJobAuthorizationValidator()
+                    )
             )
         )
     }
@@ -228,7 +234,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
     }
 
     private func shortestPath(
-        runtime: DatabaseServerRuntime
+        runtime: DatabaseOperationRuntime
     ) async throws -> MaterializedPath {
         let response = try await invoke(
             DatabaseOperations.graphAlgorithm,
@@ -260,7 +266,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
     }
 
     private func personExists(
-        runtime: DatabaseServerRuntime
+        runtime: DatabaseOperationRuntime
     ) async throws -> Bool {
         let response = try await invoke(
             DatabaseOperations.queryExecute,
@@ -295,7 +301,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
     }
 
     private func validateMissingName(
-        runtime: DatabaseServerRuntime,
+        runtime: DatabaseOperationRuntime,
         rdfIndex: String
     ) async throws -> MaterializedValidation {
         _ = try await invoke(
@@ -383,7 +389,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         _ operation: DatabaseOperation<Request, Response>,
         request: Request,
         requestID: UInt64,
-        runtime: DatabaseServerRuntime,
+        runtime: DatabaseOperationRuntime,
         metadata: OperationRequestMetadata = OperationRequestMetadata()
     ) async throws -> Response {
         let encoder = DatabaseWireEncoder()
@@ -391,12 +397,14 @@ struct SchemaDrivenSemanticParitySQLiteTests {
             try encoder.encodeRequest(
                 operation,
                 requestID: requestID,
-                target: .base(try TestBaseEnvironment.id()),
+                target: operationTarget(),
                 metadata: metadata,
                 request: request
             ),
             context: DatabaseRequestExecutionContext(
-                authorization: TestBaseEnvironment.authorization
+                authorization: TestBaseEnvironment.authorization,
+                jobAuthorizationReference:
+                    try SQLiteJobAuthorizationValidator.reference()
             )
         )
         switch try DatabaseWireDecoder().decodeResponse(
@@ -409,6 +417,14 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         case .failure(let error):
             throw error
         }
+    }
+
+    private func operationTarget() throws -> DatabaseOperationTarget {
+        #if MultipleBases
+        .base(try TestBaseEnvironment.id())
+        #else
+        .database
+        #endif
     }
 
     private struct MaterializedPath {

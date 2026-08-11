@@ -76,7 +76,20 @@ public final class DatabaseWorkMeter: Sendable {
             let withSentinel = remaining == UInt64.max
                 ? UInt64.max
                 : remaining + 1
-            return max(1, Int(min(withSentinel, UInt64(Int.max))))
+            let intermediateLimit = UInt64(budget.maximumIntermediateRows)
+            let boundedIntermediateLimit = intermediateLimit == UInt64.max
+                ? UInt64.max
+                : intermediateLimit + 1
+            return max(
+                1,
+                Int(
+                    min(
+                        withSentinel,
+                        boundedIntermediateLimit,
+                        UInt64(Int.max)
+                    )
+                )
+            )
         }
     }
 

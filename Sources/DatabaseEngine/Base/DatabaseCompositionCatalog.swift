@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import StorageKit
 
@@ -203,3 +204,5 @@ package struct DatabaseCompositionCatalog: Sendable {
         return next
     }
 }
+
+#endif

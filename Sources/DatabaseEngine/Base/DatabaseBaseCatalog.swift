@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -200,3 +201,5 @@ package struct DatabaseBaseCatalog: Sendable {
         return result
     }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 /// Typed failures produced by the durable Composition catalog.
@@ -10,3 +11,5 @@ public enum DatabaseCompositionCatalogError: Error, Sendable, Equatable {
     case catalogTooLarge(maximum: Int)
     case corruptedRecord(Base.Composition.ID?)
 }
+
+#endif

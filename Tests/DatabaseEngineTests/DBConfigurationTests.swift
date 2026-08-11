@@ -105,6 +105,7 @@ struct DBConfigurationOwnershipTests {
         #expect(configuration.debugDescription.contains("indexConfigs: 1"))
     }
 
+    #if MultipleBases
     @Test("Topology rejects assigning one engine to multiple domains")
     func topologyRejectsDuplicateEngineOwnership() throws {
         let engine = ShutdownRecordingEngine()
@@ -141,6 +142,7 @@ struct DBConfigurationOwnershipTests {
             )
         }
     }
+    #endif
 
     @Test("Container shutdown releases its engine exactly once")
     func containerShutdownIsExactlyOnce() async throws {

@@ -123,6 +123,8 @@ build gates documented in [Production Readiness](../production-readiness.md).
 
 | Date | Scope | Result |
 | --- | --- | --- |
+| 2026-08-12 | Final Base/Composition and host-boundary release source: strict URL-dependency backend harnesses with database-kit 26.0811.0, storage-kit 26.0807.0, and swift-hnsw 1.1.4 | Passed: FoundationDB 3,977, SQLite 119, and PostgreSQL 72 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors; FoundationDB and PostgreSQL teardown confirmed negative readiness |
+| 2026-08-12 | Final release source: standard WASI, Embedded WASM, and static Musl Linux `Database` products with `AllRuntimeFeatures,MultipleBases` | Passed: all three release products compiled and linked with the pinned 2026-07-23 Swift 6.4 toolchain and matching SDKs |
 | 2026-08-10 | Base/Composition release candidate: strict FoundationDB Xcode harness with database-kit 26.0809.8, storage-kit 26.0807.0, and swift-hnsw 1.1.4 | Passed: 3,964 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors; cluster teardown confirmed negative readiness |
 | 2026-08-10 | Base/Composition release candidate: strict SQLite Xcode harness | Passed: 119 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors |
 | 2026-08-10 | Base/Composition release candidate: strict PostgreSQL Xcode harness against isolated PostgreSQL 16.14 | Passed: 72 tests; 0 failures, skips, expected failures, runtime warnings, or internal tool errors; explicit and trap teardown both confirmed negative readiness |

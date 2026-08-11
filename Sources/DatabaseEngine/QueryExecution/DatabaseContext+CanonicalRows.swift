@@ -128,14 +128,14 @@ extension DatabaseContext {
         execution: ReadExecutionContext,
         graphPartitions: FieldObject = FieldObject()
     ) async throws -> QueryResponse {
-        try await withBaseOperation { [self] in
+        try await withDataOperation { [self] in
             try await withFieldReadAuthorization(for: selectQuery) {
                 if let binding = ActiveDatabaseTransactionContext.binding {
-                    guard binding.baseID == self.baseID,
+                    guard binding.resource == self.resource,
                           binding.authorization == self.authorization,
                           binding.grantedAccess.contains(.read) else {
                         throw DatabaseGrantAuthorizationError.denied(
-                            resource: .base(self.baseID),
+                            resource: self.resource,
                             required: .read
                         )
                     }
@@ -165,14 +165,14 @@ extension DatabaseContext {
         graphPartitions: FieldObject = FieldObject(),
         transaction: any TransactionAccess
     ) async throws -> QueryResponse {
-        try await withBaseOperation { [self] in
+        try await withDataOperation { [self] in
             try await withFieldReadAuthorization(for: selectQuery) {
-                _ = try requireOperationBaseLease()
+                _ = try requireOperationDataRoot()
                 return try await ActiveDatabaseTransactionContext.$binding
                     .withValue(
                         DatabaseTransactionExecutionBinding(
                             transaction: transaction,
-                            baseID: self.baseID,
+                            resource: self.resource,
                             authorization: self.authorization,
                             grantedAccess: .read,
                             databaseTransaction: nil
@@ -260,9 +260,10 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         transaction: any TransactionAccess
     ) async throws -> QueryResponse {
+        let sourceOptions = executionContextWithoutExternalPageWindow(options)
         let sourceRows = try await materializeTransactionBoundRows(
             for: selectQuery.source,
-            options: options,
+            options: sourceOptions,
             transaction: transaction
         )
         let filteredRows = try applyFilter(
@@ -311,34 +312,11 @@ extension DatabaseContext {
     ) async throws -> [CanonicalSourceRow] {
         switch source {
         case .table(let tableRef):
-            let entity = try resolveEntity(named: tableRef.table)
-            guard let runtime = container.runtimeConfiguration
-                .entityRuntimes.registration(named: entity.name) else {
-                throw CanonicalReadError.unsupportedSelectQuery(
-                    "Entity '\(tableRef.table)' has no registered runtime type"
-                )
-            }
-            let sourceName = tableRef.alias ?? tableRef.effectiveName
-            let select = SelectQuery(
-                projection: .all,
-                source: .table(tableRef)
-            )
-            let rows = try await fetchTableSourceRows(
-                runtime: runtime,
-                sourceName: sourceName,
-                selectQuery: select,
+            return try await materializeUnwindowedTableSourceRows(
+                tableRef,
                 options: options,
                 transaction: transaction
             )
-            guard rows.residualFilter == nil,
-                  rows.residualOrderBy == nil,
-                  !rows.limitPushed,
-                  !rows.offsetPushed else {
-                throw CanonicalReadError.unsupportedSelectQuery(
-                    "A transaction-bound join source unexpectedly applied query pushdown"
-                )
-            }
-            return rows.rows
 
         case .join(let clause):
             switch clause.type {
@@ -479,10 +457,11 @@ extension DatabaseContext {
             )
         }
 
+        let sourceOptions = executionContextWithoutExternalPageWindow(options)
         let sourceRows = try await materializeRows(
             for: selectQuery.source,
             namedSubqueries: selectQuery.subqueries ?? [],
-            options: options,
+            options: sourceOptions,
             partitionValues: partitionValues,
             partitionMode: .routed
         )
@@ -630,15 +609,30 @@ extension DatabaseContext {
         selectQuery: SelectQuery,
         options: ReadExecutionContext
     ) throws -> QueryResponse {
-        let canonicalRows = try rowSet.rows.map { indexRow in
+        var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: options.workMeter,
+            stage: .projection,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: rowSet.rows.count
+        )
+        for indexRow in rowSet.rows {
             try options.workMeter.consume(at: .projection)
-            return CanonicalSourceRow.fromBaseFields(
+            let row = CanonicalSourceRow.fromBaseFields(
                 indexRow.fields,
                 sourceName: sourceName,
                 annotations: indexRow.annotations,
                 version: indexRow.version
             )
+            try retainedRows.append(
+                footprint: try CanonicalRelationalFootprintMeter.footprint(
+                    of: row,
+                    workMeter: options.workMeter
+                ),
+                make: { row }
+            )
         }
+        let canonicalRows = retainedRows.finish().promoteToOutput()
 
         let filtered = try applyFilter(
             selectQuery.filter,
@@ -762,7 +756,11 @@ extension DatabaseContext {
         let page = try CanonicalQueryPagination.window(
             rows: consume projectedRows,
             selectQuery: paginationQuery,
-            options: options
+            options: options,
+            rowsAreContinuationRelative: pushdown.pageWindowPushed,
+            continuationPosition: pushdown.continuationPosition,
+            prevalidatedQueryFingerprint:
+                pushdown.stableSnapshotQueryFingerprint
         )
         return QueryResponse(rows: page.items, continuation: page.continuation)
     }
@@ -823,6 +821,54 @@ extension DatabaseContext {
         )
     }
 
+    private func materializeUnwindowedTableSourceRows(
+        _ tableRef: TableRef,
+        options: ReadExecutionContext,
+        transaction: (any TransactionAccess)?
+    ) async throws -> [CanonicalSourceRow] {
+        let entity = try resolveEntity(named: tableRef.table)
+        guard let runtime = container.runtimeConfiguration
+            .entityRuntimes.registration(named: entity.name) else {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "Entity '\(tableRef.table)' has no registered runtime type"
+            )
+        }
+        let sourceName = tableRef.alias ?? tableRef.effectiveName
+        let select = SelectQuery(
+            projection: .all,
+            source: .table(tableRef)
+        )
+        let sourceOptions = executionContextWithoutExternalPageWindow(options)
+        let rows = try await fetchTableSourceRows(
+            runtime: runtime,
+            sourceName: sourceName,
+            selectQuery: select,
+            options: sourceOptions,
+            transaction: transaction
+        )
+        guard rows.residualFilter == nil,
+              rows.residualOrderBy == nil,
+              !rows.limitPushed,
+              !rows.offsetPushed,
+              !rows.pageWindowPushed else {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "A join source unexpectedly applied top-level query pushdown"
+            )
+        }
+        return rows.rows
+    }
+
+    private func executionContextWithoutExternalPageWindow(
+        _ options: ReadExecutionContext
+    ) -> ReadExecutionContext {
+        ReadExecutionContext(
+            options: options.options.withoutExternalPageWindow(),
+            monotonicClock: container.monotonicClock,
+            workMeter: options.workMeter,
+            queryStructuralLimits: options.queryStructuralLimits
+        )
+    }
+
     private func resolveEntity(named name: String) throws -> Schema.Entity {
         guard let entity = container.schema.entity(named: name) else {
             throw CanonicalReadError.unsupportedSource(
@@ -865,7 +911,14 @@ extension DatabaseContext {
             orderBy: canonicalOrderByFields(selectQuery.orderBy)
         )
 
-        let sourceRows = try entities.map { entity in
+        var sourceRowBuilder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: options.workMeter,
+            stage: .resultMaterialization,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: entities.count
+        )
+        for entity in entities {
             try options.workMeter.consume(at: .resultMaterialization)
             let row = try QueryRowCodec.encode(
                 entity.item,
@@ -874,13 +927,21 @@ extension DatabaseContext {
                     PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
                 ]
             )
-            return CanonicalSourceRow.fromBaseFields(
+            let sourceRow = CanonicalSourceRow.fromBaseFields(
                 row.fields,
                 sourceName: nil,
                 annotations: row.annotations,
                 version: row.version
             )
+            try sourceRowBuilder.append(
+                footprint: try CanonicalRelationalFootprintMeter.footprint(
+                    of: sourceRow,
+                    workMeter: options.workMeter
+                ),
+                make: { sourceRow }
+            )
         }
+        let sourceRows = sourceRowBuilder.finish().promoteToOutput()
 
         if let countResponse = try makeCountProjectionResponse(
             selectQuery,
@@ -942,39 +1003,18 @@ extension DatabaseContext {
                     partitionMode: partitionMode
                 )
                 let alias = tableRef.alias ?? named.name
-                return response.rows.map {
-                    CanonicalSourceRow.fromBaseFields(
-                        $0.fields,
-                        sourceName: alias,
-                        annotations: $0.annotations,
-                        version: $0.version
-                    )
-                }
+                return try materializeSourceRows(
+                    response.rows,
+                    sourceName: alias,
+                    workMeter: options.workMeter
+                )
             }
 
-            let select = SelectQuery(
-                projection: .all,
-                source: .table(
-                    TableRef(
-                        schema: tableRef.schema,
-                        table: tableRef.table,
-                        partitions: tableRef.partitions
-                    )
-                )
+            return try await materializeUnwindowedTableSourceRows(
+                tableRef,
+                options: options,
+                transaction: nil
             )
-            let response = try await executeSingleTableRows(
-                select,
-                options: options
-            )
-            let sourceName = tableRef.alias ?? tableRef.effectiveName
-            return response.rows.map {
-                CanonicalSourceRow.fromBaseFields(
-                    $0.fields,
-                    sourceName: sourceName,
-                    annotations: $0.annotations,
-                    version: $0.version
-                )
-            }
 
         case .logical(let logicalSource):
             guard logicalSource.kindIdentifier == LogicalSourceKind.polymorphic else {
@@ -992,7 +1032,15 @@ extension DatabaseContext {
                 configuration: execution.transactionConfiguration
             )
             let sourceName = logicalSource.alias ?? logicalSource.effectiveName
-            return try entities.map { entity in
+            var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+                workMeter: options.workMeter,
+                stage: .bindingCandidate,
+                layout: try CanonicalRelationalFootprintMeter
+                    .retainedArrayLayout(for: CanonicalSourceRow.self),
+                expectedCount: entities.count
+            )
+            for entity in entities {
+                try options.workMeter.consume(at: .bindingCandidate)
                 let row = try QueryRowCodec.encode(
                     entity.item,
                     annotations: [
@@ -1000,13 +1048,21 @@ extension DatabaseContext {
                         PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
                     ]
                 )
-                return CanonicalSourceRow.fromBaseFields(
+                let sourceRow = CanonicalSourceRow.fromBaseFields(
                     row.fields,
                     sourceName: sourceName,
                     annotations: row.annotations,
                     version: row.version
                 )
+                try retained.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: sourceRow,
+                        workMeter: options.workMeter
+                    ),
+                    make: { sourceRow }
+                )
             }
+            return retained.finish().promoteToOutput()
 
         case .subquery(let query, let alias):
             let response = try await queryCanonical(
@@ -1015,14 +1071,11 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
-            return response.rows.map {
-                CanonicalSourceRow.fromBaseFields(
-                    $0.fields,
-                    sourceName: alias,
-                    annotations: $0.annotations,
-                    version: $0.version
-                )
-            }
+            return try materializeSourceRows(
+                response.rows,
+                sourceName: alias,
+                workMeter: options.workMeter
+            )
 
         case .join(let clause):
             return try await materializeJoinRows(
@@ -1073,16 +1126,39 @@ extension DatabaseContext {
             )
 
         case .values(let rows, let columnNames):
-            return try rows.map { values in
+            var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+                workMeter: options.workMeter,
+                stage: .bindingCandidate,
+                layout: try CanonicalRelationalFootprintMeter
+                    .retainedArrayLayout(for: CanonicalSourceRow.self),
+                expectedCount: rows.count
+            )
+            for values in rows {
+                try options.workMeter.consume(at: .bindingCandidate)
                 let names = columnNames ?? values.indices.map { "column\($0)" }
                 guard names.count == values.count else {
                     throw CanonicalReadError.unsupportedSelectQuery("VALUES column count mismatch")
                 }
-                let fields = try Dictionary(uniqueKeysWithValues: zip(names, values).map { name, literal in
-                    (name, try literal.toFieldValue())
-                })
-                return CanonicalSourceRow(fields: fields)
+                var fields: [String: FieldValue] = [:]
+                fields.reserveCapacity(values.count)
+                for (name, literal) in zip(names, values) {
+                    guard fields[name] == nil else {
+                        throw CanonicalReadError.unsupportedSelectQuery(
+                            "VALUES contains a duplicate column name"
+                        )
+                    }
+                    fields[name] = try literal.toFieldValue()
+                }
+                let sourceRow = CanonicalSourceRow(fields: fields)
+                try retained.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: sourceRow,
+                        workMeter: options.workMeter
+                    ),
+                    make: { sourceRow }
+                )
             }
+            return retained.finish().promoteToOutput()
 
         case .graphTable(let graphTableSource):
             guard let executor = container.runtimeConfiguration.logicalSourceExecutors.graphTableExecutor else {
@@ -1094,22 +1170,43 @@ extension DatabaseContext {
                 options: options,
                 partitions: partitionValues ?? FieldObject()
             )
-            let sourceRows = rows.map {
-                canonicalGraphTableSourceRow(from: $0.fields, graphName: graphTableSource.graphName)
-            }
-            guard let columns = graphTableSource.columns, !columns.isEmpty else {
-                return sourceRows.map {
-                    $0.applyingAlias(graphTableSource.alias)
+            var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+                workMeter: options.workMeter,
+                stage: .bindingCandidate,
+                layout: try CanonicalRelationalFootprintMeter
+                    .retainedArrayLayout(for: CanonicalSourceRow.self),
+                expectedCount: rows.count
+            )
+            for graphRow in rows {
+                try options.workMeter.consume(at: .bindingCandidate)
+                let sourceRow = canonicalGraphTableSourceRow(
+                    from: graphRow.fields,
+                    graphName: graphTableSource.graphName
+                )
+                let outputRow: CanonicalSourceRow
+                if let columns = graphTableSource.columns, !columns.isEmpty {
+                    var fields: [String: FieldValue] = [:]
+                    fields.reserveCapacity(columns.count)
+                    for column in columns {
+                        fields[column.alias] = try evaluateExpression(
+                            column.expression,
+                            on: sourceRow
+                        )
+                    }
+                    outputRow = CanonicalSourceRow(fields: fields)
+                        .applyingAlias(graphTableSource.alias)
+                } else {
+                    outputRow = sourceRow.applyingAlias(graphTableSource.alias)
                 }
+                try retained.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: outputRow,
+                        workMeter: options.workMeter
+                    ),
+                    make: { outputRow }
+                )
             }
-            return try sourceRows.map { row in
-                var fields: [String: FieldValue] = [:]
-                for column in columns {
-                    fields[column.alias] = try evaluateExpression(column.expression, on: row)
-                }
-                return CanonicalSourceRow(fields: fields)
-                    .applyingAlias(graphTableSource.alias)
-            }
+            return retained.finish().promoteToOutput()
 
         case .graphPattern, .namedGraph:
             guard let executor = container.runtimeConfiguration.logicalSourceExecutors.sparqlExecutor else {
@@ -1121,7 +1218,11 @@ extension DatabaseContext {
                 options: options,
                 partitions: partitionValues ?? FieldObject()
             )
-            return response.rows.map { CanonicalSourceRow(fields: $0.fields, annotations: $0.annotations) }
+            return try materializeSourceRows(
+                response.rows,
+                sourceName: nil,
+                workMeter: options.workMeter
+            )
 
         case .service(let endpoint, _, _):
             throw CanonicalReadError.unsupportedSource(
@@ -1196,14 +1297,31 @@ extension DatabaseContext {
         workMeter: DatabaseWorkMeter
     ) throws -> [CanonicalSourceRow] {
         if type == .cross {
-            var rows: [CanonicalSourceRow] = []
+            let inputReservation = try reserveIntermediateRows(
+                leftRows,
+                and: rightRows,
+                workMeter: workMeter,
+                stage: .joinCandidate
+            )
+            defer { inputReservation.release() }
+            var rows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+                workMeter: workMeter,
+                stage: .joinCandidate,
+                layout: try CanonicalRelationalFootprintMeter
+                    .retainedArrayLayout(for: CanonicalSourceRow.self)
+            )
             for left in leftRows {
                 for right in rightRows {
                     try workMeter.consume(at: .joinCandidate)
-                    rows.append(left.merged(with: right))
+                    let merged = left.merged(with: right)
+                    try rows.append(
+                        footprint: try CanonicalRelationalFootprintMeter
+                            .footprint(of: merged, workMeter: workMeter),
+                        make: { merged }
+                    )
                 }
             }
-            return rows
+            return rows.finish().promoteToOutput()
         }
 
         let emptyLeft = CanonicalSourceRow(
@@ -1214,9 +1332,42 @@ extension DatabaseContext {
             fields: CanonicalSourceRow.flatten(scopedFields: inferredEmptyScopes(from: rightRows)),
             scopedFields: inferredEmptyScopes(from: rightRows)
         )
+        let inputReservation = try reserveIntermediateRows(
+            leftRows,
+            and: rightRows,
+            workMeter: workMeter,
+            stage: .joinCandidate
+        )
+        defer { inputReservation.release() }
 
+        if let hashJoined = try performHashJoin(
+            leftRows: leftRows,
+            rightRows: rightRows,
+            type: type,
+            condition: condition,
+            emptyLeft: emptyLeft,
+            emptyRight: emptyRight,
+            workMeter: workMeter
+        ) {
+            return hashJoined
+        }
+
+        let matchedSetBytes = try DatabaseIntermediateFootprint(
+            bytes: UInt64(max(1, MemoryLayout<Int>.stride + 16))
+        ).multiplied(by: UInt64(rightRows.count)).bytes
+        let matchedSetReservation = try workMeter.reserveIntermediate(
+            bytes: matchedSetBytes,
+            at: .joinCandidate
+        )
+        defer { matchedSetReservation.release() }
         var matchedRightIndexes = Set<Int>()
-        var results: [CanonicalSourceRow] = []
+        matchedRightIndexes.reserveCapacity(rightRows.count)
+        var results = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: workMeter,
+            stage: .joinCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self)
+        )
 
         for leftRow in leftRows {
             var matched = false
@@ -1225,22 +1376,337 @@ extension DatabaseContext {
                 if try joinMatches(left: leftRow, right: rightRow, condition: condition, joinType: type) {
                     matched = true
                     matchedRightIndexes.insert(rightIndex)
-                    results.append(leftRow.merged(with: rightRow))
+                    let merged = leftRow.merged(with: rightRow)
+                    try results.append(
+                        footprint: try CanonicalRelationalFootprintMeter
+                            .footprint(of: merged, workMeter: workMeter),
+                        make: { merged }
+                    )
                 }
             }
 
             if !matched, type == .left || type == .full {
-                results.append(leftRow.merged(with: emptyRight))
+                let merged = leftRow.merged(with: emptyRight)
+                try results.append(
+                    footprint: try CanonicalRelationalFootprintMeter
+                        .footprint(of: merged, workMeter: workMeter),
+                    make: { merged }
+                )
             }
         }
 
         if type == .right || type == .full {
             for (rightIndex, rightRow) in rightRows.enumerated() where !matchedRightIndexes.contains(rightIndex) {
-                results.append(emptyLeft.merged(with: rightRow))
+                let merged = emptyLeft.merged(with: rightRow)
+                try results.append(
+                    footprint: try CanonicalRelationalFootprintMeter
+                        .footprint(of: merged, workMeter: workMeter),
+                    make: { merged }
+                )
             }
         }
 
-        return results
+        return results.finish().promoteToOutput()
+    }
+
+    private enum CanonicalJoinKeySource: Hashable {
+        case column(ColumnRef)
+        case unqualified(String)
+    }
+
+    private struct CanonicalHashJoinPlan {
+        let left: [CanonicalJoinKeySource]
+        let right: [CanonicalJoinKeySource]
+        let validatesFullCondition: Bool
+    }
+
+    private struct CanonicalJoinKey: Hashable {
+        let values: [FieldValue]
+    }
+
+    private func performHashJoin(
+        leftRows: [CanonicalSourceRow],
+        rightRows: [CanonicalSourceRow],
+        type: JoinType,
+        condition: JoinCondition?,
+        emptyLeft: CanonicalSourceRow,
+        emptyRight: CanonicalSourceRow,
+        workMeter: DatabaseWorkMeter
+    ) throws -> [CanonicalSourceRow]? {
+        guard let plan = canonicalHashJoinPlan(
+            condition: condition,
+            leftRows: leftRows,
+            rightRows: rightRows
+        ), hashRepresentationsAreCompatible(
+            plan: plan,
+            leftRows: leftRows,
+            rightRows: rightRows
+        ) else {
+            return nil
+        }
+
+        let keySlotBytes = try DatabaseIntermediateFootprint(
+            bytes: UInt64(max(1, MemoryLayout<FieldValue?>.stride + 16))
+        ).multiplied(by: UInt64(plan.left.count)).bytes
+        let hashEntryBytes = try DatabaseIntermediateFootprint(
+            bytes: UInt64(
+                max(1, MemoryLayout<CanonicalSourceRow>.stride + 64)
+            )
+        ).adding(
+            DatabaseIntermediateFootprint(bytes: keySlotBytes)
+        ).adding(
+            DatabaseIntermediateFootprint(
+                bytes: UInt64(max(1, MemoryLayout<Int>.stride + 16))
+            )
+        ).bytes
+        let hashBytes = try DatabaseIntermediateFootprint(
+            bytes: hashEntryBytes
+        ).multiplied(by: UInt64(rightRows.count)).bytes
+        let hashReservation = try workMeter.reserveIntermediate(
+            rows: UInt64(rightRows.count),
+            bytes: hashBytes,
+            at: .joinCandidate
+        )
+        defer { hashReservation.release() }
+        var buckets: [CanonicalJoinKey: [(Int, CanonicalSourceRow)]] = [:]
+        buckets.reserveCapacity(rightRows.count)
+        for (index, row) in rightRows.enumerated() {
+            try workMeter.consume(at: .joinCandidate)
+            guard let key = canonicalJoinKey(
+                sources: plan.right,
+                row: row
+            ) else { continue }
+            buckets[key, default: []].append((index, row))
+        }
+
+        let matchedSetBytes = try DatabaseIntermediateFootprint(
+            bytes: UInt64(max(1, MemoryLayout<Int>.stride + 16))
+        ).multiplied(by: UInt64(rightRows.count)).bytes
+        let matchedSetReservation = try workMeter.reserveIntermediate(
+            bytes: matchedSetBytes,
+            at: .joinCandidate
+        )
+        defer { matchedSetReservation.release() }
+        var matchedRight = Set<Int>()
+        matchedRight.reserveCapacity(rightRows.count)
+        var results = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: workMeter,
+            stage: .joinCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self)
+        )
+        for left in leftRows {
+            try workMeter.consume(at: .joinCandidate)
+            let matches = canonicalJoinKey(sources: plan.left, row: left)
+                .flatMap { buckets[$0] } ?? []
+            var matchedLeft = false
+            for (rightIndex, right) in matches {
+                try workMeter.consume(at: .joinCandidate)
+                if plan.validatesFullCondition,
+                   try !joinMatches(
+                       left: left,
+                       right: right,
+                       condition: condition,
+                       joinType: type
+                   ) {
+                    continue
+                }
+                matchedLeft = true
+                matchedRight.insert(rightIndex)
+                let merged = left.merged(with: right)
+                try results.append(
+                    footprint: try CanonicalRelationalFootprintMeter
+                        .footprint(of: merged, workMeter: workMeter),
+                    make: { merged }
+                )
+            }
+            if !matchedLeft, type == .left || type == .full {
+                let merged = left.merged(with: emptyRight)
+                try results.append(
+                    footprint: try CanonicalRelationalFootprintMeter
+                        .footprint(of: merged, workMeter: workMeter),
+                    make: { merged }
+                )
+            }
+        }
+        if type == .right || type == .full {
+            for (index, right) in rightRows.enumerated()
+                where !matchedRight.contains(index) {
+                let merged = emptyLeft.merged(with: right)
+                try results.append(
+                    footprint: try CanonicalRelationalFootprintMeter
+                        .footprint(of: merged, workMeter: workMeter),
+                    make: { merged }
+                )
+            }
+        }
+        return results.finish().promoteToOutput()
+    }
+
+    private func canonicalHashJoinPlan(
+        condition: JoinCondition?,
+        leftRows: [CanonicalSourceRow],
+        rightRows: [CanonicalSourceRow]
+    ) -> CanonicalHashJoinPlan? {
+        switch condition {
+        case .using(let columns) where !columns.isEmpty:
+            let sources = columns.map(CanonicalJoinKeySource.unqualified)
+            return CanonicalHashJoinPlan(
+                left: sources,
+                right: sources,
+                validatesFullCondition: false
+            )
+        case .on(let expression):
+            guard let leftSample = leftRows.first,
+                  let rightSample = rightRows.first else {
+                return nil
+            }
+            var pairs: [(ColumnRef, ColumnRef)] = []
+            collectHashJoinColumnPairs(
+                from: expression,
+                leftSample: leftSample,
+                rightSample: rightSample,
+                into: &pairs
+            )
+            guard !pairs.isEmpty else { return nil }
+            return CanonicalHashJoinPlan(
+                left: pairs.map { .column($0.0) },
+                right: pairs.map { .column($0.1) },
+                validatesFullCondition: true
+            )
+        default:
+            return nil
+        }
+    }
+
+    private func collectHashJoinColumnPairs(
+        from expression: Expression,
+        leftSample: CanonicalSourceRow,
+        rightSample: CanonicalSourceRow,
+        into pairs: inout [(ColumnRef, ColumnRef)]
+    ) {
+        switch expression {
+        case .equal(.column(let lhs), .column(let rhs)):
+            let forward = leftSample.value(for: lhs) != nil
+                && rightSample.value(for: rhs) != nil
+            let reverse = leftSample.value(for: rhs) != nil
+                && rightSample.value(for: lhs) != nil
+            if forward != reverse {
+                pairs.append(forward ? (lhs, rhs) : (rhs, lhs))
+            }
+        case .and(let lhs, let rhs):
+            collectHashJoinColumnPairs(
+                from: lhs,
+                leftSample: leftSample,
+                rightSample: rightSample,
+                into: &pairs
+            )
+            collectHashJoinColumnPairs(
+                from: rhs,
+                leftSample: leftSample,
+                rightSample: rightSample,
+                into: &pairs
+            )
+        default:
+            break
+        }
+    }
+
+    private func hashRepresentationsAreCompatible(
+        plan: CanonicalHashJoinPlan,
+        leftRows: [CanonicalSourceRow],
+        rightRows: [CanonicalSourceRow]
+    ) -> Bool {
+        for (leftSource, rightSource) in zip(plan.left, plan.right) {
+            guard let left = firstNonNullJoinValue(
+                source: leftSource,
+                rows: leftRows
+            ), let right = firstNonNullJoinValue(
+                source: rightSource,
+                rows: rightRows
+            ) else {
+                continue
+            }
+            guard hashRepresentationTag(left) == hashRepresentationTag(right),
+                  hashRepresentationTag(left) != nil else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func firstNonNullJoinValue(
+        source: CanonicalJoinKeySource,
+        rows: [CanonicalSourceRow]
+    ) -> FieldValue? {
+        for row in rows {
+            if let value = joinValue(source: source, row: row), value != .null {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func hashRepresentationTag(_ value: FieldValue) -> UInt8? {
+        switch value {
+        case .null: return nil
+        case .bool: return 1
+        case .int8: return 2
+        case .int16: return 3
+        case .int32: return 4
+        case .int64: return 5
+        case .uint8: return 6
+        case .uint16: return 7
+        case .uint32: return 8
+        case .uint64: return 9
+        case .float32: return 10
+        case .float64: return 11
+        case .decimal: return nil
+        case .string: return 12
+        case .bytes: return 13
+        case .date: return 14
+        case .time: return 15
+        case .dateTime: return 16
+        case .timestamp: return 17
+        case .timeSpan: return 18
+        case .calendarPeriod: return 19
+        case .geographicPoint: return 20
+        case .geographicPosition: return 21
+        case .vector: return 22
+        case .uuid: return 23
+        case .array: return 24
+        case .object: return 25
+        case .reference: return 26
+        case .rdfTerm: return 27
+        }
+    }
+
+    private func canonicalJoinKey(
+        sources: [CanonicalJoinKeySource],
+        row: CanonicalSourceRow
+    ) -> CanonicalJoinKey? {
+        var values: [FieldValue] = []
+        values.reserveCapacity(sources.count)
+        for source in sources {
+            guard let value = joinValue(source: source, row: row),
+                  value != .null else {
+                return nil
+            }
+            values.append(value)
+        }
+        return CanonicalJoinKey(values: values)
+    }
+
+    private func joinValue(
+        source: CanonicalJoinKeySource,
+        row: CanonicalSourceRow
+    ) -> FieldValue? {
+        switch source {
+        case .column(let column):
+            return row.value(for: column)
+        case .unqualified(let column):
+            return firstScopedFieldValue(named: column, in: row)
+        }
     }
 
     private func joinMatches(
@@ -1324,25 +1790,41 @@ extension DatabaseContext {
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
-        var rows: [CanonicalSourceRow] = []
+        var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: options.workMeter,
+            stage: .bindingCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self)
+        )
         for source in sources {
-            rows.append(
-                contentsOf: try await materializeRows(
-                    for: source,
-                    namedSubqueries: namedSubqueries,
-                    options: options,
-                    partitionValues: partitionValues,
-                    partitionMode: partitionMode
-                )
+            let sourceRows = try await materializeRows(
+                for: source,
+                namedSubqueries: namedSubqueries,
+                options: options,
+                partitionValues: partitionValues,
+                partitionMode: partitionMode
             )
+            let sourceReservation = try reserveIntermediateRows(
+                sourceRows,
+                workMeter: options.workMeter,
+                stage: .bindingCandidate
+            )
+            defer { sourceReservation.release() }
+            for row in sourceRows {
+                try options.workMeter.consume(at: .bindingCandidate)
+                try retained.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: row,
+                        workMeter: options.workMeter
+                    ),
+                    make: { row }
+                )
+            }
         }
+        let rows = retained.finish().promoteToOutput()
         if deduplicate {
             return try uniqueSourceRows(rows, workMeter: options.workMeter)
         }
-        try options.workMeter.consume(
-            UInt64(rows.count),
-            at: .bindingCandidate
-        )
         return rows
     }
 
@@ -1369,15 +1851,47 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
+            let inputReservation = try reserveIntermediateRows(
+                accumulator,
+                and: next,
+                workMeter: options.workMeter,
+                stage: .joinCandidate
+            )
+            defer { inputReservation.release() }
+            let setBytes = try DatabaseIntermediateFootprint(
+                bytes: UInt64(max(1, MemoryLayout<QueryRow>.stride + 32))
+            ).multiplied(by: UInt64(next.count)).bytes
+            let setReservation = try options.workMeter.reserveIntermediate(
+                rows: UInt64(next.count),
+                bytes: setBytes,
+                at: .deduplication
+            )
+            defer { setReservation.release() }
             var nextKeys = Set<QueryRow>()
+            nextKeys.reserveCapacity(next.count)
             for row in next {
                 try options.workMeter.consume(at: .deduplication)
                 nextKeys.insert(identityRow(row))
             }
-            accumulator = try accumulator.filter { row in
+            var intersected = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+                workMeter: options.workMeter,
+                stage: .joinCandidate,
+                layout: try CanonicalRelationalFootprintMeter
+                    .retainedArrayLayout(for: CanonicalSourceRow.self),
+                expectedCount: accumulator.count
+            )
+            for row in accumulator {
                 try options.workMeter.consume(at: .joinCandidate)
-                return nextKeys.contains(identityRow(row))
+                guard nextKeys.contains(identityRow(row)) else { continue }
+                try intersected.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: row,
+                        workMeter: options.workMeter
+                    ),
+                    make: { row }
+                )
             }
+            accumulator = intersected.finish().promoteToOutput()
         }
         return try uniqueSourceRows(
             accumulator,
@@ -1407,17 +1921,48 @@ extension DatabaseContext {
             partitionValues: partitionValues,
             partitionMode: partitionMode
         )
+        let inputReservation = try reserveIntermediateRows(
+            leftRows,
+            and: rightRows,
+            workMeter: options.workMeter,
+            stage: .joinCandidate
+        )
+        defer { inputReservation.release() }
+        let setBytes = try DatabaseIntermediateFootprint(
+            bytes: UInt64(max(1, MemoryLayout<QueryRow>.stride + 32))
+        ).multiplied(by: UInt64(rightRows.count)).bytes
+        let setReservation = try options.workMeter.reserveIntermediate(
+            rows: UInt64(rightRows.count),
+            bytes: setBytes,
+            at: .deduplication
+        )
+        defer { setReservation.release() }
         var rightKeys = Set<QueryRow>()
+        rightKeys.reserveCapacity(rightRows.count)
         for row in rightRows {
             try options.workMeter.consume(at: .deduplication)
             rightKeys.insert(identityRow(row))
         }
-        let difference = try leftRows.filter { row in
+        var difference = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: options.workMeter,
+            stage: .joinCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: leftRows.count
+        )
+        for row in leftRows {
             try options.workMeter.consume(at: .joinCandidate)
-            return !rightKeys.contains(identityRow(row))
+            guard !rightKeys.contains(identityRow(row)) else { continue }
+            try difference.append(
+                footprint: try CanonicalRelationalFootprintMeter.footprint(
+                    of: row,
+                    workMeter: options.workMeter
+                ),
+                make: { row }
+            )
         }
         return try uniqueSourceRows(
-            difference,
+            difference.finish().promoteToOutput(),
             workMeter: options.workMeter
         )
     }
@@ -1426,16 +1971,44 @@ extension DatabaseContext {
         _ rows: [CanonicalSourceRow],
         workMeter: DatabaseWorkMeter
     ) throws -> [CanonicalSourceRow] {
+        let inputReservation = try reserveIntermediateRows(
+            rows,
+            workMeter: workMeter,
+            stage: .deduplication
+        )
+        defer { inputReservation.release() }
+        let setBytes = try DatabaseIntermediateFootprint(
+            bytes: UInt64(max(1, MemoryLayout<QueryRow>.stride + 32))
+        ).multiplied(by: UInt64(rows.count)).bytes
+        let setReservation = try workMeter.reserveIntermediate(
+            rows: UInt64(rows.count),
+            bytes: setBytes,
+            at: .deduplication
+        )
+        defer { setReservation.release() }
         var seen = Set<QueryRow>()
-        var unique: [CanonicalSourceRow] = []
+        seen.reserveCapacity(rows.count)
+        var unique = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: workMeter,
+            stage: .deduplication,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: rows.count
+        )
         for row in rows {
             try workMeter.consume(at: .deduplication)
             let key = identityRow(row)
             if seen.insert(key).inserted {
-                unique.append(row)
+                try unique.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: row,
+                        workMeter: workMeter
+                    ),
+                    make: { row }
+                )
             }
         }
-        return unique
+        return unique.finish().promoteToOutput()
     }
 
     private func identityRow(_ row: CanonicalSourceRow) -> QueryRow {
@@ -1480,10 +2053,31 @@ extension DatabaseContext {
         workMeter: DatabaseWorkMeter
     ) throws -> [CanonicalSourceRow] {
         guard let filter else { return rows }
-        return try rows.filter { row in
+        let inputReservation = try reserveIntermediateRows(
+            rows,
+            workMeter: workMeter,
+            stage: .filterEvaluation
+        )
+        defer { inputReservation.release() }
+        var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: workMeter,
+            stage: .filterEvaluation,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: rows.count
+        )
+        for row in rows {
             try workMeter.consume(at: .filterEvaluation)
-            return try evaluateBoolean(filter, on: row)
+            guard try evaluateBoolean(filter, on: row) else { continue }
+            try retained.append(
+                footprint: try CanonicalRelationalFootprintMeter.footprint(
+                    of: row,
+                    workMeter: workMeter
+                ),
+                make: { row }
+            )
         }
+        return retained.finish().promoteToOutput()
     }
 
     private func applyOrder(
@@ -1492,23 +2086,30 @@ extension DatabaseContext {
         workMeter: DatabaseWorkMeter
     ) throws -> [CanonicalSourceRow] {
         guard let orderBy, !orderBy.isEmpty else { return rows }
+        let inputReservation = try reserveIntermediateRows(
+            rows,
+            workMeter: workMeter,
+            stage: .sortInput
+        )
+        defer { inputReservation.release() }
         try workMeter.consume(UInt64(rows.count), at: .sortInput)
-        let fingerprinted = try rows.map { row in
-            (
-                row: row,
-                fingerprint: try CanonicalRowFingerprint.compute(
-                    QueryRow(
-                        fields: row.fields,
-                        annotations: row.annotations,
-                        version: row.version
-                    ),
+        var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: workMeter,
+            stage: .sortInput,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: rows.count
+        )
+        for row in rows {
+            try retained.append(
+                footprint: try CanonicalRelationalFootprintMeter.footprint(
+                    of: row,
                     workMeter: workMeter
-                )
+                ),
+                make: { row }
             )
         }
-        return try fingerprinted.sorted { lhsItem, rhsItem in
-            let lhs = lhsItem.row
-            let rhs = rhsItem.row
+        let sorted = try retained.finish().sortingElements { lhs, rhs in
             for sortKey in orderBy {
                 try workMeter.consume(2, at: .sortComparison)
                 let lhsValue = try evaluateExpression(sortKey.expression, on: lhs)
@@ -1539,10 +2140,25 @@ extension DatabaseContext {
                 }
             }
             try workMeter.consume(2, at: .sortComparison)
-            return lhsItem.fingerprint.lexicographicallyPrecedes(
-                rhsItem.fingerprint
+            let lhsFingerprint = try CanonicalRowFingerprint.compute(
+                QueryRow(
+                    fields: lhs.fields,
+                    annotations: lhs.annotations,
+                    version: lhs.version
+                ),
+                workMeter: workMeter
             )
-        }.map { $0.row }
+            let rhsFingerprint = try CanonicalRowFingerprint.compute(
+                QueryRow(
+                    fields: rhs.fields,
+                    annotations: rhs.annotations,
+                    version: rhs.version
+                ),
+                workMeter: workMeter
+            )
+            return lhsFingerprint.lexicographicallyPrecedes(rhsFingerprint)
+        }
+        return sorted.promoteToOutput()
     }
 
     private func projectRows(
@@ -1550,35 +2166,76 @@ extension DatabaseContext {
         projection: Projection,
         workMeter: DatabaseWorkMeter
     ) throws -> [QueryRow] {
+        let inputReservation = try reserveIntermediateRows(
+            rows,
+            workMeter: workMeter,
+            stage: .projection
+        )
+        defer { inputReservation.release() }
+        var retained = try DatabaseRetainedArrayBuilder<QueryRow>(
+            workMeter: workMeter,
+            stage: .projection,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: QueryRow.self),
+            expectedCount: rows.count
+        )
         switch projection {
         case .all:
-            return try rows.map {
+            for row in rows {
                 try workMeter.consume(at: .projection)
-                return QueryRow(
-                    fields: $0.fields,
-                    annotations: $0.annotations,
-                    version: $0.version
+                let projected = QueryRow(
+                    fields: row.fields,
+                    annotations: row.annotations,
+                    version: row.version
+                )
+                try retained.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: projected,
+                        workMeter: workMeter
+                    ),
+                    make: { projected }
                 )
             }
 
         case .allFrom(let sourceName):
-            return try rows.map { row in
+            for row in rows {
                 try workMeter.consume(at: .projection)
                 guard let fields = row.fields(for: sourceName) else {
                     throw CanonicalReadError.unsupportedSelectQuery("Projection source '\(sourceName)' not found")
                 }
-                return QueryRow(fields: fields, annotations: row.annotations, version: row.version)
+                let projected = QueryRow(
+                    fields: fields,
+                    annotations: row.annotations,
+                    version: row.version
+                )
+                try retained.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: projected,
+                        workMeter: workMeter
+                    ),
+                    make: { projected }
+                )
             }
 
         case .items(let items):
-            return try rows.map { row in
+            for row in rows {
                 try workMeter.consume(at: .projection)
                 var fields: [String: FieldValue] = [:]
                 for (index, item) in items.enumerated() {
                     let fieldName = item.alias ?? canonicalProjectionName(for: item.expression, index: index)
                     fields[fieldName] = try evaluateExpression(item.expression, on: row)
                 }
-                return QueryRow(fields: fields, annotations: row.annotations)
+                let projected = QueryRow(
+                    fields: fields,
+                    annotations: row.annotations
+                )
+                try retained.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: projected,
+                        workMeter: workMeter
+                    ),
+                    make: { projected }
+                )
             }
 
         case .distinctItems(let items):
@@ -1591,6 +2248,7 @@ extension DatabaseContext {
                 workMeter: workMeter
             )
         }
+        return retained.finish().promoteToOutput()
     }
 
     private func makeCountProjectionResponse(
@@ -1612,6 +2270,13 @@ extension DatabaseContext {
                 "Canonical logical-source execution currently supports only COUNT(*) projections"
             )
         }
+
+        let inputReservation = try reserveIntermediateRows(
+            rows,
+            workMeter: workMeter,
+            stage: .aggregateInput
+        )
+        defer { inputReservation.release() }
 
         try workMeter.consume(
             UInt64(max(1, rows.count)),
@@ -1692,17 +2357,18 @@ extension DatabaseContext {
             return try evaluateExpression(inner, on: row) != FieldValue.null
         case .inList(let lhs, let values):
             let left = try evaluateExpression(lhs, on: row)
-            let right = try values.map { try evaluateExpression($0, on: row) }
             if left == .null { return false }
-            for value in right where value != .null {
+            for expression in values {
+                let value = try evaluateExpression(expression, on: row)
+                guard value != .null else { continue }
                 if try FieldValueComparator.equal(left, value) { return true }
             }
             return false
         case .notInList(let lhs, let values):
             let left = try evaluateExpression(lhs, on: row)
-            let right = try values.map { try evaluateExpression($0, on: row) }
             if left == .null { return false }
-            for value in right {
+            for expression in values {
+                let value = try evaluateExpression(expression, on: row)
                 if value == .null { return false }
                 if try FieldValueComparator.equal(left, value) { return false }
             }
@@ -1774,14 +2440,114 @@ extension DatabaseContext {
         _ rows: [QueryRow],
         workMeter: DatabaseWorkMeter
     ) throws -> [QueryRow] {
+        let inputFootprint = try CanonicalRelationalFootprintMeter.footprint(
+            of: rows,
+            workMeter: workMeter
+        )
+        let inputReservation = try workMeter.reserveIntermediate(
+            rows: inputFootprint.rows,
+            bytes: inputFootprint.bytes,
+            at: .deduplication
+        )
+        defer { inputReservation.release() }
+        let setBytes = try DatabaseIntermediateFootprint(
+            bytes: UInt64(max(1, MemoryLayout<QueryRow>.stride + 32))
+        ).multiplied(by: UInt64(rows.count)).bytes
+        let setReservation = try workMeter.reserveIntermediate(
+            bytes: setBytes,
+            at: .deduplication
+        )
+        defer { setReservation.release() }
         var seen: Set<QueryRow> = []
-        var unique: [QueryRow] = []
+        seen.reserveCapacity(rows.count)
+        var unique = try DatabaseRetainedArrayBuilder<QueryRow>(
+            workMeter: workMeter,
+            stage: .deduplication,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: QueryRow.self),
+            expectedCount: rows.count
+        )
         for row in rows {
             try workMeter.consume(at: .deduplication)
             if seen.insert(row).inserted {
-                unique.append(row)
+                try unique.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: row,
+                        workMeter: workMeter
+                    ),
+                    make: { row }
+                )
             }
         }
-        return unique
+        return unique.finish().promoteToOutput()
+    }
+
+    private func reserveIntermediateRows(
+        _ rows: [CanonicalSourceRow],
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateReservation {
+        let footprint = try CanonicalRelationalFootprintMeter.footprint(
+            of: rows,
+            workMeter: workMeter
+        )
+        return try workMeter.reserveIntermediate(
+            rows: footprint.rows,
+            bytes: footprint.bytes,
+            at: stage
+        )
+    }
+
+    private func materializeSourceRows(
+        _ rows: [QueryRow],
+        sourceName: String?,
+        workMeter: DatabaseWorkMeter
+    ) throws -> [CanonicalSourceRow] {
+        var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: workMeter,
+            stage: .bindingCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: rows.count
+        )
+        for row in rows {
+            try workMeter.consume(at: .bindingCandidate)
+            let sourceRow = CanonicalSourceRow.fromBaseFields(
+                row.fields,
+                sourceName: sourceName,
+                annotations: row.annotations,
+                version: row.version
+            )
+            try retained.append(
+                footprint: try CanonicalRelationalFootprintMeter.footprint(
+                    of: sourceRow,
+                    workMeter: workMeter
+                ),
+                make: { sourceRow }
+            )
+        }
+        return retained.finish().promoteToOutput()
+    }
+
+    private func reserveIntermediateRows(
+        _ first: [CanonicalSourceRow],
+        and second: [CanonicalSourceRow],
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateReservation {
+        let firstFootprint = try CanonicalRelationalFootprintMeter.footprint(
+            of: first,
+            workMeter: workMeter
+        )
+        let secondFootprint = try CanonicalRelationalFootprintMeter.footprint(
+            of: second,
+            workMeter: workMeter
+        )
+        let footprint = try firstFootprint.adding(secondFootprint)
+        return try workMeter.reserveIntermediate(
+            rows: footprint.rows,
+            bytes: footprint.bytes,
+            at: stage
+        )
     }
 }

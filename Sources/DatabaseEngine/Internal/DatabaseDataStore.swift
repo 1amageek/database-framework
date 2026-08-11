@@ -642,9 +642,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 blobsSubspace: self.blobsSubspace
             )
 
-            // Parallel reads within the same transaction
+            // Keep point-read concurrency bounded so candidate cardinality does
+            // not become Task cardinality.
             return try await withThrowingTaskGroup(of: (Int, T?).self) { group in
-                for (index, key) in keys.enumerated() {
+                let maximumConcurrentReads = 32
+                var nextIndex = 0
+                while nextIndex < min(maximumConcurrentReads, keys.count) {
+                    let index = nextIndex
+                    let key = keys[index]
                     group.addTask {
                         if let bytes = try await storage.read(for: key) {
                             let model: T = try DataAccess.deserialize(bytes)
@@ -652,22 +657,31 @@ package final class DatabaseDataStore: DataStore, Sendable {
                         }
                         return (index, nil)
                     }
+                    nextIndex += 1
                 }
-
-                // Collect results preserving order
-                var indexed: [(Int, T?)] = []
-                indexed.reserveCapacity(keys.count)
+                var ordered = [T?](repeating: nil, count: keys.count)
                 while let result = try await group.next() {
-                    indexed.append(result)
+                    ordered[result.0] = result.1
+                    if nextIndex < keys.count {
+                        let index = nextIndex
+                        let key = keys[index]
+                        group.addTask {
+                            if let bytes = try await storage.read(for: key) {
+                                let model: T = try DataAccess.deserialize(bytes)
+                                return (index, model)
+                            }
+                            return (index, nil)
+                        }
+                        nextIndex += 1
+                    }
                 }
-                indexed.sort { $0.0 < $1.0 }
 
                 // Missing rows are dropped, not raised: this fetch runs in a
                 // second transaction after the index scan, so an absent row is
                 // indistinguishable from a legitimate concurrent delete.
                 // Same-transaction reads go through fetchByIdsWithTransaction,
                 // which treats a missing row as a dangling index entry.
-                return indexed.compactMap { $0.1 }
+                return ordered.compactMap { $0 }
             }
         }
     }
@@ -907,7 +921,13 @@ package final class DatabaseDataStore: DataStore, Sendable {
             results = try await fetchAllWithTransaction(
                 T.self,
                 transaction: transaction,
-                workMeter: query.executionWorkMeter
+                workMeter: query.executionWorkMeter,
+                limit: query.executionWindowIsPushed ? query.fetchLimit : nil,
+                offset: query.executionWindowIsPushed
+                    ? query.executionStorageOffset
+                    : 0,
+                startingAfterIdentifier:
+                    query.executionStartAfterIdentifier
             )
 
             // Apply predicate filter
@@ -942,11 +962,13 @@ package final class DatabaseDataStore: DataStore, Sendable {
             }
         }
 
-        QueryResultWindow.apply(
-            to: &results,
-            limit: query.fetchLimit,
-            offset: query.fetchOffset
-        )
+        if !query.executionWindowIsPushed {
+            QueryResultWindow.apply(
+                to: &results,
+                limit: query.fetchLimit,
+                offset: query.fetchOffset
+            )
+        }
 
         try query.executionWorkMeter?.consume(
             UInt64(results.count),
@@ -960,7 +982,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
     private func fetchAllWithTransaction<T: Persistable>(
         _ type: T.Type,
         transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter?
+        workMeter: DatabaseWorkMeter?,
+        limit: Int? = nil,
+        offset: Int = 0,
+        startingAfterIdentifier: ByteString? = nil
     ) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
@@ -972,15 +997,35 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 blobsSubspace: self.blobsSubspace
             )
             var results: [T] = []
+            if let limit {
+                results.reserveCapacity(limit)
+            }
+            let startingAfter = try startingAfterIdentifier.map {
+                typeSubspace.pack(try Tuple(packed: $0))
+            }
+            let scanLimit: Int
+            if let limit {
+                let (value, overflow) = limit.addingReportingOverflow(offset)
+                scanLimit = overflow ? Int.max : value
+            } else {
+                scanLimit = 0
+            }
+            var skipped = 0
 
             // ItemStorage.scan handles both inline and external (split) values transparently
             var iterator = storage.scan(
                 begin: begin,
                 end: end,
-                snapshot: true
+                startingAfter: startingAfter,
+                snapshot: true,
+                limit: scanLimit
             ).makeAsyncIterator()
             while let (_, data) = try await iterator.next() {
                 try workMeter?.consume(at: .storageRow)
+                if skipped < offset {
+                    skipped += 1
+                    continue
+                }
                 let model: T = try DataAccess.deserialize(data)
                 results.append(model)
             }
@@ -1215,9 +1260,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         try workMeter?.consume(UInt64(keys.count), at: .storageRow)
 
-        // Parallel reads within the same transaction
+        // Keep point-read concurrency bounded so candidate cardinality does
+        // not become Task cardinality.
         return try await withThrowingTaskGroup(of: (Int, T).self) { group in
-            for (index, key) in keys.enumerated() {
+            let maximumConcurrentReads = 32
+            var nextIndex = 0
+            while nextIndex < min(maximumConcurrentReads, keys.count) {
+                let index = nextIndex
+                let key = keys[index]
                 let primaryKey = ids[index]
                 group.addTask {
                     guard let bytes = try await storage.read(for: key) else {
@@ -1229,17 +1279,36 @@ package final class DatabaseDataStore: DataStore, Sendable {
                     let model: T = try DataAccess.deserialize(bytes)
                     return (index, model)
                 }
+                nextIndex += 1
             }
-
-            // Collect results preserving order
-            var indexed: [(Int, T)] = []
-            indexed.reserveCapacity(keys.count)
+            var ordered = [T?](repeating: nil, count: keys.count)
             while let result = try await group.next() {
-                indexed.append(result)
+                ordered[result.0] = result.1
+                if nextIndex < keys.count {
+                    let index = nextIndex
+                    let key = keys[index]
+                    let primaryKey = ids[index]
+                    group.addTask {
+                        guard let bytes = try await storage.read(for: key) else {
+                            throw CanonicalReadError.danglingIndexEntry(
+                                indexName: indexName,
+                                primaryKey: Self.hexadecimalString(primaryKey.pack())
+                            )
+                        }
+                        let model: T = try DataAccess.deserialize(bytes)
+                        return (index, model)
+                    }
+                    nextIndex += 1
+                }
             }
-            indexed.sort { $0.0 < $1.0 }
-
-            return indexed.map { $0.1 }
+            return ordered.map { value in
+                guard let value else {
+                    preconditionFailure(
+                        "Every strict point read must complete with a value"
+                    )
+                }
+                return value
+            }
         }
     }
 

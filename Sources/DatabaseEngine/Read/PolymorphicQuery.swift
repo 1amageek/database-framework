@@ -153,7 +153,9 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
             pageSize: copy.options.pageSize,
             continuation: copy.options.continuation,
             budget: copy.options.budget,
-            continuationScope: copy.options.continuationScope
+            continuationScope: copy.options.continuationScope,
+            continuationSnapshotIsStable:
+                copy.options.continuationSnapshotIsStable
         )
         return copy
     }
@@ -166,7 +168,9 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
             pageSize: pageSize,
             continuation: copy.options.continuation,
             budget: copy.options.budget,
-            continuationScope: copy.options.continuationScope
+            continuationScope: copy.options.continuationScope,
+            continuationSnapshotIsStable:
+                copy.options.continuationSnapshotIsStable
         )
         return copy
     }
@@ -179,7 +183,9 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
             pageSize: copy.options.pageSize,
             continuation: continuation,
             budget: copy.options.budget,
-            continuationScope: copy.options.continuationScope
+            continuationScope: copy.options.continuationScope,
+            continuationSnapshotIsStable:
+                copy.options.continuationSnapshotIsStable
         )
         return copy
     }

@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import DatabaseTypes
 
@@ -45,3 +46,5 @@ package struct DatabaseBaseDeletionRecord:
         self.deletingRevision = try decoder.readUInt64()
     }
 }
+
+#endif

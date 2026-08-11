@@ -723,7 +723,7 @@ public struct MigrationContext: Sendable {
             any TransactionAccess
         ) async throws -> Result
     ) async throws -> Result {
-        try await container.withActiveBaseTransaction(
+        try await container.withActiveDataRootTransaction(
             requiredAccess: .administer,
             configuration: configuration
         ) { transaction in
@@ -1199,7 +1199,7 @@ public enum DatabaseRuntimeError: Error, CustomStringConvertible {
                         let currentLastKey = lastKey
 
 	                        // Each batch is a separate transaction
-	                        let batch: [(key: ByteString, value: ByteString)] = try await container.withActiveBaseTransaction(
+	                        let batch: [(key: ByteString, value: ByteString)] = try await container.withActiveDataRootTransaction(
 	                            requiredAccess: .administer,
 	                            configuration: .batch
 	                        ) { transaction in

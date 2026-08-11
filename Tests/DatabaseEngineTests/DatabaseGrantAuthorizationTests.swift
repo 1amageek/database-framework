@@ -75,6 +75,7 @@ struct DatabaseGrantAuthorizationTests {
         }
     }
 
+#if MultipleBases
     @Test("Database Grants do not inherit into a Base")
     func databaseGrantDoesNotInheritIntoBase() async throws {
         let container = try await makeContainer()
@@ -103,6 +104,119 @@ struct DatabaseGrantAuthorizationTests {
             )
         }
     }
+#endif
+
+    @Test("Revoking the final administering Grant is atomic and rejected")
+    func finalAdministratorCannotBeRevoked() async throws {
+        let engine = InMemoryEngine()
+        let executor = StorageTransactionExecutor(engine: engine)
+        let store = DatabaseGrantStore(resource: .database, root: Subspace())
+        let administrator = Security.Grant(
+            subject: .principal("administrator"),
+            resource: .database,
+            access: .all
+        )
+        try await executor.withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            try await store.installInitial(
+                [administrator],
+                transaction: transaction
+            )
+        }
+
+        await #expect(
+            throws: DatabaseGrantAuthorizationError.lastAdministrator
+        ) {
+            try await executor.withTransaction(
+                configuration: .batch,
+                clock: TestProcessMonotonicClock()
+            ) { transaction in
+                _ = try await store.revoke(
+                    Security.Grant(
+                        subject: administrator.subject,
+                        resource: .database,
+                        access: .administer
+                    ),
+                    expectedRevision: 1,
+                    transaction: transaction
+                )
+            }
+        }
+
+        let persisted = try await executor.withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            try await store.direct(
+                subject: administrator.subject,
+                transaction: transaction
+            )
+        }
+        #expect(persisted.revision == 1)
+        #expect(persisted.grants == [administrator])
+    }
+
+    @Test("An administering Grant can be revoked when another remains")
+    func administratorCanBeRevokedWhenAnotherRemains() async throws {
+        let engine = InMemoryEngine()
+        let executor = StorageTransactionExecutor(engine: engine)
+        let store = DatabaseGrantStore(resource: .database, root: Subspace())
+        let primary = Security.Grant(
+            subject: .principal("primary"),
+            resource: .database,
+            access: .all
+        )
+        let backup = Security.Grant(
+            subject: .principalRole("backup"),
+            resource: .database,
+            access: .administer
+        )
+        try await executor.withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            try await store.installInitial(
+                [primary, backup],
+                transaction: transaction
+            )
+        }
+
+        let revision = try await executor.withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            try await store.revoke(
+                Security.Grant(
+                    subject: primary.subject,
+                    resource: .database,
+                    access: .administer
+                ),
+                expectedRevision: 1,
+                transaction: transaction
+            )
+        }
+        #expect(revision == 2)
+
+        let grants = try await executor.withTransaction(
+            configuration: .readOnly,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            try await store.direct(transaction: transaction)
+        }
+        #expect(grants.revision == 2)
+        #expect(grants.grants.contains(backup))
+        #expect(
+            grants.grants.contains(
+                Security.Grant(
+                    subject: primary.subject,
+                    resource: .database,
+                    access: [.read, .write]
+                )
+            )
+        )
+    }
 
     private func makeContainer() async throws -> DBContainer {
         try await DBContainer.open(
@@ -124,6 +238,7 @@ struct DatabaseGrantAuthorizationTests {
         container: DBContainer,
         principal: Principal
     ) -> DatabaseContext {
+#if MultipleBases
         do {
             return container.session(authorization: .authenticated(principal))
                 .base(try TestBaseEnvironment.id())
@@ -131,5 +246,8 @@ struct DatabaseGrantAuthorizationTests {
         } catch {
             preconditionFailure("The fixed test Base identity must be valid")
         }
+#else
+        container.newContext(authorization: .authenticated(principal))
+#endif
     }
 }

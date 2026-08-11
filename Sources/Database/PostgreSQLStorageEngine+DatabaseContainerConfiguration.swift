@@ -13,26 +13,37 @@ extension PostgreSQLStorageEngine.Configuration: DatabaseContainerConfiguration 
     ) async throws -> DBConfiguration {
         let engine = try await PostgreSQLStorageEngine(configuration: self)
         let domainID = try DatabaseStorageDomain.ID("primary")
+        #if DATABASE_MULTIPLE_BASES
         let placementID = try Base.Placement.ID("default")
+        let topology = try DatabaseStorageTopology(
+            controlDomainID: domainID,
+            domains: [
+                try DatabaseStorageDomain(
+                    id: domainID,
+                    namespacePath: ["database", "main"],
+                    storageEngine: engine
+                ),
+            ],
+            placements: [
+                try DatabaseStoragePlacement(
+                    id: placementID,
+                    domainID: domainID,
+                    path: ["bases"]
+                ),
+            ],
+            defaultPlacementID: placementID
+        )
+        #else
+        let topology = DatabaseStorageTopology(
+            controlDomain: try DatabaseStorageDomain(
+                id: domainID,
+                namespacePath: ["database", "main"],
+                storageEngine: engine
+            )
+        )
+        #endif
         return DBConfiguration(
-            storageTopology: try DatabaseStorageTopology(
-                controlDomainID: domainID,
-                domains: [
-                    try DatabaseStorageDomain(
-                        id: domainID,
-                        namespacePath: ["database", "main"],
-                        storageEngine: engine
-                    ),
-                ],
-                placements: [
-                    try DatabaseStoragePlacement(
-                        id: placementID,
-                        domainID: domainID,
-                        path: ["bases"]
-                    ),
-                ],
-                defaultPlacementID: placementID
-            ),
+            storageTopology: topology,
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             indexConfigurations: indexConfigurations

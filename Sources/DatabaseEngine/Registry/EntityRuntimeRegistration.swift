@@ -133,6 +133,9 @@ struct EntityTableRows: Sendable {
     let residualOrderBy: [SortKey]?
     let limitPushed: Bool
     let offsetPushed: Bool
+    let pageWindowPushed: Bool
+    let continuationPosition: ByteString?
+    let stableSnapshotQueryFingerprint: ByteString?
 }
 
 public struct EntityRuntimeDefinition: Sendable {
@@ -196,22 +199,51 @@ public struct EntityRuntimeDefinition: Sendable {
             } else {
                 items = try await context.fetch(plan.typedQuery)
             }
-            let rows = try items.map { item -> CanonicalSourceRow in
+            var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+                workMeter: options.workMeter,
+                stage: .resultMaterialization,
+                layout: try CanonicalRelationalFootprintMeter
+                    .retainedArrayLayout(for: CanonicalSourceRow.self),
+                expectedCount: items.count
+            )
+            for item in items {
                 try options.workMeter.consume(at: .resultMaterialization)
                 let row = try QueryRowCodec.encode(item)
-                return CanonicalSourceRow.fromBaseFields(
+                let sourceRow = CanonicalSourceRow.fromBaseFields(
                     row.fields,
                     sourceName: sourceName,
                     annotations: row.annotations,
                     version: row.version
                 )
+                try retainedRows.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: sourceRow,
+                        workMeter: options.workMeter
+                    ),
+                    make: { sourceRow }
+                )
+            }
+            let rows = retainedRows.finish().promoteToOutput()
+            let continuationPosition: ByteString?
+            if let visiblePageSize = plan.visiblePageSize,
+               items.count > visiblePageSize,
+               visiblePageSize > 0 {
+                continuationPosition = try PersistableIdentifierKeyCodec
+                    .tuple(for: items[visiblePageSize - 1])
+                    .pack()
+            } else {
+                continuationPosition = nil
             }
             return EntityTableRows(
                 rows: rows,
                 residualFilter: plan.residualFilter,
                 residualOrderBy: plan.residualOrderBy,
                 limitPushed: plan.limitPushed,
-                offsetPushed: plan.offsetPushed
+                offsetPushed: plan.offsetPushed,
+                pageWindowPushed: plan.pageWindowPushed,
+                continuationPosition: continuationPosition,
+                stableSnapshotQueryFingerprint:
+                    plan.stableSnapshotQueryFingerprint
             )
         }
     }
@@ -579,8 +611,16 @@ public struct EntityRuntimeDefinition: Sendable {
                 "Schema-driven runtime expected table '\(entity.name)'"
             )
         }
-        let readLimit = try options.workMeter.storageReadLimitWithSentinel(
+        let stablePageWindow = try schemaDrivenStablePageWindow(
+            selectQuery: selectQuery,
+            options: options
+        )
+        let budgetReadLimit = try options.workMeter.storageReadLimitWithSentinel(
             at: .storageRow
+        )
+        let readLimit = min(
+            stablePageWindow?.fetchLimit ?? budgetReadLimit,
+            budgetReadLimit
         )
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
@@ -590,30 +630,130 @@ public struct EntityRuntimeDefinition: Sendable {
             entity: entity,
             partitions: table.partitions,
             limit: readLimit,
+            offset: stablePageWindow?.storageOffset ?? 0,
+            startingAfterIdentifier:
+                stablePageWindow?.startingAfterIdentifier,
+            workMeter: options.workMeter,
             configuration: execution.transactionConfiguration,
             transaction: transaction
         )
-        var rows: [CanonicalSourceRow] = []
-        rows.reserveCapacity(models.count)
+        var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: options.workMeter,
+            stage: .resultMaterialization,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: models.count
+        )
         for model in models {
-            try options.workMeter.consume(at: .storageRow)
+            try options.workMeter.consume(at: .resultMaterialization)
             let row = try QueryRowCodec.encode(model)
-            rows.append(
-                CanonicalSourceRow.fromBaseFields(
-                    row.fields,
-                    sourceName: sourceName,
-                    annotations: row.annotations,
-                    version: row.version
-                )
+            let sourceRow = CanonicalSourceRow.fromBaseFields(
+                row.fields,
+                sourceName: sourceName,
+                annotations: row.annotations,
+                version: row.version
             )
+            try retainedRows.append(
+                footprint: try CanonicalRelationalFootprintMeter.footprint(
+                    of: sourceRow,
+                    workMeter: options.workMeter
+                ),
+                make: { sourceRow }
+            )
+        }
+        let rows = retainedRows.finish().promoteToOutput()
+        let continuationPosition: ByteString?
+        if let stablePageWindow,
+           models.count > stablePageWindow.visibleCount,
+           stablePageWindow.visibleCount > 0 {
+            let identity = try identity(
+                for: models[stablePageWindow.visibleCount - 1],
+                entity: entity
+            )
+            continuationPosition = try PersistableIdentifierKeyCodec.tuple(
+                for: identity,
+                expectedType: entity.identifierType
+            ).pack()
+        } else {
+            continuationPosition = nil
         }
         return EntityTableRows(
             rows: rows,
-            residualFilter: selectQuery.filter,
-            residualOrderBy: selectQuery.orderBy,
+            residualFilter: stablePageWindow == nil ? selectQuery.filter : nil,
+            residualOrderBy: stablePageWindow == nil ? selectQuery.orderBy : nil,
             limitPushed: false,
-            offsetPushed: false
+            offsetPushed: false,
+            pageWindowPushed: stablePageWindow != nil,
+            continuationPosition: continuationPosition,
+            stableSnapshotQueryFingerprint:
+                stablePageWindow?.queryFingerprint
         )
+    }
+
+    private struct SchemaDrivenStablePageWindow {
+        let queryFingerprint: ByteString
+        let storageOffset: Int
+        let fetchLimit: Int
+        let visibleCount: Int
+        let startingAfterIdentifier: ByteString?
+    }
+
+    private static func schemaDrivenStablePageWindow(
+        selectQuery: SelectQuery,
+        options: ReadExecutionContext
+    ) throws -> SchemaDrivenStablePageWindow? {
+        guard options.options.continuationSnapshotIsStable,
+              selectQuery.filter == nil,
+              selectQuery.orderBy?.isEmpty ?? true,
+              !selectQuery.distinct,
+              !isCountProjection(selectQuery.projection),
+              let pageSize = try options.resolvePageSize() else {
+            return nil
+        }
+        let cursor = try CanonicalQueryPagination
+            .validatedStableSnapshotCursor(
+                selectQuery: selectQuery,
+                options: options
+            )
+        guard options.continuation == nil || cursor.storagePosition != nil else {
+            return nil
+        }
+        guard let queryOffset = Int(exactly: selectQuery.offset ?? 0) else {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "Query offset exceeds the platform integer range"
+            )
+        }
+        let remainingLimit: Int?
+        if let limit = selectQuery.limit {
+            guard let limit = Int(exactly: limit) else {
+                throw CanonicalReadError.unsupportedSelectQuery(
+                    "Query limit exceeds the platform integer range"
+                )
+            }
+            remainingLimit = max(0, limit - cursor.offset)
+        } else {
+            remainingLimit = nil
+        }
+        let visibleCount = min(pageSize, remainingLimit ?? pageSize)
+        let wantsLookahead = remainingLimit.map { $0 > visibleCount } ?? true
+        let (fetchLimit, overflow) = visibleCount.addingReportingOverflow(
+            wantsLookahead ? 1 : 0
+        )
+        return SchemaDrivenStablePageWindow(
+            queryFingerprint: cursor.queryFingerprint,
+            storageOffset: cursor.storagePosition == nil ? queryOffset : 0,
+            fetchLimit: max(1, overflow ? Int.max : fetchLimit),
+            visibleCount: visibleCount,
+            startingAfterIdentifier: cursor.storagePosition
+        )
+    }
+
+    private static func isCountProjection(_ projection: Projection) -> Bool {
+        guard case .items(let items) = projection, items.count == 1,
+              case .aggregate(.count) = items[0].expression else {
+            return false
+        }
+        return true
     }
 
 }
@@ -818,15 +958,24 @@ private extension EntityRuntimeIndexOperationBuilding {
                 snapshot: false,
                 limit: maximumWorkUnits + 1
             )
+            // Work units bound the total slice, while this fixed batch bounds
+            // retained decoded models. The two limits have different ownership
+            // and must not be reused as one allocation capacity.
+            let retainedBatchLimit = min(maximumWorkUnits, 256)
             var batch: [(item: PersistedModel, id: Tuple)] = []
-            batch.reserveCapacity(maximumWorkUnits)
+            batch.reserveCapacity(retainedBatchLimit)
             var lastKey: ByteString?
             var hasMore = false
+            var processed = 0
+            let violationTracker = UniquenessViolationTracker(
+                container: container,
+                metadataSubspace: storeSubspace.subspace(SubspaceKey.metadata)
+            )
             var iterator = sequence.makeAsyncIterator()
             while let (key, data) = try await iterator.next() {
-                if batch.count == maximumWorkUnits {
+                if processed == maximumWorkUnits {
                     hasMore = true
-                    continue
+                    break
                 }
                 let item = try canonicalizeModel(
                     DataAccess.deserializePersistedModel(
@@ -836,20 +985,31 @@ private extension EntityRuntimeIndexOperationBuilding {
                 )
                 batch.append((item: item, id: try itemTypeSubspace.unpack(key)))
                 lastKey = key
+                processed += 1
+                if batch.count == retainedBatchLimit {
+                    try await OnlineIndexBatchWriter.write(
+                        batch,
+                        index: index,
+                        maintainer: maintainer,
+                        uniquenessMaintainer: uniquenessMaintainer,
+                        violationTracker: violationTracker,
+                        transaction: transaction
+                    )
+                    batch.removeAll(keepingCapacity: true)
+                }
             }
-            try await OnlineIndexBatchWriter.write(
-                batch,
-                index: index,
-                maintainer: maintainer,
-                uniquenessMaintainer: uniquenessMaintainer,
-                violationTracker: UniquenessViolationTracker(
-                    container: container,
-                    metadataSubspace: storeSubspace.subspace(SubspaceKey.metadata)
-                ),
-                transaction: transaction
-            )
+            if !batch.isEmpty {
+                try await OnlineIndexBatchWriter.write(
+                    batch,
+                    index: index,
+                    maintainer: maintainer,
+                    uniquenessMaintainer: uniquenessMaintainer,
+                    violationTracker: violationTracker,
+                    transaction: transaction
+                )
+            }
             return EntityIndexSliceResult(
-                processed: UInt64(batch.count),
+                processed: UInt64(processed),
                 lastProcessedKey: lastKey,
                 hasMore: hasMore
             )
