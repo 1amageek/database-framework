@@ -2,7 +2,8 @@
 import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
-import DatabaseWireRuntime
+import DatabaseOperations
+import DatabaseWireAdapter
 import DatabaseFoundation
 import DatabaseTypes
 import DatabaseWire
@@ -94,7 +95,7 @@ struct DatabaseSingleRootRuntimeTests {
         let runtime = try await makeRuntime(container: container)
 
         let response = try await invoke(
-            DatabaseOperations.capabilitiesDescribe,
+            DatabaseOperationCatalog.capabilitiesDescribe,
             request: EmptyOperationPayload(),
             requestID: 1,
             target: .database,
@@ -115,15 +116,15 @@ struct DatabaseSingleRootRuntimeTests {
         let runtime = try await makeRuntime(container: container)
         let requestID: UInt64 = 2
         let frame = try DatabaseWireEncoder().encodeRequest(
-            DatabaseOperations.capabilitiesDescribe,
+            DatabaseOperationCatalog.capabilitiesDescribe,
             requestID: requestID,
             target: .base(try Base.ID("unavailable")),
             metadata: OperationRequestMetadata(),
             request: EmptyOperationPayload()
         )
         let response = try DatabaseWireDecoder().decodeResponse(
-            DatabaseOperations.capabilitiesDescribe,
-            from: try await runtime.execute(
+            DatabaseOperationCatalog.capabilitiesDescribe,
+            from: try await DatabaseWireEndpoint(instance: runtime).execute(
                 frame,
                 context: DatabaseRequestExecutionContext(
                     authorization: Self.authorization
@@ -147,7 +148,7 @@ struct DatabaseSingleRootRuntimeTests {
         let container = try await makeContainer()
         let runtime = try await makeRuntime(container: container)
         let response = try await invoke(
-            DatabaseOperations.grantExecute,
+            DatabaseOperationCatalog.grantExecute,
             request: GrantExecuteOperation.Request(invocation: .effective),
             requestID: 3,
             target: .database,
@@ -172,7 +173,7 @@ struct DatabaseSingleRootRuntimeTests {
         let reader = Principal(identifier: "single-root-reader", roles: [])
         let key = "grant-single-root-reader"
         _ = try await invoke(
-            DatabaseOperations.grantExecute,
+            DatabaseOperationCatalog.grantExecute,
             request: GrantExecuteOperation.Request(
                 invocation: .grant(
                     Security.Grant(
@@ -190,7 +191,7 @@ struct DatabaseSingleRootRuntimeTests {
             runtime: runtime
         )
         let response = try await invoke(
-            DatabaseOperations.grantExecute,
+            DatabaseOperationCatalog.grantExecute,
             request: GrantExecuteOperation.Request(invocation: .effective),
             requestID: 5,
             target: .database,
@@ -245,18 +246,17 @@ struct DatabaseSingleRootRuntimeTests {
 
     private func makeRuntime(
         container: DBContainer
-    ) async throws -> DatabaseOperationRuntime {
-        try await DatabaseOperationRuntime(
+    ) async throws -> DatabaseOperationInstance {
+        try await DatabaseOperationInstance.open(
             container: container,
-            configuration: try DatabaseOperationRuntimeConfiguration(
-                identity: DatabaseRuntimeIdentity(version: "single-root-test"),
+            configuration: try DatabaseOperationConfiguration(
+                identity: DatabaseOperationIdentity(version: "single-root-test"),
                 serviceFactory: AnyDatabaseOperationServiceFactory(
                     SingleRootServiceFactory()
                 ),
                 admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
                     UnrestrictedDatabaseOperationAdmissionPolicy()
                 ),
-                clock: RealtimeDatabaseWallClock()
             )
         )
     }
@@ -268,7 +268,7 @@ struct DatabaseSingleRootRuntimeTests {
         target: DatabaseOperationTarget,
         metadata: OperationRequestMetadata = OperationRequestMetadata(),
         authorization: AuthorizationContext = Self.authorization,
-        runtime: DatabaseOperationRuntime
+        runtime: DatabaseOperationInstance
     ) async throws -> Response {
         let frame = try DatabaseWireEncoder().encodeRequest(
             operation,
@@ -279,7 +279,7 @@ struct DatabaseSingleRootRuntimeTests {
         )
         let response = try DatabaseWireDecoder().decodeResponse(
             operation,
-            from: try await runtime.execute(
+            from: try await DatabaseWireEndpoint(instance: runtime).execute(
                 frame,
                 context: DatabaseRequestExecutionContext(
                     authorization: authorization
@@ -304,8 +304,10 @@ private final class SingleRootServiceFactory: DatabaseOperationServiceFactory {
         #if GraphIndexes
         return DatabaseOperationServices(
             graphOperations: GraphOperationServices(
-                statementExecutor: CanonicalDatabaseStatementMutationExecutor(
-                    runtimeLimits: context.runtimeLimits
+                statementExecutor: AnyDatabaseStatementMutationExecutor(
+                    CanonicalDatabaseStatementMutationExecutor(
+                        runtimeLimits: context.runtimeLimits
+                    )
                 ),
                 algorithm: AnyDatabaseGraphAlgorithmService(unavailable),
                 ontology: AnyDatabaseOntologyService(unavailable),
@@ -318,8 +320,10 @@ private final class SingleRootServiceFactory: DatabaseOperationServiceFactory {
         )
         #else
         return DatabaseOperationServices(
-            statementExecutor: CanonicalDatabaseStatementMutationExecutor(
-                runtimeLimits: context.runtimeLimits
+            statementExecutor: AnyDatabaseStatementMutationExecutor(
+                CanonicalDatabaseStatementMutationExecutor(
+                    runtimeLimits: context.runtimeLimits
+                )
             ),
             readCommandRegistry: try DatabaseReadCommandRegistry(commands: []),
             writeCommandRegistry: try DatabaseWriteCommandRegistry(commands: []),

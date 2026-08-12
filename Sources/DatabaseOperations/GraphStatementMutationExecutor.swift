@@ -1,0 +1,12 @@
+import DatabaseMaintenanceOperations
+import DatabaseSchemaOperations
+import DatabaseJobRuntime
+import DatabaseGraphOperations
+import DatabaseMutationOperations
+import DatabaseQueryOperations
+import DatabaseCommandOperations
+import DatabaseOperationCore
+#if DATABASE_OPERATIONS_GRAPH_INDEXES
+public protocol GraphStatementMutationExecutor:
+    DatabaseStatementMutationExecutor {}
+#endif

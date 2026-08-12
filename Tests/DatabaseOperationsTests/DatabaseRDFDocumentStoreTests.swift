@@ -1,0 +1,159 @@
+import DatabaseKit
+import TestSupport
+import DatabaseRuntime
+import DatabaseEngine
+import DatabaseOperations
+import DatabaseWire
+import StorageKit
+import Testing
+
+@Suite("Canonical RDF document store", .serialized)
+struct DatabaseRDFDocumentStoreTests {
+    @Test("replacement is canonical, paged, and revisioned")
+    func replacementIsCanonicalAndPaged() async throws {
+        let container = try await makeContainer()
+        let store = try await DatabaseRDFDocumentStore(
+            container: container,
+            namespace: "ontology"
+        )
+        let later = try quad(subject: "urn:z")
+        let earlier = try quad(subject: "urn:a")
+
+        let context = container.testBaseContext()
+        let firstPage = try await context.withTransaction(
+            configuration: .batch
+        ) { transaction in
+            let revision = try await store.replace(
+                identifier: "urn:calendar",
+                auxiliaryIdentifiers: ["urn:z-import", "urn:a-import", "urn:z-import"],
+                quads: [later, earlier, later],
+                expectedRevision: 0,
+                transaction: transaction.storageAccess
+            )
+            #expect(revision == 1)
+            return try await store.page(
+                identifier: "urn:calendar",
+                offset: 0,
+                limit: 1,
+                transaction: transaction.storageAccess
+            )
+        }
+
+        #expect(firstPage?.revision == 1)
+        #expect(firstPage?.auxiliaryIdentifiers == ["urn:a-import", "urn:z-import"])
+        #expect(firstPage?.totalQuadCount == 2)
+        #expect(firstPage?.quads.count == 1)
+        #expect(firstPage?.nextOffset == 1)
+
+        let secondPage = try await context.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
+        ) { transaction in
+            try await store.page(
+                identifier: "urn:calendar",
+                offset: 1,
+                limit: 1,
+                transaction: transaction.storageAccess
+            )
+        }
+        #expect(secondPage?.quads.count == 1)
+        #expect(secondPage?.nextOffset == nil)
+        #expect(Set((firstPage?.quads ?? []) + (secondPage?.quads ?? [])) == [earlier, later])
+    }
+
+    @Test("revision conflicts and tombstones are deterministic")
+    func revisionConflictAndTombstone() async throws {
+        let container = try await makeContainer()
+        let store = try await DatabaseRDFDocumentStore(
+            container: container,
+            namespace: "shacl"
+        )
+        let context = container.testBaseContext()
+        try await context.withTransaction(configuration: .batch) { transaction in
+            _ = try await store.replace(
+                identifier: "urn:shapes",
+                auxiliaryIdentifiers: [],
+                quads: [try quad(subject: "urn:shape")],
+                expectedRevision: nil,
+                transaction: transaction.storageAccess
+            )
+        }
+
+        await #expect(throws: DatabaseRDFDocumentStoreError.self) {
+            try await context.withTransaction(configuration: .batch) { transaction in
+                _ = try await store.replace(
+                    identifier: "urn:shapes",
+                    auxiliaryIdentifiers: [],
+                    quads: [],
+                    expectedRevision: 9,
+                    transaction: transaction.storageAccess
+                )
+            }
+        }
+
+        let deletedRevision = try await context.withTransaction(
+            configuration: .batch
+        ) { transaction in
+            try await store.delete(
+                identifier: "urn:shapes",
+                expectedRevision: 1,
+                transaction: transaction.storageAccess
+            )
+        }
+        #expect(deletedRevision == 2)
+
+        let page = try await context.withTransaction(
+            requiredAccess: .read,
+            configuration: .readOnly
+        ) { transaction in
+            try await store.page(
+                identifier: "urn:shapes",
+                offset: 0,
+                limit: 10,
+                transaction: transaction.storageAccess
+            )
+        }
+        #expect(page == nil)
+
+        let recreatedRevision = try await context.withTransaction(
+            configuration: .batch
+        ) { transaction in
+            try await store.replace(
+                identifier: "urn:shapes",
+                auxiliaryIdentifiers: [],
+                quads: [try quad(subject: "urn:replacement")],
+                expectedRevision: 2,
+                transaction: transaction.storageAccess
+            )
+        }
+        #expect(recreatedRevision == 3)
+    }
+
+    private func makeContainer() async throws -> DBContainer {
+        try await DBContainer.open(
+            for: try Schema(
+                entities: [try DatabaseEndpointEntity.schemaEntity],
+                version: Schema.Version(1, 0, 0)
+            ),
+            configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+            ),
+            security: .testingDisabled
+        )
+    }
+
+    private func quad(subject: String) throws -> RDFQuad {
+        try RDFQuad(
+            validatingSubject: try RDFTerm.iri(validating: subject),
+            predicate: try RDFTerm.iri(validating: "urn:predicate"),
+            object: .literal(
+                try .init(
+                    lexicalForm: subject,
+                    datatype: "http://www.w3.org/2001/XMLSchema#string"
+                )
+            ),
+            graph: try RDFTerm.iri(validating: "urn:graph")
+        )
+    }
+}

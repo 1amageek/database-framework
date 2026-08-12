@@ -1,0 +1,11 @@
+@_exported import DatabaseCommandOperations
+@_exported import DatabaseGraphOperations
+@_exported import DatabaseJobRuntime
+@_exported import DatabaseSchemaOperations
+@_exported import DatabaseMaintenanceOperations
+#if DATABASE_OPERATIONS_MULTIPLE_BASES
+@_exported import DatabaseAdministrationOperations
+#endif
+@_exported import DatabaseMutationOperations
+@_exported import DatabaseOperationCore
+@_exported import DatabaseQueryOperations

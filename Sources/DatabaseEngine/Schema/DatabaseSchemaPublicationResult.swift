@@ -1,5 +1,5 @@
 import DatabaseKit
-@_spi(DatabaseWireRuntime) import DatabaseWire
+@_spi(DatabaseOperations) import DatabaseWire
 
 package struct DatabaseSchemaPublicationResult: Sendable {
     package let previousFingerprint: SchemaFingerprint?

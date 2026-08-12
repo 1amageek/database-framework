@@ -1,7 +1,7 @@
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
-@_spi(DatabaseWireRuntime) import DatabaseWire
+@_spi(DatabaseOperations) import DatabaseWire
 import Synchronization
 
 /// DBContainer - Application resource manager for database persistence

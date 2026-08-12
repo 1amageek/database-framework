@@ -3,7 +3,8 @@ import Database
 import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
-import DatabaseWireRuntime
+import DatabaseOperations
+import DatabaseWireAdapter
 import DatabaseFoundation
 import DatabaseTypes
 import DatabaseWire
@@ -153,7 +154,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
 
     private func makeRuntime(
         container: DBContainer
-    ) async throws -> DatabaseOperationRuntime {
+    ) async throws -> DatabaseOperationInstance {
         let identifierGenerator = RandomDatabaseUUIDGenerator()
         let serviceFactory = CanonicalDatabaseOperationServiceFactory(
             maintenanceServiceFactory: DatabaseMaintenanceOperationServiceFactory(
@@ -167,17 +168,16 @@ struct SchemaDrivenSemanticParitySQLiteTests {
                 )
             )
         )
-        return try await DatabaseOperationRuntime(
+        return try await DatabaseOperationInstance.open(
             container: container,
-            configuration: try DatabaseOperationRuntimeConfiguration(
-                identity: DatabaseRuntimeIdentity(version: "semantic-parity-test"),
+            configuration: try DatabaseOperationConfiguration(
+                identity: DatabaseOperationIdentity(version: "semantic-parity-test"),
                 serviceFactory: AnyDatabaseOperationServiceFactory(serviceFactory),
                 admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
                     UnrestrictedDatabaseOperationAdmissionPolicy()
                 ),
-                clock: RealtimeDatabaseWallClock()
             ),
-            hostServices: DatabaseHostServices(
+            hostServices: DatabaseOperationHostServices(
                 jobScheduler: AnyDatabaseJobScheduler(
                     SemanticParityJobScheduler()
                 ),
@@ -234,10 +234,10 @@ struct SchemaDrivenSemanticParitySQLiteTests {
     }
 
     private func shortestPath(
-        runtime: DatabaseOperationRuntime
+        runtime: DatabaseOperationInstance
     ) async throws -> MaterializedPath {
         let response = try await invoke(
-            DatabaseOperations.graphAlgorithm,
+            DatabaseOperationCatalog.graphAlgorithm,
             request: GraphAlgorithmOperation.Request(
                 source: GraphAlgorithmOperation.Source(
                     index: "semantic_graph",
@@ -266,10 +266,10 @@ struct SchemaDrivenSemanticParitySQLiteTests {
     }
 
     private func personExists(
-        runtime: DatabaseOperationRuntime
+        runtime: DatabaseOperationInstance
     ) async throws -> Bool {
         let response = try await invoke(
-            DatabaseOperations.queryExecute,
+            DatabaseOperationCatalog.queryExecute,
             request: QueryExecuteOperation.Request(
                 input: .ir(
                     .ask(
@@ -301,11 +301,11 @@ struct SchemaDrivenSemanticParitySQLiteTests {
     }
 
     private func validateMissingName(
-        runtime: DatabaseOperationRuntime,
+        runtime: DatabaseOperationInstance,
         rdfIndex: String
     ) async throws -> MaterializedValidation {
         _ = try await invoke(
-            DatabaseOperations.shaclExecute,
+            DatabaseOperationCatalog.shaclExecute,
             request: SHACLExecuteOperation.Request(
                 invocation: .upsertShapes(
                     graph: Self.shapesGraph,
@@ -320,7 +320,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
             )
         )
         let response = try await invoke(
-            DatabaseOperations.shaclExecute,
+            DatabaseOperationCatalog.shaclExecute,
             request: SHACLExecuteOperation.Request(
                 invocation: .validate(
                     shapesGraph: Self.shapesGraph,
@@ -389,11 +389,13 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         _ operation: DatabaseOperation<Request, Response>,
         request: Request,
         requestID: UInt64,
-        runtime: DatabaseOperationRuntime,
+        runtime: DatabaseOperationInstance,
         metadata: OperationRequestMetadata = OperationRequestMetadata()
     ) async throws -> Response {
         let encoder = DatabaseWireEncoder()
-        let responseBytes = try await runtime.execute(
+        let responseBytes = try await DatabaseWireEndpoint(
+            instance: runtime
+        ).execute(
             try encoder.encodeRequest(
                 operation,
                 requestID: requestID,

@@ -1,6 +1,6 @@
 #if SQLITE
 import DatabaseKit
-import DatabaseWireRuntime
+import DatabaseOperations
 import TestSupport
 
 struct SQLiteJobAuthorizationValidator:

@@ -4,7 +4,8 @@ import DatabaseEngine
 import DatabaseFoundation
 import DatabaseKit
 import DatabaseRuntime
-import DatabaseWireRuntime
+import DatabaseOperations
+import DatabaseWireAdapter
 import DatabaseTypes
 import DatabaseWire
 import TestSupport
@@ -107,7 +108,7 @@ struct DatabaseQueryContinuationSQLiteTests {
         )
     }
 
-    private func makeEndpoint(container: DBContainer) throws -> DatabaseEndpoint {
+    private func makeEndpoint(container: DBContainer) throws -> DatabaseWireEndpoint {
         let snapshotStore = DatabaseQuerySnapshotStore(
             container: container,
             clock: AnyDatabaseWallClock(RealtimeDatabaseWallClock()),
@@ -130,7 +131,7 @@ struct DatabaseQueryContinuationSQLiteTests {
             ],
             requiredOperations: [.queryExecute]
         )
-        return DatabaseEndpoint(
+        return DatabaseWireEndpoint(
             container: container,
             registry: registry,
             admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
@@ -155,11 +156,11 @@ struct DatabaseQueryContinuationSQLiteTests {
     private func execute(
         _ request: QueryExecuteOperation.Request,
         requestID: UInt64,
-        endpoint: DatabaseEndpoint
+        endpoint: DatabaseWireEndpoint
     ) async throws -> Result<QueryExecuteOperation.Response, RemoteOperationError> {
         let encoder = DatabaseWireEncoder()
         let requestFrame = try encoder.encodeRequest(
-            DatabaseOperations.queryExecute,
+            DatabaseOperationCatalog.queryExecute,
             requestID: requestID,
             target: operationTarget(),
             metadata: OperationRequestMetadata(),
@@ -172,7 +173,7 @@ struct DatabaseQueryContinuationSQLiteTests {
             )
         )
         return try DatabaseWireDecoder().decodeResponse(
-            DatabaseOperations.queryExecute,
+            DatabaseOperationCatalog.queryExecute,
             from: responseFrame,
             matching: requestID
         )

@@ -25,7 +25,7 @@ For example, a consuming package selects a graph composition with:
 ```swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0809.2",
+    from: "26.0812.1",
     traits: ["GraphIndexes"]
 )
 ```
@@ -35,10 +35,11 @@ umbrella also includes GraphIndex and OntologyIndex for that composition.
 `Relationships`, storage backends, and `MultipleBases` remain independent
 choices.
 
-`Database` does not re-export `DatabaseWireRuntime` or `DatabaseFoundation`.
-They are separate optional products for remote operation execution and native
-Foundation adapters. The standalone `database-server` package consumes them;
-an in-process application does not.
+`Database` does not re-export `DatabaseOperations`, `DatabaseWireAdapter`, or
+`DatabaseFoundation`. They are separate optional products for canonical remote
+operation execution, Wire frame adaptation, and native Foundation conversion.
+The standalone `database-server` package consumes the first two; an in-process
+application does not.
 
 Backend facade availability is both trait- and platform-dependent:
 

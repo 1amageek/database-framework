@@ -65,7 +65,8 @@ general-purpose database value type in this package.
 | `VersionIndex` | Model version history |
 | `LeaderboardIndex` | Time-window leaderboard indexes |
 | `QueryAST` | SQL and SPARQL parsing and syntax representation; semantic QueryIR remains in `database-kit` |
-| `DatabaseWireRuntime` | Bounded DatabaseWire decoding, typed operation dispatch, limits, jobs, idempotency, and typed response encoding; it is not a network listener |
+| `DatabaseOperations` | Typed operation dispatch, limits, jobs, idempotency, and database execution; it is not a network listener |
+| `DatabaseWireAdapter` | Bounded frame decoding, response encoding, and error mapping around `DatabaseOperations` |
 | `Database` | Convenience facade that re-exports the selected runtime and storage adapter |
 
 Index modules depend on `DatabaseEngine`, `database-kit`, `database-types`, and
@@ -184,9 +185,10 @@ or error contracts.
 
 ## Server Contract
 
-`DatabaseWireRuntime` consumes the canonical `DatabaseWire` protocol declared by
-`database-kit`. It owns operation routing and execution, not transport framing
-outside DatabaseWire and not storage implementation.
+`DatabaseOperations` consumes the canonical `DatabaseWire` protocol declared by
+`database-kit` and owns operation routing and execution. `DatabaseWireAdapter`
+owns the bounded frame boundary. Neither owns a network transport or storage
+implementation.
 
 The 14 registered operations are grouped into these families:
 
@@ -310,7 +312,7 @@ the same commit as `origin/main`.
 | Package | Minimum release |
 |---|---:|
 | `database-types` | `26.0730.0` |
-| `database-kit` | `26.0809.4` |
+| `database-kit` | `26.0812.1` |
 | `storage-kit` | `26.0807.0` |
 | `swift-hnsw` | `1.1.4` |
 

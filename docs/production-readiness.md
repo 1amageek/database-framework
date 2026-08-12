@@ -96,33 +96,41 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3977 \
+    --expected-count 3980 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
 
-swift build \
-  --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm \
-  --product Database \
-  --disable-default-traits \
-  --traits AllRuntimeFeatures,MultipleBases \
-  -c release \
-  -debug-info-format none
-swift build \
-  --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm-embedded \
-  --product Database \
-  --disable-default-traits \
-  --traits AllRuntimeFeatures,MultipleBases \
-  -c release \
-  -debug-info-format none
-swift build \
-  --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_static-linux-0.1.0 \
-  --triple aarch64-swift-linux-musl \
-  --product Database \
-  --disable-default-traits \
-  --traits AllRuntimeFeatures,MultipleBases \
-  -c release \
-  -debug-info-format none
+for product in Database DatabaseWireAdapter; do
+  swift build \
+    --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm \
+    --product "$product" \
+    --disable-default-traits \
+    --traits AllRuntimeFeatures,MultipleBases \
+    -c release \
+    -debug-info-format none
+done
+
+for product in Database DatabaseWireAdapter; do
+  swift build \
+    --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm-embedded \
+    --product "$product" \
+    --disable-default-traits \
+    --traits AllRuntimeFeatures,MultipleBases \
+    -c release \
+    -debug-info-format none
+done
+
+for product in Database DatabaseWireAdapter; do
+  swift build \
+    --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_static-linux-0.1.0 \
+    --triple aarch64-swift-linux-musl \
+    --product "$product" \
+    --disable-default-traits \
+    --traits AllRuntimeFeatures,MultipleBases \
+    -c release \
+    -debug-info-format none
+done
 
 ~~~
 
@@ -135,8 +143,8 @@ successfully. Do not replace these invocations with a direct package-wide
 the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
-The release gate uses database-kit tag 26.0811.0 (normalized by SwiftPM as
-26.811.0), storage-kit 26.0807.0, and swift-hnsw 1.1.4. Record the exact
+The release gate uses database-kit tag 26.0812.1 (normalized by SwiftPM as
+26.812.1), storage-kit 26.0807.0, and swift-hnsw 1.1.4. Record the exact
 framework commit, result bundles, backend service identities, and platform
 build logs in the release report; do not preserve a previous release's results
 as evidence for a later source revision.

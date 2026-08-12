@@ -1,3 +1,4 @@
+#if DATABASE_RUNTIME_TEST_GRAPH_INDEXES
 import DatabaseKit
 import TestSupport
 import DatabaseRuntime
@@ -133,3 +134,4 @@ struct SPARQLRuntimeDependencyInjectionTests {
         }
     }
 }
+#endif

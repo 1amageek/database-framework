@@ -45,10 +45,10 @@ exposing backend credentials through the semantic API.
 ~~~bash
 scripts/fdb-test-env run --clean -- \
   scripts/xcode-test-harness \
-    --traits FoundationDB,AllRuntimeFeatures \
+    --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3977 \
+    --expected-count 3980 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -66,7 +66,7 @@ independent.
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0812.0",
+    from: "26.0812.1",
     traits: ["SQLite", "GraphIndexes"]
 )
 ~~~
@@ -79,7 +79,7 @@ Enable the data-partitioning feature independently:
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0812.0",
+    from: "26.0812.1",
     traits: ["SQLite", "AllRuntimeFeatures", "MultipleBases"]
 )
 ~~~

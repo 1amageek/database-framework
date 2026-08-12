@@ -3,7 +3,8 @@
 import Database
 import DatabaseKit
 import DatabaseRuntime
-import DatabaseWireRuntime
+import DatabaseOperations
+import DatabaseWireAdapter
 import DatabaseFoundation
 import DatabaseTypes
 import DatabaseWire
@@ -82,7 +83,7 @@ struct SchemaIndexJobRestartSQLiteTests {
             )
             try await context.save()
             let response = try await invoke(
-                DatabaseOperations.schemaExecute,
+                DatabaseOperationCatalog.schemaExecute,
                 request: SchemaExecuteOperation.Request(
                     invocation: .apply(
                         manifest: SchemaManifest(schema: targetSchema),
@@ -142,8 +143,8 @@ struct SchemaIndexJobRestartSQLiteTests {
 
     private func makeRuntime(
         container: DBContainer
-    ) async throws -> DatabaseOperationRuntime {
-        let runtimeLimits = DatabaseRuntimeLimits.default
+    ) async throws -> DatabaseOperationInstance {
+        let runtimeLimits = DatabaseOperationLimits.default
         let identifierGenerator = RandomDatabaseUUIDGenerator()
         let registry = try DatabaseResumableOperationRegistry(
             operations: [
@@ -167,10 +168,10 @@ struct SchemaIndexJobRestartSQLiteTests {
                 )
             )
         )
-        return try await DatabaseOperationRuntime(
+        return try await DatabaseOperationInstance.open(
             container: container,
-            configuration: try DatabaseOperationRuntimeConfiguration(
-                identity: DatabaseRuntimeIdentity(
+            configuration: try DatabaseOperationConfiguration(
+                identity: DatabaseOperationIdentity(
                     version: "schema-restart-test"
                 ),
                 serviceFactory: AnyDatabaseOperationServiceFactory(
@@ -179,13 +180,12 @@ struct SchemaIndexJobRestartSQLiteTests {
                 admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
                     UnrestrictedDatabaseOperationAdmissionPolicy()
                 ),
-                clock: RealtimeDatabaseWallClock(),
                 schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory(
                     SchemaDrivenDatabaseRuntimeFactory()
                 ),
                 runtimeLimits: runtimeLimits
             ),
-            hostServices: DatabaseHostServices(
+            hostServices: DatabaseOperationHostServices(
                 jobScheduler: AnyDatabaseJobScheduler(
                     SQLiteSchemaJobScheduler()
                 ),
@@ -199,14 +199,14 @@ struct SchemaIndexJobRestartSQLiteTests {
 
     private func runUntilTerminal(
         _ job: JobIdentity,
-        runtime: DatabaseOperationRuntime,
+        runtime: DatabaseOperationInstance,
         firstRequestID: UInt64
     ) async throws -> JobStatusOperation.Response {
         var requestID = firstRequestID
         for _ in 0..<64 {
             try await runtime.runScheduledWork()
             let status = try await invoke(
-                DatabaseOperations.jobStatus,
+                DatabaseOperationCatalog.jobStatus,
                 request: JobStatusOperation.Request(job: job),
                 requestID: requestID,
                 runtime: runtime
@@ -241,7 +241,7 @@ struct SchemaIndexJobRestartSQLiteTests {
         _ operation: DatabaseOperation<Request, Response>,
         request: Request,
         requestID: UInt64,
-        runtime: DatabaseOperationRuntime
+        runtime: DatabaseOperationInstance
     ) async throws -> Response {
         let requestBytes = try DatabaseWireEncoder().encodeRequest(
             operation,
@@ -250,7 +250,9 @@ struct SchemaIndexJobRestartSQLiteTests {
             metadata: OperationRequestMetadata(),
             request: request
         )
-        let responseBytes = try await runtime.execute(
+        let responseBytes = try await DatabaseWireEndpoint(
+            instance: runtime
+        ).execute(
             requestBytes,
             context: DatabaseRequestExecutionContext(
                 authorization: TestBaseEnvironment.authorization,

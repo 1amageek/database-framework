@@ -58,7 +58,9 @@ runtime. Server hosting does not become a second execution implementation.
 flowchart TB
     Definition["Application definition<br/>schema / commands / policy"] --> Runtime["database-framework<br/>DBContainer + execution"]
     Runtime --> Engine["Injected StorageEngine"]
-    NativeHost["database-server<br/>optional standalone host"] --> Runtime
+    NativeHost["database-server<br/>optional standalone host"] --> Adapter["DatabaseWireAdapter<br/>bounded framing"]
+    Adapter --> Operations["DatabaseOperations<br/>canonical execution"]
+    Operations --> Runtime
     Remote["CLI / DatabaseClient"] --> NativeHost
 ~~~
 
@@ -148,19 +150,19 @@ The same trait conditions control `DatabaseRuntime` provider registration.
 Therefore an implementation cannot be re-exported without being registered, or
 registered without being part of the selected dependency graph.
 
-`DatabaseWireRuntime` uses the same composition. Its operation registry and
+`DatabaseOperations` uses the same composition. Its operation registry and
 `capabilities.describe` response contain graph, ontology, and SHACL operations
 only when `GraphIndexes` is active. A request for an operation outside the
 compiled composition fails with the typed `OPERATION_UNAVAILABLE` error; it
 never falls back to a partial implementation.
 
 Graph algorithm, ontology, SHACL, RDF document storage, graph query paging, and
-SPARQL mutation services are compiled out of `DatabaseWireRuntime` when
+SPARQL mutation services are compiled out of `DatabaseOperations` when
 `GraphIndexes` is absent. DatabaseWire's closed query and operation algebra
 remains available so a smaller runtime can decode a request and reject an
 unavailable operation or statement deterministically.
 
-`DatabaseRuntimeLimits` contains limits shared by every server composition.
+`DatabaseOperationLimits` contains limits shared by every server composition.
 `GraphOperationLimits`, including the SPARQL LOAD document byte limit, exists
 only in a `GraphIndexes` composition and is passed from runtime configuration
 through the service context into the graph-capable statement executor.

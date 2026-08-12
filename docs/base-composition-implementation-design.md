@@ -35,8 +35,8 @@ query or mutation never receives an API capable of selecting another Base.
 | Current fact | Evidence | Enforced consequence |
 |---|---|---|
 | Every Wire request carries a required `DatabaseOperationTarget`. | `database-kit/Sources/DatabaseWire/DatabaseWireRequestEnvelope.swift` | No targetless decode path exists. |
-| A handler prepares the typed payload and exact access/transaction requirement before execution. | `Sources/DatabaseWireRuntime/AnyDatabaseOperationHandler.swift`; `DatabaseOperationRequirement.swift` | Target compatibility and access are checked before handler invocation. |
-| `DatabaseOperationContext` contains a narrow executor and never exposes a raw container. | `Sources/DatabaseWireRuntime/DatabaseOperationContext.swift`; `DatabaseOperationExecutor.swift` | Data handlers cannot select a second Base. |
+| A handler prepares the typed payload and exact access/transaction requirement before execution. | `Sources/DatabaseOperations/AnyDatabaseOperationHandler.swift`; `DatabaseOperationRequirement.swift` | Target compatibility and access are checked before handler invocation. |
+| `DatabaseOperationContext` contains a narrow executor and never exposes a raw container. | `Sources/DatabaseOperations/DatabaseOperationContext.swift`; `DatabaseOperationExecutor.swift` | Data handlers cannot select a second Base. |
 | `DBContainer` claims a control domain and every data domain exactly once. | `Sources/DatabaseEngine/Topology`; `Sources/DatabaseEngine/Core/DBContainer.swift` | Catalog and Base storage lifecycles have one owner and one shutdown path. |
 | Local operations use a database-bound context, or `DatabaseSession` with a Base or Composition selector when `MultipleBases` is enabled. | `Sources/DatabaseEngine/Core/DBContainer.swift`; `Sources/DatabaseEngine/Base/DatabaseSession.swift` | A public unscoped context does not exist. |
 | Base, Composition, placement, Grant, and layout records are persisted catalogs with immutable generations and leases. | `Sources/DatabaseEngine/Base`; `Sources/DatabaseEngine/Security` | Existence and lifecycle come from catalogs rather than backend namespace probes. |
@@ -208,7 +208,8 @@ flowchart TB
     Client --> Wire["DatabaseWire<br/>target and operations"]
     Wire --> Kit["DatabaseKit<br/>semantic values"]
 
-    Host["database-server<br/>auth and transport"] --> Server["DatabaseWireRuntime target<br/>operation preparation"]
+    Host["database-server<br/>auth and transport"] --> Adapter["DatabaseWireAdapter<br/>bounded framing"]
+    Adapter --> Server["DatabaseOperations target<br/>operation preparation"]
     Server --> Engine["DatabaseEngine<br/>catalogs, leases, execution"]
     Engine --> Kit
     Engine --> Storage["storage-kit<br/>transactions and namespaces"]
@@ -221,7 +222,7 @@ flowchart TB
 | `EntityAddress`, `BaseResult` | `database-kit / DatabaseKit` | Database identity/provenance semantics change. |
 | `DatabaseOperationTarget`, Base/Composition/Grant operations, codecs | `database-kit / DatabaseWire` | Canonical protocol changes. |
 | Session, data-source interfaces, catalogs, generation leases, placement, planners | `database-framework / DatabaseEngine` | Execution and lifecycle behavior changes. |
-| Operation requirement resolution and target-bound handler context | `database-framework / DatabaseWireRuntime` | Canonical operation dispatch changes. |
+| Operation requirement resolution and target-bound handler context | `database-framework / DatabaseOperations` | Canonical operation dispatch changes. |
 | Namespace resolution and backend transaction behavior | `storage-kit` | Storage semantics or backend behavior changes. |
 | Credentials, TLS, database routing, process lifecycle | `database-server` | Native hosting changes. |
 | Typed target facade and transport | `database-client` | Client invocation behavior changes. |
@@ -266,7 +267,7 @@ facades bind it once:
 ```swift
 let companyA = client.base(companyAID)
 let response = try await companyA.execute(
-    DatabaseOperations.queryExecute,
+    DatabaseOperationCatalog.queryExecute,
     request: request
 )
 ```

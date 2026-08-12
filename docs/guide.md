@@ -102,7 +102,7 @@ maintenance.
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0812.0",
+    from: "26.0812.1",
     traits: ["GraphIndexes"]
 )
 ~~~
@@ -230,9 +230,10 @@ a deployment concern.
 
 ## 8. Client And Server
 
-DatabaseWireRuntime exposes a container through DatabaseWire for database-client.
-The client protocol is defined in database-kit; server execution and storage
-policy remain in this package.
+DatabaseOperations executes canonical operations against a container, while
+DatabaseWireAdapter provides the bounded frame boundary used by hosts. The
+client protocol is defined in database-kit; execution and storage policy remain
+in this package.
 
 Cloudflare Workers use the separate
 database-framework-cloudflare repository, which bridges DatabaseWire to

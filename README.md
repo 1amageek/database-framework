@@ -35,9 +35,10 @@ flowchart LR
     Container --> Storage["Injected StorageEngine"]
 
     CLI["database CLI / remote client"] --> Server["database-server<br/>optional native host"]
-    Server --> WireRuntime["DatabaseWireRuntime<br/>optional operation execution"]
-    Cloudflare["Cloudflare Durable Object host"] --> WireRuntime
-    WireRuntime --> Framework
+    Server --> Wire["DatabaseWireAdapter<br/>bounded framing"]
+    Cloudflare["Cloudflare Durable Object host"] --> Wire
+    Wire --> Operations["DatabaseOperations<br/>optional operation execution"]
+    Operations --> Framework
 ```
 
 | Requirement | Use |
@@ -47,7 +48,7 @@ flowchart LR
 | Standalone native process or remote DatabaseWire endpoint | add `database-server` |
 | Cloudflare deployment | add `database-framework-cloudflare`, not `database-server` |
 
-The host-independent `DatabaseWireRuntime` product belongs to this package
+The host-independent `DatabaseOperations` product belongs to this package
 because both native and Cloudflare hosts execute the same canonical operations.
 It is not re-exported by `Database`, is not a default dependency, and owns no
 listener, TLS, credential store, process, signal, stdio, or Cloudflare lifecycle.
@@ -57,7 +58,8 @@ Those concerns remain in their host packages.
 |---|---|---|
 | `DatabaseEngine` | transactions, persistence, planning, schema and security execution | yes |
 | `DatabaseRuntime` | trait-selected runtime registrations | yes |
-| `DatabaseWireRuntime` | host-independent DatabaseWire operation execution | no |
+| `DatabaseOperations` | host-independent DatabaseWire operation execution | no |
+| `DatabaseWireAdapter` | bounded frame decoding, response encoding, and host-selected error mapping | no |
 | `DatabaseFoundation` | optional native clock and UUID adapters | no |
 | `database-server` package | native listener, TLS, auth, stdio, signals and shutdown | separate package |
 
@@ -145,7 +147,7 @@ documented semantic mapping.
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0812.0"
+            from: "26.0812.1"
         )
     ]
 
@@ -159,7 +161,7 @@ The package that consumes database-framework selects that composition:
 
     .package(
         url: "https://github.com/1amageek/database-framework.git",
-        from: "26.0812.0",
+        from: "26.0812.1",
         traits: ["GraphIndexes"]
     )
 
@@ -258,10 +260,10 @@ The FoundationDB adapter is not compiled for iOS or WASI.
 
     scripts/fdb-test-env run --clean -- \
       scripts/xcode-test-harness \
-        --traits FoundationDB,AllRuntimeFeatures \
+        --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3977 \
+        --expected-count 3980 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
@@ -290,10 +292,10 @@ For local testing, the repository includes an isolated cluster wrapper:
 
     scripts/fdb-test-env run --clean -- \
       scripts/xcode-test-harness \
-        --traits FoundationDB,AllRuntimeFeatures \
+        --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3977 \
+        --expected-count 3980 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
@@ -559,7 +561,7 @@ The framework supports two explicit composition models:
 `SchemaDrivenDatabaseRuntimeFactory` restores an empty database as schema
 version `0.0.0` and builds `PersistedModel` runtime registrations directly from
 canonical schema metadata. It does not create a synthetic `Persistable` type.
-The native `StandaloneDatabaseApplication` that pairs this factory with a
+The native `StandaloneDatabaseOperationApplication` that pairs this factory with a
 storage-owned catalog belongs to the separate `database-server` package. A
 typed application converts its model to `PersistedModel` once at the persistence
 boundary and uses the same canonical index core.
@@ -603,15 +605,16 @@ query and reasoning APIs.
 
 ### Remote operation execution
 
-`DatabaseWireRuntime` exposes a `DBContainer` to
+`DatabaseOperations` executes canonical operations against a `DBContainer` for
 [database-client](https://github.com/1amageek/database-client) through the
-DatabaseWire protocol. It is a host-independent optional product, separate from
-the `Database` umbrella and storage engine; it can execute against a container
-backed by any engine supported by the target.
+DatabaseWire protocol. `DatabaseWireAdapter` is the separate optional frame
+boundary used by native and Cloudflare hosts. Neither product is part of the
+`Database` umbrella; operation execution can use a container backed by any
+engine supported by the target.
 
-`DatabaseApplication` is the single host-independent composition
+`DatabaseOperationApplication` is the single host-independent composition
 contract. It produces a `DatabaseContainerDefinition` and the corresponding
-`DatabaseOperationRuntimeConfiguration`. Native HTTP/WebSocket/stdio listeners
+`DatabaseOperationConfiguration`. Native HTTP/WebSocket/stdio listeners
 belong to the independent
 [`database-server`](https://github.com/1amageek/database-server) package;
 Cloudflare lifecycle remains in `database-framework-cloudflare`.
@@ -685,7 +688,8 @@ logical key/value model in their own tables and indexes.
 | DatabaseRuntime | runtime assembly for index maintainers |
 | ScalarIndex, VectorIndex, FullTextIndex, ... | individual index modules |
 | QueryAST | SQL/SPARQL parsing and serialization |
-| DatabaseWireRuntime | optional, host-independent DatabaseWire operation execution |
+| DatabaseOperations | optional, host-independent DatabaseWire operation execution |
+| DatabaseWireAdapter | optional, bounded DatabaseWire frame adaptation |
 | DatabaseFoundation | optional native clock and UUID adapters |
 
 Import Database for the standard application path, or import individual
@@ -696,7 +700,7 @@ products when compile time and dependency size matter.
 The authenticated command-line client is owned by the independent
 [`database-cli`](https://github.com/1amageek/database-cli) package. It reaches
 this framework through `DatabaseClient`, DatabaseWire, and
-`DatabaseOperationRuntime`; it does not bypass runtime authorization or connect a
+`DatabaseOperationInstance`; it does not bypass runtime authorization or connect a
 `StorageEngine` directly. FoundationDB lifecycle and read-only diagnostics are
 isolated in that package's version-matched `database-fdb` companion.
 
@@ -772,7 +776,7 @@ direction. The database core stays independent from web hosts and UI tools.
 | [storage-kit](https://github.com/1amageek/storage-kit) | StorageEngine, Transaction, Tuple, directory abstraction, and backend engines | Direct dependency |
 | [swift-hnsw](https://github.com/1amageek/swift-hnsw) | Swift HNSW graph index used by VectorIndex | Direct dependency |
 | [database-client](https://github.com/1amageek/database-client) | Native client SDK, typed queries, and transport layer | Client of the server layer |
-| [database-server](https://github.com/1amageek/database-server) | Native HTTP, WebSocket, and stdio host lifecycle | Hosts DatabaseOperationRuntime |
+| [database-server](https://github.com/1amageek/database-server) | Native HTTP, WebSocket, and stdio host lifecycle | Hosts DatabaseOperationInstance |
 | [database-cli](https://github.com/1amageek/database-cli) | Authenticated operator commands and standalone UX | Uses database-client; does not link a backend |
 
 ### Deployment And Web Integration

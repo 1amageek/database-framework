@@ -38,7 +38,7 @@
   only inside one test process, so separate bundles must not concurrently
   share the same disposable service. Target compilation and Swift Testing
   inside each bundle retain their normal parallelism.
-- The strict backend contracts are 3,977 FoundationDB tests, 119 SQLite tests,
+- The strict backend contracts are 3,980 FoundationDB tests, 119 SQLite tests,
   and 72 PostgreSQL tests. PostgreSQL tests require an isolated real server.
 - `POSTGRES_TEST_UNIX_SOCKET` is the complete PostgreSQL socket file path, such
   as `<socket-directory>/.s.PGSQL.<port>`, not the containing directory. The

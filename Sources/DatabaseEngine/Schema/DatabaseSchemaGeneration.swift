@@ -1,5 +1,5 @@
 import DatabaseKit
-@_spi(DatabaseWireRuntime) import DatabaseWire
+@_spi(DatabaseOperations) import DatabaseWire
 
 /// One immutable database execution generation.
 ///

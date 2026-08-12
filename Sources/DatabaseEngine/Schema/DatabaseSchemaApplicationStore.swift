@@ -1,5 +1,5 @@
 import DatabaseTypes
-@_spi(DatabaseWireRuntime) import DatabaseWire
+@_spi(DatabaseOperations) import DatabaseWire
 import StorageKit
 
 /// Serializes accepted schema transitions in the control transaction domain.
