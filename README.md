@@ -811,4 +811,4 @@ boundary between the web framework and database implementation.
 
 ## License
 
-MIT License
+Licensed under the [MIT License](LICENSE).
