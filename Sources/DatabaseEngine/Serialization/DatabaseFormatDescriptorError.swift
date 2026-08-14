@@ -2,6 +2,8 @@ public enum DatabaseFormatDescriptorError: Error, Sendable, Equatable {
     case invalidSize(actual: Int, expected: Int)
     case invalidMagic
     case unsupportedDescriptorVersion(UInt8)
+    case unsupportedLayoutKind(UInt8)
+    case unsupportedLayoutVersion(UInt16)
     case unsupportedPersistableFormatVersion(UInt16)
     case unsupportedEnvelopeVersion(UInt8)
     case unsupportedPayloadEncoding(UInt8)

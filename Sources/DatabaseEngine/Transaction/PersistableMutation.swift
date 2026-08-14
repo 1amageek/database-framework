@@ -1,7 +1,8 @@
 import DatabaseKit
 
 /// One primary persisted-model intent applied by `DatabaseTransaction`.
-package enum PersistableMutation: Sendable {
+@_spi(DatabaseExecution)
+public enum PersistableMutation: Sendable {
     case save(
         identity: EntityReference,
         model: PersistedModel,

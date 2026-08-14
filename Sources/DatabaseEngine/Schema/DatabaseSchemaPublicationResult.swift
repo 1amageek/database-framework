@@ -1,9 +1,10 @@
 import DatabaseKit
-@_spi(DatabaseOperations) import DatabaseWire
+@_spi(DatabaseExecution) import DatabaseWire
 
-package struct DatabaseSchemaPublicationResult: Sendable {
-    package let previousFingerprint: SchemaFingerprint?
-    package let fingerprint: SchemaFingerprint
-    package let schemaVersion: Schema.Version
-    package let generation: UInt64
+@_spi(DatabaseExecution)
+public struct DatabaseSchemaPublicationResult: Sendable {
+    public let previousFingerprint: SchemaFingerprint?
+    public let fingerprint: SchemaFingerprint
+    public let schemaVersion: Schema.Version
+    public let generation: UInt64
 }

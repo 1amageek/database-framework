@@ -8,7 +8,7 @@
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 
 // MARK: - DatabaseContext Extension
 
@@ -70,7 +70,7 @@ public struct OntologyContextAPI: Sendable {
         _ operation: @Sendable @escaping (OntologyStore) async throws -> Result
     ) async throws -> Result {
         try await context.withDataOperation {
-            let root = try context.requireOperationDataRoot().root
+            let root = try context.operationDataRoot()
                 .subspace("data")
                 .subspace("database-framework")
                 .subspace("ontology-index")

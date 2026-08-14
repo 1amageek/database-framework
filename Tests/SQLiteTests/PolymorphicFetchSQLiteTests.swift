@@ -788,6 +788,7 @@ struct PolymorphicFetchSQLiteTests {
             security: .enabled()
         )
         defer { await container.shutdown() }
+        #if MultipleBases
         try await container.grantTestBaseAccess(
             to: .principal("alice"),
             access: [.read, .write]
@@ -796,6 +797,7 @@ struct PolymorphicFetchSQLiteTests {
             to: .principal("bob"),
             access: [.read, .write]
         )
+        #endif
         let aliceAuthorization = AuthorizationContext.authenticated(
             Principal(identifier: "alice")
         )

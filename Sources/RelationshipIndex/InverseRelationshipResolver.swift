@@ -91,7 +91,7 @@ public struct InverseRelationshipResolver: Sendable {
         return try await context.withTransaction(
             requiredAccess: .read
         ) { transaction in
-            let dataRoot = try context.requireOperationDataRoot().root
+            let dataRoot = try context.operationDataRoot()
             let page = try await RelationshipReferenceCatalog.referrerPage(
                 of: target.persistableIdentity,
                 descriptor: descriptor,

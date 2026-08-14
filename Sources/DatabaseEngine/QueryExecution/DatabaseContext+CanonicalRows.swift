@@ -131,6 +131,7 @@ extension DatabaseContext {
         try await withDataOperation { [self] in
             try await withFieldReadAuthorization(for: selectQuery) {
                 if let binding = ActiveDatabaseTransactionContext.binding {
+                    #if DATABASE_MULTIPLE_BASES
                     guard binding.resource == self.resource,
                           binding.authorization == self.authorization,
                           binding.grantedAccess.contains(.read) else {
@@ -139,6 +140,7 @@ extension DatabaseContext {
                             required: .read
                         )
                     }
+                    #endif
                     return try await query(
                         selectQuery,
                         execution: execution,
@@ -156,10 +158,24 @@ extension DatabaseContext {
         }
     }
 
+    @_spi(DatabaseExecution)
+    public func executeCanonicalQuery(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject()
+    ) async throws -> QueryResponse {
+        try await query(
+            selectQuery,
+            execution: execution,
+            graphPartitions: graphPartitions
+        )
+    }
+
     /// Executes a Base-local read through a caller-owned storage transaction.
     /// Relational sources and admitted index readers reuse exactly that
     /// transaction so callers cannot accidentally create a mixed snapshot.
-    package func query(
+    @_spi(DatabaseExecution)
+    public func query(
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
         graphPartitions: FieldObject = FieldObject(),
@@ -167,17 +183,23 @@ extension DatabaseContext {
     ) async throws -> QueryResponse {
         try await withDataOperation { [self] in
             try await withFieldReadAuthorization(for: selectQuery) {
+                #if DATABASE_MULTIPLE_BASES
                 _ = try requireOperationDataRoot()
+                let executionBinding = DatabaseTransactionExecutionBinding(
+                    transaction: transaction,
+                    resource: self.resource,
+                    authorization: self.authorization,
+                    grantedAccess: .read,
+                    databaseTransaction: nil
+                )
+                #else
+                let executionBinding = DatabaseTransactionExecutionBinding(
+                    transaction: transaction,
+                    databaseTransaction: nil
+                )
+                #endif
                 return try await ActiveDatabaseTransactionContext.$binding
-                    .withValue(
-                        DatabaseTransactionExecutionBinding(
-                            transaction: transaction,
-                            resource: self.resource,
-                            authorization: self.authorization,
-                            grantedAccess: .read,
-                            databaseTransaction: nil
-                        )
-                    ) {
+                    .withValue(executionBinding) {
                         if isSPARQLSource(selectQuery.source) {
                             guard let executor = container.runtimeConfiguration
                                 .logicalSourceExecutors.sparqlExecutor else {
@@ -237,6 +259,21 @@ extension DatabaseContext {
                     }
             }
         }
+    }
+
+    @_spi(DatabaseExecution)
+    public func executeCanonicalQuery(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject(),
+        transaction: any TransactionAccess
+    ) async throws -> QueryResponse {
+        try await query(
+            selectQuery,
+            execution: execution,
+            graphPartitions: graphPartitions,
+            transaction: transaction
+        )
     }
 
     private func withFieldReadAuthorization<Result: Sendable>(

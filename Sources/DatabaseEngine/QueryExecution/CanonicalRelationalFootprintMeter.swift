@@ -1,5 +1,5 @@
 import DatabaseTypes
-@_spi(DatabaseOperations) import DatabaseWire
+@_spi(DatabaseExecution) import DatabaseWire
 
 package enum CanonicalRelationalFootprintMeter {
     private static let rowHeaderByteCount: UInt64 = 64

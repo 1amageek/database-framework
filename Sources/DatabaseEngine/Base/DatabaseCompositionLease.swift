@@ -4,9 +4,10 @@ import StorageKit
 
 /// Retains one immutable Composition definition and every member Base lease
 /// for the complete lifetime of a federated read.
-package final class DatabaseCompositionLease: Sendable {
-    package let record: DatabaseCompositionRecord
-    package let members: [DatabaseBaseLease]
+@_spi(DatabaseExecution)
+public final class DatabaseCompositionLease: Sendable {
+    public let record: DatabaseCompositionRecord
+    public let members: [DatabaseBaseLease]
 
     package init(
         record: DatabaseCompositionRecord,
@@ -20,7 +21,7 @@ package final class DatabaseCompositionLease: Sendable {
         self.members = members
     }
 
-    package func member(
+    public func member(
         identifiedBy id: Base.ID
     ) -> DatabaseBaseLease? {
         members.first { $0.baseID == id }
@@ -28,8 +29,9 @@ package final class DatabaseCompositionLease: Sendable {
 }
 
 /// One request-local set of simultaneously open domain transactions.
-package struct DatabaseCompositionReadSnapshot: Sendable {
-    package let lease: DatabaseCompositionLease
+@_spi(DatabaseExecution)
+public struct DatabaseCompositionReadSnapshot: Sendable {
+    public let lease: DatabaseCompositionLease
     private let transactions: [String: any TransactionAccess]
     private let capturedReadPoints: [DomainReadPoint]
 
@@ -43,7 +45,7 @@ package struct DatabaseCompositionReadSnapshot: Sendable {
         self.capturedReadPoints = readPoints
     }
 
-    package func transaction(
+    public func transaction(
         for member: DatabaseBaseLease
     ) throws -> any TransactionAccess {
         guard let transaction = transactions[member.domainID] else {
@@ -57,7 +59,7 @@ package struct DatabaseCompositionReadSnapshot: Sendable {
     /// Captures exactly one backend read point for every simultaneously open
     /// physical domain. Domain ordering is canonical so the resulting value is
     /// valid for the DatabaseWire federated-consistency contract.
-    package func readPoints() async throws -> [DomainReadPoint] {
+    public func readPoints() async throws -> [DomainReadPoint] {
         capturedReadPoints
     }
 }

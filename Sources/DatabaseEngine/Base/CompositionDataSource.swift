@@ -61,7 +61,8 @@ public struct CompositionDataSource: Sendable {
     }
 
     /// Acquires and authorizes every member for metadata-only resolution.
-    package func acquireReadLease() async throws -> DatabaseCompositionLease {
+    @_spi(DatabaseExecution)
+    public func acquireReadLease() async throws -> DatabaseCompositionLease {
         let lease = try await acquireLease()
         do {
             for member in lease.members {
@@ -85,14 +86,16 @@ public struct CompositionDataSource: Sendable {
 
     /// Resolves a Composition for metadata operations while preserving the
     /// same all-member authorization contract as execution.
-    package func resolve() async throws -> DatabaseCompositionRecord {
+    @_spi(DatabaseExecution)
+    public func resolve() async throws -> DatabaseCompositionRecord {
         try await acquireReadLease().record
     }
 
     /// Opens one read transaction per physical domain and keeps all of them
     /// alive until the federated operation finishes. Every member Grant is
     /// checked before `operation` can observe data.
-    package func withReadSnapshot<Result: Sendable>(
+    @_spi(DatabaseExecution)
+    public func withReadSnapshot<Result: Sendable>(
         _ operation: @escaping @Sendable (
             DatabaseCompositionReadSnapshot
         ) async throws -> Result
@@ -221,7 +224,8 @@ public struct CompositionDataSource: Sendable {
     /// Executes one member-local read against the transaction captured by the
     /// federated snapshot. The caller receives neither a container nor a
     /// transaction capable of resolving a different Base.
-    package func withMemberContext<Result: Sendable>(
+    @_spi(DatabaseExecution)
+    public func withMemberContext<Result: Sendable>(
         _ member: DatabaseBaseLease,
         in snapshot: DatabaseCompositionReadSnapshot,
         _ operation: @Sendable @escaping (

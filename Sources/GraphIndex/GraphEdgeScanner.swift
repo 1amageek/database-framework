@@ -66,7 +66,8 @@ public struct GraphEdgeScanner: Sendable {
         self.readBudget = nil
     }
 
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         graphTarget: GraphScanTarget,

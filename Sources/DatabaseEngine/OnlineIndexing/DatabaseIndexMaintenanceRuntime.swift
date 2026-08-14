@@ -2,13 +2,13 @@ import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
-package struct DatabaseIndexMaintenanceRuntime: Sendable {
-    package static let maximumSliceWorkUnits: UInt64 = 10_000
+public struct DatabaseIndexMaintenanceRuntime: Sendable {
+    public static let maximumSliceWorkUnits: UInt64 = 10_000
 
     private let container: DBContainer
     private let storageLimits: StorageFrameLimits
 
-    package init(
+    public init(
         container: DBContainer,
         storageLimits: StorageFrameLimits = .default
     ) {
@@ -16,7 +16,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         self.storageLimits = storageLimits
     }
 
-    package func prepareResources(
+    public func prepareResources(
         entity: String,
         index: String,
         partitions: FieldObject,
@@ -35,7 +35,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
     /// storage. Persistent job compilation uses this pure boundary so a job
     /// cannot leave Base-local resources behind before its control record is
     /// committed.
-    package func canonicalPartitions(
+    public func canonicalPartitions(
         entity entityName: String,
         index indexName: String,
         partitions: FieldObject
@@ -48,7 +48,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         return target.binding?.canonicalPartitions() ?? FieldObject()
     }
 
-    package func status(
+    public func status(
         entity: String,
         index: String,
         partitions: FieldObject,
@@ -79,21 +79,35 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
             )
             effectiveState = pending.contains(index) ? .writeOnly : .disabled
         }
+        let rebuildState = try await loadRebuildState(
+            key: rebuildStateKey(target: target),
+            entity: entity,
+            index: index,
+            transaction: transaction
+        )
+        let rebuildPhase: DatabaseIndexRebuildPhase?
+        switch rebuildState?.phase {
+        case .building:
+            rebuildPhase = .building
+        case .complete:
+            rebuildPhase = .complete
+        case .failed:
+            rebuildPhase = .failed
+        case nil:
+            rebuildPhase = nil
+        }
         return DatabaseIndexMaintenanceStatus(
             entity: entity,
             index: index,
             partitions: target.partitions,
             indexState: effectiveState,
-            rebuildState: try await loadRebuildState(
-                key: rebuildStateKey(target: target),
-                entity: entity,
-                index: index,
-                transaction: transaction
-            )
+            rebuildPhase: rebuildPhase,
+            indexedEntityCount: rebuildState?.indexedEntityCount ?? 0,
+            detail: rebuildState?.detail
         )
     }
 
-    package func runRebuildSlice(
+    public func runRebuildSlice(
         entity: String,
         index indexName: String,
         partitions: FieldObject,
@@ -253,7 +267,7 @@ package struct DatabaseIndexMaintenanceRuntime: Sendable {
         )
     }
 
-    package func markFailed(
+    public func markFailed(
         entity: String,
         index: String,
         partitions: FieldObject,

@@ -58,8 +58,7 @@ Set authorization information around each request:
 let authorization = AuthorizationContext.authenticated(
     Principal(identifier: authenticatedUserID, roles: authenticatedRoles)
 )
-let session = container.session(authorization: authorization)
-let context = session.base(baseID).newContext()
+let context = container.newContext(authorization: authorization)
 let posts = try await context.fetch(Post.self).execute()
 _ = posts
 ~~~
@@ -87,17 +86,18 @@ Tenant isolation has two independent parts:
 | Concern | Mechanism |
 |---|---|
 | Physical/logical boundary | database root, plus explicit Base roots with `MultipleBases` |
-| Resource authorization | persisted direct and role Grants |
+| Resource authorization | application boundary by default; persisted direct and role Grants with `MultipleBases` |
 | Entity and field authorization | SecurityPolicy and `@Restricted` |
 
-The standard runtime binds data operations to the database resource and its
-single data root. The `MultipleBases` trait additionally accepts one exact Base
-or a read-only Composition. `#Directory` and dynamic partitions are relative
-paths inside the selected data root and are not credentials. The runtime opens
-the selected transaction, unions matching direct and role Grants, requires the
-exact access bits, and only then executes entity and field policy. A
-Composition read requires `.read` on every retained member and
-fails as a whole when any member is unavailable or unauthorized.
+The standard runtime binds data operations to its single data root and applies
+registered entity and field policy. It has no persisted Grant store. The
+`MultipleBases` trait additionally accepts one exact Base or a read-only
+Composition and enables persisted Grants. `#Directory` and dynamic partitions
+are relative paths inside the selected root and are not credentials. The
+trait-specific runtime opens the selected transaction, unions matching direct
+and role Grants, requires the exact access bits, and only then executes entity
+and field policy. A Composition read requires `.read` on every retained member
+and fails as a whole when any member is unavailable or unauthorized.
 
 ## Production Rules
 
@@ -105,7 +105,8 @@ fails as a whole when any member is unavailable or unauthorized.
   database root or a `DatabaseSession` selector.
 - Use `.database` by default; when `MultipleBases` is enabled, select a Base or
   Composition explicitly when crossing that boundary.
-- Manage access through persisted Grants; role names are claims, not bypasses.
+- With `MultipleBases`, manage Base access through persisted Grants; role names
+  are claims, not bypasses.
 - Register each AuthorizationPolicyHandler in DatabaseRuntimeConfiguration.
 - Keep the security configuration enabled in production.
 - Never use client-side filtering as the authorization mechanism.

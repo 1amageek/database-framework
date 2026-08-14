@@ -6,14 +6,15 @@ import DatabaseEngine
 /// The owner of the transaction controls retry, timeout, commit, and cancel.
 /// Algorithms never create nested transactions and therefore cannot mix read
 /// versions while traversing a graph.
-package final class GraphReadSnapshot: Sendable {
-    package let transaction: any TransactionAccess
-    package let monotonicClock: any StorageMonotonicClock
-    package let workBudget: GraphAlgorithmWorkBudget?
+@_spi(DatabaseExecution)
+public final class GraphReadSnapshot: Sendable {
+    public let transaction: any TransactionAccess
+    public let monotonicClock: any StorageMonotonicClock
+    public let workBudget: GraphAlgorithmWorkBudget?
     package let identityPool: GraphIdentityPool
     let clock: MonotonicClock
 
-    package init(
+    public init(
         transaction: any TransactionAccess,
         monotonicClock: any StorageMonotonicClock,
         workBudget: GraphAlgorithmWorkBudget? = nil

@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 /// Persisted-Grant authorization and mutation failures.
@@ -15,3 +16,4 @@ public enum DatabaseGrantAuthorizationError: Error, Sendable, Equatable {
     case revisionOverflow
     case corruptedGrant
 }
+#endif

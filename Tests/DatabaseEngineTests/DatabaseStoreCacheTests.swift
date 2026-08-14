@@ -6,21 +6,12 @@ import Testing
 struct DatabaseStoreCacheTests {
     @Test("lookup remains correct across sorted insertion and replacement")
     func insertionAndReplacement() throws {
-        let alpha = DatabaseStoreCacheKey(
-            basePlacementGeneration: 1,
-            entity: "Document",
-            components: ["alpha"]
-        )
-        let nested = DatabaseStoreCacheKey(
-            basePlacementGeneration: 1,
+        let alpha = key(entity: "Document", components: ["alpha"])
+        let nested = key(
             entity: "Document",
             components: ["alpha", "nested"]
         )
-        let omega = DatabaseStoreCacheKey(
-            basePlacementGeneration: 1,
-            entity: "Document",
-            components: ["omega"]
-        )
+        let omega = key(entity: "Document", components: ["omega"])
         var cache = DatabaseStoreCache<String>()
 
         cache.insert("omega", for: omega)
@@ -34,12 +25,26 @@ struct DatabaseStoreCacheTests {
         #expect(cache.value(for: omega) == "omega")
         #expect(
             cache.value(
-                for: DatabaseStoreCacheKey(
-                    basePlacementGeneration: 1,
+                for: key(
                     entity: "Missing",
                     components: []
                 )
             ) == nil
         )
+    }
+
+    private func key(
+        entity: String,
+        components: [String]
+    ) -> DatabaseStoreCacheKey {
+        #if MultipleBases
+        DatabaseStoreCacheKey(
+            basePlacementGeneration: 1,
+            entity: entity,
+            components: components
+        )
+        #else
+        DatabaseStoreCacheKey(entity: entity, components: components)
+        #endif
     }
 }

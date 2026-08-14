@@ -1,6 +1,6 @@
 import DatabaseTypes
 
-package enum DatabaseIndexRebuildError: Error, Sendable, Equatable {
+public enum DatabaseIndexRebuildError: Error, Sendable, Equatable {
     case entityNotFound(String)
     case compiledTypeMissing(String)
     case indexNotFound(entity: String, index: String)

@@ -680,7 +680,8 @@ struct UniquenessEnforcementTests {
         }
     }
 
-    @Test("Uniqueness violation inspection requires target administration")
+    #if MultipleBases
+    @Test("Uniqueness violation inspection requires Base administration")
     func contextViolationInspectionRequiresAdministration() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
@@ -692,12 +693,8 @@ struct UniquenessEnforcementTests {
             let authorization = AuthorizationContext.authenticated(
                 Principal(identifier: readerID)
             )
-            #if MultipleBases
             let baseID = try TestBaseEnvironment.id()
             let expectedResource = Security.Resource.base(baseID)
-            #else
-            let expectedResource = Security.Resource.database
-            #endif
             let context = container.testBaseContext(
                 authorization: authorization
             )
@@ -718,6 +715,7 @@ struct UniquenessEnforcementTests {
             }
         }
     }
+    #endif
 
     // MARK: - OnlineIndexBuildError Tests
 

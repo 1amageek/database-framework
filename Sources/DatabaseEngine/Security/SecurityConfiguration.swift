@@ -1,7 +1,8 @@
 /// Configuration for schema-driven entity and field policy evaluation.
 ///
-/// Base-level operation access is always enforced by persisted Grants. This
-/// value controls only the policy layer that runs after Grant authorization.
+/// This value controls the policy layer applied by the in-process engine.
+/// When `MultipleBases` is enabled, persisted Grant authorization is an
+/// additional, independent boundary evaluated before this policy.
 public struct SecurityConfiguration: Sendable {
     package enum PolicyEvaluation: Sendable {
         case enabled
@@ -19,8 +20,8 @@ public struct SecurityConfiguration: Sendable {
         SecurityConfiguration(policyEvaluation: .enabled)
     }
 
-    /// Disables only schema-driven policy evaluation in isolated test
-    /// runtimes. Persisted database and Base Grants remain mandatory.
+    /// Disables schema-driven policy evaluation in isolated test runtimes.
+    /// With `MultipleBases`, this does not disable persisted Grants.
     @_spi(Testing)
     public static let disabledForTesting = SecurityConfiguration(
         policyEvaluation: .disabledForTesting

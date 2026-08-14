@@ -9,7 +9,7 @@
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseWire
 
 import OntologyIndex
@@ -75,7 +75,7 @@ public struct SHACLContextAPI: Sendable {
     ) async throws -> Result {
         let context = self.context
         return try await context.withDataOperation {
-            let baseSubspace = try context.requireOperationDataRoot().root
+            let baseSubspace = try context.operationDataRoot()
                 .subspace("data")
                 .subspace(Self.shaclPrefix)
             return try await operation(

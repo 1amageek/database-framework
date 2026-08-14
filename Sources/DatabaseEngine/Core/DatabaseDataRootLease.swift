@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import StorageKit
 
@@ -22,3 +23,4 @@ package struct DatabaseDataRootLease: Sendable {
 package enum ActiveDatabaseDataRootContext {
     @TaskLocal package static var lease: DatabaseDataRootLease?
 }
+#endif

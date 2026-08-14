@@ -1,4 +1,4 @@
-#if SQLITE
+#if SQLITE && !MultipleBases
 import Foundation
 import Database
 import Testing

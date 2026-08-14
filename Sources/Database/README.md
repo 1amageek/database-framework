@@ -25,7 +25,7 @@ For example, a consuming package selects a graph composition with:
 ```swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0812.1",
+    from: "26.0814.0",
     traits: ["GraphIndexes"]
 )
 ```
@@ -35,11 +35,9 @@ umbrella also includes GraphIndex and OntologyIndex for that composition.
 `Relationships`, storage backends, and `MultipleBases` remain independent
 choices.
 
-`Database` does not re-export `DatabaseOperations`, `DatabaseWireAdapter`, or
-`DatabaseFoundation`. They are separate optional products for canonical remote
-operation execution, Wire frame adaptation, and native Foundation conversion.
-The standalone `database-server` package consumes the first two; an in-process
-application does not.
+`Database` does not re-export remote operation execution or native hosting.
+Those products belong to the independent `database-server` repository; an
+in-process application does not depend on them.
 
 Backend facade availability is both trait- and platform-dependent:
 
@@ -49,12 +47,16 @@ Backend facade availability is both trait- and platform-dependent:
 | SQLite | `SQLite` | macOS, iOS, Linux |
 | PostgreSQL | `PostgreSQL` | macOS, iOS, Linux |
 
-Every facade ultimately creates an engine, wraps it in a validated one-domain
-`DatabaseStorageTopology`, and passes that topology to the backend-neutral
-`DBConfiguration(storageTopology:)` contract. A multi-domain host constructs
-the topology directly. The resulting container owns every engine. Opening
-failure, `DBContainer.shutdown()`, and deinitialization share one exactly-once
-shutdown path.
+The SQLite and PostgreSQL facades create one engine and pass its root directly
+to `DBConfiguration(storageEngine:)`. FoundationDB instead requires an
+`FDBDatabaseConfiguration` with a non-empty application-selected Directory
+path; the facade resolves that Directory once and injects its retained
+`Subspace`. Schema, metadata, data, and index paths are tuple-derived below the
+injected root without a hot-path Directory lookup. With `MultipleBases`, a multi-domain
+composition instead supplies `DatabaseStorageTopology` through the
+trait-specific initializer. The default facade does not create a hidden
+one-domain topology. Opening failure, `DBContainer.shutdown()`, and
+deinitialization share one exactly-once shutdown path.
 
 ## SQL Query Execution
 

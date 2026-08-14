@@ -1,5 +1,5 @@
 #if MultipleBases
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
@@ -46,7 +46,7 @@ struct DatabaseBasePlacementMoveTests {
         #expect(retired.lifecycle == .retired)
 
         let owner = ByteString((0..<16).map(UInt8.init))
-        let descriptor = try await fixture.container.prepareBasePlacementMove(
+        let descriptor = try await fixture.container.executionPrepareBasePlacementMove(
             fixture.baseID,
             destinationPlacementID: fixture.destinationPlacementID,
             expectedRevision: retired.revision,
@@ -72,14 +72,14 @@ struct DatabaseBasePlacementMoveTests {
         #expect(source.byteCount == destination.byteCount)
         #expect(source.digest == destination.digest)
 
-        let moved = try await fixture.container.cutOverBasePlacementMove(
+        let moved = try await fixture.container.executionCutOverBasePlacementMove(
             descriptor
         )
         #expect(moved.lifecycle == .retired)
         #expect(moved.placementID == fixture.destinationPlacementID)
 
         await #expect(throws: DatabaseBaseCatalogError.self) {
-            try await fixture.container.finishBasePlacementMove(
+            try await fixture.container.executionFinishBasePlacementMove(
                 descriptor,
                 owner: ByteString(repeating: 0xff, count: 16)
             )
@@ -91,11 +91,11 @@ struct DatabaseBasePlacementMoveTests {
         )
         #expect(sourceBeforeOwningCleanup.keyCount > 0)
 
-        let cleaned = try await fixture.container.finishBasePlacementMove(
+        let cleaned = try await fixture.container.executionFinishBasePlacementMove(
             descriptor,
             owner: owner
         )
-        let replayedCleanup = try await fixture.container.finishBasePlacementMove(
+        let replayedCleanup = try await fixture.container.executionFinishBasePlacementMove(
             descriptor,
             owner: owner
         )
@@ -103,14 +103,14 @@ struct DatabaseBasePlacementMoveTests {
         try await fixture.container.withControlMetadataTransaction(
             configuration: .batch
         ) { transaction in
-            try await fixture.container.finalizeSuccessfulBasePlacementMove(
+            try await fixture.container.executionFinalizeSuccessfulBasePlacementMove(
                 descriptor,
                 owner: owner,
                 controlTransaction: transaction.storageAccess
             )
         }
         await #expect(throws: DatabaseBaseCatalogError.self) {
-            try await fixture.container.finishBasePlacementMove(
+            try await fixture.container.executionFinishBasePlacementMove(
                 descriptor,
                 owner: owner
             )
@@ -236,7 +236,7 @@ struct DatabaseBasePlacementMoveTests {
         while true {
             let progress: DatabaseBasePlacementTransferProgress
             if let destination {
-                progress = try await container.verifyBasePlacementBatch(
+                progress = try await container.executionVerifyBasePlacementBatch(
                     descriptor,
                     destination: destination,
                     continuation: continuation,
@@ -245,7 +245,7 @@ struct DatabaseBasePlacementMoveTests {
                     byteCount: byteCount
                 )
             } else {
-                progress = try await container.copyBasePlacementBatch(
+                progress = try await container.executionCopyBasePlacementBatch(
                     descriptor,
                     continuation: continuation,
                     digest: digest,

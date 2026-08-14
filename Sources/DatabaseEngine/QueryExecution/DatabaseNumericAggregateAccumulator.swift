@@ -4,8 +4,9 @@ import DatabaseTypes
 /// Integer inputs remain exact through an Int128 accumulator; floating-point
 /// inputs use compensated summation. Mixing integer and floating-point kinds
 /// is rejected instead of silently changing the query's numeric semantics.
-package struct DatabaseNumericAggregateAccumulator: Sendable {
-    package enum Failure: Error, Sendable, Equatable {
+@_spi(DatabaseExecution)
+public struct DatabaseNumericAggregateAccumulator: Sendable {
+    public enum Failure: Error, Sendable, Equatable {
         case incompatibleNumericKinds
         case nonNumericValue
         case nonFiniteValue
@@ -34,9 +35,9 @@ package struct DatabaseNumericAggregateAccumulator: Sendable {
 
     private var state: State = .empty
 
-    package init() {}
+    public init() {}
 
-    package mutating func add(_ value: FieldValue) throws(Failure) {
+    public mutating func add(_ value: FieldValue) throws(Failure) {
         switch value {
         case .null:
             return
@@ -65,7 +66,7 @@ package struct DatabaseNumericAggregateAccumulator: Sendable {
         }
     }
 
-    package func sum() throws(Failure) -> FieldValue? {
+    public func sum() throws(Failure) -> FieldValue? {
         switch state {
         case .empty:
             return nil
@@ -78,7 +79,7 @@ package struct DatabaseNumericAggregateAccumulator: Sendable {
         }
     }
 
-    package func average() throws(Failure) -> FieldValue? {
+    public func average() throws(Failure) -> FieldValue? {
         switch state {
         case .empty:
             return nil

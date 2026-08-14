@@ -79,7 +79,8 @@ public final class ShortestPathFinder: Sendable {
     ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
     ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,

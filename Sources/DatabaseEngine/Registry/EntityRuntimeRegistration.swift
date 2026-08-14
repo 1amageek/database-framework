@@ -1234,7 +1234,8 @@ public struct EntityRuntimeRegistration: Sendable {
         try makePersistedModelOperation(object)
     }
 
-    package func identity(
+    @_spi(DatabaseExecution)
+    public func identity(
         for model: PersistedModel
     ) throws -> EntityReference {
         try resolveIdentityOperation(model)

@@ -1,4 +1,4 @@
-@_spi(DatabaseOperations) import DatabaseWire
+@_spi(DatabaseExecution) import DatabaseWire
 
 public enum DatabaseSchemaPublicationError: Error, Sendable, Equatable,
     CustomStringConvertible {
@@ -7,7 +7,7 @@ public enum DatabaseSchemaPublicationError: Error, Sendable, Equatable,
         actual: SchemaFingerprint
     )
     case idempotencyKeyReused(String)
-    case transitionInProgress(JobIdentity)
+    case transitionInProgress
     case invalidIdempotencyKey
     case persistentIndexBuildJobRequired
     case generationOverflow
@@ -19,8 +19,8 @@ public enum DatabaseSchemaPublicationError: Error, Sendable, Equatable,
             return "The expected schema fingerprint does not match the active schema"
         case .idempotencyKeyReused(let key):
             return "Schema idempotency key '\(key)' was already used for a different schema"
-        case .transitionInProgress(let job):
-            return "Schema transition '\(job.jobID)' is already in progress"
+        case .transitionInProgress:
+            return "A schema transition is already in progress"
         case .invalidIdempotencyKey:
             return "Schema idempotency key must not be empty"
         case .persistentIndexBuildJobRequired:

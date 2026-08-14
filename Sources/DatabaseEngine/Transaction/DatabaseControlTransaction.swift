@@ -6,14 +6,20 @@ extension DBContainer {
     /// metadata. Callers at a user request boundary must perform the target
     /// Grant check before invoking this method; this method is intentionally
     /// package-scoped and never creates an authorization bypass on its own.
-    package func withControlMetadataTransaction<Result: Sendable>(
+    @_spi(DatabaseExecution)
+    public func withControlMetadataTransaction<Result: Sendable>(
         configuration: TransactionConfiguration = .default,
         executionDeadline: TransactionExecutionDeadline? = nil,
         _ operation: @Sendable @escaping (
             DatabaseTransaction
         ) async throws -> Result
     ) async throws -> Result {
-        try await controlTransactionExecutor.withTransaction(
+        #if DATABASE_MULTIPLE_BASES
+        let selectedTransactionExecutor = controlTransactionExecutor
+        #else
+        let selectedTransactionExecutor = transactionExecutor
+        #endif
+        return try await selectedTransactionExecutor.withTransaction(
             configuration: configuration,
             clock: monotonicClock,
             executionDeadline: executionDeadline
@@ -33,9 +39,11 @@ extension DBContainer {
         }
     }
 
+    #if DATABASE_MULTIPLE_BASES
     /// Executes a control-domain transaction after evaluating the persisted
-    /// database Grant in that same transaction attempt.
-    package func withControlTransaction<Result: Sendable>(
+    /// database Grant in the same transaction attempt.
+    @_spi(DatabaseExecution)
+    public func withControlTransaction<Result: Sendable>(
         requiredAccess: Security.Access,
         authorization: AuthorizationContext,
         configuration: TransactionConfiguration = .default,
@@ -44,7 +52,8 @@ extension DBContainer {
             DatabaseTransaction
         ) async throws -> Result
     ) async throws -> Result {
-        try await controlTransactionExecutor.withTransaction(
+        let selectedTransactionExecutor = controlTransactionExecutor
+        return try await selectedTransactionExecutor.withTransaction(
             configuration: configuration,
             clock: monotonicClock,
             executionDeadline: executionDeadline
@@ -72,4 +81,41 @@ extension DBContainer {
             }
         }
     }
+    #else
+    /// Executes server-initiated control work against the ordinary database.
+    /// Operation-level authorization belongs to the server runtime; the
+    /// framework only binds the authenticated context for entity policies.
+    @_spi(DatabaseExecution)
+    public func withControlTransaction<Result: Sendable>(
+        authorization: AuthorizationContext,
+        configuration: TransactionConfiguration = .default,
+        executionDeadline: TransactionExecutionDeadline? = nil,
+        _ operation: @Sendable @escaping (
+            DatabaseTransaction
+        ) async throws -> Result
+    ) async throws -> Result {
+        try await transactionExecutor.withTransaction(
+            configuration: configuration,
+            clock: monotonicClock,
+            executionDeadline: executionDeadline
+        ) { storageAccess in
+            let transaction = DatabaseTransaction(
+                storageAccess: storageAccess,
+                container: self
+            )
+            return try await RequestAuthorization.$context.withValue(
+                authorization
+            ) {
+                do {
+                    let result = try await operation(transaction)
+                    try await transaction.prepareForCommit()
+                    return result
+                } catch {
+                    await transaction.invalidate()
+                    throw error
+                }
+            }
+        }
+    }
+    #endif
 }

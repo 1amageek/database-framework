@@ -1,4 +1,5 @@
 #if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 #endif
 
@@ -32,3 +33,4 @@ package struct DatabaseStorageRuntimeTopology: Sendable {
     }
     #endif
 }
+#endif

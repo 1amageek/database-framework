@@ -49,25 +49,28 @@ schema, runtime feature traits, commands, policy, clocks, and injected
 framework does not depend on `database-server` and this path does not create a
 listener or process boundary.
 
-`database-server` is needed only for the native standalone deployment form. It
-owns transport, TLS, credential validation, routing, signals, and process
-lifecycle, then delegates every database operation to the same framework
-runtime. Server hosting does not become a second execution implementation.
+The independent `database-server` repository has two layers. Its
+Foundation-independent `DatabaseServerRuntime` owns DatabaseWire operation
+dispatch, remote command composition, durable server jobs, and schema
+administration. Its `DatabaseServerHost` owns native transport, TLS,
+credential persistence, routing, signals, and process lifecycle. Both invoke
+the framework's execution APIs; neither duplicates query or index semantics.
 
 ~~~mermaid
 flowchart TB
-    Definition["Application definition<br/>schema / commands / policy"] --> Runtime["database-framework<br/>DBContainer + execution"]
-    Runtime --> Engine["Injected StorageEngine"]
-    NativeHost["database-server<br/>optional standalone host"] --> Adapter["DatabaseWireAdapter<br/>bounded framing"]
-    Adapter --> Operations["DatabaseOperations<br/>canonical execution"]
-    Operations --> Runtime
+    Definition["Application definition<br/>schema / policy"] --> Framework["database-framework<br/>DBContainer + execution"]
+    Framework --> Engine["Injected StorageEngine"]
+    NativeHost["DatabaseServerHost<br/>native standalone"] --> ServerRuntime["DatabaseServerRuntime<br/>Wire operations + jobs"]
+    Cloudflare["Cloudflare Durable Object host"] --> ServerRuntime
+    ServerRuntime --> Framework
     Remote["CLI / DatabaseClient"] --> NativeHost
 ~~~
 
 | Owner | Must not own |
 |---|---|
-| Application + `database-framework` | HTTP/WS listener, token files, native signals |
-| `database-server` | query planning, index semantics, application schema meaning |
+| Application + `database-framework` | Wire dispatch, remote jobs, HTTP/WS listener, token files, native signals |
+| `DatabaseServerRuntime` | storage backend lifecycle, query planning, index semantics |
+| `DatabaseServerHost` | operation semantics or framework execution internals |
 
 ### Storage Injection And Ownership
 
@@ -77,33 +80,43 @@ adapter construction belongs to the composition layer; the `Database` umbrella
 provides native facade overloads only when their package traits are selected.
 
 ~~~text
-composition layer
-  constructs one or more StorageEngine values
-          |
-          | DatabaseStorageTopology
-          | DBConfiguration(storageTopology:)
-          | ownership transfer
-          v
-     DBContainer
+default composition
+  one StorageEngine
+    -> host-selected Subspace (engine root or resolved shared-backend root)
+      -> DBConfiguration(storageEngine:, databaseRoot:)
+        -> DBContainer(retained database root)
+       |-- no Base catalog / placement / persisted Grant lookup
+       `-- tuple-derived schema / metadata / data / index subspaces
+
+MultipleBases composition
+  DatabaseStorageTopology -> DBConfiguration(storageTopology:) -> DBContainer
        |-- control domain + named data placements
-       |-- open failure -> all engines shut down
-       |-- shutdown() --> all engines shut down
-       `-- deinit ------> all engines shut down
-                           (exactly once across all paths)
+       `-- Base / Composition / persisted Grant execution
+
+both ownership paths
+  open failure -> authoritative engine shutdown
+  shutdown()   -> authoritative engine shutdown
+  deinit       -> same exactly-once release path
 ~~~
 
-The configuration and container share one topology lifecycle owner. Backend
-facades create the same topology contract for one-engine deployments without
-creating an implicit Base. Once injected, an engine must not be reused or shut
-down by its former caller.
+The default configuration carries only one engine lifecycle owner. It does not
+construct a one-domain topology as a hidden approximation. The topology owner,
+catalogs, target leases, and persisted Grant checks are compiled only when the
+`MultipleBases` trait is selected. Once injected, an engine must not be reused
+or shut down by its former caller. Dedicated backends use their engine root.
+FoundationDB and other shared backends require the host to resolve an explicit
+application-selected root before injection. Startup installs a format
+descriptor only when that selected root is empty. A populated root without the
+current descriptor fails explicitly and is not mutated or treated as a new
+database.
 
 ## Runtime Forms
 
 Native and Embedded WASI builds use the same database-framework sources and the
 same synchronization, transaction, and error contracts. A full Cloudflare
-database runtime links the application-specific schema and database-framework
-into a Swift 6.4 Embedded WASM reactor. `DatabaseTypesFoundation`,
-`DatabaseKitFoundation`, and `DatabaseFoundation` are adapter products and
+database runtime links `DatabaseServerRuntime`, the application-specific
+schema, and database-framework into a Swift 6.4 Embedded WASM reactor.
+`DatabaseTypesFoundation` and `DatabaseKitFoundation` are adapter products and
 do not enter that reactor dependency graph.
 
 An Embedded application, such as Calendar, remains a separate WASM artifact. It
@@ -115,7 +128,7 @@ Embedded application WASM
         |
         | DatabaseWire
         v
-Full database-framework Embedded WASM reactor
+DatabaseServerRuntime + database-framework Embedded WASM reactor
         |
         | StorageEngine transaction contract
         v
@@ -150,14 +163,14 @@ The same trait conditions control `DatabaseRuntime` provider registration.
 Therefore an implementation cannot be re-exported without being registered, or
 registered without being part of the selected dependency graph.
 
-`DatabaseOperations` uses the same composition. Its operation registry and
+`DatabaseServerRuntime` uses the same composition. Its operation registry and
 `capabilities.describe` response contain graph, ontology, and SHACL operations
 only when `GraphIndexes` is active. A request for an operation outside the
 compiled composition fails with the typed `OPERATION_UNAVAILABLE` error; it
 never falls back to a partial implementation.
 
 Graph algorithm, ontology, SHACL, RDF document storage, graph query paging, and
-SPARQL mutation services are compiled out of `DatabaseOperations` when
+SPARQL mutation services are compiled out of `DatabaseServerRuntime` when
 `GraphIndexes` is absent. DatabaseWire's closed query and operation algebra
 remains available so a smaller runtime can decode a request and reject an
 unavailable operation or statement deterministically.
@@ -196,6 +209,14 @@ instead of disassembling and reconstructing feature state.
 | `Relationships` | relationship mutation maintenance and typed remote error mapping |
 | `MultipleBases` | Base lifecycle, placement, Base-local Grants, and read-only Composition execution |
 | `AllRuntimeFeatures` | every index and relationship capability above; excludes `MultipleBases` |
+
+`MultipleBases` is a storage and authorization model, not a baseline database
+feature. Without it, the Base/Composition/topology/Grant implementation is
+conditionally compiled out and the hot transaction path uses the one engine
+directly. The standard DatabaseWire v2 graph is target-free. Enabling
+`MultipleBases` compiles the Base and Grant values together with the
+target-bound DatabaseWire v3 graph; the two package graphs do not expose a
+half-enabled target model.
 
 The framework package has no default traits. Every backend, runtime feature,
 and `MultipleBases` is selected explicitly by the consuming package. The

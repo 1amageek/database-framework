@@ -245,7 +245,8 @@ public final class CycleDetector: Sendable {
     ///   - snapshot: Stable storage snapshot for the complete traversal
     ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
     ///   - configuration: Algorithm configuration
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,

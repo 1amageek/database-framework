@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import StorageKit
 
 /// One independently transacted storage domain owned by a database container.
@@ -70,3 +71,4 @@ public struct DatabaseStorageDomain: Sendable {
         self.storageEngine = storageEngine
     }
 }
+#endif

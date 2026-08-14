@@ -1,4 +1,5 @@
 #if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 #endif
 import StorageKit
@@ -25,3 +26,4 @@ struct ClaimedDatabaseStorageTopology: Sendable {
         return domain
     }
 }
+#endif

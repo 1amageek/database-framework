@@ -1,10 +1,18 @@
 import DatabaseKit
 import DatabaseTypes
 
-package struct DatabaseIndexMaintenanceStatus: Sendable {
-    package let entity: String
-    package let index: String
-    package let partitions: FieldObject
-    package let indexState: IndexState
-    package let rebuildState: DatabaseIndexRebuildState?
+public enum DatabaseIndexRebuildPhase: Sendable, Hashable {
+    case building
+    case complete
+    case failed
+}
+
+public struct DatabaseIndexMaintenanceStatus: Sendable {
+    public let entity: String
+    public let index: String
+    public let partitions: FieldObject
+    public let indexState: IndexState
+    public let rebuildPhase: DatabaseIndexRebuildPhase?
+    public let indexedEntityCount: UInt64
+    public let detail: String?
 }

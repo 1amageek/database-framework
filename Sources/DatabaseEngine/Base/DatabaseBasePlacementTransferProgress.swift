@@ -2,13 +2,14 @@
 import DatabaseTypes
 
 /// One durable checkpoint produced by a bounded placement-transfer scan.
-package struct DatabaseBasePlacementTransferProgress: Sendable, Hashable {
-    package let continuation: ByteString?
-    package let digest: ByteString
-    package let keyCount: UInt64
-    package let byteCount: UInt64
+@_spi(DatabaseExecution)
+public struct DatabaseBasePlacementTransferProgress: Sendable, Hashable {
+    public let continuation: ByteString?
+    public let digest: ByteString
+    public let keyCount: UInt64
+    public let byteCount: UInt64
 
-    package var isComplete: Bool { continuation == nil }
+    public var isComplete: Bool { continuation == nil }
 }
 
 #endif

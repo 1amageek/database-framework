@@ -10,7 +10,7 @@ import TestHeartbeat
 import Testing
 import TestSupport
 @testable import DatabaseEngine
-@testable import GraphIndex
+@_spi(DatabaseExecution) @testable import GraphIndex
 
 @Persistable
 struct RuntimeSemanticPathEdge {

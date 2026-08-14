@@ -3,10 +3,11 @@ import DatabaseKit
 import StorageKit
 
 /// Durable control-domain definition of one named Base Composition.
-package struct DatabaseCompositionRecord: Sendable, Hashable, StorageFrameValue {
-    package let composition: Base.Composition
-    package let revision: UInt64
-    package let generation: UInt64
+@_spi(DatabaseExecution)
+public struct DatabaseCompositionRecord: Sendable, Hashable, StorageFrameValue {
+    public let composition: Base.Composition
+    public let revision: UInt64
+    public let generation: UInt64
 
     package init(
         composition: Base.Composition,

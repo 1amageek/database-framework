@@ -1,15 +1,22 @@
 import DatabaseKit
 import DatabaseTypes
-@_spi(DatabaseOperations) import DatabaseWire
+@_spi(DatabaseExecution) import DatabaseWire
 import StorageKit
 
 extension DBContainer {
     package func requireNoActiveSchemaTransition(
         transaction: any TransactionAccess
     ) async throws {
-        try await DatabaseSchemaApplicationStore(
-            metadataSubspace: metadataSubspace
-        ).requireNoActiveTransition(transaction: transaction)
+        let activeKey = metadataSubspace
+            .subspace("schema")
+            .subspace("applications")
+            .pack(Tuple("active"))
+        if try await transaction.getValue(
+            for: activeKey,
+            snapshot: false
+        ) != nil {
+            throw DatabaseSchemaPublicationError.transitionInProgress
+        }
     }
 
     /// Atomically publishes the complete initial schema catalog for a compiled
@@ -18,12 +25,21 @@ extension DBContainer {
         _ schema: Schema,
         fingerprint targetFingerprint: SchemaFingerprint
     ) async throws {
+        #if DATABASE_MULTIPLE_BASES
+        let schemaEngine = storageTopology.controlDomain.engine
+        let schemaRoot = storageTopology.controlDomain.root
+        let schemaTransactionExecutor = controlTransactionExecutor
+        #else
+        let schemaEngine = engine
+        let schemaRoot = databaseRoot
+        let schemaTransactionExecutor = transactionExecutor
+        #endif
         let registry = SchemaRegistry(
-            database: storageTopology.controlDomain.engine,
-            root: storageTopology.controlDomain.root,
+            database: schemaEngine,
+            root: schemaRoot,
             clock: monotonicClock
         )
-        try await controlTransactionExecutor.withTransaction(
+        try await schemaTransactionExecutor.withTransaction(
             configuration: .default,
             clock: monotonicClock
         ) { transaction in
@@ -105,15 +121,23 @@ extension DBContainer {
         guard !idempotencyKey.isEmpty else {
             throw DatabaseSchemaPublicationError.invalidIdempotencyKey
         }
-        return try await controlTransactionExecutor.withTransaction(
+        #if DATABASE_MULTIPLE_BASES
+        let schemaTransactionExecutor = controlTransactionExecutor
+        #else
+        let schemaTransactionExecutor = transactionExecutor
+        _ = authorization
+        #endif
+        return try await schemaTransactionExecutor.withTransaction(
             configuration: .readOnly,
             clock: monotonicClock
         ) { transaction in
+            #if DATABASE_MULTIPLE_BASES
             try await self.databaseGrantStore.require(
                 .administer,
                 authorization: authorization,
                 transaction: transaction
             )
+            #endif
             guard let stored = try await Self.loadSchemaPublication(
                 idempotencyKey: idempotencyKey,
                 metadataSubspace: self.metadataSubspace,
@@ -130,7 +154,8 @@ extension DBContainer {
         }
     }
 
-    package func publishSchema(
+    @_spi(DatabaseExecution)
+    public func publishSchema(
         _ schema: Schema,
         fingerprint targetFingerprint: SchemaFingerprint,
         expectedFingerprint: SchemaFingerprint,
@@ -150,21 +175,33 @@ extension DBContainer {
         let publishedLease = acquirePublishedSchemaLease()
         let leasedFingerprint = publishedLease.fingerprint.detached()
         let leasedGeneration = publishedLease.generation
+        #if DATABASE_MULTIPLE_BASES
+        let schemaEngine = storageTopology.controlDomain.engine
+        let schemaRoot = storageTopology.controlDomain.root
+        let schemaTransactionExecutor = controlTransactionExecutor
+        #else
+        let schemaEngine = engine
+        let schemaRoot = databaseRoot
+        let schemaTransactionExecutor = transactionExecutor
+        _ = authorization
+        #endif
         let registry = SchemaRegistry(
-            database: storageTopology.controlDomain.engine,
-            root: storageTopology.controlDomain.root,
+            database: schemaEngine,
+            root: schemaRoot,
             clock: monotonicClock
         )
-        let outcome = try await controlTransactionExecutor.withTransaction(
+        let outcome = try await schemaTransactionExecutor.withTransaction(
             configuration: .batch,
             clock: monotonicClock,
             executionDeadline: nil
         ) { transaction in
+            #if DATABASE_MULTIPLE_BASES
             try await self.databaseGrantStore.require(
                 .administer,
                 authorization: authorization,
                 transaction: transaction
             )
+            #endif
             let databaseTransaction = DatabaseTransaction(
                 storageAccess: transaction,
                 container: self
@@ -291,7 +328,8 @@ extension DBContainer {
         return outcome.publication
     }
 
-    package func validateSchemaGeneration(
+    @_spi(DatabaseExecution)
+    public func validateSchemaGeneration(
         _ schema: Schema,
         runtimeConfiguration: DatabaseRuntimeConfiguration
     ) throws {
@@ -307,7 +345,8 @@ extension DBContainer {
         )
     }
 
-    package func initializeNewSchemaIndexStates(
+    @_spi(DatabaseExecution)
+    public func initializeNewSchemaIndexStates(
         from previous: Schema,
         to target: Schema,
         transaction: any TransactionAccess
@@ -397,7 +436,7 @@ extension DBContainer {
         for group in target.polymorphicGroups
         where previous.polymorphicGroup(identifier: group.identifier) == nil
             && !group.indexes.isEmpty {
-            let subspace = try activeDataSubspace(
+            let subspace = try operationDataSubspace(
                 relativePath: group.resolvedDirectoryPath()
             )
             try await IndexLifecycleStore(
@@ -449,7 +488,8 @@ extension DBContainer {
         }
     }
 
-    package func pendingSchemaIndexBuilds(
+    @_spi(DatabaseExecution)
+    public func pendingSchemaIndexBuilds(
         in schema: Schema,
         transaction: any TransactionAccess
     ) async throws -> [String: Set<String>] {
@@ -467,7 +507,8 @@ extension DBContainer {
         return result
     }
 
-    package func completeSchemaIndexBuild(
+    @_spi(DatabaseExecution)
+    public func completeSchemaIndexBuild(
         entity: String,
         index: String,
         transaction: any TransactionAccess
@@ -482,14 +523,14 @@ extension DBContainer {
         )
     }
 
-    package func installDataRootSchemaSnapshot(
+    @_spi(DatabaseExecution)
+    public func installDataRootSchemaSnapshot(
         _ schema: Schema,
         transaction: any TransactionAccess
     ) throws {
         try Self.setCurrentSchemaSnapshot(
             schema,
-            metadataSubspace: requireActiveDataRoot().root
-                .subspace("metadata"),
+            metadataSubspace: activeDataRootMetadataSubspace(),
             transaction: transaction
         )
     }
@@ -535,7 +576,23 @@ extension DBContainer {
     }
 
     private func dataRootSchemaMetadataSubspace() throws -> Subspace {
+        try activeDataRootInternalMetadataSubspace()
+    }
+
+    private func activeDataRootMetadataSubspace() throws -> Subspace {
+        #if DATABASE_MULTIPLE_BASES
+        try requireActiveDataRoot().root.subspace("metadata")
+        #else
+        databaseRoot.subspace("metadata")
+        #endif
+    }
+
+    private func activeDataRootInternalMetadataSubspace() throws -> Subspace {
+        #if DATABASE_MULTIPLE_BASES
         try requireActiveDataRoot().root.subspace("_metadata")
+        #else
+        databaseRoot.subspace("_metadata")
+        #endif
     }
 
     package static func activeSchemaFingerprintKey(

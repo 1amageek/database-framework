@@ -2,10 +2,10 @@
 
 database-framework executes against StorageKit protocols. `DatabaseEngine`
 never creates or selects a concrete backend. Its storage construction contract
-is a validated `DatabaseStorageTopology` containing a control domain and one or
-more data domains. The `MultipleBases` trait adds named Base placements.
-Backend facades build a one-domain topology from one initialized
-`StorageEngine`; the standard build uses that domain as the database data root.
+is one initialized `StorageEngine` in the default composition. The independent
+`MultipleBases` trait replaces that input with a validated
+`DatabaseStorageTopology` containing a control domain, one or more data
+domains, and named Base placements.
 
 ## Backend Matrix
 
@@ -20,10 +20,8 @@ All application data access passes through the same conceptual path:
 
 ~~~text
 DBContainer
-    -> database data root
-        -> target-bound executor
-            -> resolved storage domain
-                -> Transaction
+    -> one StorageEngine
+        -> Transaction
 
 DBContainer [MultipleBases]
     -> DatabaseSession
@@ -33,12 +31,13 @@ DBContainer [MultipleBases]
                     -> Transaction
 ~~~
 
-`DatabaseContext` is target-bound and backend-neutral. With `MultipleBases`, a
+`DatabaseContext` is backend-neutral. With `MultipleBases`, it is additionally
+target-bound. A
 Composition is read-only and uses its planner-backed executor instead of a
 mutation context. Backend
 traits only decide which facade adapters are available to the consuming
-package. The topology decides which backend owns each Base placement without
-exposing backend credentials through the semantic API.
+package. Only the trait-specific topology decides which backend owns each Base
+placement without exposing backend credentials through the semantic API.
 
 ## SwiftPM Traits
 
@@ -48,7 +47,7 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3980 \
+    --expected-count 3681 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -66,7 +65,7 @@ independent.
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0812.1",
+    from: "26.0814.0",
     traits: ["SQLite", "GraphIndexes"]
 )
 ~~~
@@ -79,7 +78,7 @@ Enable the data-partitioning feature independently:
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0812.1",
+    from: "26.0814.0",
     traits: ["SQLite", "AllRuntimeFeatures", "MultipleBases"]
 )
 ~~~
@@ -88,7 +87,20 @@ Enable the data-partitioning feature independently:
 scripts/xcode-test-harness \
   --traits SQLite,AllRuntimeFeatures \
   --only-testing SQLiteTests \
-  --expected-count 119 \
+  --expected-count 111 \
+  --require-zero-skips \
+  --require-zero-expected-failures \
+  --require-zero-runtime-warnings
+~~~
+
+Base isolation, persisted Grants, and Composition execution are present only
+when the optional trait is enabled:
+
+~~~bash
+scripts/xcode-test-harness \
+  --traits SQLite,AllRuntimeFeatures,MultipleBases \
+  --only-testing SQLiteTests \
+  --expected-count 114 \
   --require-zero-skips \
   --require-zero-expected-failures \
   --require-zero-runtime-warnings
@@ -225,13 +237,19 @@ must fail explicitly; they must not silently fall back to another backend.
 
 ## Storage Engine Lifecycle
 
-Passing a topology to `DBConfiguration(storageTopology:)` transfers every
-engine lifecycle to one shared configuration/container owner. Backend facades
-that construct a one-domain topology have the same transfer contract. Do not
+Passing one engine to `DBConfiguration(storageEngine:)` transfers its lifecycle
+to the configuration/container owner. With `MultipleBases`, passing a topology
+to `DBConfiguration(storageTopology:)` transfers every engine lifecycle. Do not
 use or shut down any transferred engine through another owner afterward.
 
 ~~~text
-StorageEngine(s)
+default
+  StorageEngine -> DBConfiguration(storageEngine:) -> DBContainer.open
+                                                       |-- open failure -> shutdown once
+                                                       `-- shutdown() --> shutdown once
+
+MultipleBases
+  StorageEngine(s)
     |
     | validate topology and transfer ownership
     v
@@ -241,7 +259,7 @@ DatabaseStorageTopology -> DBConfiguration -> DBContainer.open
                                                 `-- deinit ------> all engines shut down exactly once
 ~~~
 
-`DBContainer.shutdown()` is synchronous, thread-safe, and idempotent. It is the
+`DBContainer.shutdown()` is thread-safe and idempotent. It is the
 explicit service shutdown hook. Deinitialization is a safety net, not the
 preferred operational shutdown signal. No operation may start after this
 terminal transition.

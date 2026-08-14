@@ -678,6 +678,14 @@ package enum RDFTermStorageFormat {
     }
 }
 
+@_spi(DatabaseExecution)
+public func validatePersistedRDFTerm(
+    _ term: RDFTerm,
+    role: RDFTermRole
+) throws {
+    try RDFTermStorageFormat.validate(term, role: role)
+}
+
 private extension RDFTerm {
     var storageKind: RDFTermKind {
         switch self {

@@ -18,14 +18,16 @@ public struct DatabaseRetainedRDFGraph: ~Copyable, Sendable {
     public var count: Int { storage.count }
     public var isEmpty: Bool { storage.isEmpty }
 
-    package borrowing func withElement<Result, Failure: Error>(
+    @_spi(DatabaseExecution)
+    public borrowing func withElement<Result, Failure: Error>(
         at index: Int,
         _ body: (borrowing RDFQuad) throws(Failure) -> Result
     ) throws(Failure) -> Result {
         try storage.withElement(at: index, body)
     }
 
-    package consuming func sorting<Failure: Error>(
+    @_spi(DatabaseExecution)
+    public consuming func sorting<Failure: Error>(
         by areInIncreasingOrder: (
             borrowing RDFQuad,
             borrowing RDFQuad
@@ -38,7 +40,8 @@ public struct DatabaseRetainedRDFGraph: ~Copyable, Sendable {
         )
     }
 
-    package consuming func removingAdjacentDuplicates<Failure: Error>(
+    @_spi(DatabaseExecution)
+    public consuming func removingAdjacentDuplicates<Failure: Error>(
         by areEquivalent: (
             borrowing RDFQuad,
             borrowing RDFQuad
@@ -51,7 +54,8 @@ public struct DatabaseRetainedRDFGraph: ~Copyable, Sendable {
         )
     }
 
-    package consuming func promotePage(
+    @_spi(DatabaseExecution)
+    public consuming func promotePage(
         _ range: Range<Int>
     ) -> [RDFQuad] {
         precondition(

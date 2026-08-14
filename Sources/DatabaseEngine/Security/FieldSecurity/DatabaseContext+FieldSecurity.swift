@@ -19,7 +19,8 @@ extension DatabaseContext {
         )
     }
 
-    package func authorizeIndexFieldRead(
+    @_spi(DatabaseExecution)
+    public func authorizeIndexFieldRead(
         entity: Schema.Entity,
         descriptor: IndexDescriptor
     ) throws {

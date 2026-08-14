@@ -1,9 +1,11 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
 /// Transaction-scoped persisted Grants for one exact Security resource.
-package struct DatabaseGrantStore: Sendable {
+@_spi(DatabaseExecution)
+public struct DatabaseGrantStore: Sendable {
     private static let maximumSubjectUTF8ByteCount = 512
     private static let maximumGrantCount = 65_536
 
@@ -13,7 +15,7 @@ package struct DatabaseGrantStore: Sendable {
     private let roles: Subspace
     private let revisionKey: ByteString
 
-    package init(resource: Security.Resource, root: Subspace) {
+    public init(resource: Security.Resource, root: Subspace) {
         self.resource = resource
         self.root = root.subspace("security").subspace("grants")
         self.principals = self.root.subspace("principals")
@@ -21,7 +23,7 @@ package struct DatabaseGrantStore: Sendable {
         self.revisionKey = self.root.pack(Tuple("revision"))
     }
 
-    package func require(
+    public func require(
         _ required: Security.Access,
         authorization: AuthorizationContext,
         transaction: any TransactionAccess
@@ -47,7 +49,7 @@ package struct DatabaseGrantStore: Sendable {
         }
     }
 
-    package func effective(
+    public func effective(
         principal: Principal,
         transaction: any TransactionAccess
     ) async throws -> DatabaseEffectiveGrant {
@@ -87,7 +89,7 @@ package struct DatabaseGrantStore: Sendable {
         )
     }
 
-    package func direct(
+    public func direct(
         subject: Security.Subject? = nil,
         transaction: any TransactionAccess
     ) async throws -> DatabaseGrantSet {
@@ -124,7 +126,7 @@ package struct DatabaseGrantStore: Sendable {
         return DatabaseGrantSet(revision: revision, grants: grants)
     }
 
-    package func grant(
+    public func grant(
         _ grant: Security.Grant,
         expectedRevision: UInt64,
         transaction: any TransactionAccess
@@ -145,7 +147,7 @@ package struct DatabaseGrantStore: Sendable {
         return nextRevision
     }
 
-    package func revoke(
+    public func revoke(
         _ grant: Security.Grant,
         expectedRevision: UInt64,
         transaction: any TransactionAccess
@@ -178,7 +180,7 @@ package struct DatabaseGrantStore: Sendable {
         return nextRevision
     }
 
-    package func installInitial(
+    public func installInitial(
         _ grants: [Security.Grant],
         transaction: any TransactionAccess
     ) async throws {
@@ -413,3 +415,4 @@ private extension Security.Access {
         Security.Access(rawValue: rawValue & ~other.rawValue)
     }
 }
+#endif

@@ -1,5 +1,5 @@
 import DatabaseKit
-@_spi(DatabaseOperations) import DatabaseWire
+@_spi(DatabaseExecution) import DatabaseWire
 
 /// A retained snapshot of one immutable schema execution generation.
 public final class DatabaseSchemaLease: Sendable {

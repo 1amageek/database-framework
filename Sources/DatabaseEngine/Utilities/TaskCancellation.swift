@@ -3,3 +3,8 @@ package func ensureDatabaseTaskIsActive() throws {
         throw CancellationError()
     }
 }
+
+@_spi(DatabaseExecution)
+public func ensureDatabaseExecutionTaskIsActive() throws {
+    try ensureDatabaseTaskIsActive()
+}

@@ -4,7 +4,7 @@ import DatabaseWire
 import Synchronization
 import TestSupport
 import Testing
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Suite("Database retained buffers")
 struct DatabaseRetainedBufferTests {

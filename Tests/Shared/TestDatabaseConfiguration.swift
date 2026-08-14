@@ -1,4 +1,4 @@
-@_spi(Testing) import DatabaseEngine
+@_spi(Testing) @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -46,20 +46,20 @@ public extension DBConfiguration {
     /// Creates an explicitly clocked configuration for tests.
     static func testing(
         name: String? = nil,
-        databaseIdentifier: String = "test",
+        databaseIdentifier: String? = nil,
         storageEngine: any StorageEngine,
         indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
     ) throws -> DBConfiguration {
+        #if MultipleBases
         let domainID = try DatabaseStorageDomain.ID("test-primary")
         let domain = try DatabaseStorageDomain(
             id: domainID,
-            namespacePath: ["database", databaseIdentifier],
+            namespacePath: ["database", databaseIdentifier ?? "test"],
             storageEngine: storageEngine
         )
-        #if MultipleBases
         let placementID = try Base.Placement.ID("test-default")
         let placement = try DatabaseStoragePlacement(
             id: placementID,
@@ -90,10 +90,12 @@ public extension DBConfiguration {
             metrics: metrics
         )
         #else
-        let topology = DatabaseStorageTopology(controlDomain: domain)
         return DBConfiguration(
             name: name,
-            storageTopology: topology,
+            storageEngine: storageEngine,
+            databaseRoot: databaseIdentifier.map {
+                Subspace("test-database", $0)
+            } ?? Subspace(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             indexConfigurations: indexConfigurations,
@@ -105,6 +107,7 @@ public extension DBConfiguration {
     }
 }
 
+#if MultipleBases
 public extension DatabaseStorageTopology {
     /// Creates the canonical single-domain topology used by test hosts that
     /// own the topology directly instead of constructing a DBConfiguration.
@@ -112,7 +115,6 @@ public extension DatabaseStorageTopology {
         storageEngine: any StorageEngine
     ) throws -> DatabaseStorageTopology {
         let domainID = try DatabaseStorageDomain.ID("test-primary")
-        #if MultipleBases
         let placementID = try Base.Placement.ID("test-default")
         return try DatabaseStorageTopology(
             controlDomainID: domainID,
@@ -132,24 +134,18 @@ public extension DatabaseStorageTopology {
             ],
             defaultPlacementID: placementID
         )
-        #else
-        return DatabaseStorageTopology(
-            controlDomain: try DatabaseStorageDomain(
-                id: domainID,
-                namespacePath: ["database", "test"],
-                storageEngine: storageEngine
-            )
-        )
-        #endif
     }
 }
+#endif
 
 /// Explicit test-only Base identity and authorization used by behavioral
 /// fixtures that are not themselves testing authorization.
 public enum TestBaseEnvironment {
+    #if MultipleBases
     public static func id() throws -> Base.ID {
         try Base.ID("test")
     }
+    #endif
 
     public static var authorization: AuthorizationContext {
         .authenticated(
@@ -193,13 +189,13 @@ public extension DBContainer {
         #endif
     }
 
+    #if MultipleBases
     /// Persists access for one test subject through the same Base-local Grant
     /// transaction used by production authorization.
     func grantTestBaseAccess(
         to subject: Security.Subject,
         access: Security.Access
     ) async throws {
-        #if MultipleBases
         let baseID = try TestBaseEnvironment.id()
         try await grantBaseAccessForTesting(
             Security.Grant(
@@ -209,9 +205,6 @@ public extension DBContainer {
             ),
             authorization: TestBaseEnvironment.authorization
         )
-        #else
-        try await grantTestDatabaseAccess(to: subject, access: access)
-        #endif
     }
 
     /// Persists database access for one test subject through the production
@@ -229,6 +222,7 @@ public extension DBContainer {
             authorization: TestBaseEnvironment.authorization
         )
     }
+    #endif
 
     /// Returns administrative APIs bound to the explicitly bootstrapped test
     /// Base and test principal.
@@ -260,8 +254,9 @@ public extension DBContainer {
     /// Test suites that reuse one backend call this between serialized cases.
     func resetTestBaseData() async throws {
         try await withTestBaseOperation {
-            let dataRoot = try self.activeDataSubspace(relativePath: [])
-            try await self.engine.withTransaction { transaction in
+            let storage = try self.executionStorage()
+            let dataRoot = storage.root.subspace("data")
+            try await storage.engine.withTransaction { transaction in
                 try transaction.clearRange(
                     beginKey: dataRoot.range().begin,
                     endKey: dataRoot.range().end

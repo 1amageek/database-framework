@@ -1,5 +1,5 @@
 #if MultipleBases
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
@@ -29,36 +29,36 @@ struct DatabaseBaseDeletionTests {
         let baseID = try TestBaseEnvironment.id()
         let retired = try await retire(baseID, container: container)
         let owner = ByteString((0..<16).map(UInt8.init))
-        let deleting = try await container.prepareBaseDeletion(
+        let deleting = try await container.executionPrepareBaseDeletion(
             baseID,
             expectedRevision: retired.revision,
             owner: owner
         )
         #expect(deleting.lifecycle == .deleting)
 
-        _ = try await container.clearBaseForDeletion(
+        _ = try await container.executionClearBaseForDeletion(
             baseID,
             owner: owner,
             authorization: TestBaseEnvironment.authorization
         )
         #expect(
-            try await container.permitsBaseDeletionFinalization(
+            try await container.executionPermitsBaseDeletionFinalization(
                 baseID,
                 owner: owner
             )
         )
         #expect(
-            try await container.permitsBaseDeletionFinalization(
+            try await container.executionPermitsBaseDeletionFinalization(
                 baseID,
                 owner: ByteString(repeating: 0xff, count: 16)
             ) == false
         )
 
-        let tombstone = try await container.finishBaseDeletion(
+        let tombstone = try await container.executionFinishBaseDeletion(
             baseID,
             owner: owner
         )
-        let replayedTombstone = try await container.finishBaseDeletion(
+        let replayedTombstone = try await container.executionFinishBaseDeletion(
             baseID,
             owner: owner
         )
@@ -66,7 +66,7 @@ struct DatabaseBaseDeletionTests {
         try await container.withControlMetadataTransaction(
             configuration: .batch
         ) { transaction in
-            try await container.finalizeSuccessfulBaseDeletion(
+            try await container.executionFinalizeSuccessfulBaseDeletion(
                 baseID,
                 owner: owner,
                 controlTransaction: transaction.storageAccess
@@ -111,14 +111,14 @@ struct DatabaseBaseDeletionTests {
         let baseID = try TestBaseEnvironment.id()
         let retired = try await retire(baseID, container: container)
         let owner = ByteString(repeating: 0x22, count: 16)
-        _ = try await container.prepareBaseDeletion(
+        _ = try await container.executionPrepareBaseDeletion(
             baseID,
             expectedRevision: retired.revision,
             owner: owner
         )
 
         await #expect(throws: DatabaseGrantAuthorizationError.self) {
-            try await container.clearBaseForDeletion(
+            try await container.executionClearBaseForDeletion(
                 baseID,
                 owner: owner,
                 authorization: .authenticated(
@@ -127,21 +127,21 @@ struct DatabaseBaseDeletionTests {
             )
         }
         #expect(
-            try await container.permitsBaseDeletionFinalization(
+            try await container.executionPermitsBaseDeletionFinalization(
                 baseID,
                 owner: owner
             ) == false
         )
 
         let restored = try await container
-            .prepareUnsuccessfulBaseDeletionRecovery(
+            .executionPrepareUnsuccessfulBaseDeletionRecovery(
                 baseID,
                 owner: owner
             )
         try await container.withControlMetadataTransaction(
             configuration: .batch
         ) { transaction in
-            try await container.finalizeUnsuccessfulBaseDeletion(
+            try await container.executionFinalizeUnsuccessfulBaseDeletion(
                 baseID,
                 owner: owner,
                 controlTransaction: transaction.storageAccess

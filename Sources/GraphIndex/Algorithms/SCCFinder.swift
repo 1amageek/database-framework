@@ -128,7 +128,8 @@ public final class SCCFinder: Sendable {
 
     // MARK: - Initialization
 
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         snapshot: GraphReadSnapshot,
         scanner: GraphEdgeScanner,
         configuration: SCCConfiguration = .default

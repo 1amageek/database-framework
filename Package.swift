@@ -1,6 +1,13 @@
 // swift-tools-version: 6.4
 import PackageDescription
 
+let databaseKitTraits: Set<Package.Dependency.Trait> = [
+    .trait(
+        name: "MultipleBases",
+        condition: .when(traits: ["MultipleBases"])
+    ),
+]
+
 let nativeRuntimePlatforms: [Platform] = [
     .macOS,
     .iOS,
@@ -26,6 +33,7 @@ let package = Package(
         .iOS(.v26),
     ],
     products: [
+        .library(name: "DatabaseMath", targets: ["DatabaseMath"]),
         .library(name: "DatabaseEngine", targets: ["DatabaseEngine"]),
         .library(
             name: "SwiftLogDatabaseLogging",
@@ -57,12 +65,6 @@ let package = Package(
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
         .library(name: "BenchmarkFramework", targets: ["BenchmarkFramework"]),
-        .library(name: "DatabaseOperations", targets: ["DatabaseOperations"]),
-        .library(name: "DatabaseWireAdapter", targets: ["DatabaseWireAdapter"]),
-        .library(
-            name: "DatabaseFoundation",
-            targets: ["DatabaseFoundation"]
-        ),
     ],
     traits: [
         .trait(name: "FoundationDB"),
@@ -106,7 +108,8 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0812.1"
+            from: "26.0814.0",
+            traits: databaseKitTraits
         ),
         .package(
             url: "https://github.com/1amageek/swift-hnsw.git",
@@ -547,227 +550,6 @@ let package = Package(
                 .product(name: "StorageKit", package: "storage-kit"),
             ]
         ),
-        // DatabaseOperationCore - Shared operation admission and resource contracts
-        .target(
-            name: "DatabaseOperationCore",
-            dependencies: [
-                "DatabaseEngine",
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
-            ]
-        ),
-        // DatabaseCommandOperations - Application command contracts and registries
-        .target(
-            name: "DatabaseCommandOperations",
-            dependencies: [
-                "DatabaseOperationCore",
-                "DatabaseEngine",
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKit", package: "database-kit"),
-            ]
-        ),
-        // DatabaseQueryOperations - Query admission, evaluation, and paging
-        .target(
-            name: "DatabaseQueryOperations",
-            dependencies: [
-                "DatabaseOperationCore",
-                "DatabaseEngine",
-                "QueryAST",
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
-            ],
-            swiftSettings: [
-                .define(
-                    "DATABASE_QUERY_OPERATIONS_GRAPH_INDEXES",
-                    .when(traits: ["GraphIndexes"])
-                ),
-            ]
-        ),
-        // DatabaseMutationOperations - Entity and SPARQL mutation preparation
-        .target(
-            name: "DatabaseMutationOperations",
-            dependencies: [
-                "DatabaseOperationCore",
-                "DatabaseQueryOperations",
-                "DatabaseEngine",
-                .target(
-                    name: "GraphIndex",
-                    condition: .when(traits: ["GraphIndexes"])
-                ),
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
-            ],
-            swiftSettings: [
-                .define(
-                    "DATABASE_MUTATION_OPERATIONS_GRAPH_INDEXES",
-                    .when(traits: ["GraphIndexes"])
-                ),
-            ]
-        ),
-        // DatabaseGraphOperations - Graph, ontology, and SHACL processing
-        .target(
-            name: "DatabaseGraphOperations",
-            dependencies: [
-                "DatabaseOperationCore",
-                "DatabaseQueryOperations",
-                "DatabaseMutationOperations",
-                "DatabaseEngine",
-                .target(
-                    name: "GraphIndex",
-                    condition: .when(traits: ["GraphIndexes"])
-                ),
-                .target(
-                    name: "OntologyIndex",
-                    condition: .when(traits: ["GraphIndexes"])
-                ),
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
-            ],
-            swiftSettings: [
-                .define(
-                    "DATABASE_GRAPH_OPERATIONS_ENABLED",
-                    .when(traits: ["GraphIndexes"])
-                ),
-            ]
-        ),
-        // DatabaseJobRuntime - Durable job state, storage, and scheduling contracts
-        .target(
-            name: "DatabaseJobRuntime",
-            dependencies: [
-                "DatabaseOperationCore",
-                "DatabaseEngine",
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
-            ]
-        ),
-        // DatabaseSchemaOperations - Schema compatibility and runtime assembly
-        .target(
-            name: "DatabaseSchemaOperations",
-            dependencies: [
-                "DatabaseJobRuntime",
-                "DatabaseEngine",
-                "DatabaseRuntime",
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKit", package: "database-kit"),
-            ]
-        ),
-        // DatabaseMaintenanceOperations - Index and maintenance state/planning
-        .target(
-            name: "DatabaseMaintenanceOperations",
-            dependencies: [
-                "DatabaseJobRuntime",
-                "DatabaseEngine",
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
-            ]
-        ),
-        // DatabaseAdministrationOperations - Multiple-Base lifecycle state
-        .target(
-            name: "DatabaseAdministrationOperations",
-            dependencies: [
-                "DatabaseJobRuntime",
-                "DatabaseEngine",
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKit", package: "database-kit"),
-            ],
-            swiftSettings: [
-                .define(
-                    "DATABASE_ADMINISTRATION_OPERATIONS_ENABLED",
-                    .when(traits: ["MultipleBases"])
-                ),
-            ]
-        ),
-        // DatabaseOperations - Host-independent operation composition
-        .target(
-            name: "DatabaseOperations",
-            dependencies: [
-                "DatabaseOperationCore",
-                "DatabaseCommandOperations",
-                "DatabaseQueryOperations",
-                "DatabaseMutationOperations",
-                "DatabaseGraphOperations",
-                "DatabaseJobRuntime",
-                "DatabaseSchemaOperations",
-                "DatabaseMaintenanceOperations",
-                .target(
-                    name: "DatabaseAdministrationOperations",
-                    condition: .when(traits: ["MultipleBases"])
-                ),
-                "DatabaseMath",
-                "DatabaseEngine",
-                "DatabaseRuntime",
-                .target(
-                    name: "GraphIndex",
-                    condition: .when(traits: ["GraphIndexes"])
-                ),
-                .target(
-                    name: "OntologyIndex",
-                    condition: .when(traits: ["GraphIndexes"])
-                ),
-                .target(
-                    name: "RelationshipIndex",
-                    condition: .when(traits: ["Relationships"])
-                ),
-                "QueryAST",
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
-            ],
-            swiftSettings: [
-                .define(
-                    "DATABASE_OPERATIONS_GRAPH_INDEXES",
-                    .when(traits: ["GraphIndexes"])
-                ),
-                .define(
-                    "DATABASE_OPERATIONS_RELATIONSHIPS",
-                    .when(traits: ["Relationships"])
-                ),
-                .define(
-                    "DATABASE_OPERATIONS_VECTOR_INDEXES",
-                    .when(traits: ["VectorIndexes"])
-                ),
-                .define(
-                    "DATABASE_OPERATIONS_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
-                ),
-            ]
-        ),
-        // DatabaseWireAdapter - Bounded frame adaptation around operation execution
-        .target(
-            name: "DatabaseWireAdapter",
-            dependencies: [
-                "DatabaseOperations",
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-            ]
-        ),
-        .target(
-            name: "DatabaseFoundation",
-            dependencies: [
-                "DatabaseEngine",
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(
-                    name: "DatabaseTypesFoundation",
-                    package: "database-types"
-                ),
-            ]
-        ),
         // Test Support (shared test utilities)
         .target(
             name: "TestSupport",
@@ -796,6 +578,13 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 "DatabaseRuntime",
+                .target(
+                    name: "Database",
+                    condition: .when(
+                        platforms: foundationDBClientPlatforms,
+                        traits: ["FoundationDB"]
+                    )
+                ),
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(
@@ -835,24 +624,6 @@ let package = Package(
                 .product(name: "StorageKitSystemClock", package: "storage-kit"),
             ],
             linkerSettings: foundationDBClientLinkerSettings
-        ),
-        .testTarget(
-            name: "DatabaseSingleRootTests",
-            dependencies: [
-                "DatabaseEngine",
-                "DatabaseRuntime",
-                "DatabaseOperations",
-                "DatabaseWireAdapter",
-                "DatabaseFoundation",
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "StorageKit", package: "storage-kit"),
-                .product(
-                    name: "StorageKitSystemClock",
-                    package: "storage-kit"
-                ),
-            ]
         ),
         .testTarget(
             name: "DatabaseRuntimeTests",
@@ -1065,44 +836,6 @@ let package = Package(
             ],
             linkerSettings: foundationDBClientLinkerSettings
         ),
-        // DatabaseOperations tests
-        .testTarget(
-            name: "DatabaseOperationsTests",
-            dependencies: [
-                "DatabaseOperations",
-                "DatabaseWireAdapter",
-                "DatabaseOperationCore",
-                "DatabaseCommandOperations",
-                "DatabaseQueryOperations",
-                "DatabaseMutationOperations",
-                "DatabaseGraphOperations",
-                "DatabaseJobRuntime",
-                "DatabaseSchemaOperations",
-                "DatabaseMaintenanceOperations",
-                "DatabaseAdministrationOperations",
-                "DatabaseFoundation",
-                "DatabaseRuntime",
-                "DatabaseEngine",
-                "GraphIndex",
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "DatabaseKitFoundation", package: "database-kit"),
-                .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
-                "TestSupport",
-            ],
-            swiftSettings: [
-                .define(
-                    "DATABASE_OPERATIONS_TEST_GRAPH_INDEXES",
-                    .when(traits: ["GraphIndexes"])
-                ),
-                .define(
-                    "DATABASE_OPERATIONS_TEST_VECTOR_INDEXES",
-                    .when(traits: ["VectorIndexes"])
-                ),
-            ],
-            linkerSettings: foundationDBClientLinkerSettings
-        ),
         // QueryAST tests
         .testTarget(
             name: "QueryASTTests",
@@ -1206,9 +939,6 @@ let package = Package(
             dependencies: [
                 "Database",
                 "DatabaseRuntime",
-                "DatabaseOperations",
-                "DatabaseWireAdapter",
-                "DatabaseFoundation",
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(
                     name: "DatabaseKitFoundation",

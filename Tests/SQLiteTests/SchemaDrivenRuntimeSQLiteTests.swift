@@ -1,6 +1,6 @@
 #if SQLITE
 import Database
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes

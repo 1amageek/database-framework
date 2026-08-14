@@ -19,6 +19,21 @@ public struct SchemaRegistry: Sendable {
     /// In-memory cache for entities (reduces CLI latency by 10-100x)
     private let cache: SchemaCatalogCache
 
+    /// Opens the schema catalog for one ordinary database.
+    public init(
+        database: any StorageEngine,
+        clock: any StorageMonotonicClock,
+        cacheTTLSeconds: Int = 300
+    ) {
+        self.init(
+            database: database,
+            root: Subspace(),
+            clock: clock,
+            cacheTTLSeconds: cacheTTLSeconds
+        )
+    }
+
+    /// Opens a schema catalog below an explicitly selected control root.
     public init(
         database: any StorageEngine,
         root: Subspace,

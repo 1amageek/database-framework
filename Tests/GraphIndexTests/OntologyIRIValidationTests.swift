@@ -13,7 +13,7 @@ import DatabaseKit
 import DatabaseTypes
 import DatabaseRuntime
 import TestSupport
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 @testable import GraphIndex
 @testable import OntologyIndex
 
@@ -170,7 +170,7 @@ struct OntologyIRIValidationTests {
         context: DatabaseContext
     ) async throws -> OntologyStore {
         try await context.withDataOperation {
-            let root = try context.requireOperationDataRoot().root
+            let root = try context.operationDataRoot()
                 .subspace("data")
                 .subspace("database-framework")
                 .subspace("ontology-index")

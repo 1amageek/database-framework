@@ -3,7 +3,7 @@
 
 import DatabaseKit
 import QueryAST
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseRuntime
 import DatabaseWire
 import StorageKit

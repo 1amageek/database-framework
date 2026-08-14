@@ -28,7 +28,8 @@ package struct DatabasePartitionCatalog: Sendable {
 
     /// Opens the pre-Base partition catalog whose namespace root was resolved
     /// through the backend namespace service. This exists only for the explicit
-    /// layout-v1 migration path; normal execution always uses the Base data root.
+    /// layout-v1 migration path. Standard execution uses the single database
+    /// root; `MultipleBases` execution uses the operation-bound Base root.
     package init(
         legacyEngine engine: any StorageEngine,
         resolvedCatalogRoot: Subspace,
@@ -251,11 +252,15 @@ package struct DatabasePartitionCatalog: Sendable {
             streamingMode: .iterator
         )
         let visibleRows = rows.prefix(limit)
-        var decodedEntries: [DatabasePartitionCatalogEntry] = []
+        var decodedEntries: [DatabasePartitionCatalogItem] = []
         decodedEntries.reserveCapacity(visibleRows.count)
         for row in visibleRows {
+            let entry = try decodeEntry(key: row.0, bytes: row.1)
             decodedEntries.append(
-                try decodeEntry(key: row.0, bytes: row.1)
+                DatabasePartitionCatalogItem(
+                    entity: entry.entity,
+                    partitions: entry.partitions
+                )
             )
         }
         let next: ByteString?

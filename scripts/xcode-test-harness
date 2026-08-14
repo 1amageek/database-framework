@@ -440,6 +440,12 @@ if [[ -n "$REUSE_WORK_ROOT" && -f "$source_copy/Package.swift" ]]; then
     # graph does not invalidate every SwiftPM target on each focused rerun.
     rsync_arguments+=(--exclude '/Package.swift')
     manifest_reused=true
+  else
+    # SwiftPM/Xcode can retain dependency-trait activation from the previous
+    # normalized manifest. A different trait graph must never reuse those
+    # products because the dependent package may expose a different API.
+    rm -rf -- "$derived_data"
+    mkdir -p "$derived_data"
   fi
   if [[ -f "$ROOT_DIR/Package.resolved" \
       && -f "$source_copy/Package.resolved" ]] \
@@ -457,6 +463,30 @@ if ! cmp -s "$normalized_package" "$source_copy/Package.swift"; then
   rsync -a "$normalized_package" "$source_copy/Package.swift"
 fi
 rm -f -- "$normalized_package"
+
+if rg -n '\.package\(path:\s*"\.\./database-kit"' \
+    "$source_copy/Package.swift" >/dev/null; then
+  if [[ "${DATABASE_FRAMEWORK_ALLOW_LOCAL_DEPENDENCIES:-0}" != "1" ]]; then
+    echo "error: release verification requires URL dependencies" >&2
+    exit 2
+  fi
+  if [[ "$REUSE_BUILT_TESTS" == true ]]; then
+    echo "error: built-test reuse is unavailable with local dependencies" >&2
+    exit 2
+  fi
+  database_kit_source="$ROOT_DIR/../database-kit"
+  database_kit_copy="$XCODE_HARNESS_WORK_ROOT/database-kit"
+  if [[ ! -f "$database_kit_source/Package.swift" ]]; then
+    echo "error: local database-kit source is unavailable" >&2
+    exit 2
+  fi
+  rsync -a --delete \
+    --exclude '.git' \
+    --exclude '.build' \
+    --exclude '.swiftpm' \
+    --exclude '*.xcresult' \
+    "$database_kit_source/" "$database_kit_copy/"
+fi
 
 locked_pins="$XCODE_HARNESS_WORK_ROOT/locked-pins.json"
 resolved_pins="$XCODE_HARNESS_WORK_ROOT/resolved-pins.json"

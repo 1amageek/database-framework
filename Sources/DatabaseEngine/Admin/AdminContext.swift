@@ -451,12 +451,11 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         }
     }
 
-    /// Get statistics subspace from DirectoryLayer
+    /// Gets statistics inside the selected database data root.
     private func getStatisticsSubspace() async throws -> Subspace {
-        let lease = try context.requireOperationDataRoot()
-        return lease.root
-            .subspace("data")
-            .subspace("statistics")
+        try context.container.operationDataSubspace(
+            relativePath: ["statistics"]
+        )
     }
 
     // MARK: - FDB-Specific Features

@@ -6,7 +6,7 @@ import Testing
 import Foundation
 import StorageKit
 import PostgreSQLStorage
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 @testable import DatabaseKit
 import TestSupport
 import DatabaseRuntime
@@ -236,6 +236,7 @@ struct PostgreSQLPointReadTests {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupSecuredContainer()
             let itemID = uniqueID("secure")
+            #if MultipleBases
             try await container.grantTestBaseAccess(
                 to: .principal("owner"),
                 access: .all
@@ -244,6 +245,7 @@ struct PostgreSQLPointReadTests {
                 to: .principal("intruder"),
                 access: .read
             )
+            #endif
 
             let owner = AuthorizationContext.authenticated(
                 Principal(identifier: "owner")

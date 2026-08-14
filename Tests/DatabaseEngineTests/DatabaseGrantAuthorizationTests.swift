@@ -1,9 +1,10 @@
+#if MultipleBases
 import DatabaseKit
 import DatabaseRuntime
 import StorageKit
 import TestSupport
 import Testing
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Suite("Persisted Grant authorization")
 struct DatabaseGrantAuthorizationTests {
@@ -251,3 +252,4 @@ struct DatabaseGrantAuthorizationTests {
 #endif
     }
 }
+#endif

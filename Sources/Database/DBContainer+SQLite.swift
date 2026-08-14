@@ -1,5 +1,5 @@
 #if !os(WASI)
-#if SQLITE
+#if SQLITE && !DATABASE_MULTIPLE_BASES
 import DatabaseEngine
 import SQLiteStorage
 import StorageKit

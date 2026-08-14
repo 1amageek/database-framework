@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import StorageKit
 
 /// Prepared execution state for one claimed storage domain.
@@ -9,3 +10,4 @@ package struct DatabaseStorageDomainRuntime: Sendable {
     package let root: Subspace
     package let transactionCapabilities: TransactionCapabilities
 }
+#endif

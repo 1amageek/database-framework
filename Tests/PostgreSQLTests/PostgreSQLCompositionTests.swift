@@ -1,11 +1,11 @@
 #if POSTGRESQL && MultipleBases
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
 import PostgreSQLStorage
 import StorageKit
 import TestSupport
 import Testing
-@testable import DatabaseEngine
 
 @Persistable
 private struct PostgreSQLCompositionItem {

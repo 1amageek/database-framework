@@ -1,22 +1,24 @@
 import DatabaseKit
 import DatabaseTypes
 
-package struct RDFDatasetIndexMetadata: Sendable {
-    package let subjectFieldName: String
-    package let predicateFieldName: String
-    package let objectFieldName: String
-    package let graphMapping: RDFDatasetGraphMapping
+@_spi(DatabaseExecution)
+public struct RDFDatasetIndexMetadata: Sendable {
+    public let subjectFieldName: String
+    public let predicateFieldName: String
+    public let objectFieldName: String
+    public let graphMapping: RDFDatasetGraphMapping
 
-    package var strategy: GraphIndexStrategy { .quadStore }
+    public var strategy: GraphIndexStrategy { .quadStore }
 }
 
-package struct RDFDatasetIndexSelection: Sendable {
-    package let indexName: String
-    package let kindIdentifier: String
-    package let metadata: RDFDatasetIndexMetadata
-    package let storedFieldNames: [String]
+@_spi(DatabaseExecution)
+public struct RDFDatasetIndexSelection: Sendable {
+    public let indexName: String
+    public let kindIdentifier: String
+    public let metadata: RDFDatasetIndexMetadata
+    public let storedFieldNames: [String]
 
-    package init?(descriptor: IndexDescriptor) throws {
+    public init?(descriptor: IndexDescriptor) throws {
         guard let metadata = try Self.decode(
             kind: descriptor.kind,
             indexName: descriptor.name
@@ -29,7 +31,7 @@ package struct RDFDatasetIndexSelection: Sendable {
         self.storedFieldNames = descriptor.storedFieldNames
     }
 
-    package init?(descriptor: IndexDescriptorMetadata) throws {
+    public init?(descriptor: IndexDescriptorMetadata) throws {
         guard let metadata = try Self.decode(
             kind: descriptor.kind,
             indexName: descriptor.name

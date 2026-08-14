@@ -11,41 +11,50 @@ tree unless a paragraph explicitly describes optional future work.
 
 ## 1. Decision
 
-Base isolation must be an execution boundary, not a query predicate. Every data
-operation enters the runtime with one explicit target, acquires immutable
-Schema and data-root leases, proves the required Grant in the data transaction,
-and receives only a target-bound executor. A handler must not be able to
-construct an unscoped `DatabaseContext` or access an unrestricted `DBContainer`.
+Base isolation is an optional execution boundary, not a query predicate. The
+standard package graph has one database root and compiles no Base target,
+topology catalog, placement lease, Composition planner, or persisted Grant
+store. When `MultipleBases` is selected, every data operation enters the server
+runtime with one explicit target, acquires immutable Schema and data-root
+leases, proves the required Grant in the data transaction, and receives only a
+target-bound executor.
 
 ```mermaid
-flowchart LR
-    Client["Client / CLI<br/>selects one target"] --> Wire["DatabaseWire<br/>target + typed operation"]
-    Wire --> Prepare["Operation preparation<br/>decode + requirement"]
-    Prepare --> Bind["Execution coordinator<br/>leases + Grant"]
+flowchart TB
+    Standard["Standard graph<br/>target-free Wire v2"] --> Root["One database root"]
+    Root --> StandardTransaction["Direct storage transaction"]
+
+    Multiple["MultipleBases graph<br/>target-bound Wire v3"] --> Prepare["Operation preparation<br/>decode + requirement"]
+    Prepare --> Bind["Execution coordinator<br/>leases + persisted Grant"]
     Bind --> Handler["Target-bound handler"]
     Handler --> Namespace["Authorized Base root<br/>+ relative directory"]
-    Namespace --> Storage["Storage transaction"]
+    Namespace --> MultipleTransaction["Storage transaction"]
 ```
 
-The critical security property is structural: code that executes a normal
-query or mutation never receives an API capable of selecting another Base.
+The critical optional-feature property is structural: the standard graph pays
+no Base cost, while code compiled with `MultipleBases` cannot select another
+Base through a target-bound executor.
 
 ## 2. Confirmed Current Implementation
 
 | Current fact | Evidence | Enforced consequence |
 |---|---|---|
-| Every Wire request carries a required `DatabaseOperationTarget`. | `database-kit/Sources/DatabaseWire/DatabaseWireRequestEnvelope.swift` | No targetless decode path exists. |
-| A handler prepares the typed payload and exact access/transaction requirement before execution. | `Sources/DatabaseOperations/AnyDatabaseOperationHandler.swift`; `DatabaseOperationRequirement.swift` | Target compatibility and access are checked before handler invocation. |
-| `DatabaseOperationContext` contains a narrow executor and never exposes a raw container. | `Sources/DatabaseOperations/DatabaseOperationContext.swift`; `DatabaseOperationExecutor.swift` | Data handlers cannot select a second Base. |
-| `DBContainer` claims a control domain and every data domain exactly once. | `Sources/DatabaseEngine/Topology`; `Sources/DatabaseEngine/Core/DBContainer.swift` | Catalog and Base storage lifecycles have one owner and one shutdown path. |
+| The standard Wire v2 envelope has no target field; `DatabaseOperationTarget` and Wire v3 target encoding compile only with `MultipleBases`. | `database-kit/Sources/DatabaseWire/DatabaseWireRequestEnvelope.swift`; `DatabaseOperationTarget.swift`; `EnvelopeWireFormat.swift` | A normal client or server does not carry dormant Base state. |
+| The standard `DBContainer` claims one injected engine and resolves one database data root directly. | `Sources/DatabaseEngine/Core/DBConfiguration.swift`; `DBContainer.swift`; `DBContainer+DataRootTransaction.swift` | The hot path has no topology dictionary, catalog read, target lease, or persisted Grant lookup. |
+| With `MultipleBases`, a handler prepares the typed payload and exact access/transaction requirement before target execution. | `database-server/Sources/DatabaseServerRuntime/AnyDatabaseOperationHandler.swift`; `DatabaseOperationRequirement.swift` | Target compatibility and access are checked before handler invocation. |
+| With `MultipleBases`, `DatabaseOperationContext` contains a narrow executor and never exposes a raw container. | `database-server/Sources/DatabaseServerRuntime/DatabaseOperationContext.swift`; `DatabaseOperationExecutor.swift` | Data handlers cannot select a second Base. |
+| With `MultipleBases`, `DBContainer` claims a control domain and every data domain exactly once. | `Sources/DatabaseEngine/Topology`; `Sources/DatabaseEngine/Core/DBContainer.swift` | Catalog and Base storage lifecycles have one owner and one shutdown path. |
 | Local operations use a database-bound context, or `DatabaseSession` with a Base or Composition selector when `MultipleBases` is enabled. | `Sources/DatabaseEngine/Core/DBContainer.swift`; `Sources/DatabaseEngine/Base/DatabaseSession.swift` | A public unscoped context does not exist. |
 | Base, Composition, placement, Grant, and layout records are persisted catalogs with immutable generations and leases. | `Sources/DatabaseEngine/Base`; `Sources/DatabaseEngine/Security` | Existence and lifecycle come from catalogs rather than backend namespace probes. |
 | Direct and role Grants are unioned in the Base transaction; role-name administration bypasses are absent. | `DatabaseGrantStore.swift`; `DataStoreSecurityDelegate.swift` | Authentication claims alone never grant data access. |
 | Composition reads hold one transaction per physical domain, authorize all members, and retain origin. | `CompositionDataSource.swift`; `DatabaseCompositionQueryPlanner.swift` | Partial authorization and silent member omission are impossible. |
 | Cross-domain continuation is a bounded durable snapshot spool in the control domain. | `DatabaseCompositionSnapshotStore.swift` | Client pages do not retain transactions or carry trusted continuation state. |
-| Legacy global layout opens control-only and migrates through a checkpointed persistent job. | `DBContainer+LegacyLayoutMigration.swift`; `DatabaseLegacyLayoutMigrationResumableOperation.swift` | No legacy namespace alias or automatic default Base is retained. |
+| Removed layouts and populated unformatted roots fail before data execution. | `Sources/DatabaseEngine/Format/DatabaseFormatCatalog.swift`; `DatabaseFormatDescriptor.swift` | No namespace probing, compatibility alias, or migration path is retained. |
 
-## 3. Invariants
+## 3. `MultipleBases` Invariants
+
+The following invariants apply only to the graph compiled with
+`MultipleBases`. The standard graph has one database mutation and read root.
 
 1. A Base is the only data mutation target.
 2. A Composition is read-only and contains a canonical, non-recursive set of
@@ -205,12 +214,12 @@ the ownership boundary.
 ```mermaid
 flowchart TB
     CLI["database-cli<br/>options and rendering"] --> Client["database-client<br/>typed invocation"]
-    Client --> Wire["DatabaseWire<br/>target and operations"]
+    Client --> Wire["DatabaseWire<br/>v2 standard / v3 MultipleBases"]
     Wire --> Kit["DatabaseKit<br/>semantic values"]
 
-    Host["database-server<br/>auth and transport"] --> Adapter["DatabaseWireAdapter<br/>bounded framing"]
-    Adapter --> Server["DatabaseOperations target<br/>operation preparation"]
-    Server --> Engine["DatabaseEngine<br/>catalogs, leases, execution"]
+    NativeHost["DatabaseServerHost<br/>native auth and transport"] --> Server["DatabaseServerRuntime<br/>frame + operation + jobs"]
+    Cloudflare["Cloudflare Durable Object host"] --> Server
+    Server --> Engine["DatabaseEngine<br/>single root or MultipleBases catalogs"]
     Engine --> Kit
     Engine --> Storage["storage-kit<br/>transactions and namespaces"]
 ```
@@ -222,24 +231,26 @@ flowchart TB
 | `EntityAddress`, `BaseResult` | `database-kit / DatabaseKit` | Database identity/provenance semantics change. |
 | `DatabaseOperationTarget`, Base/Composition/Grant operations, codecs | `database-kit / DatabaseWire` | Canonical protocol changes. |
 | Session, data-source interfaces, catalogs, generation leases, placement, planners | `database-framework / DatabaseEngine` | Execution and lifecycle behavior changes. |
-| Operation requirement resolution and target-bound handler context | `database-framework / DatabaseOperations` | Canonical operation dispatch changes. |
+| Operation requirement resolution and target-bound handler context | `database-server / DatabaseServerRuntime` | Canonical operation dispatch changes. |
 | Namespace resolution and backend transaction behavior | `storage-kit` | Storage semantics or backend behavior changes. |
 | Credentials, TLS, database routing, process lifecycle | `database-server` | Native hosting changes. |
 | Typed target facade and transport | `database-client` | Client invocation behavior changes. |
 | `--base`, `--composition`, administration commands, output | `database-cli` | User interaction changes. |
 | Durable Object admission and host lifecycle | `database-framework-cloudflare` | Cloudflare hosting changes. |
 
-No new shared package is required. Base semantics are not primitive values and
+No new shared package is required. `DatabaseServerRuntime` is the reusable
+server execution product; `DatabaseServerHost` is only the native hosting
+adapter. Base semantics are not primitive values and
 must not enter `database-types`; resolved storage prefixes are not Wire values
 and must not enter `database-kit`.
 
 ## 6. Canonical Wire Contract
 
-### 6.1 Target belongs in the envelope
+### 6.1 Target belongs only in the `MultipleBases` envelope
 
-The request envelope receives a required semantic target. It is not metadata
-and has no optional encoding. Client UX may select `.database` by default, but
-the encoded target always remains explicit.
+When `MultipleBases` is selected, the request envelope receives a required
+semantic target. It is not metadata and has no optional encoding in Wire v3.
+Without the trait, Wire v2 has no target property or encoded placeholder.
 
 ```swift
 public enum DatabaseOperationTarget: Sendable, Hashable {
@@ -257,9 +268,10 @@ public struct DatabaseWireRequestEnvelope: Sendable, Hashable {
 }
 ```
 
-This is a breaking canonical Wire change. All golden vectors and protocol
-frames are regenerated together; no legacy decoder or targetless default is
-retained.
+The two build graphs intentionally expose different canonical protocols. The
+standard graph uses target-free Wire v2. The `MultipleBases` graph uses
+target-bound Wire v3. A single binary never accepts both forms and neither
+graph contains a compatibility decoder.
 
 `DatabaseClient.execute` requires the target explicitly. Higher-level client
 facades bind it once:
@@ -721,22 +733,23 @@ ownership violations are internal failures, not missing-resource results.
 
 ## 14. Required Changes by Repository
 
-### `database-kit`
+### `database-kit` with `MultipleBases`
 
-- Add Base, Composition, Security Grant vocabulary, EntityAddress, and
-  origin-preserving result values to `DatabaseKit`.
+- Compile Base, Composition, persisted Grant vocabulary, EntityAddress, and
+  origin-preserving result values only into the `MultipleBases` graph.
 - Rename Schema directory metadata to its relative meaning and update macros,
   manifest JSON, compatibility analysis, and tests.
-- Add required Wire target encoding.
+- Add required Wire v3 target encoding only in that graph; preserve target-free
+  Wire v2 in the standard graph.
 - Add Base, Composition, and Grant operation families and capabilities.
 - Extend result pages and continuation contracts with provenance and generation
   binding.
 - Qualify idempotency digesting and persistence by operation target.
 - Update all golden vectors; retain no targetless compatibility decoder.
 
-### `database-framework`
+### `database-framework` with `MultipleBases`
 
-- Add catalogs, records, lifecycle actors, immutable generation stores, leases,
+- Compile catalogs, records, lifecycle actors, immutable generation stores, leases,
   Grant authorizer, placement resolver, and storage topology.
 - Bind every `DatabaseContext`, transaction, store cache, partition catalog,
   index state, relationship, graph, RDF, ontology, and SHACL path to one Base.
@@ -747,8 +760,8 @@ ownership violations are internal failures, not missing-resource results.
   production read/write projection path.
 - Add Composition planner, streaming merge, result provenance, continuations,
   consistency metadata, jobs, and cancellation cleanup.
-- Migrate legacy global namespaces with an explicit checked migration job; do
-  not reinterpret or alias them silently.
+- Reject removed global namespaces and descriptor versions explicitly. No
+  migration job, reinterpretation, probe, or alias remains in the runtime.
 
 ### `storage-kit`
 
@@ -758,21 +771,23 @@ ownership violations are internal failures, not missing-resource results.
 - Verify Directory Layer allocation and root resolution in the caller's
   lifecycle transaction.
 
-### `database-client`
+### `database-client` with `MultipleBases`
 
-- Require a target for raw execution and provide Base/Composition-bound typed
+- Require a target for raw Wire v3 execution and provide Base/Composition-bound typed
   facades.
 - Preserve target and provenance across paging and cancellation.
 - Keep HTTP, WebSocket, JavaScript, and framed-stream transports byte-oriented.
 
 ### `database-server`
 
-- Continue to own credentials, TLS, routing, listener lifecycle, and engine
-  construction.
-- Inject one or more named storage domains into the framework composition.
+- `DatabaseServerRuntime` owns Wire dispatch, operations, jobs, and schema
+  administration; `DatabaseServerHost` owns credentials, TLS, routing,
+  listeners, process lifecycle, and native engine construction.
+- The standard host injects one engine. With `MultipleBases`, it injects one or
+  more named storage domains.
 - Do not evaluate Base Grants or parse query semantics.
 
-### `database-cli`
+### `database-cli` with `MultipleBases`
 
 - Require exactly one of `--base` or `--composition` for data reads and exactly
   `--base` for mutations.
@@ -782,7 +797,7 @@ ownership violations are internal failures, not missing-resource results.
   format can represent it; reject lossy formats otherwise.
 - Display consistency and generation metadata without interpreting it.
 
-### `database-framework-cloudflare`
+### `database-framework-cloudflare` with `MultipleBases`
 
 - Pass the canonical target bytes unchanged through the host boundary.
 - Enforce the same runtime execution path and limits.
@@ -814,7 +829,7 @@ flowchart LR
 | A | Canonical semantic types, target envelope, operations, golden vectors | Native, WASM, and Embedded encode/decode identity and rejection tests pass. |
 | B | Durable catalogs, lifecycle recovery, Base root leases | Create/restart/conflict/cancel/recovery tests pass on SQLite and FDB. |
 | C | Prepared operation and target-bound context | No handler or middleware can access an unscoped data context. |
-| D | Every entity and derived-data path is Base-local | Differential success/failure/results/index state match legacy single-Base behavior. |
+| D | Every entity and derived-data path is Base-local | Differential success/failure/results/index state match ordinary single-database behavior. |
 | E | Explicit Grants plus entity and field policy | Every public and Wire path denies missing access and proves principal isolation. |
 | F | Composition read planner and continuations | Supported plans match a reference global evaluation within budgets; unsupported plans fail. |
 | G | Typed clients, CLI, native and Cloudflare hosts | Same Wire frames and failures across all transports. |
@@ -886,8 +901,9 @@ contract is not defined:
 - vector search across different dimension, metric, or scoring contracts; and
 - Composition mutation, ontology, SHACL, command, and maintenance operations.
 
-Base movement across domains and legacy-global-data migration are implemented
-as resumable offline jobs. They are not fallback query paths. Until each
+Base movement across domains is implemented as a resumable offline job. Legacy
+global-data migration is intentionally absent: a populated root without the
+current format descriptor is rejected before runtime publication. Until each
 unadvertised operation above has one precise provenance, consistency, budget,
 and recovery contract, its capability remains absent; no placeholder branch
 returns empty or synthetic success.

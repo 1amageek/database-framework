@@ -34,11 +34,10 @@ flowchart LR
     Framework --> Container["DBContainer<br/>in-process execution"]
     Container --> Storage["Injected StorageEngine"]
 
-    CLI["database CLI / remote client"] --> Server["database-server<br/>optional native host"]
-    Server --> Wire["DatabaseWireAdapter<br/>bounded framing"]
-    Cloudflare["Cloudflare Durable Object host"] --> Wire
-    Wire --> Operations["DatabaseOperations<br/>optional operation execution"]
-    Operations --> Framework
+    CLI["database CLI / remote client"] --> Host["database-server<br/>native host"]
+    Host --> Runtime["DatabaseServerRuntime<br/>Wire operations + jobs"]
+    Cloudflare["Cloudflare Durable Object host"] --> Runtime
+    Runtime --> Framework
 ```
 
 | Requirement | Use |
@@ -46,22 +45,21 @@ flowchart LR
 | Lightweight in-process or Embedded customization | `database-framework` / `Database` |
 | Application-specific schema, indexes, commands, or policy | `database-framework` / `Database` |
 | Standalone native process or remote DatabaseWire endpoint | add `database-server` |
-| Cloudflare deployment | add `database-framework-cloudflare`, not `database-server` |
+| Cloudflare deployment | add `database-framework-cloudflare`; it consumes `DatabaseServerRuntime`, not the native host |
 
-The host-independent `DatabaseOperations` product belongs to this package
-because both native and Cloudflare hosts execute the same canonical operations.
-It is not re-exported by `Database`, is not a default dependency, and owns no
-listener, TLS, credential store, process, signal, stdio, or Cloudflare lifecycle.
-Those concerns remain in their host packages.
+Remote operation dispatch is not a framework responsibility. The independent
+`database-server` package owns the Foundation-independent
+`DatabaseServerRuntime` product and its native `DatabaseServerHost`. Cloudflare
+reuses the runtime product without linking Hummingbird, TLS, process, signal,
+or stdio implementations.
 
 | Product | Responsibility | Included by `Database` |
 |---|---|---|
 | `DatabaseEngine` | transactions, persistence, planning, schema and security execution | yes |
 | `DatabaseRuntime` | trait-selected runtime registrations | yes |
-| `DatabaseOperations` | host-independent DatabaseWire operation execution | no |
-| `DatabaseWireAdapter` | bounded frame decoding, response encoding, and host-selected error mapping | no |
-| `DatabaseFoundation` | optional native clock and UUID adapters | no |
-| `database-server` package | native listener, TLS, auth, stdio, signals and shutdown | separate package |
+| `DatabaseMath` | reusable numeric execution primitives used by framework features and server algorithms | no |
+| `database-server / DatabaseServerRuntime` | DatabaseWire dispatch, remote commands, durable jobs, schema administration | separate package |
+| `database-server / DatabaseServerHost` | native listener, TLS, auth, stdio, signals and shutdown | separate package |
 
 ## Architecture
 
@@ -147,7 +145,7 @@ documented semantic mapping.
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0812.1"
+            from: "26.0814.0"
         )
     ]
 
@@ -161,7 +159,7 @@ The package that consumes database-framework selects that composition:
 
     .package(
         url: "https://github.com/1amageek/database-framework.git",
-        from: "26.0812.1",
+        from: "26.0814.0",
         traits: ["GraphIndexes"]
     )
 
@@ -263,26 +261,23 @@ The FoundationDB adapter is not compiled for iOS or WASI.
         --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3980 \
+        --expected-count 3681 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
 
     import Database
 
-    let container = try await DBContainer.open(
-        for: schema,
-        monotonicClock: applicationMonotonicClock,
-        wallClock: applicationWallClock,
-        runtimeConfiguration: runtime
-    )
-
-The explicit facade form accepts a FoundationDB storage configuration and
-constructs the engine before transferring it to the container:
+The facade requires both an explicit FoundationDB storage configuration and a
+non-empty application Directory. It resolves that Directory once before
+transferring the engine and resolved root to the container:
 
     let container = try await DBContainer.open(
         for: schema,
-        configuration: FDBStorageEngine.Configuration(),
+        configuration: try FDBDatabaseConfiguration(
+            storage: FDBStorageEngine.Configuration(),
+            directoryPath: ["applications", "calendar"]
+        ),
         monotonicClock: applicationMonotonicClock,
         wallClock: applicationWallClock,
         runtimeConfiguration: runtime
@@ -295,7 +290,7 @@ For local testing, the repository includes an isolated cluster wrapper:
         --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
         --skip-testing BenchmarkFrameworkTests \
         --skip-testing PerformanceBenchmarks \
-        --expected-count 3980 \
+        --expected-count 3681 \
         --require-zero-skips \
         --require-zero-expected-failures \
         --require-zero-runtime-warnings
@@ -308,7 +303,18 @@ not require a FoundationDB process.
     scripts/xcode-test-harness \
       --traits SQLite,AllRuntimeFeatures \
       --only-testing SQLiteTests \
-      --expected-count 119 \
+      --expected-count 111 \
+      --require-zero-skips \
+      --require-zero-expected-failures \
+      --require-zero-runtime-warnings
+
+`MultipleBases` adds Base isolation, persisted Grants, and Composition
+execution to the same backend suite:
+
+    scripts/xcode-test-harness \
+      --traits SQLite,AllRuntimeFeatures,MultipleBases \
+      --only-testing SQLiteTests \
+      --expected-count 114 \
       --require-zero-skips \
       --require-zero-expected-failures \
       --require-zero-runtime-warnings
@@ -436,30 +442,36 @@ The same injection path is used for a custom remote or host-provided engine:
 
 ## Transaction and Context Model
 
-DBContainer owns the control domain and the configured data domains. Without
-`MultipleBases`, one context binds the authenticated principal to the database
-data root. With `MultipleBases`, a session can additionally select one Base or
-a read-only Composition. Both paths use the same target-bound executor and
-never infer a Base from model data.
+By default, `DBContainer` owns exactly one injected engine and one ordinary
+database root. Its transaction path has no Base catalog lookup, target
+TaskLocal, placement resolution, persisted Grant read, or Composition planner.
+`DBConfiguration.databaseRoot` is the already-resolved root and defaults to the
+engine root. SQLite, PostgreSQL, in-memory, and Durable Object deployments use
+that root directly. A host sharing one FoundationDB cluster must first resolve
+an explicitly selected Directory and inject its retained `Subspace`; the
+framework never performs a Directory lookup on the data path. A populated root
+without the current format descriptor is rejected as a typed format failure and
+is never interpreted as an empty database.
 
-    DBContainer
-      owns: control domain, data domains, schema and target catalogs
-           |
-           +--> newContext(authorization:) --------> database root
-           |
-           `--> session(authorization:)             [MultipleBases]
-                    |
-                    +--> base(Base.ID) ------------> Base root
-                    `--> composition(ID) ----------> read-only members
+The optional `MultipleBases` trait replaces that storage composition with a
+control domain and explicit Base roots. It adds Base-local persisted Grants and
+read-only Compositions; it is not part of `AllRuntimeFeatures`.
 
-Creating `DBConfiguration(storageTopology:)` transfers every domain engine
-lifecycle to a shared owner carried by that configuration. Backend-specific
-facades construct a one-domain topology with the same ownership contract.
-`DBContainer.open` retains that owner. If opening fails, all engines are shut
-down before the error is returned. For an opened container, `shutdown()` is
-the public terminal operation and deinitialization invokes the same path as a
-safety net. Repeated shutdown paths release every engine exactly once. The
-caller must not reuse or shut down a transferred engine independently.
+    default
+      DBContainer(one engine) --> newContext(authorization:) --> data
+
+    MultipleBases
+      DBContainer(control + data domains)
+          --> session(authorization:)
+                +--> base(Base.ID) --> mutable Base root
+                `--> composition(ID) --> read-only members
+
+Creating `DBConfiguration(storageEngine:)` transfers the one engine lifecycle
+to the configuration and then to `DBContainer`. With `MultipleBases`, the
+separate `DBConfiguration(storageTopology:)` initializer transfers every
+configured domain engine. Opening failure and terminal shutdown await the
+authoritative engine shutdown in either form; the caller must not keep an
+operational path that bypasses container ownership.
 
     let context = container.newContext(authorization: authorization)
 
@@ -605,19 +617,17 @@ query and reasoning APIs.
 
 ### Remote operation execution
 
-`DatabaseOperations` executes canonical operations against a `DBContainer` for
-[database-client](https://github.com/1amageek/database-client) through the
-DatabaseWire protocol. `DatabaseWireAdapter` is the separate optional frame
-boundary used by native and Cloudflare hosts. Neither product is part of the
-`Database` umbrella; operation execution can use a container backed by any
-engine supported by the target.
+The independent
+[`database-server`](https://github.com/1amageek/database-server) repository
+owns canonical DatabaseWire operation dispatch. Its `DatabaseServerRuntime`
+product contains frame execution, operation handlers, durable server jobs,
+schema administration, and server command registries. Its
+`DatabaseServerHost` product adds the native HTTP/WebSocket/stdio process,
+TLS, authentication storage, signals, and shutdown lifecycle.
 
-`DatabaseOperationApplication` is the single host-independent composition
-contract. It produces a `DatabaseContainerDefinition` and the corresponding
-`DatabaseOperationConfiguration`. Native HTTP/WebSocket/stdio listeners
-belong to the independent
-[`database-server`](https://github.com/1amageek/database-server) package;
-Cloudflare lifecycle remains in `database-framework-cloudflare`.
+`database-framework-cloudflare` links only `DatabaseServerRuntime` and supplies
+Durable Object lifecycle and storage adaptation. None of these server products
+are declared or re-exported by this package.
 
 ### Cloudflare Durable Objects
 
@@ -686,11 +696,9 @@ logical key/value model in their own tables and indexes.
 | Database | stable umbrella and trait-selected adapter/index re-exports |
 | DatabaseEngine | container, context, persistence, planning, migrations |
 | DatabaseRuntime | runtime assembly for index maintainers |
+| DatabaseMath | numeric primitives shared by execution features |
 | ScalarIndex, VectorIndex, FullTextIndex, ... | individual index modules |
 | QueryAST | SQL/SPARQL parsing and serialization |
-| DatabaseOperations | optional, host-independent DatabaseWire operation execution |
-| DatabaseWireAdapter | optional, bounded DatabaseWire frame adaptation |
-| DatabaseFoundation | optional native clock and UUID adapters |
 
 Import Database for the standard application path, or import individual
 products when compile time and dependency size matter.
@@ -699,10 +707,10 @@ products when compile time and dependency size matter.
 
 The authenticated command-line client is owned by the independent
 [`database-cli`](https://github.com/1amageek/database-cli) package. It reaches
-this framework through `DatabaseClient`, DatabaseWire, and
-`DatabaseOperationInstance`; it does not bypass runtime authorization or connect a
-`StorageEngine` directly. FoundationDB lifecycle and read-only diagnostics are
-isolated in that package's version-matched `database-fdb` companion.
+the independent server runtime through `DatabaseClient` and DatabaseWire; it
+does not link this framework or connect a `StorageEngine` directly.
+FoundationDB lifecycle and bounded read-only diagnostics are isolated in the
+version-matched `database-fdb` companion, which is separate from the main CLI.
 
 The former `DatabaseCLICore` library and `database` executable were removed
 from this package. No compatibility product or alias remains.

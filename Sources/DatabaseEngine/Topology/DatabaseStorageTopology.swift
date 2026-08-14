@@ -1,4 +1,5 @@
 #if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 #endif
 
@@ -100,3 +101,4 @@ public struct DatabaseStorageTopology: Sendable {
     }
     #endif
 }
+#endif

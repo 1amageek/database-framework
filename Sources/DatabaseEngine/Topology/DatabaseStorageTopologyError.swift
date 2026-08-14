@@ -1,4 +1,5 @@
 #if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 #endif
 
@@ -31,3 +32,4 @@ public enum DatabaseStorageTopologyError: Error, Sendable, Equatable {
     #endif
     case configurationAlreadyClaimed
 }
+#endif

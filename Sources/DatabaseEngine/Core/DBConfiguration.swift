@@ -3,13 +3,13 @@ import DatabaseKit
 
 /// Database configuration
 ///
-/// Configures an injected storage topology and runtime index parameters.
+/// Configures an injected storage engine and runtime index parameters.
 ///
 /// **Example usage**:
 /// ```swift
 /// let sqliteEngine = try SQLiteStorageEngine(configuration: .inMemory)
 /// let config = DBConfiguration(
-///     storageTopology: topology,
+///     storageEngine: sqliteEngine,
 ///     indexConfigurations: [
 ///         VectorIndexConfiguration<Document>(
 ///             field: Document.fields.embedding,
@@ -32,8 +32,21 @@ public struct DBConfiguration: Sendable {
     /// Configuration name (optional, for debugging)
     public let name: String?
 
+    #if DATABASE_MULTIPLE_BASES
     /// Single-use lifecycle that owns every injected storage domain.
     private let storageTopologyLifecycle: DatabaseStorageTopologyLifecycle
+    #else
+    /// Single-use lifecycle that owns the injected storage engine.
+    private let storageLifecycle: DatabaseStorageLifecycle
+
+    /// Host-selected root containing the one ordinary database.
+    ///
+    /// DatabaseEngine never resolves backend namespaces in the standard
+    /// runtime. A host that shares one physical backend, such as a
+    /// FoundationDB deployment, resolves its Directory before constructing
+    /// this configuration. Dedicated backends use the engine root.
+    public let databaseRoot: Subspace
+    #endif
 
     /// Index configurations for runtime parameters
     ///
@@ -70,6 +83,7 @@ public struct DBConfiguration: Sendable {
     ///
     /// - Parameters:
     ///   - name: Configuration name for debugging (default: nil)
+    #if DATABASE_MULTIPLE_BASES
     ///   - storageTopology: Validated storage domains and placements.
     ///   - indexConfigurations: Runtime index configurations (default: [])
     public init(
@@ -92,12 +106,9 @@ public struct DBConfiguration: Sendable {
         self.metrics = metrics
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
-        #if DATABASE_MULTIPLE_BASES
         self.testingBootstrap = nil
-        #endif
     }
 
-    #if DATABASE_MULTIPLE_BASES
     @_spi(Testing)
     public init(
         testingName name: String? = nil,
@@ -126,7 +137,7 @@ public struct DBConfiguration: Sendable {
             principal: testingPrincipal
         )
     }
-    #endif
+
 
     func claimStorageTopology() throws -> ClaimedDatabaseStorageTopology {
         try storageTopologyLifecycle.claim()
@@ -147,6 +158,56 @@ public struct DBConfiguration: Sendable {
     func requestStorageTopologyShutdown() {
         storageTopologyLifecycle.requestShutdown()
     }
+    #else
+    /// Creates a lightweight single-database configuration.
+    ///
+    /// The container exclusively owns `storageEngine` after opening starts.
+    /// Base catalogs, placements, Compositions, and persisted Grants are not
+    /// part of this configuration or its transaction path.
+    public init(
+        name: String? = nil,
+        storageEngine: any StorageEngine,
+        databaseRoot: Subspace = Subspace(),
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock,
+        indexConfigurations: [any IndexRuntimeConfiguration] = [],
+        itemStorage: ItemStorageConfiguration = .v1,
+        logging: DatabaseLoggingConfiguration = .disabled,
+        metrics: DatabaseMetricsConfiguration = .disabled
+    ) {
+        self.name = name
+        self.storageLifecycle = DatabaseStorageLifecycle(
+            storageEngine: storageEngine
+        )
+        self.databaseRoot = databaseRoot
+        self.indexConfigurations = indexConfigurations
+        self.itemStorage = itemStorage
+        self.logging = logging
+        self.metrics = metrics
+        self.monotonicClock = monotonicClock
+        self.wallClock = wallClock
+    }
+
+    func claimStorageEngine() throws -> any StorageEngine {
+        try storageLifecycle.claimStorageEngine()
+    }
+
+    func finishOpeningStorageEngine() throws {
+        try storageLifecycle.finishOpening()
+    }
+
+    func shutdownStorageEngine() async {
+        await storageLifecycle.shutdown()
+    }
+
+    func shutdownStorageEngineIfUnclaimed() async {
+        await storageLifecycle.shutdownIfUnclaimed()
+    }
+
+    func requestStorageEngineShutdown() {
+        storageLifecycle.requestShutdown()
+    }
+    #endif
 }
 
 // MARK: - CustomDebugStringConvertible

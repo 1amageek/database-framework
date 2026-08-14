@@ -102,7 +102,7 @@ maintenance.
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0812.1",
+    from: "26.0814.0",
     traits: ["GraphIndexes"]
 )
 ~~~
@@ -113,8 +113,7 @@ A context is a unit of work. Stage mutations first, then save them in one
 transaction:
 
 ~~~swift
-let session = container.session(authorization: authorization)
-let context = session.base(baseID).newContext()
+let context = container.newContext(authorization: authorization)
 
 try context.insert(User(id: "alice", email: "alice@example.com", name: "Alice"))
 try context.insert(User(id: "bob", email: "bob@example.com", name: "Bob"))
@@ -122,16 +121,23 @@ try context.insert(User(id: "bob", email: "bob@example.com", name: "Bob"))
 try await context.save()
 ~~~
 
-DBContainer owns the storage topology, Schema and target catalogs, and runtime
-configuration. `DatabaseSession` binds authorization, and DatabaseContext is a
-backend-neutral unit of work fixed to one Base.
+In the default composition, DBContainer owns one StorageEngine, Schema, and
+runtime configuration. DatabaseContext is a backend-neutral unit of work for
+that database. Engine ownership transfers through
+`DBConfiguration(storageEngine:)`; opening failure, explicit shutdown, and
+deinitialization converge on the same exactly-once release path.
 
-Engine ownership transfers when a `DatabaseStorageTopology` is passed to
-`DBConfiguration(storageTopology:)`. Backend facades create a one-domain
-topology with the same contract. Opening failure shuts every transferred
-engine down. An opened container exposes idempotent `shutdown()`, and
-deinitialization uses the same exactly-once path. Do not retain a second
-operational owner for an injected engine.
+When the consuming package explicitly enables `MultipleBases`, use a session
+to select the Base. That trait adds storage topology, Base and Composition
+catalogs, target leases, and persisted Grants:
+
+~~~swift
+let session = container.session(authorization: authorization)
+let context = session.base(baseID).newContext()
+~~~
+
+`MultipleBases` is not implied by `AllRuntimeFeatures` and does not affect the
+default transaction path.
 
 ## 4. Queries
 
@@ -230,11 +236,13 @@ a deployment concern.
 
 ## 8. Client And Server
 
-DatabaseOperations executes canonical operations against a container, while
-DatabaseWireAdapter provides the bounded frame boundary used by hosts. The
-client protocol is defined in database-kit; execution and storage policy remain
-in this package.
+Remote invocation is owned by the independent `database-server` package.
+`DatabaseServerRuntime` maps canonical DatabaseWire requests to this
+framework's execution APIs and owns durable server jobs and remote schema
+administration. `DatabaseServerHost` adds native HTTP, WebSocket, stdio, TLS,
+credentials, signals, and process shutdown.
 
 Cloudflare Workers use the separate
-database-framework-cloudflare repository, which bridges DatabaseWire to
-Durable Object SQLite.
+database-framework-cloudflare repository. It consumes
+`DatabaseServerRuntime`, not the native host, and bridges it to Durable Object
+SQLite.

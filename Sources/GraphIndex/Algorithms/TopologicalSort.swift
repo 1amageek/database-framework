@@ -166,7 +166,8 @@ public final class TopologicalSorter: Sendable {
     ///   - snapshot: Stable storage snapshot for the complete computation
     ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
     ///   - configuration: Algorithm configuration
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,

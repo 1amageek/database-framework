@@ -165,6 +165,14 @@ public enum FieldValueTupleCodec {
         }
     }
 
+    @_spi(DatabaseExecution)
+    public static func encodedByteCount(
+        for value: FieldValue,
+        limits: FieldValueTupleCodecLimits = .default
+    ) throws(FieldValueTupleCodecError) -> Int {
+        try prepareComposite(value, limits: limits).encodedByteCount
+    }
+
     package static func isCanonicalEncoding(_ bytes: ByteString) -> Bool {
         guard bytes.count >= 3 else { return false }
         return bytes[bytes.startIndex] == magic0

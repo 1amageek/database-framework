@@ -1,11 +1,13 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 /// Union of the exact principal and role Grants contributing to one decision.
-package struct DatabaseEffectiveGrant: Sendable, Hashable {
-    package let access: Security.Access
-    package let contributors: [Security.Grant]
+@_spi(DatabaseExecution)
+public struct DatabaseEffectiveGrant: Sendable, Hashable {
+    public let access: Security.Access
+    public let contributors: [Security.Grant]
 
-    package init(
+    public init(
         access: Security.Access,
         contributors: [Security.Grant]
     ) {
@@ -13,3 +15,4 @@ package struct DatabaseEffectiveGrant: Sendable, Hashable {
         self.contributors = contributors
     }
 }
+#endif

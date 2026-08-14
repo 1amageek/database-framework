@@ -9,7 +9,7 @@ import StorageKit
 import DatabaseKit
 import DatabaseTypes
 @testable import DatabaseEngine
-@testable import GraphIndex
+@_spi(DatabaseExecution) @testable import GraphIndex
 
 // MARK: - Test Model
 

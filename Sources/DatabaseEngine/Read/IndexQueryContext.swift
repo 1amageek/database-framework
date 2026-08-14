@@ -146,7 +146,9 @@ public struct IndexQueryContext: Sendable {
         for type: T.Type,
         transaction: any TransactionAccess
     ) async throws -> ReadableIndex? {
+        #if DATABASE_MULTIPLE_BASES
         _ = try context.requireOperationDataRoot()
+        #endif
         let descriptor = try indexDescriptor(
             named: indexName,
             kindIdentifier: kindIdentifier,
@@ -182,7 +184,9 @@ public struct IndexQueryContext: Sendable {
         partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> ReadableIndex? {
+        #if DATABASE_MULTIPLE_BASES
         _ = try context.requireOperationDataRoot()
+        #endif
         let descriptor = try indexDescriptor(
             named: indexName,
             kindIdentifier: kindIdentifier,
@@ -501,7 +505,9 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         transaction: any TransactionAccess
     ) async throws -> T? {
+        #if DATABASE_MULTIPLE_BASES
         _ = try context.requireOperationDataRoot()
+        #endif
         let store: DatabaseDataStore
         if let binding = try partitionBinding(for: type) {
             store = try await context.container.store(for: type, path: binding)

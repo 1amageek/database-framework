@@ -5,17 +5,22 @@ database-framework service.
 
 ## Architecture
 
-- Define the control domain, data domains, and named Base placements
-  deliberately. A single backend remains a valid one-domain topology.
+- For the default composition, inject one StorageEngine and confirm its
+  lifecycle. Dedicated backends use the engine root. For FoundationDB or any
+  shared physical backend, record the explicitly selected Directory/root and
+  keep it stable across restarts. Only a
+  `MultipleBases` deployment defines a control domain, data domains, and named
+  Base placements.
 - Select runtime/index capabilities through consuming-package traits. A host
   package's defaults do not change the framework's explicit trait contract.
 - Confirm the backend transaction and isolation semantics.
 - Create one long-lived DBContainer per service process or Durable Object
   instance.
-- Transfer the complete initialized storage topology into that container and register
-  `container.shutdown()` with the host's shutdown lifecycle.
-- Create one authorization-bound `DatabaseSession` and select a Base or
-  Composition explicitly for each request or unit of work.
+- Transfer the initialized engine, or the `MultipleBases` topology, into that
+  container and register `container.shutdown()` with the host lifecycle.
+- Create one authorization-bound DatabaseContext per unit of work. With
+  `MultipleBases`, create a DatabaseSession and explicitly select a Base or
+  Composition instead.
 - Keep web host and database adapter dependencies separate.
 
 ## Schema And Indexes
@@ -31,10 +36,10 @@ database-framework service.
 ## Security
 
 - Establish AuthorizationContext at the request boundary.
-- Persist database and Base Grants; role names are authenticated claims, not
-  an administrative bypass.
-- Require explicit `.read`, `.write`, and `.administer` access independently.
-- Authorize every member Base before emitting any Composition result.
+- With `MultipleBases`, persist Base Grants; role names are authenticated
+  claims, not an administrative bypass.
+- With `MultipleBases`, require explicit `.read`, `.write`, and `.administer`
+  access independently and authorize every Composition member before output.
 - Register every enabled entity policy through AuthorizationPolicyHandler.
 - Keep SecurityPolicy evaluation enabled in production.
 - Test create, read, update, delete, list, and cross-tenant move paths.
@@ -64,8 +69,8 @@ export TOOLCHAINS=org.swift.64202607231a
 
 scripts/xcode-test-harness \
   --traits SQLite,AllRuntimeFeatures \
-  --only-testing DatabaseSingleRootTests \
-  --expected-count 5 \
+  --only-testing SQLiteTests \
+  --expected-count 111 \
   --require-zero-skips \
   --require-zero-expected-failures \
   --require-zero-runtime-warnings
@@ -73,7 +78,7 @@ scripts/xcode-test-harness \
 scripts/xcode-test-harness \
   --traits SQLite,AllRuntimeFeatures,MultipleBases \
   --only-testing SQLiteTests \
-  --expected-count 119 \
+  --expected-count 114 \
   --require-zero-skips \
   --require-zero-expected-failures \
   --require-zero-runtime-warnings
@@ -96,38 +101,38 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3980 \
+    --expected-count 3681 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
 
-for product in Database DatabaseWireAdapter; do
+for product in Database; do
   swift build \
     --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm \
     --product "$product" \
     --disable-default-traits \
-    --traits AllRuntimeFeatures,MultipleBases \
+    --traits AllRuntimeFeatures \
     -c release \
     -debug-info-format none
 done
 
-for product in Database DatabaseWireAdapter; do
+for product in Database; do
   swift build \
     --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm-embedded \
     --product "$product" \
     --disable-default-traits \
-    --traits AllRuntimeFeatures,MultipleBases \
+    --traits AllRuntimeFeatures \
     -c release \
     -debug-info-format none
 done
 
-for product in Database DatabaseWireAdapter; do
+for product in Database; do
   swift build \
     --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_static-linux-0.1.0 \
     --triple aarch64-swift-linux-musl \
     --product "$product" \
     --disable-default-traits \
-    --traits AllRuntimeFeatures,MultipleBases \
+    --traits AllRuntimeFeatures \
     -c release \
     -debug-info-format none
 done
@@ -143,8 +148,8 @@ successfully. Do not replace these invocations with a direct package-wide
 the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
-The release gate uses database-kit tag 26.0812.1 (normalized by SwiftPM as
-26.812.1), storage-kit 26.0807.0, and swift-hnsw 1.1.4. Record the exact
+The release gate uses database-kit tag 26.0814.0 (normalized by SwiftPM as
+26.814.0), storage-kit 26.0807.0, and swift-hnsw 1.1.4. Record the exact
 framework commit, result bundles, backend service identities, and platform
 build logs in the release report; do not preserve a previous release's results
 as evidence for a later source revision.

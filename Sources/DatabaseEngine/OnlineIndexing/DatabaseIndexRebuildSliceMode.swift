@@ -1,4 +1,4 @@
-package enum DatabaseIndexRebuildSliceMode: Sendable {
+public enum DatabaseIndexRebuildSliceMode: Sendable {
     case start
     case resume
 }

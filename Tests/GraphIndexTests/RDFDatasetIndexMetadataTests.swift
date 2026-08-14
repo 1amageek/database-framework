@@ -2,7 +2,7 @@
 import DatabaseKit
 import DatabaseTypes
 import Testing
-@testable import GraphIndex
+@_spi(DatabaseExecution) @testable import GraphIndex
 
 @Suite("RDF dataset index metadata")
 struct RDFDatasetIndexMetadataTests {

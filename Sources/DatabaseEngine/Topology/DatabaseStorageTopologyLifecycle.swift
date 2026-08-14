@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import StorageKit
 import Synchronization
 
@@ -144,3 +145,4 @@ final class DatabaseStorageTopologyLifecycle: Sendable {
         }
     }
 }
+#endif

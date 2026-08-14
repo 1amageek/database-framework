@@ -1,6 +1,7 @@
 #if DATABASE_MULTIPLE_BASES
 /// Durable lifecycle state controlling admission to one Base.
-package enum DatabaseBaseLifecycleState: UInt8, Sendable, Hashable {
+@_spi(DatabaseExecution)
+public enum DatabaseBaseLifecycleState: UInt8, Sendable, Hashable {
     case provisioning = 0
     case active = 1
     case retiring = 2
@@ -9,7 +10,7 @@ package enum DatabaseBaseLifecycleState: UInt8, Sendable, Hashable {
     case deleting = 5
     case tombstone = 6
 
-    package var name: String {
+    public var name: String {
         switch self {
         case .provisioning: "provisioning"
         case .active: "active"

@@ -13,7 +13,7 @@ import DatabaseRuntime
 import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
-@testable import GraphIndex
+@_spi(DatabaseExecution) @testable import GraphIndex
 @testable import QueryAST
 
 // Disambiguate PropertyPath - use GraphIndex version

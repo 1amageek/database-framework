@@ -1,7 +1,15 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 /// Direct Grants and revision stored for one exact Security resource.
-package struct DatabaseGrantSet: Sendable, Hashable {
-    package let revision: UInt64
-    package let grants: [Security.Grant]
+@_spi(DatabaseExecution)
+public struct DatabaseGrantSet: Sendable, Hashable {
+    public let revision: UInt64
+    public let grants: [Security.Grant]
+
+    public init(revision: UInt64, grants: [Security.Grant]) {
+        self.revision = revision
+        self.grants = grants
+    }
 }
+#endif

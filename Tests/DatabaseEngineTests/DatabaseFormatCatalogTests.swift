@@ -5,7 +5,7 @@ import Testing
 
 @Suite("Database Format Catalog Tests")
 struct DatabaseFormatCatalogTests {
-    @Test("Empty database installs v1 and exact reopen succeeds")
+    @Test("An empty database installs the current descriptor and reopens")
     func installsAndReopens() async throws {
         let engine = InMemoryEngine()
         let catalog = DatabaseFormatCatalog(
@@ -13,7 +13,10 @@ struct DatabaseFormatCatalogTests {
             root: Subspace(),
             clock: SystemStorageClock()
         )
-        let expected = DatabaseFormatDescriptor.v1(itemStorage: .v1)
+        let expected = DatabaseFormatDescriptor.current(
+            layoutKind: .singleDatabase,
+            itemStorage: .v1
+        )
 
         let installed = try await catalog.installIfEmptyOrValidate(expected)
         let reopened = try await catalog.installIfEmptyOrValidate(expected)
@@ -41,7 +44,7 @@ struct DatabaseFormatCatalogTests {
                 .descriptorMissingInNonEmptyDatabase
         ) {
             _ = try await catalog.installIfEmptyOrValidate(
-                .v1(itemStorage: .v1)
+                .current(layoutKind: .singleDatabase, itemStorage: .v1)
             )
         }
         await #expect(throws: DatabaseFormatCatalogError.missingDescriptor) {
@@ -57,7 +60,10 @@ struct DatabaseFormatCatalogTests {
             root: Subspace(),
             clock: SystemStorageClock()
         )
-        let stored = DatabaseFormatDescriptor.v1(itemStorage: .v1)
+        let stored = DatabaseFormatDescriptor.current(
+            layoutKind: .singleDatabase,
+            itemStorage: .v1
+        )
         _ = try await catalog.installIfEmptyOrValidate(stored)
         let differentConfiguration = try ItemStorageConfiguration(
             encoding: .identity,
@@ -66,7 +72,8 @@ struct DatabaseFormatCatalogTests {
             maximumInlineByteCount: 80_000,
             chunkByteCount: 80_000
         )
-        let expected = DatabaseFormatDescriptor.v1(
+        let expected = DatabaseFormatDescriptor.current(
+            layoutKind: .singleDatabase,
             itemStorage: differentConfiguration
         )
 
@@ -78,6 +85,35 @@ struct DatabaseFormatCatalogTests {
         ) {
             _ = try await catalog.installIfEmptyOrValidate(expected)
         }
+    }
+
+    @Test("A different storage layout is rejected")
+    func rejectsLayoutMismatch() async throws {
+        let engine = InMemoryEngine()
+        let catalog = DatabaseFormatCatalog(
+            database: engine,
+            root: Subspace(),
+            clock: SystemStorageClock()
+        )
+        let stored = DatabaseFormatDescriptor.current(
+            layoutKind: .singleDatabase,
+            itemStorage: .v1
+        )
+        let expected = DatabaseFormatDescriptor.current(
+            layoutKind: .multipleBases,
+            itemStorage: .v1
+        )
+        _ = try await catalog.installIfEmptyOrValidate(stored)
+
+        await #expect(
+            throws: DatabaseFormatCatalogError.descriptorMismatch(
+                stored: stored,
+                expected: expected
+            )
+        ) {
+            _ = try await catalog.installIfEmptyOrValidate(expected)
+        }
+        #expect(try await catalog.loadRequired() == stored)
     }
 
     @Test("Corrupted persisted descriptor is never replaced")
@@ -98,7 +134,7 @@ struct DatabaseFormatCatalogTests {
 
         await #expect(throws: DatabaseFormatDescriptorError.self) {
             _ = try await catalog.installIfEmptyOrValidate(
-                .v1(itemStorage: .v1)
+                .current(layoutKind: .singleDatabase, itemStorage: .v1)
             )
         }
         let persisted = try await engine.withTransaction { transaction in

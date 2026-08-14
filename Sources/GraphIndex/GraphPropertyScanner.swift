@@ -146,7 +146,8 @@ public struct GraphPropertyScanner: Sendable {
         self.snapshot = nil
     }
 
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         storedFieldNames: [String],

@@ -23,6 +23,11 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
 
     nonisolated package let storageAccess: any TransactionAccess
 
+    @_spi(DatabaseExecution)
+    public nonisolated var serverStorageAccess: any TransactionAccess {
+        storageAccess
+    }
+
     private let container: DBContainer
     private let mutationMaintenanceService: PersistableMutationMaintenanceService
     private let operationGate = TransactionOperationGate()
@@ -41,7 +46,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let partitionPath: [String]
     }
 
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         storageAccess: any TransactionAccess,
         container: DBContainer
     ) {
@@ -320,7 +326,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
 
     // MARK: - Package persistence operations
 
-    package func loadPersistedModel(
+    @_spi(DatabaseExecution)
+    public func loadPersistedModel(
         entity: String,
         id: Tuple,
         partition: AnyDirectoryPath?
@@ -367,7 +374,27 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         }
     }
 
-    package func savePersistedModel(
+    @_spi(DatabaseExecution)
+    public func scanPersistedModelsForExecution(
+        entity: String,
+        partition: AnyDirectoryPath?,
+        limit: Int,
+        offset: Int = 0,
+        startingAfterIdentifier: ByteString? = nil,
+        workMeter: DatabaseWorkMeter? = nil
+    ) async throws -> [PersistedModel] {
+        try await scanPersistedModels(
+            entity: entity,
+            partition: partition,
+            limit: limit,
+            offset: offset,
+            startingAfterIdentifier: startingAfterIdentifier,
+            workMeter: workMeter
+        )
+    }
+
+    @_spi(DatabaseExecution)
+    public func savePersistedModel(
         _ model: PersistedModel,
         precondition: WritePrecondition
     ) async throws {
@@ -401,7 +428,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         }
     }
 
-    package func apply(
+    @_spi(DatabaseExecution)
+    public func apply(
         _ mutations: [PersistableMutation]
     ) async throws {
         try await performOperation { operationID in
@@ -412,7 +440,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         }
     }
 
-    package func persistedMutationEffects() throws
+    @_spi(DatabaseExecution)
+    public func persistedMutationEffects() throws
         -> [PersistableMutationEffect] {
         guard state == .open else {
             throw lifecycleError(for: state)
@@ -910,11 +939,16 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     private func makeMutationContext(
         operationID: UInt64
     ) throws -> PersistableMutationContext {
-        try PersistableMutationContext(
+        #if DATABASE_MULTIPLE_BASES
+        let dataRoot = try container.requireActiveDataRoot().root
+        #else
+        let dataRoot = container.databaseRoot
+        #endif
+        return PersistableMutationContext(
             schema: container.schema,
             transaction: self,
             operationID: operationID,
-            baseRoot: container.requireActiveDataRoot().root,
+            baseRoot: dataRoot,
             storageAccess: storageAccess
         )
     }
@@ -956,12 +990,18 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let path = try partition ?? AnyDirectoryPath(for: entity)
         try path.validate()
         let partitionPath = path.resolve()
-        let lease = try container.requireActiveDataRoot()
+        #if DATABASE_MULTIPLE_BASES
         let cacheKey = DatabaseStoreCacheKey(
-            basePlacementGeneration: lease.generation,
+            basePlacementGeneration: try container.requireActiveDataRoot().generation,
             entity: entity.name,
             components: partitionPath
         )
+        #else
+        let cacheKey = DatabaseStoreCacheKey(
+            entity: entity.name,
+            components: partitionPath
+        )
+        #endif
         if let cached = subspaceCache.value(for: cacheKey) {
             return cached
         }

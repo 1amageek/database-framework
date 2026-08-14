@@ -5,7 +5,7 @@ import StorageKit
 import Synchronization
 import TestSupport
 import Testing
-@testable import GraphIndex
+@_spi(DatabaseExecution) @testable import GraphIndex
 
 @Suite("Graph physical read budget")
 struct GraphPhysicalReadBudgetTests {

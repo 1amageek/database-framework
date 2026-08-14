@@ -4,7 +4,7 @@ import DatabaseTypes
 import StorageKit
 import TestSupport
 import Testing
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 @testable import GraphIndex
 
 @Persistable

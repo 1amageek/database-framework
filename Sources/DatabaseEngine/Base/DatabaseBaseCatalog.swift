@@ -126,24 +126,6 @@ package struct DatabaseBaseCatalog: Sendable {
         return record
     }
 
-    /// Removes a never-published provisioning record during an unsuccessful
-    /// legacy-layout migration. Published or tombstoned Base identifiers are
-    /// intentionally not removable through this boundary.
-    package func removeProvisioning(
-        _ id: Base.ID,
-        expectedRevision: UInt64,
-        transaction: any TransactionAccess
-    ) async throws {
-        guard let current = try await load(id, transaction: transaction) else {
-            return
-        }
-        guard current.lifecycle == .provisioning,
-              current.revision == expectedRevision else {
-            throw DatabaseBaseCatalogError.corruptedRecord(id)
-        }
-        try transaction.clear(key: recordKey(id))
-    }
-
     package func loadAll(
         transaction: any TransactionAccess
     ) async throws -> [DatabaseBaseRecord] {

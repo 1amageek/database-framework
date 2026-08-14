@@ -1,7 +1,6 @@
 #if !os(WASI)
-#if SQLITE
+#if SQLITE && !DATABASE_MULTIPLE_BASES
 import DatabaseEngine
-import DatabaseKit
 import SQLiteStorage
 import StorageKit
 
@@ -12,38 +11,8 @@ extension SQLiteStorageEngine.Configuration: DatabaseContainerConfiguration {
         indexConfigurations: [any IndexRuntimeConfiguration]
     ) async throws -> DBConfiguration {
         let engine = try SQLiteStorageEngine(configuration: self)
-        let domainID = try DatabaseStorageDomain.ID("primary")
-        #if DATABASE_MULTIPLE_BASES
-        let placementID = try Base.Placement.ID("default")
-        let topology = try DatabaseStorageTopology(
-            controlDomainID: domainID,
-            domains: [
-                try DatabaseStorageDomain(
-                    id: domainID,
-                    namespacePath: ["database", "main"],
-                    storageEngine: engine
-                ),
-            ],
-            placements: [
-                try DatabaseStoragePlacement(
-                    id: placementID,
-                    domainID: domainID,
-                    path: ["bases"]
-                ),
-            ],
-            defaultPlacementID: placementID
-        )
-        #else
-        let topology = DatabaseStorageTopology(
-            controlDomain: try DatabaseStorageDomain(
-                id: domainID,
-                namespacePath: ["database", "main"],
-                storageEngine: engine
-            )
-        )
-        #endif
         return DBConfiguration(
-            storageTopology: topology,
+            storageEngine: engine,
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             indexConfigurations: indexConfigurations

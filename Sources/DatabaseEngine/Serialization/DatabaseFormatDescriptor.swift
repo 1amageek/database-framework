@@ -3,20 +3,26 @@ import StorageKit
 
 /// Immutable physical format contract stored with every database store.
 public struct DatabaseFormatDescriptor: Sendable, Equatable {
-    public static let descriptorVersion: UInt8 = 1
-    public static let serializedSize = 45
+    public static let descriptorVersion: UInt8 = 2
+    public static let currentLayoutVersion: UInt16 = 1
+    public static let serializedSize = 48
 
     private static let magic: ByteString = [0x44, 0x42, 0x46, 0x4D]
-    private static let checksumOffset = 41
+    private static let checksumOffset = 44
 
+    public let layoutKind: DatabaseStorageLayoutKind
+    public let layoutVersion: UInt16
     public let persistableFormatVersion: UInt16
     public let envelopeVersion: UInt8
     public let itemStorage: ItemStorageConfiguration
 
-    public static func v1(
+    public static func current(
+        layoutKind: DatabaseStorageLayoutKind,
         itemStorage: ItemStorageConfiguration
     ) -> DatabaseFormatDescriptor {
         DatabaseFormatDescriptor(
+            layoutKind: layoutKind,
+            layoutVersion: currentLayoutVersion,
             persistableFormatVersion: PersistableStorageCodec.formatVersion,
             envelopeVersion: ItemEnvelope.currentVersion,
             itemStorage: itemStorage
@@ -24,10 +30,14 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
     }
 
     private init(
+        layoutKind: DatabaseStorageLayoutKind,
+        layoutVersion: UInt16,
         persistableFormatVersion: UInt16,
         envelopeVersion: UInt8,
         itemStorage: ItemStorageConfiguration
     ) {
+        self.layoutKind = layoutKind
+        self.layoutVersion = layoutVersion
         self.persistableFormatVersion = persistableFormatVersion
         self.envelopeVersion = envelopeVersion
         self.itemStorage = itemStorage
@@ -41,28 +51,30 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
             output[2] = Self.magic[2]
             output[3] = Self.magic[3]
             output[4] = Self.descriptorVersion
-            Self.writeUInt16(persistableFormatVersion, to: output, at: 5)
-            output[7] = envelopeVersion
-            output[8] = itemStorage.encoding.rawValue
+            output[5] = layoutKind.rawValue
+            Self.writeUInt16(layoutVersion, to: output, at: 6)
+            Self.writeUInt16(persistableFormatVersion, to: output, at: 8)
+            output[10] = envelopeVersion
+            output[11] = itemStorage.encoding.rawValue
             Self.writeUInt64(
                 UInt64(itemStorage.maximumPlainByteCount),
                 to: output,
-                at: 9
+                at: 12
             )
             Self.writeUInt64(
                 UInt64(itemStorage.maximumStoredByteCount),
                 to: output,
-                at: 17
+                at: 20
             )
             Self.writeUInt64(
                 UInt64(itemStorage.maximumInlineByteCount),
                 to: output,
-                at: 25
+                at: 28
             )
             Self.writeUInt64(
                 UInt64(itemStorage.chunkByteCount),
                 to: output,
-                at: 33
+                at: 36
             )
             let checksum = ItemChecksum.crc32c(
                 UnsafeRawBufferPointer(
@@ -80,7 +92,7 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
     public static func deserialize(
         _ bytes: ByteString
     ) throws -> DatabaseFormatDescriptor {
-        guard bytes.count == serializedSize else {
+        guard bytes.count >= 5 else {
             throw DatabaseFormatDescriptorError.invalidSize(
                 actual: bytes.count,
                 expected: serializedSize
@@ -96,6 +108,12 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
         guard encodedDescriptorVersion == descriptorVersion else {
             throw DatabaseFormatDescriptorError.unsupportedDescriptorVersion(
                 encodedDescriptorVersion
+            )
+        }
+        guard bytes.count == serializedSize else {
+            throw DatabaseFormatDescriptorError.invalidSize(
+                actual: bytes.count,
+                expected: serializedSize
             )
         }
 
@@ -114,19 +132,33 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
             )
         }
 
-        let persistableFormatVersion = readUInt16(bytes, at: 5)
+        let encodedLayoutKind = byte(in: bytes, at: 5)
+        guard let layoutKind = DatabaseStorageLayoutKind(
+            rawValue: encodedLayoutKind
+        ) else {
+            throw DatabaseFormatDescriptorError.unsupportedLayoutKind(
+                encodedLayoutKind
+            )
+        }
+        let layoutVersion = readUInt16(bytes, at: 6)
+        guard layoutVersion == currentLayoutVersion else {
+            throw DatabaseFormatDescriptorError.unsupportedLayoutVersion(
+                layoutVersion
+            )
+        }
+        let persistableFormatVersion = readUInt16(bytes, at: 8)
         guard persistableFormatVersion == PersistableStorageCodec.formatVersion else {
             throw DatabaseFormatDescriptorError.unsupportedPersistableFormatVersion(
                 persistableFormatVersion
             )
         }
-        let envelopeVersion = byte(in: bytes, at: 7)
+        let envelopeVersion = byte(in: bytes, at: 10)
         guard envelopeVersion == ItemEnvelope.currentVersion else {
             throw DatabaseFormatDescriptorError.unsupportedEnvelopeVersion(
                 envelopeVersion
             )
         }
-        let encodingByte = byte(in: bytes, at: 8)
+        let encodingByte = byte(in: bytes, at: 11)
         guard let encoding = ItemPayloadEncoding(rawValue: encodingByte) else {
             throw DatabaseFormatDescriptorError.unsupportedPayloadEncoding(
                 encodingByte
@@ -134,16 +166,16 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
         }
 
         guard let maximumPlainByteCount = Int(
-                  exactly: readUInt64(bytes, at: 9)
+                  exactly: readUInt64(bytes, at: 12)
               ),
               let maximumStoredByteCount = Int(
-                  exactly: readUInt64(bytes, at: 17)
+                  exactly: readUInt64(bytes, at: 20)
               ),
               let maximumInlineByteCount = Int(
-                  exactly: readUInt64(bytes, at: 25)
+                  exactly: readUInt64(bytes, at: 28)
               ),
               let chunkByteCount = Int(
-                  exactly: readUInt64(bytes, at: 33)
+                  exactly: readUInt64(bytes, at: 36)
               ) else {
             throw DatabaseFormatDescriptorError.integerOutOfRange
         }
@@ -163,6 +195,8 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
             )
         }
         return DatabaseFormatDescriptor(
+            layoutKind: layoutKind,
+            layoutVersion: layoutVersion,
             persistableFormatVersion: persistableFormatVersion,
             envelopeVersion: envelopeVersion,
             itemStorage: itemStorage

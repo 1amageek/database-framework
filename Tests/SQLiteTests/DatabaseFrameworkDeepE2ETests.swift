@@ -508,6 +508,7 @@ struct DatabaseFrameworkDeepE2ETests {
             await container.shutdown()
             deepE2ERemoveTemporaryDirectory(directory)
         }
+        #if MultipleBases
         try await container.grantTestBaseAccess(
             to: .principal("alice"),
             access: [.read, .write]
@@ -516,6 +517,7 @@ struct DatabaseFrameworkDeepE2ETests {
             to: .principal("bob"),
             access: [.read, .write]
         )
+        #endif
         let aliceAuthorization = AuthorizationContext.authenticated(
             Principal(identifier: "alice")
         )

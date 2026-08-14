@@ -157,6 +157,12 @@ public struct RDFDatasetScanRow: Sendable {
     }
 
     package var quad: RDFQuad { owner.storage[position].quad }
+
+    /// Materializes one owned quad at the server mutation boundary. The scan
+    /// owner cannot outlive its request reservation, while transfer mutations
+    /// must retain the quad across an asynchronous storage call.
+    @_spi(DatabaseExecution)
+    public func ownedQuad() -> RDFQuad { owner.storage[position].quad }
     package var subject: RDFTerm {
         owner.storage[position].quad.subject.term
     }

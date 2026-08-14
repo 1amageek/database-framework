@@ -4,7 +4,7 @@ import DatabaseRuntime
 import StorageKit
 import TestSupport
 import Testing
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Suite("Composition typed query execution")
 struct CompositionQueryExecutorTests {

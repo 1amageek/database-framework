@@ -1,3 +1,4 @@
+#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
 
 extension DBContainer {
@@ -83,3 +84,4 @@ extension DBContainer {
     }
     #endif
 }
+#endif

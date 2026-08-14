@@ -4,7 +4,7 @@
 #if DATABASE_GRAPH_INDEXES
 import DatabaseKit
 import QueryAST
-import GraphIndex
+@_spi(DatabaseExecution) import GraphIndex
 import DatabaseEngine
 import DatabaseTypes
 import StorageKit

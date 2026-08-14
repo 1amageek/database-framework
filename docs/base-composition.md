@@ -10,12 +10,14 @@ implementation order, and verification gates are defined in
 This document defines the optional contract for isolating and composing data
 inside one logical database. The standard build retains one database data root.
 Enabling `MultipleBases` adds Base and Composition execution without replacing
-that root or changing the schema model.
+the schema model. The default compiled path still has one engine and does not
+carry a topology, target lease, Base catalog, persisted Grant store, or
+Composition planner.
 
-| Trait selection | Available data targets |
+| Trait selection | Execution boundary |
 |---|---|
-| standard / `AllRuntimeFeatures` | `.database` |
-| `MultipleBases` | `.database`, `.base(Base.ID)`, `.composition(Base.Composition.ID)` |
+| standard / `AllRuntimeFeatures` | One implicit database root; no target type or target field is compiled |
+| `MultipleBases` | Explicit `.database`, `.base(Base.ID)`, and `.composition(Base.Composition.ID)` targets |
 
 `AllRuntimeFeatures` does not imply `MultipleBases`.
 
@@ -522,10 +524,12 @@ must not silently present a federated read as transactionally atomic.
 
 ## Implemented Capability Boundary
 
-The runtime implements Base lifecycle and offline placement movement, durable
-legacy migration, target-bound request execution, Base-local Grants, field
-authorization, Composition provenance, and durable federated paging. It only
-advertises Composition operations whose merge semantics are implemented.
+The runtime implements Base lifecycle and offline placement movement,
+target-bound request execution, Base-local Grants, field authorization,
+Composition provenance, and durable federated paging. Removed storage layouts
+are rejected; the MultipleBases runtime does not probe, alias, or migrate them.
+It only advertises Composition operations whose merge semantics are
+implemented.
 
 | Composition operation | Contract |
 |---|---|

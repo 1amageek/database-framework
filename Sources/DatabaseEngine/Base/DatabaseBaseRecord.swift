@@ -2,14 +2,15 @@
 import DatabaseKit
 
 /// Durable control-domain description of one Base placement and lifecycle.
-package struct DatabaseBaseRecord: Sendable, Hashable, StorageFrameValue {
-    package let id: Base.ID
-    package let placementID: Base.Placement.ID
-    package let domainID: DatabaseStorageDomain.ID
-    package let namespacePath: [String]
-    package let placementGeneration: UInt64
-    package let revision: UInt64
-    package let lifecycle: DatabaseBaseLifecycleState
+@_spi(DatabaseExecution)
+public struct DatabaseBaseRecord: Sendable, Hashable, StorageFrameValue {
+    public let id: Base.ID
+    public let placementID: Base.Placement.ID
+    public let domainID: DatabaseStorageDomain.ID
+    public let namespacePath: [String]
+    public let placementGeneration: UInt64
+    public let revision: UInt64
+    public let lifecycle: DatabaseBaseLifecycleState
 
     package init(
         id: Base.ID,

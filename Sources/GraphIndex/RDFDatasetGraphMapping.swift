@@ -1,12 +1,13 @@
 import DatabaseTypes
 import DatabaseKit
 
-package enum RDFDatasetGraphMapping: Sendable, Equatable {
+@_spi(DatabaseExecution)
+public enum RDFDatasetGraphMapping: Sendable, Equatable {
     case defaultGraph
     case entityField(String)
     case fixed(RDFTerm)
 
-    package var sourceCoverage: RDFDatasetSourceCoverage {
+    public var sourceCoverage: RDFDatasetSourceCoverage {
         get throws {
             switch self {
             case .defaultGraph:
@@ -19,7 +20,7 @@ package enum RDFDatasetGraphMapping: Sendable, Equatable {
         }
     }
 
-    package var entityGraphFieldName: String? {
+    public var entityGraphFieldName: String? {
         switch self {
         case .defaultGraph:
             return nil

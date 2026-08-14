@@ -4,6 +4,7 @@ import DatabaseRuntime
 import DatabaseTypes
 import DatabaseWire
 import Foundation
+@_spi(DatabaseExecution) import GraphIndex
 import TestSupport
 import TestHeartbeat
 import Testing

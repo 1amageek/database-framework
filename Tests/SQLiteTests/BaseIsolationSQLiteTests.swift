@@ -1,5 +1,6 @@
 #if SQLITE && MultipleBases
 import Database
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseRuntime
 import TestHeartbeat
 import TestSupport

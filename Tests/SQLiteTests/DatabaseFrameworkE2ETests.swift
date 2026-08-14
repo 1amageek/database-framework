@@ -608,10 +608,12 @@ struct DatabaseFrameworkE2ETests {
             security: .enabled()
         )
         defer { await container.shutdown() }
+        #if MultipleBases
         try await container.grantTestBaseAccess(
             to: .principal("alice"),
             access: [.read, .write]
         )
+        #endif
 
         var original = DatabaseFrameworkE2ESecuredDocument(ownerID: "alice", title: "Original")
         original.id = "database-framework-secure-stale-delete-document"

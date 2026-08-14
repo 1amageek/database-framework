@@ -222,7 +222,8 @@ public struct AnyDirectoryPath: Sendable {
         try self.init(entity: entity, partitions: FieldObject())
     }
 
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         entity: Schema.Entity,
         partitions: FieldObject
     ) throws {

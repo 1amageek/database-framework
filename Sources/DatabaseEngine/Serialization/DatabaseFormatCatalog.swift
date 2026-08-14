@@ -8,6 +8,15 @@ public struct DatabaseFormatCatalog: Sendable {
     private let root: Subspace
     private let descriptorKey: ByteString
 
+    /// Opens the format catalog for one ordinary database.
+    public init(
+        database: any StorageEngine,
+        clock: any StorageMonotonicClock
+    ) {
+        self.init(database: database, root: Subspace(), clock: clock)
+    }
+
+    /// Opens a format catalog below an explicitly selected database root.
     public init(
         database: any StorageEngine,
         root: Subspace,

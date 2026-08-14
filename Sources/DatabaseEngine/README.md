@@ -4,7 +4,7 @@ Core engine for StorageKit-backed persistence with transactional guarantees.
 
 DatabaseEngine is the lightweight in-process execution core. Applications
 normally consume it through the `Database` umbrella and customize the database
-with schema, selected traits, runtime registrations, commands, policy, and an
+with schema, selected traits, runtime registrations, policy, and an
 injected `StorageEngine`. `database-server` is not required unless the runtime
 must be hosted as a standalone native process with DatabaseWire transports.
 
@@ -24,9 +24,10 @@ DatabaseEngine provides the foundation for all database operations, including:
 Application-level resource manager. Does NOT create transactions.
 
 ```swift
-// Inject a validated control/data domain topology.
+// Inject exactly one engine for the lightweight default composition.
 let configuration = DBConfiguration(
-    storageTopology: storageTopology,
+    storageEngine: storageEngine,
+    namespacePath: ["database", "application"],
     monotonicClock: applicationMonotonicClock,
     wallClock: applicationWallClock
 )
@@ -41,17 +42,32 @@ let context = container.newContext(authorization: authorization)
 ```
 
 DatabaseEngine does not import, select, or construct a concrete backend. The
-package that creates `storageTopology` owns those adapter choices. Creating
-`DBConfiguration(storageTopology:)` transfers every engine lifecycle to the
-configuration/container owner; the caller must not reuse or shut down an
-engine independently.
+package that creates `storageEngine` owns the adapter choice. Creating
+`DBConfiguration(storageEngine:)` transfers its lifecycle to the
+configuration/container owner; the caller must not reuse it or shut it down
+independently. The standard configuration retains its injected `databaseRoot`;
+model, index, and metadata paths are derived from it without namespace
+resolution. Dedicated backends use the engine root. A host sharing a physical
+backend must resolve the application-selected root before constructing the
+configuration. `MultipleBases` adds a separate
+`DBConfiguration(storageTopology:)` initializer and transfers every domain.
 
 Opening failure, explicit `container.shutdown()`, and container deinitialization
 all converge on one idempotent shutdown path. Every underlying engine is
 released exactly once.
 
 ```text
-initialized StorageEngine values
+initialized StorageEngine
+          |
+          | ownership transfer
+          v
+DBConfiguration(storageEngine:) -> DBContainer.open
+                        |-- failure --------> shut down once
+                        |-- shutdown() -----> shut down once
+                        `-- deinit ----------> shut down once
+
+MultipleBases only
+  initialized StorageEngine values
           |
           | validated DatabaseStorageTopology
           | ownership transfer
@@ -64,9 +80,9 @@ DBConfiguration -> DBContainer.open
 
 ### DatabaseContext
 
-Target-bound transaction manager and user-facing unit of work. It owns pending
-changes and read-version cache for the database root, or for one explicitly
-selected Base when the `MultipleBases` trait is enabled.
+Transaction manager and user-facing unit of work. It owns pending changes and
+read-version cache for the one database root. With `MultipleBases`, the
+trait-specific session API creates a context fixed to one explicit Base.
 
 ```swift
 let context = container.newContext(authorization: authorization)

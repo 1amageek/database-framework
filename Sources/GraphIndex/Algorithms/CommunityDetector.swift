@@ -110,7 +110,8 @@ public final class CommunityDetector: Sendable {
     ///   - subspace: Index subspace
     ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         snapshot: GraphReadSnapshot,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,

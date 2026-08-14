@@ -10,7 +10,7 @@ import DatabaseKit
 import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
-@testable import GraphIndex
+@_spi(DatabaseExecution) @testable import GraphIndex
 
 // MARK: - Benchmark Context
 
