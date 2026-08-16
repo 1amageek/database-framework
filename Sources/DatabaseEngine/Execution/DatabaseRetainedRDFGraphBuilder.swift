@@ -1,4 +1,3 @@
-import DatabaseWire
 import DatabaseKit
 
 /// Public admitted builder for custom SPARQL runtime implementations.

@@ -82,9 +82,9 @@ extension DBContainer {
         }
     }
     #else
-    /// Executes server-initiated control work against the ordinary database.
-    /// Operation-level authorization belongs to the server runtime; the
-    /// framework only binds the authenticated context for entity policies.
+    /// Executes authorized control work against the ordinary database.
+    /// The calling composition admits the operation while the framework binds
+    /// its authorization context for entity and field policies.
     @_spi(DatabaseExecution)
     public func withControlTransaction<Result: Sendable>(
         authorization: AuthorizationContext,

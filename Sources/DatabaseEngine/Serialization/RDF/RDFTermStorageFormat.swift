@@ -6,7 +6,7 @@ import DatabaseTypes
 /// The returned `ByteString` owns exactly one final payload allocation.
 /// Decoding borrows slices from that owner until an RDF string must be owned.
 /// Storage frames and tuple-key components share this physical contract.
-/// DatabaseWire has an independent representation.
+/// Runtime persistence uses the framework-owned StorageFrame representation.
 package enum RDFTermStorageFormat {
     /// Validates a semantic RDF term without allocating an encoded payload.
     package static func validate(

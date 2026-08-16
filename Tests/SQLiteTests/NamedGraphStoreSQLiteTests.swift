@@ -1,8 +1,8 @@
 #if SQLITE
 import Database
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
-import DatabaseWire
 import Foundation
 import TestSupport
 import TestHeartbeat

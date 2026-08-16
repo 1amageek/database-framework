@@ -1,7 +1,6 @@
 import StorageKit
 import DatabaseKit
 import DatabaseTypes
-import DatabaseWire
 
 /// Static utility for accessing Persistable item data
 ///

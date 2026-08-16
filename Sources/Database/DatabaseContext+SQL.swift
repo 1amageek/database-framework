@@ -5,7 +5,6 @@ import DatabaseKit
 import QueryAST
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseRuntime
-import DatabaseWire
 import StorageKit
 
 // MARK: - DatabaseContext + SQL String Execution

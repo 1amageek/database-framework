@@ -1,5 +1,5 @@
 import DatabaseEngine
-import DatabaseWire
+import DatabaseKit
 import StorageKit
 
 public final class SHACLValidationWorkBudget: Sendable {

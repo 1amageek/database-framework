@@ -1,6 +1,5 @@
 import DatabaseTypes
 import DatabaseKit
-import DatabaseWire
 import StorageKit
 
 enum DatabaseSchemaFingerprint {

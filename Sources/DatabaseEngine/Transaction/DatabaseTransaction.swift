@@ -24,7 +24,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     nonisolated package let storageAccess: any TransactionAccess
 
     @_spi(DatabaseExecution)
-    public nonisolated var serverStorageAccess: any TransactionAccess {
+    public nonisolated var executionStorageAccess: any TransactionAccess {
         storageAccess
     }
 

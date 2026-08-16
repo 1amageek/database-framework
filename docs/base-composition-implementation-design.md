@@ -218,8 +218,8 @@ flowchart TB
     Wire --> Kit["DatabaseKit<br/>semantic values"]
 
     NativeHost["DatabaseServerHost<br/>native auth and transport"] --> Server["DatabaseServerRuntime<br/>frame + operation + jobs"]
-    Cloudflare["Cloudflare Durable Object host"] --> Server
     Server --> Engine["DatabaseEngine<br/>single root or MultipleBases catalogs"]
+    Cloudflare["database-framework-cloudflare<br/>application session"] --> Engine
     Engine --> Kit
     Engine --> Storage["storage-kit<br/>transactions and namespaces"]
 ```
@@ -238,9 +238,10 @@ flowchart TB
 | `--base`, `--composition`, administration commands, output | `database-cli` | User interaction changes. |
 | Durable Object admission and host lifecycle | `database-framework-cloudflare` | Cloudflare hosting changes. |
 
-No new shared package is required. `DatabaseServerRuntime` is the reusable
-server execution product; `DatabaseServerHost` is only the native hosting
-adapter. Base semantics are not primitive values and
+No new shared runtime package is required. The server runtime and native host
+are internal layers of the standalone `database-server` executable. Platform
+adapters reuse database-framework execution directly and do not consume either
+server layer. Base semantics are not primitive values and
 must not enter `database-types`; resolved storage prefixes are not Wire values
 and must not enter `database-kit`.
 
@@ -799,8 +800,10 @@ ownership violations are internal failures, not missing-resource results.
 
 ### `database-framework-cloudflare` with `MultipleBases`
 
-- Pass the canonical target bytes unchanged through the host boundary.
-- Enforce the same runtime execution path and limits.
+- Carry application-owned opaque request and context bytes through the host
+  boundary and let the application session select its database target.
+- Enforce the same database-framework execution and storage contracts without
+  installing the standalone server's operation registry.
 - Advertise only the storage-domain and index capabilities actually available
   under the Worker memory budget.
 
@@ -832,7 +835,7 @@ flowchart LR
 | D | Every entity and derived-data path is Base-local | Differential success/failure/results/index state match ordinary single-database behavior. |
 | E | Explicit Grants plus entity and field policy | Every public and Wire path denies missing access and proves principal isolation. |
 | F | Composition read planner and continuations | Supported plans match a reference global evaluation within budgets; unsupported plans fail. |
-| G | Typed clients, CLI, native and Cloudflare hosts | Same Wire frames and failures across all transports. |
+| G | Typed clients, CLI, native host, and platform adapters | Each host preserves the same framework semantics and typed failures through its owned protocol boundary. |
 | H | URL-dependency release graph | Required backend counts, target builds, lifecycle, and artifact checks pass. |
 
 Estimated critical path before convergence loops is 34 engineer-days. Phases B

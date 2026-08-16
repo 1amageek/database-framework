@@ -5,7 +5,6 @@
 
 import DatabaseKit
 import DatabaseEngine
-import DatabaseWire
 import StorageKit
 
 /// Builder for SPARQL-like graph queries

@@ -14,6 +14,7 @@ public enum QueryCursorError: Error, Sendable, Equatable {
     case closed
     case positionOutOfRange(UInt64)
     case positionOverflow
+    case queryFingerprintUnavailable
 }
 
 /// A serialized cursor for bounded typed-query pagination.
@@ -92,7 +93,8 @@ public actor QueryCursor<T: Persistable> {
     ///   - query: The query to execute
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - continuation: Optional continuation token to resume from
-    /// - Throws: `ContinuationError` if token is invalid
+    /// - Throws: `ContinuationError` if the token is invalid, or
+    ///   `QueryCursorError` if cursor bounds or query identity are invalid.
     internal init(
         context: DatabaseContext,
         query: Query<T>,

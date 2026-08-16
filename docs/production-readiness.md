@@ -101,7 +101,7 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3681 \
+    --expected-count 3715 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -169,13 +169,13 @@ form is preferred because it does not expose a host TCP port.
 Run Cloudflare Worker smoke and deployment dry-run checks in the
 database-framework-cloudflare repository.
 
-A release is not production-ready merely because the default FoundationDB
-build passes. Every backend selected for release must have a successful build,
-its relevant integration tests, and an explicit operational configuration.
-FoundationDB artifacts are released only for macOS and Linux. iOS and
-WASI/Embedded compositions must prove their own selected storage adapter path;
-the presence of the `FoundationDB` default trait does not provide an adapter on
-those targets.
+A release is not production-ready merely because one FoundationDB-selected
+build passes. The package has no default backend trait. Every backend selected
+for release must have a successful build, its relevant integration tests, and
+an explicit operational configuration. FoundationDB artifacts are released
+only for macOS and Linux. iOS and WASI/Embedded compositions must prove their
+own selected storage adapter path; selecting `FoundationDB` elsewhere does not
+provide an adapter on those targets.
 
 Opening failure, explicit shutdown, and deinitialization must converge on the
 same exactly-once engine release. A production host must call

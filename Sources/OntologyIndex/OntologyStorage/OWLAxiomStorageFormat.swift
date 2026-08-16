@@ -6,7 +6,7 @@ import DatabaseTypes
 ///
 /// Recursive expressions are length-delimited so `StorageFrameLimits` applies
 /// the same depth, collection, string, and frame budgets during writes and
-/// reads. The format is independent of DatabaseWire.
+/// reads through the framework-owned StorageFrame representation.
 enum OWLAxiomStorageFormat {
     private static let magic: UInt32 = 0x3141_574F
 

@@ -14,7 +14,8 @@ database-types
         v
 database-kit
   Persistable contracts, schema metadata, EntityReference, QueryIR,
-  mutation contracts, DatabaseWire
+  mutation contracts, execution budgets, schema fingerprints,
+  optional DatabaseWire codecs
         |
         v
 database-framework
@@ -37,6 +38,17 @@ database-framework owns database behavior. It resolves schemas, coordinates one
 logical transaction, enforces mutation and relationship rules, maintains indexes,
 executes QueryIR, and performs migrations. It does not implement a concrete
 storage engine or transport.
+
+`DatabaseEngine` uses `DatabaseWire` only for three canonical codec services:
+schema-manifest hashing shared with remote schema administration, QueryIR bytes
+used to bind continuation tokens, and exact encoded-size accounting. It does
+not expose operation requests, response pages, dispatch, jobs, or transport
+behavior. Failures from those codecs are translated at the internal boundary
+to schema fingerprint, canonical read, cursor, or intermediate-footprint
+errors; a local framework operation never exposes `DatabaseWireError` as its
+execution contract. `ExecutionBudget` and `SchemaFingerprint` are
+`DatabaseKit` semantic values, and neither `GraphIndex` nor the `Database`
+facade declares a direct `DatabaseWire` target dependency.
 
 storage-kit owns the physical storage contract and backend adapters. It does not
 interpret models, QueryIR, graph semantics, or application commands.
@@ -61,8 +73,8 @@ flowchart TB
     Definition["Application definition<br/>schema / policy"] --> Framework["database-framework<br/>DBContainer + execution"]
     Framework --> Engine["Injected StorageEngine"]
     NativeHost["DatabaseServerHost<br/>native standalone"] --> ServerRuntime["DatabaseServerRuntime<br/>Wire operations + jobs"]
-    Cloudflare["Cloudflare Durable Object host"] --> ServerRuntime
     ServerRuntime --> Framework
+    Cloudflare["database-framework-cloudflare<br/>Durable Object + application session"] --> Framework
     Remote["CLI / DatabaseClient"] --> NativeHost
 ~~~
 
@@ -74,8 +86,9 @@ flowchart TB
 
 ### Storage Injection And Ownership
 
-`DatabaseEngine` depends on `StorageEngine` only. It does not import, select,
-or construct FoundationDB, SQLite, PostgreSQL, or Cloudflare adapters. Concrete
+For physical storage, `DatabaseEngine` depends only on the `StorageEngine`
+contract. It does not import, select, or construct FoundationDB, SQLite,
+PostgreSQL, or Cloudflare adapters. Concrete
 adapter construction belongs to the composition layer; the `Database` umbrella
 provides native facade overloads only when their package traits are selected.
 
@@ -113,26 +126,27 @@ database.
 ## Runtime Forms
 
 Native and Embedded WASI builds use the same database-framework sources and the
-same synchronization, transaction, and error contracts. A full Cloudflare
-database runtime links `DatabaseServerRuntime`, the application-specific
-schema, and database-framework into a Swift 6.4 Embedded WASM reactor.
+same synchronization, transaction, and error contracts. A Cloudflare
+application links its schema, selected database-framework features, and the
+`database-framework-cloudflare` adapter into a Swift 6.4 Embedded WASM reactor.
+It does not link `database-server` or its internal runtime targets.
 `DatabaseTypesFoundation` and `DatabaseKitFoundation` are adapter products and
 do not enter that reactor dependency graph.
 
-An Embedded application, such as Calendar, remains a separate WASM artifact. It
-uses database-client and DatabaseWire to call the full Embedded database reactor;
-it does not link the database execution engine into the Calendar artifact.
+The application defines the payload and authorization-context codec used by its
+Cloudflare session. DatabaseWire is one optional application protocol, not a
+mandatory adapter or reactor ABI.
 
 ~~~text
-Embedded application WASM
+Cloudflare request
         |
-        | DatabaseWire
+        | application-owned opaque bytes
         v
-DatabaseServerRuntime + database-framework Embedded WASM reactor
+database-framework-cloudflare + application + database-framework reactor
         |
         | StorageEngine transaction contract
         v
-host storage adapter
+Durable Object SQLite host adapter
 ~~~
 
 ### Runtime Feature Selection
@@ -163,35 +177,12 @@ The same trait conditions control `DatabaseRuntime` provider registration.
 Therefore an implementation cannot be re-exported without being registered, or
 registered without being part of the selected dependency graph.
 
-`DatabaseServerRuntime` uses the same composition. Its operation registry and
-`capabilities.describe` response contain graph, ontology, and SHACL operations
-only when `GraphIndexes` is active. A request for an operation outside the
-compiled composition fails with the typed `OPERATION_UNAVAILABLE` error; it
-never falls back to a partial implementation.
-
-Graph algorithm, ontology, SHACL, RDF document storage, graph query paging, and
-SPARQL mutation services are compiled out of `DatabaseServerRuntime` when
-`GraphIndexes` is absent. DatabaseWire's closed query and operation algebra
-remains available so a smaller runtime can decode a request and reject an
-unavailable operation or statement deterministically.
-
-`DatabaseOperationLimits` contains limits shared by every server composition.
-`GraphOperationLimits`, including the SPARQL LOAD document byte limit, exists
-only in a `GraphIndexes` composition and is passed from runtime configuration
-through the service context into the graph-capable statement executor.
-
-The service composition type follows the selected traits. Without
-`GraphIndexes`, `DatabaseOperationServices` requires a statement executor. With
-`GraphIndexes`, it instead requires one non-optional `GraphOperationServices`
-value containing that executor together with the graph algorithm, ontology,
-and SHACL services. The graph-enabled build has no initializer that can create
-a partial service composition, so missing graph services are rejected by the
-compiler rather than by a runtime capability assertion.
-
-When an application adds commands, it uses
-`DatabaseOperationServices.replacingCommandRegistries(read:write:)`; this preserves
-the trait-specific service composition, maintenance service, and job service
-instead of disassembling and reconstructing feature state.
+Graph algorithm, ontology, SHACL, RDF document storage, and SPARQL mutation
+semantics live in optional database-framework products. A host such as the
+standalone server may map its own protocol to those APIs, but its operation
+registry, paging DTOs, admission policy, and remote error mapping remain outside
+this package. An application that does not select `GraphIndexes` neither links
+nor registers those framework implementations.
 
 | Trait | Runtime capability |
 |---|---|
@@ -206,7 +197,7 @@ instead of disassembling and reconstructing feature state.
 | `GraphIndexes` | ScalarIndex, GraphIndex, OntologyIndex, RDF, and SPARQL; enables `ScalarIndexes` |
 | `AggregationIndexes` | count, numeric, distinct, and percentile indexes |
 | `LeaderboardIndexes` | time-window leaderboard indexes |
-| `Relationships` | relationship mutation maintenance and typed remote error mapping |
+| `Relationships` | relationship mutation maintenance and inverse lookup execution |
 | `MultipleBases` | Base lifecycle, placement, Base-local Grants, and read-only Composition execution |
 | `AllRuntimeFeatures` | every index and relationship capability above; excludes `MultipleBases` |
 

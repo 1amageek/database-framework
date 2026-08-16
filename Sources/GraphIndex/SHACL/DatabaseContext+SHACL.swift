@@ -10,7 +10,6 @@ import DatabaseTypes
 import StorageKit
 import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseEngine
-import DatabaseWire
 
 import OntologyIndex
 // MARK: - DatabaseContext Extension

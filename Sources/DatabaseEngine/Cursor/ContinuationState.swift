@@ -59,8 +59,8 @@ internal enum QueryFingerprint {
             )
         } catch let error {
             switch error {
-            case .encoding(let wireError):
-                throw wireError
+            case .encoding:
+                throw QueryCursorError.queryFingerprintUnavailable
             case .destination:
                 preconditionFailure(
                     "The query fingerprint destination cannot fail"

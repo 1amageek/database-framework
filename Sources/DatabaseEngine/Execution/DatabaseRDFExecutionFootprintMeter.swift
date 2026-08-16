@@ -1,5 +1,4 @@
 import DatabaseKit
-import DatabaseWire
 
 @_spi(DatabaseExecution)
 public struct DatabaseExecutionFootprint: Sendable, Equatable {

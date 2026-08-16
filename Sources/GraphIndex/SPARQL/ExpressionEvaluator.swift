@@ -1,7 +1,6 @@
 // ExpressionEvaluator.swift
 // GraphIndex - Evaluates DatabaseKit.Expression against VariableBinding
 
-import DatabaseWire
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine

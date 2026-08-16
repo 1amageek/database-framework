@@ -252,7 +252,7 @@ public enum CanonicalQueryPagination {
 
     /// Validates a continuation before a stable-snapshot storage window is
     /// planned and returns its logical offset. This does not inspect result
-    /// rows because the server-owned read point already fixes their identity.
+    /// rows because the caller-owned read point already fixes their identity.
     package struct StableSnapshotCursor: Sendable {
         package let queryFingerprint: ByteString
         package let offset: Int
@@ -343,17 +343,24 @@ public enum CanonicalQueryPagination {
         let maximumFrameBytes = Int(
             min(maximumIntermediateBytes, UInt64(Int.max))
         )
-        let limits = try DatabaseWireLimits(
-            maximumFrameBytes: maximumFrameBytes,
-            maximumStringBytes: maximumFrameBytes,
-            maximumByteStringBytes: maximumFrameBytes,
-            maximumCollectionCount:
-                DatabaseWireLimits.default.maximumCollectionCount,
-            maximumNestingDepth:
-                DatabaseWireLimits.maximumSupportedNestingDepth,
-            maximumObjectCount:
-                DatabaseWireLimits.default.maximumObjectCount
-        )
+        let limits: DatabaseWireLimits
+        do {
+            limits = try DatabaseWireLimits(
+                maximumFrameBytes: maximumFrameBytes,
+                maximumStringBytes: maximumFrameBytes,
+                maximumByteStringBytes: maximumFrameBytes,
+                maximumCollectionCount:
+                    DatabaseWireLimits.default.maximumCollectionCount,
+                maximumNestingDepth:
+                    DatabaseWireLimits.maximumSupportedNestingDepth,
+                maximumObjectCount:
+                    DatabaseWireLimits.default.maximumObjectCount
+            )
+        } catch {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "Query fingerprint limits are invalid"
+            )
+        }
         do {
             try QueryIRWireFormat.emitCanonicalEncoding(
                 .select(selectQuery),
@@ -392,7 +399,9 @@ public enum CanonicalQueryPagination {
                         maximum: maximumIntermediateBytes
                     )
                 default:
-                    throw wireError
+                    throw CanonicalReadError.unsupportedSelectQuery(
+                        "Query cannot be represented for continuation fingerprinting"
+                    )
                 }
             case .destination(let destinationError):
                 throw destinationError

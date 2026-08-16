@@ -8,7 +8,7 @@ debug logs, and review reports are not retained here.
 | Item | Status | Owner |
 |---|---|---|
 | Complete release verification for the implemented [Base and Composition](base-composition.md) contract | Verification | database ecosystem |
-| Keep Cloudflare Durable Object validation aligned with DatabaseWire changes | Ongoing | database-framework-cloudflare |
+| Keep the Cloudflare Durable Object host aligned with the opaque application-session ABI | Ongoing | database-framework-cloudflare |
 | Maintain backend parity tests for FoundationDB, SQLite, and PostgreSQL | Ongoing | database-framework and storage-kit |
 
 ## Explicit Non-Goals

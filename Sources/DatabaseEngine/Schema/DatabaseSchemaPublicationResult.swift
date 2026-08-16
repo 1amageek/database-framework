@@ -1,5 +1,4 @@
 import DatabaseKit
-@_spi(DatabaseExecution) import DatabaseWire
 
 @_spi(DatabaseExecution)
 public struct DatabaseSchemaPublicationResult: Sendable {

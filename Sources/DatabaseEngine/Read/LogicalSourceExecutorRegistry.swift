@@ -1,5 +1,4 @@
 import DatabaseTypes
-import DatabaseWire
 import DatabaseKit
 import StorageKit
 

@@ -237,12 +237,14 @@ a deployment concern.
 ## 8. Client And Server
 
 Remote invocation is owned by the independent `database-server` package.
-`DatabaseServerRuntime` maps canonical DatabaseWire requests to this
+Its internal operation runtime maps canonical DatabaseWire requests to this
 framework's execution APIs and owns durable server jobs and remote schema
-administration. `DatabaseServerHost` adds native HTTP, WebSocket, stdio, TLS,
-credentials, signals, and process shutdown.
+administration. Its native host adds HTTP, WebSocket, stdio, TLS, credentials,
+signals, and process shutdown. The supported artifact is the standalone
+`database-server` executable.
 
 Cloudflare Workers use the separate
-database-framework-cloudflare repository. It consumes
-`DatabaseServerRuntime`, not the native host, and bridges it to Durable Object
-SQLite.
+database-framework-cloudflare repository. An application combines that adapter
+with database-framework, its own schema, and its own request codec. The adapter
+uses an application session and Durable Object SQLite; it does not depend on
+database-server or require DatabaseWire.

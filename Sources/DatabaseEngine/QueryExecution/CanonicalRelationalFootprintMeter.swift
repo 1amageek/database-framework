@@ -110,24 +110,30 @@ package enum CanonicalRelationalFootprintMeter {
         workMeter: DatabaseWorkMeter
     ) throws -> UInt64 {
         _ = workMeter
-        let limits = try DatabaseWireLimits(
-            maximumFrameBytes: Int.max,
-            maximumStringBytes: Int.max,
-            maximumByteStringBytes: Int.max,
-            maximumCollectionCount:
-                DatabaseWireLimits.default.maximumCollectionCount,
-            maximumNestingDepth:
-                DatabaseWireLimits.maximumSupportedNestingDepth,
-            maximumObjectCount:
-                DatabaseWireLimits.default.maximumObjectCount
-        )
-        let count = try DatabaseWireWriter.encodedByteCount(limits: limits) {
-            (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
-            try writer.writeCount(fields.count)
-            for (key, value) in fields {
-                try writer.writeString(key)
-                try value.encode(into: &writer)
+        let count: Int
+        do {
+            let limits = try DatabaseWireLimits(
+                maximumFrameBytes: Int.max,
+                maximumStringBytes: Int.max,
+                maximumByteStringBytes: Int.max,
+                maximumCollectionCount:
+                    DatabaseWireLimits.default.maximumCollectionCount,
+                maximumNestingDepth:
+                    DatabaseWireLimits.maximumSupportedNestingDepth,
+                maximumObjectCount:
+                    DatabaseWireLimits.default.maximumObjectCount
+            )
+            count = try DatabaseWireWriter.encodedByteCount(limits: limits) {
+                (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
+                try writer.writeCount(fields.count)
+                for (key, value) in fields {
+                    try writer.writeString(key)
+                    try value.encode(into: &writer)
+                }
             }
+        } catch {
+            throw DatabaseIntermediateFootprintError
+                .canonicalValueByteCountUnavailable
         }
         let entries = try DatabaseIntermediateFootprint(
             bytes: collectionEntryByteCount

@@ -1,5 +1,4 @@
 import DatabaseEngine
-import DatabaseWire
 import Synchronization
 
 struct SPARQLSubqueryCacheKey: Sendable, Hashable {

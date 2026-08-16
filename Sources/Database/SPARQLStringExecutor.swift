@@ -1,7 +1,6 @@
 #if DATABASE_GRAPH_INDEXES
 import DatabaseKit
 import DatabaseEngine
-import DatabaseWire
 import GraphIndex
 import QueryAST
 import StorageKit

@@ -1,6 +1,6 @@
 # GraphIndex
 
-Unified graph edge and RDF triple indexing with configurable storage strategies and OWL DL reasoning.
+Unified graph edge and RDF triple indexing with configurable storage strategies.
 
 ## Overview
 
@@ -9,7 +9,15 @@ GraphIndex provides a unified solution for both general graph edges and RDF trip
 **Key Features**:
 - **Multi-strategy storage**: Adjacency, TripleStore, Hexastore
 - **Graph algorithms**: PageRank, shortest path, community detection, cycle detection
-- **OWL DL reasoning**: Automatic classification, subsumption checking, instance reasoning
+- **RDF execution**: Document persistence and SPARQL update execution
+- **Ontology integration**: RDFS/OWL RL materialization, classification, and hierarchy reasoning supplied by `OntologyIndex`
+- **SHACL primitives**: Target resolution, constraint evaluation, and bounded validation
+
+The `GraphIndexes` package trait composes `GraphIndex`, `OntologyIndex`, and the
+required `ScalarIndex` support. `GraphIndex` owns graph and RDF execution;
+`OntologyIndex` owns ontology reasoning. Both remain optional in-process
+framework capabilities with typed errors, work limits, and transaction-scoped
+execution inputs.
 
 **Storage Strategies**:
 - **Adjacency (2-index)**: Outgoing and incoming edge indexes for simple traversal

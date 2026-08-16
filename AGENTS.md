@@ -40,7 +40,7 @@
   share the same disposable service. Target compilation and Swift Testing
   inside each bundle retain their normal parallelism.
 - The strict SQLite contracts are 111 tests without `MultipleBases` and 114
-  tests with it. The existing `MultipleBases` backend contracts are 3,681
+  tests with it. The existing `MultipleBases` backend contracts are 3,715
   FoundationDB tests and 72 PostgreSQL tests. PostgreSQL tests require an
   isolated real server.
 - `POSTGRES_TEST_UNIX_SOCKET` is the complete PostgreSQL socket file path, such

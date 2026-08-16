@@ -1,6 +1,5 @@
 import DatabaseKit
 import DatabaseTypes
-import DatabaseWire
 import StorageKit
 
 struct CanonicalSourceRow: Sendable {

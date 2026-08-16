@@ -9,7 +9,6 @@
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
-import DatabaseWire
 
 /// A single ORDER BY sort key for VariableBinding sorting
 ///

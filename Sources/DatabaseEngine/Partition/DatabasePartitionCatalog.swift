@@ -1,6 +1,5 @@
 import DatabaseKit
 import DatabaseTypes
-import DatabaseWire
 import StorageKit
 
 package struct DatabasePartitionCatalog: Sendable {

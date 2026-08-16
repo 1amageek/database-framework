@@ -11,7 +11,6 @@
 
 import DatabaseKit
 import DatabaseEngine
-import DatabaseWire
 import StorageKit
 
 /// Fluent builder for graph-scoped federated SPARQL queries.

@@ -8,10 +8,10 @@ counts or historical module layouts.
 
 `database-framework` is the execution runtime for models and queries declared
 by `database-kit`. It owns schema registration, persistence, transactions,
-query planning, migrations, index maintenance, graph execution, and canonical
-DatabaseWire operation execution. Native listener and process lifecycle belong
-to the independent `database-server` package. Storage is provided through
-`storage-kit`.
+query planning, migrations, index maintenance, and graph execution. DatabaseWire
+operation dispatch, remote administration, listeners, and process lifecycle
+belong to the independent `database-server` package. Storage is provided
+through `storage-kit`.
 
 ```text
 database-types
@@ -23,7 +23,7 @@ database-kit
         |
         v
 database-framework
-  execution, persistence, indexes, migrations, and server handlers
+  in-process execution, persistence, indexes, and migrations
         |
         v
 storage-kit
@@ -39,7 +39,7 @@ query, runtime, transport, or storage behavior.
 |---|---|---|
 | `database-types` | `FieldValue`, `ByteString`, temporal, decimal, UUID, vector, geo, RDF, and object primitives | Models, schemas, queries, transport, persistence |
 | `database-kit` | `Persistable`, schema metadata, index declarations, QueryIR, relationships, ontology contracts, DatabaseWire | Database execution and storage engines |
-| `database-framework` | Runtime composition, transactions, persistence, planning, index behavior, migrations, server operation handlers | Portable primitives and backend transaction implementations |
+| `database-framework` | Runtime composition, transactions, persistence, planning, index behavior, migrations, graph, ontology, and SHACL execution | Portable primitives, DatabaseWire operation dispatch, server lifecycle, and backend transaction implementations |
 | `storage-kit` | Storage contracts and FoundationDB, SQLite, and PostgreSQL adapters | Model, query, index, and graph semantics |
 
 `FieldValue` is the canonical database field value. Do not introduce another
@@ -65,7 +65,7 @@ general-purpose database value type in this package.
 | `VersionIndex` | Model version history |
 | `LeaderboardIndex` | Time-window leaderboard indexes |
 | `QueryAST` | SQL and SPARQL parsing and syntax representation; semantic QueryIR remains in `database-kit` |
-| `DatabaseMath` | Numeric execution primitives shared by framework features and server algorithms |
+| `DatabaseMath` | Numeric execution primitives shared by framework graph and query features |
 | `Database` | Convenience facade that re-exports the selected runtime and storage adapter |
 
 Index modules depend on `DatabaseEngine`, `database-kit`, `database-types`, and
@@ -170,7 +170,7 @@ SwiftPM traits select the adapter included in the `Database` facade.
 
 | Trait | Default | Adapter | Intended deployment |
 |---|---:|---|---|
-| `FoundationDB` | Yes | `FDBStorageEngine` | Distributed server database |
+| `FoundationDB` | No | `FDBStorageEngine` | Distributed database deployments |
 | `SQLite` | No | `SQLiteStorageEngine` | Local, embedded, tests, single-instance services |
 | `PostgreSQL` | No | `PostgreSQLStorageEngine` | PostgreSQL and Cloud SQL services |
 
@@ -190,25 +190,6 @@ performs bounded frame execution, and owns operation routing, remote commands,
 durable jobs, and schema administration. `DatabaseServerHost` owns native
 transport and process lifecycle. This package supplies in-process execution
 APIs only.
-
-The 14 registered operations are grouped into these families:
-
-1. capabilities and schema description;
-2. schema plan and apply;
-3. query and mutation execution;
-4. graph algorithms;
-5. ontology and SHACL execution;
-6. application commands;
-7. maintenance operations;
-8. job start, status, result, and cancellation.
-
-Requests must pass bounded decoding, admission, authorization, deadline, and
-resource-limit checks before execution. Mutations use typed idempotency and
-precondition state. Responses and failures are encoded as their declared
-DatabaseWire types.
-
-TypeScript or another host adapter may transport bytes and implement a storage
-host ABI. It must not own query, schema, index, graph, or transaction semantics.
 
 ## Index Extension Contract
 

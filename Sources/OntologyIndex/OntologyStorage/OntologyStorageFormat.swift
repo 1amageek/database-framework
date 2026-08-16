@@ -3,7 +3,7 @@ import DatabaseTypes
 
 /// Versioned, bounded binary storage owned by the ontology index.
 ///
-/// The format is independent of DatabaseWire. Encoding writes directly into
+/// The framework-owned StorageFrame encoding writes directly into
 /// one exact-size `ByteString`; decoding borrows the retained storage frame.
 enum OntologyStorageFormat {
     private static let metadataMagic: UInt32 = 0x314D_544F

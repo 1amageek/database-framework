@@ -1,4 +1,3 @@
-import DatabaseWire
 import DatabaseKit
 
 /// Linear ownership for a request-accounted RDF graph result.

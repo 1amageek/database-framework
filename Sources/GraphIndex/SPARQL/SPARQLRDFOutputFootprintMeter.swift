@@ -1,7 +1,6 @@
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
-import DatabaseWire
 
 /// Measures retained RDF output before the corresponding owner is created.
 final class SPARQLRDFOutputFootprintMeter {

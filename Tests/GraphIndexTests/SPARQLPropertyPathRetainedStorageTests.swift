@@ -1,6 +1,6 @@
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
-import DatabaseWire
 import Testing
 import TestSupport
 @testable import GraphIndex

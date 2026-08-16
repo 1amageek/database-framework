@@ -1,7 +1,6 @@
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
-import DatabaseWire
 import StorageKit
 
 struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {

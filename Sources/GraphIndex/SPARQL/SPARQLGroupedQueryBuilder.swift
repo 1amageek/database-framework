@@ -6,7 +6,6 @@
 import DatabaseTypes
 import DatabaseKit
 import DatabaseEngine
-import DatabaseWire
 import StorageKit
 
 /// Builder for SPARQL GROUP BY queries with aggregation

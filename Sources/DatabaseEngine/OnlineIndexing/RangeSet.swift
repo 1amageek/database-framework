@@ -1,5 +1,4 @@
 import DatabaseTypes
-import DatabaseWire
 import StorageKit
 
 // MARK: - Byte Array Comparison Helpers

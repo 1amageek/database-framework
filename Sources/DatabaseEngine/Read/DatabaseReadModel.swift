@@ -1,6 +1,5 @@
 import DatabaseKit
 import DatabaseTypes
-import DatabaseWire
 import StorageKit
 
 /// Opaque continuation produced and consumed by the engine read pipeline.
@@ -26,8 +25,8 @@ public struct ReadExecutionOptions: Sendable, Hashable {
     public let budget: ExecutionBudget
     public let continuationScope: ByteString
     /// Indicates that the caller has pinned every page to the same immutable
-    /// storage read point. Only server-owned historical snapshots may enable
-    /// this; local callers keep result-fingerprint validation.
+    /// storage read point. Callers without such a lease keep
+    /// result-fingerprint validation enabled.
     package let continuationSnapshotIsStable: Bool
     /// Controls only the client-facing page window. Nested SQL sources disable
     /// this while retaining their own logical LIMIT/OFFSET and the request's
@@ -153,7 +152,7 @@ public struct QueryRow: Sendable, Hashable {
     }
 }
 
-/// Canonical engine result before it is encoded as a DatabaseWire operation response.
+/// Canonical engine result before an adapter projects it into an output format.
 public struct QueryResponse: Sendable {
     public let rows: [QueryRow]
     public let continuation: QueryContinuation?

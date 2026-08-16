@@ -58,7 +58,7 @@ public struct DatabaseCompositionReadSnapshot: Sendable {
 
     /// Captures exactly one backend read point for every simultaneously open
     /// physical domain. Domain ordering is canonical so the resulting value is
-    /// valid for the DatabaseWire federated-consistency contract.
+    /// stable for the complete federated read.
     public func readPoints() async throws -> [DomainReadPoint] {
         capturedReadPoints
     }

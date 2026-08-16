@@ -1,5 +1,4 @@
 import DatabaseKit
-@_spi(DatabaseExecution) import DatabaseWire
 
 /// A retained snapshot of one immutable schema execution generation.
 public final class DatabaseSchemaLease: Sendable {
@@ -12,7 +11,7 @@ public final class DatabaseSchemaLease: Sendable {
     /// Monotonically increasing identifier persisted with schema publication.
     public var generation: UInt64 { value.identifier }
 
-    /// Canonical DatabaseWire fingerprint of `schema`.
+    /// Canonical fingerprint of `schema`.
     public var fingerprint: SchemaFingerprint { value.fingerprint }
 
     /// Schema used for the complete lifetime of the request holding this lease.

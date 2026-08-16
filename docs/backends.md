@@ -47,7 +47,7 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3681 \
+    --expected-count 3715 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -268,7 +268,8 @@ terminal transition.
 
 Durable Object SQLite is not a SwiftPM trait in this repository. The
 database-framework-cloudflare repository provides the Worker/WASM and
-DatabaseWire bridge.
+application-session bridge. The application owns its request codec; DatabaseWire
+is optional and the adapter does not depend on database-server.
 
 The web host and database adapter remain independent:
 

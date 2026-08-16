@@ -1,5 +1,4 @@
 import DatabaseKit
-import DatabaseWire
 import DatabaseTypes
 
 public enum PersistableVersionTokenCodec {
