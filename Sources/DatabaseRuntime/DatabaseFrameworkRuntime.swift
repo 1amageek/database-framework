@@ -1,40 +1,40 @@
 #if DATABASE_RUNTIME_AGGREGATION_INDEXES
-import AggregationIndex
+@_exported import AggregationIndex
 #endif
 #if DATABASE_RUNTIME_BITMAP_INDEXES
-import BitmapIndex
+@_exported import BitmapIndex
 #endif
-import DatabaseEngine
-import DatabaseKit
+@_exported import DatabaseEngine
+@_exported import DatabaseKit
 #if DATABASE_RUNTIME_FULL_TEXT_INDEXES
-import FullTextIndex
+@_exported import FullTextIndex
 #endif
 #if DATABASE_RUNTIME_GRAPH_INDEXES
-import GraphIndex
+@_exported import GraphIndex
 #endif
 #if DATABASE_RUNTIME_LEADERBOARD_INDEXES
-import LeaderboardIndex
+@_exported import LeaderboardIndex
 #endif
 #if DATABASE_RUNTIME_PERMUTED_INDEXES
-import PermutedIndex
+@_exported import PermutedIndex
 #endif
 #if DATABASE_RUNTIME_RANK_INDEXES
-import RankIndex
+@_exported import RankIndex
 #endif
 #if DATABASE_RUNTIME_RELATIONSHIPS
-import RelationshipIndex
+@_exported import RelationshipIndex
 #endif
 #if DATABASE_RUNTIME_SCALAR_INDEXES
-import ScalarIndex
+@_exported import ScalarIndex
 #endif
 #if DATABASE_RUNTIME_SPATIAL_INDEXES
-import SpatialIndex
+@_exported import SpatialIndex
 #endif
 #if DATABASE_RUNTIME_VECTOR_INDEXES
-import VectorIndex
+@_exported import VectorIndex
 #endif
 #if DATABASE_RUNTIME_VERSION_INDEXES
-import VersionIndex
+@_exported import VersionIndex
 #endif
 
 /// Runtime composition assembled from the capabilities selected by package traits.

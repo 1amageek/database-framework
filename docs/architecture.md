@@ -173,7 +173,9 @@ Database umbrella
         x  RelationshipIndex, VectorIndex, FullTextIndex, SpatialIndex, ...
 ~~~
 
-The same trait conditions control `DatabaseRuntime` provider registration.
+`DatabaseRuntime` re-exports `DatabaseEngine`, `DatabaseKit`, and the selected
+runtime feature modules, while using the same trait conditions for provider
+registration. `DatabaseTypes` is available transitively through `DatabaseKit`.
 Therefore an implementation cannot be re-exported without being registered, or
 registered without being part of the selected dependency graph.
 

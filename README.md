@@ -43,9 +43,13 @@ but their APIs and deployment instructions do not belong in this README.
 
 ## Architecture
 
-`Database` is the primary umbrella product. It re-exports the portable model,
-storage, execution, runtime-composition, and query APIs, plus only the backend
-and feature modules selected by traits.
+`DatabaseRuntime` is the lightweight application-composition import. It
+re-exports `DatabaseEngine`, `DatabaseKit` (and therefore `DatabaseTypes`), and
+only the runtime feature modules selected by traits. It does not re-export
+storage backends or `QueryAST`.
+
+`Database` is the broader umbrella product. It additionally re-exports
+`StorageKit`, `QueryAST`, and only the backend modules selected by traits.
 
 ```text
 database-types
@@ -355,7 +359,7 @@ core engine dependency.
 |---|---|
 | `Database` | Primary umbrella with trait-selected re-exports |
 | `DatabaseEngine` | Container, contexts, transactions, persistence, planning, security, schema, and maintenance |
-| `DatabaseRuntime` | Trait-selected runtime provider assembly |
+| `DatabaseRuntime` | Lightweight application composition, with core execution, declarations, primitive values, and trait-selected runtime feature re-exports |
 | `QueryAST` | SQL and SPARQL syntax parsing and serialization |
 | `DatabaseMath` | Numeric primitives shared by execution features |
 | `ScalarIndex`, `VectorIndex`, `FullTextIndex`, `SpatialIndex` | Individual index implementations |
@@ -366,8 +370,11 @@ core engine dependency.
 | `SwiftMetricsDatabaseMetrics` | Swift Metrics adapter |
 | `BenchmarkFramework` | Benchmark support utilities |
 
-Use `Database` for the normal application path. Import individual products
-when a package intentionally needs a narrower dependency surface.
+Use `DatabaseRuntime` when a host adapter supplies storage and the application
+needs the framework's declarations and execution runtime. Use `Database` when
+the application also wants the storage and query-parser umbrella. Import
+individual products when a package intentionally needs a narrower dependency
+surface.
 
 ## Platform Support
 
