@@ -39,4 +39,46 @@ struct FieldValueComparatorTests {
             )
         }
     }
+
+    @Test("sort comparison applies explicit and default NULL placement once")
+    func nullSortPlacement() throws {
+        let expression = Expression.column(ColumnRef(column: "value"))
+
+        #expect(
+            try FieldValueComparator.compare(
+                .null,
+                .int64(1),
+                using: SortKey(
+                    expression,
+                    direction: .descending,
+                    nulls: .last
+                )
+            ) == .greaterThan
+        )
+        #expect(
+            try FieldValueComparator.compare(
+                .null,
+                .int64(1),
+                using: SortKey(
+                    expression,
+                    direction: .descending,
+                    nulls: .first
+                )
+            ) == .lessThan
+        )
+        #expect(
+            try FieldValueComparator.compare(
+                .null,
+                .int64(1),
+                using: SortKey(expression, direction: .ascending)
+            ) == .lessThan
+        )
+        #expect(
+            try FieldValueComparator.compare(
+                .null,
+                .int64(1),
+                using: SortKey(expression, direction: .descending)
+            ) == .greaterThan
+        )
+    }
 }

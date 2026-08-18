@@ -20,10 +20,6 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             .subspace(Int64(1))
     }
 
-    private enum ScanControl: Error {
-        case logicalLimitReached
-    }
-
     private enum CatalogRemoval {
         case none
         case key(ByteString)

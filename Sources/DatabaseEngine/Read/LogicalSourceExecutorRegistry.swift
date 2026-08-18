@@ -51,6 +51,7 @@ public protocol SPARQLSourceExecutor: Sendable {
         partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph
+
 }
 
 public struct LogicalSourceExecutorRegistry: Sendable {

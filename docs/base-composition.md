@@ -1,7 +1,8 @@
 # Base and Composition
 
-Status: implemented behind the non-default `MultipleBases` SwiftPM trait;
-production verification in progress.
+Status: implemented behind the non-default `MultipleBases` SwiftPM trait.
+The P0/P1 responsibility-boundary changes described here have not yet received
+the separately authorized build and behavioral verification pass.
 
 The package ownership, runtime state, Wire contract, transaction boundaries,
 implementation order, and verification gates are defined in
@@ -17,16 +18,18 @@ Composition planner.
 | Trait selection | Execution boundary |
 |---|---|
 | standard / `AllRuntimeFeatures` | One implicit database root; no target type or target field is compiled |
-| `MultipleBases` | Explicit `.database`, `.base(Base.ID)`, and `.composition(Base.Composition.ID)` targets |
+| `MultipleBases` | Explicit `.database`, `.base(Base.ID)`, and `.composition(CompositionSelection)` targets |
 
 `AllRuntimeFeatures` does not imply `MultipleBases`.
 
 ## Design Conclusion
 
 A `Base` is the database-native boundary for independently owned data. A
-`Base.Composition` is a named, read-only selection of Bases. Security treats a
-Base as a resource; it is not a second authorization system. The model schema
-and `#Directory` metadata remain reusable across any number of Bases.
+Composition is a read-only selection of Bases. It may be a durable named
+`Base.Composition` or a request-scoped derived selection constructed directly
+from a canonical Base set. Security treats a Base as a resource; it is not a
+second authorization system. The model schema and `#Directory` metadata remain
+reusable across any number of Bases.
 
 ```mermaid
 flowchart TB
@@ -56,6 +59,8 @@ a View.
 | `Base.ID` | Stable logical identity of one Base |
 | `Base.Composition` | Named, read-only set of Bases |
 | `Base.Composition.ID` | Stable identity of one Composition |
+| `CompositionSelection` | Named ID or request-scoped canonical Base set selected by a caller |
+| `CompositionResolution` | Immutable named generation or derived Base set fixed for one execution |
 | `Security.Resource.base` | Security resource representing one Base |
 | `BasePlacement` | Internal mapping from a Base to a storage namespace |
 | `EntityAddress` | Base-qualified address of one persisted entity |
@@ -138,6 +143,26 @@ let people = try await operational
     .execute()
 ~~~
 
+Applications may also execute canonical relational QueryIR directly through
+`CompositionDataSource.execute(_:options:)`. When the optional `GraphIndex`
+product is present it adds in-process `select`, `ask`, `construct`, and
+`describe` methods for SPARQL and RDF graph forms. These entry points invoke
+the same semantic planners used by a remote server adapter; Composition is not
+a server-only capability.
+
+A derived Composition does not require a catalog record and never receives a
+synthetic ID or generation:
+
+~~~swift
+let operational = try session.composition(
+    bases: [worldBaseID, companyABaseID]
+)
+
+let people = try await operational
+    .query(Person.self)
+    .execute()
+~~~
+
 `BaseDataSource` and `CompositionDataSource` expose parallel query builders.
 Only `BaseDataSource` provides a mutation context.
 
@@ -146,10 +171,11 @@ Only `BaseDataSource` provides a mutation context.
 | `Base` | Yes | Yes |
 | `Base.Composition` | Yes | No |
 
-`database.base(id)` and `database.composition(id)` are lightweight logical
-selectors. Authorization, generation acquisition, and placement resolution
-occur when an operation executes. Constructing a selector does not prove that
-the resource exists or that the caller may access it.
+`database.base(id)`, `database.composition(id)`, and
+`database.composition(bases:)` are lightweight logical selectors.
+Authorization, resolution, and placement acquisition occur when an operation
+executes. Constructing a selector does not prove that a resource exists or
+that the caller may access it.
 
 For CLI operations, `--base` and `--composition` are mutually exclusive:
 
@@ -229,14 +255,8 @@ merge fields, or deduplicate records after dropping their Base identity.
 
 ~~~swift
 public struct CompositionResult<Value: Sendable>: Sendable {
-    public enum Origin: Sendable {
-        case source(Base.ID)
-        case derived(contributors: [Base.ID])
-    }
-
-    public let compositionID: Base.Composition.ID
-    public let generation: UInt64
-    public let origin: Origin
+    public let composition: CompositionResolution
+    public let origin: CompositionOrigin
     public let value: Value
 }
 ~~~
@@ -448,12 +468,14 @@ semantics.
 
 ## Composition Execution and Performance
 
-A named Composition is resolved once per immutable generation into an internal
-execution value:
+A Composition selection is resolved once per execution. Named selections load
+an immutable catalog generation; derived selections retain their canonical
+Base set directly:
 
 ~~~text
-ResolvedBaseComposition
-|-- Composition identity and generation
+CompositionResolution
+|-- named identity and generation, or derived kind
+|-- canonical Base identities
 |-- Schema generation
 |-- resolved Base ordinals
 |-- retained namespace prefixes
@@ -497,9 +519,10 @@ must not silently present a federated read as transactionally atomic.
 | Package | Ownership |
 |---|---|
 | `database-kit` | Base, Composition, Security resource/Grant semantics, operation and Wire contracts |
-| `database-framework` | Catalogs, generation leases, authorization execution, placement resolution, planning, and Composition execution |
+| `database-framework` | Catalogs, generation leases, authorization execution, placement resolution, relational planning, and in-process Composition execution |
+| `database-framework / GraphIndex` | RDF blank-node identity, SPARQL/ASK/CONSTRUCT/DESCRIBE Composition semantics when `GraphIndexes` is selected |
 | `storage-kit` | Resolved namespaces, transactions, and backend adapters |
-| `database-server` | Credential authentication and request AuthorizationContext construction |
+| `database-server` | DatabaseWire dispatch, remote page/spool/job lifecycle, error mapping, credential authentication, and native host lifecycle; no Composition query semantics |
 | `database-client` | Typed Base and Composition operation invocation |
 | `database-cli` | `--base` and `--composition` selection and administration UX |
 
@@ -537,10 +560,36 @@ implemented.
 | Global order, limit, and offset | Bounded merge |
 | Distinct and decomposable aggregates | Supported with contributor origin |
 | Vector search | Supported only for identical scoring contracts |
-| Cross-Base join, full-text rank, graph algorithms | Typed unsupported failure |
+| Explicitly Base-qualified two-table `INNER JOIN` | Bounded canonical execution with derived contributor origin |
+| Outer/lateral/implicit cross-Base join, heterogeneous full-text rank, graph algorithms | Typed unsupported failure |
 | Mutation, ontology, SHACL, command, maintenance | Not advertised |
 
 Cross-domain continuation pages reference a durable, bounded snapshot spool.
-The server retains generation, plan fingerprint, read points, and watermark;
-the opaque client continuation does not carry trusted state. Every page
-reauthorizes all member Bases.
+The server retains the Composition resolution, every member placement
+generation, plan fingerprint, read points, and watermark; the opaque client
+continuation does not carry trusted state. Every page reauthorizes all member
+Bases.
+
+## Read-Decide-Write Transactions
+
+Composition remains read-only as a data source. An application may explicitly
+open a decision transaction when it must read several member Bases and write
+one member Base:
+
+~~~swift
+try await operational.withDecisionTransaction(
+    writingTo: companyABaseID
+) { transaction in
+    let rules = try await transaction.fetch(
+        Query<Rule>(),
+        from: worldBaseID
+    )
+    try await transaction.save(makeDecision(using: rules))
+}
+~~~
+
+This API exists only when every selected Base shares the writer's physical
+transaction domain. It checks `.read` for every member and `.write` for the
+writer inside that one transaction. A multi-domain selection fails with
+`CompositionDecisionError.multipleStorageDomains`; it never degrades into a
+non-atomic read-modify-write sequence.

@@ -116,60 +116,6 @@ struct OnlineIndexerAtomicityTests {
         }
     }
 
-    @Test("MultiTarget progress is atomic across all indexes")
-    func testMultiTargetAtomicProgress() async throws {
-        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let ctx = try await AtomicIndexingContext()
-
-            let players = PlayerDatasetGenerator.generatePlayers(count: 75, nameLength: 50)
-            try await ctx.insertPlayers(players)
-
-            let index1 = PlayerIdentifierIndexDefinition.make(name: "atomic_idx_1")
-            let index2 = PlayerIdentifierIndexDefinition.make(name: "atomic_idx_2")
-
-            let maintainer1 = CountingIndexMaintainer<Player>(
-                indexSubspace: ctx.indexSubspace,
-                indexName: index1.name
-            )
-            let maintainer2 = CountingIndexMaintainer<Player>(
-                indexSubspace: ctx.indexSubspace,
-                indexName: index2.name
-            )
-
-            let lifecycleStore = IndexLifecycleStore(
-                container: ctx.container,
-                subspace: ctx.indexSubspace.subspace("_meta")
-            )
-
-            let targets = [
-                IndexBuildTarget(index: index1, maintainer: maintainer1),
-                IndexBuildTarget(index: index2, maintainer: maintainer2),
-            ]
-
-            let indexer = try MultiTargetOnlineIndexer(
-                container: ctx.container,
-                storeSubspace: ctx.testSubspace,
-                itemType: Player.persistableType,
-                targets: targets,
-                lifecycleStore: lifecycleStore,
-                batchSize: 20
-            )
-
-            try await indexer.buildIndexes(clearFirst: true)
-
-            // Both indexes should have processed exactly the same items
-            let processedIds1 = maintainer1.getAllProcessedIds()
-            let processedIds2 = maintainer2.getAllProcessedIds()
-
-            #expect(processedIds1 == processedIds2)
-            #expect(processedIds1.count == players.count)
-            #expect(maintainer1.getDuplicateProcessedIds().isEmpty)
-            #expect(maintainer2.getDuplicateProcessedIds().isEmpty)
-
-            try await ctx.cleanup()
-        }
-    }
-
     @Test("RangeSet progress is saved atomically with work")
     func testRangeSetAtomicProgress() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {

@@ -108,7 +108,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0817.0",
+            from: "26.0818.0",
             traits: databaseKitTraits
         ),
         .package(
@@ -340,7 +340,13 @@ let package = Package(
                 "OntologyIndex",
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
-            exclude: ["README.md"]
+            exclude: ["README.md"],
+            swiftSettings: [
+                .define(
+                    "DATABASE_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+            ]
         ),
         .target(
             name: "AggregationIndex",

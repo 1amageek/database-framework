@@ -102,7 +102,7 @@ maintenance.
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0814.0",
+    from: "26.0818.0",
     traits: ["GraphIndexes"]
 )
 ~~~

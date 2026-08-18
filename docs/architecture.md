@@ -208,7 +208,7 @@ feature. Without it, the Base/Composition/topology/Grant implementation is
 conditionally compiled out and the hot transaction path uses the one engine
 directly. The standard DatabaseWire v2 graph is target-free. Enabling
 `MultipleBases` compiles the Base and Grant values together with the
-target-bound DatabaseWire v3 graph; the two package graphs do not expose a
+target-bound DatabaseWire v4 graph; the two package graphs do not expose a
 half-enabled target model.
 
 The framework package has no default traits. Every backend, runtime feature,

@@ -153,36 +153,7 @@ struct KnowledgeTriple {
 // - Any combination
 ```
 
-### 4. Multi-Hop Graph Traversal
-
-**Scenario**: Find friends-of-friends using BFS traversal.
-
-```swift
-let traverser = GraphTraverser<Follow>(
-    database: container.engine,
-    subspace: indexSubspace
-)
-
-// Find all users within 3 hops of Alice
-for try await (depth, userID) in traverser.traverse(
-    from: "alice",
-    maxDepth: 3,
-    label: nil,  // All edge types
-    direction: .outgoing
-) {
-    print("Depth \(depth): \(userID)")
-}
-
-// Paginated traversal with deterministic cursor
-let page = try await traverser.traversePaginated(
-    from: "alice",
-    maxDepth: 2,
-    pageSize: 100
-)
-print("Found \(page.nodes.count) nodes, complete: \(page.isComplete)")
-```
-
-### 5. Labeled Multi-Graph
+### 4. Labeled Multi-Graph
 
 **Scenario**: Multiple relationship types between nodes.
 
@@ -279,56 +250,6 @@ All 6 permutations:
 Query example: Find all X where (X, knows, Bob)
   - Use POS index: predicate="knows", object="Bob" → subjects
   - Single index scan, no filtering needed
-```
-
-### GraphTraverser Usage
-
-The `GraphTraverser` class provides efficient graph traversal:
-
-```swift
-// Create traverser
-let traverser = GraphTraverser<Edge>(
-    database: database,
-    subspace: indexSubspace
-)
-
-// 1-hop neighbors (AsyncThrowingStream)
-for try await targetID in traverser.neighbors(
-    from: "alice",
-    label: "follows",
-    direction: .outgoing
-) {
-    print("Alice follows: \(targetID)")
-}
-
-// Multi-hop BFS (up to 3 hops, max 10000 nodes)
-for try await (depth, nodeID) in traverser.traverse(
-    from: "alice",
-    maxDepth: 3,
-    label: nil,
-    direction: .outgoing,
-    maxNodes: 10000
-) {
-    print("Depth \(depth): \(nodeID)")
-}
-
-// Paginated traversal with cursor
-let page = try await traverser.traversePaginated(
-    from: "alice",
-    maxDepth: 3,
-    pageSize: 100,
-    cursor: nil  // Or cursor from previous call
-)
-
-if let nextCursor = page.nextCursor {
-    // Resume from where we left off
-    let nextPage = try await traverser.traversePaginated(
-        from: "alice",
-        maxDepth: 3,
-        pageSize: 100,
-        cursor: nextCursor
-    )
-}
 ```
 
 ### Sparse Index (Optional Relationships)
@@ -1201,8 +1122,6 @@ measurements with any performance claim.
 GraphIndex operates at the triple/edge level, which is below the Persistable-level SecurityPolicy abstraction. The following security constraints apply:
 
 **SPARQL queries**: Return `RDFTerm`-based results (not Persistable instances), so `SecurityPolicy.permitsRead(of:in:)` cannot be evaluated per-result. SPARQL results are **not filtered** by SecurityPolicy.
-
-**GraphTraverser**: Scans edge/triple indexes directly and returns node IDs (strings), not Persistable instances. SecurityPolicy is **not applied** during traversal.
 
 **Graph algorithms** (PageRank, shortest path, community detection, etc.): Operate on the raw graph structure without SecurityPolicy evaluation.
 

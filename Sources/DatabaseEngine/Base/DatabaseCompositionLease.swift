@@ -6,18 +6,24 @@ import StorageKit
 /// for the complete lifetime of a federated read.
 @_spi(DatabaseExecution)
 public final class DatabaseCompositionLease: Sendable {
-    public let record: DatabaseCompositionRecord
+    public let selection: CompositionSelection
+    public let resolution: CompositionResolution
+    public let namedRecord: DatabaseCompositionRecord?
     public let members: [DatabaseBaseLease]
 
     package init(
-        record: DatabaseCompositionRecord,
+        selection: CompositionSelection,
+        resolution: CompositionResolution,
+        namedRecord: DatabaseCompositionRecord?,
         members: [DatabaseBaseLease]
     ) {
         precondition(
-            record.composition.bases == members.map { $0.baseID },
+            resolution.bases == members.map { $0.baseID },
             "Composition member leases must preserve canonical Base order"
         )
-        self.record = record
+        self.selection = selection
+        self.resolution = resolution
+        self.namedRecord = namedRecord
         self.members = members
     }
 
@@ -25,6 +31,17 @@ public final class DatabaseCompositionLease: Sendable {
         identifiedBy id: Base.ID
     ) -> DatabaseBaseLease? {
         members.first { $0.baseID == id }
+    }
+
+    /// Immutable placement generation for every member admitted by this
+    /// execution. Remote adapters may bind durable result snapshots to these
+    /// values without inventing a generation for a derived Composition.
+    public var basePlacementGenerations: [Base.ID: UInt64] {
+        Dictionary(
+            uniqueKeysWithValues: members.map {
+                ($0.baseID, $0.placementGeneration)
+            }
+        )
     }
 }
 
@@ -50,7 +67,7 @@ public struct DatabaseCompositionReadSnapshot: Sendable {
     ) throws -> any TransactionAccess {
         guard let transaction = transactions[member.domainID] else {
             throw DatabaseCompositionAccessError.unavailable(
-                lease.record.composition.id
+                lease.selection
             )
         }
         return transaction

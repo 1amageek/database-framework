@@ -341,6 +341,131 @@ extension DatabaseContext {
         )
     }
 
+    #if DATABASE_MULTIPLE_BASES
+    /// Applies the canonical relational pipeline to two already-authorized
+    /// Base-local table inputs. Only the Composition planner may call this
+    /// boundary; ordinary Base execution rejects Base-qualified sources.
+    package func executeCompositionCrossBaseJoin(
+        _ selectQuery: SelectQuery,
+        join: JoinClause,
+        leftRows: consuming DatabaseRetainedBuffer<QueryRow>,
+        leftTable: TableRef,
+        rightRows: consuming DatabaseRetainedBuffer<QueryRow>,
+        rightTable: TableRef,
+        options: ReadExecutionContext
+    ) throws -> QueryResponse {
+        guard join.type == .inner else {
+            throw CompositionQueryError.unsupportedPlan(
+                "bounded cross-Base execution currently requires INNER JOIN"
+            )
+        }
+        var leftBuilder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: options.workMeter,
+            stage: .joinCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: leftRows.count
+        )
+        try leftRows.withSpan { rows in
+            for index in rows.indices {
+                let row = rows[index]
+                let canonical = CanonicalSourceRow.fromBaseFields(
+                    row.fields,
+                    sourceName: leftTable.effectiveName,
+                    annotations: row.annotations,
+                    version: row.version
+                )
+                try leftBuilder.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: canonical,
+                        workMeter: options.workMeter
+                    ),
+                    make: { canonical }
+                )
+            }
+        }
+        leftRows.discard()
+
+        var rightBuilder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: options.workMeter,
+            stage: .joinCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: rightRows.count
+        )
+        try rightRows.withSpan { rows in
+            for index in rows.indices {
+                let row = rows[index]
+                let canonical = CanonicalSourceRow.fromBaseFields(
+                    row.fields,
+                    sourceName: rightTable.effectiveName,
+                    annotations: row.annotations,
+                    version: row.version
+                )
+                try rightBuilder.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: canonical,
+                        workMeter: options.workMeter
+                    ),
+                    make: { canonical }
+                )
+            }
+        }
+        rightRows.discard()
+
+        let left = leftBuilder.finish().moveRetainingReservation()
+        let right = rightBuilder.finish().moveRetainingReservation()
+        // Transfer accounting to the canonical join's existing input
+        // reservation without adding a MultipleBases branch to that hot path.
+        left.reservation.release()
+        right.reservation.release()
+        let joined = try performJoin(
+            leftRows: left.elements,
+            rightRows: right.elements,
+            type: join.type,
+            condition: join.condition,
+            workMeter: options.workMeter
+        )
+        let filtered = try applyFilter(
+            selectQuery.filter,
+            to: joined,
+            workMeter: options.workMeter
+        )
+        if let countResponse = try makeCountProjectionResponse(
+            selectQuery,
+            rows: filtered,
+            workMeter: options.workMeter
+        ) {
+            return countResponse
+        }
+        let ordered = try applyOrder(
+            selectQuery.orderBy,
+            to: filtered,
+            workMeter: options.workMeter
+        )
+        var projected = try projectRows(
+            ordered,
+            projection: selectQuery.projection,
+            workMeter: options.workMeter
+        )
+        if selectQuery.distinct {
+            projected = try canonicalUniqueRows(
+                projected,
+                workMeter: options.workMeter
+            )
+        }
+        let page = try CanonicalQueryPagination.window(
+            rows: consume projected,
+            selectQuery: selectQuery,
+            options: options
+        )
+        return QueryResponse(
+            rows: page.items,
+            continuation: page.continuation
+        )
+    }
+    #endif
+
     private func materializeTransactionBoundRows(
         for source: DataSource,
         options: ReadExecutionContext,
@@ -1264,6 +1389,12 @@ extension DatabaseContext {
             throw CanonicalReadError.unsupportedSource(
                 "SERVICE source '\(endpoint)' is not supported on the canonical RPC"
             )
+        #if DATABASE_MULTIPLE_BASES
+        case .base:
+            throw CanonicalReadError.unsupportedSource(
+                "Base-qualified sources require a Composition planner"
+            )
+        #endif
         }
     }
 
@@ -2151,29 +2282,13 @@ extension DatabaseContext {
                 let lhsValue = try evaluateExpression(sortKey.expression, on: lhs)
                 let rhsValue = try evaluateExpression(sortKey.expression, on: rhs)
 
-                let comparison: QueryComparison
-                switch (lhsValue, rhsValue) {
-                case (.null, .null):
-                    comparison = .equal
-                case (.null, _):
-                    comparison = sortKey.nulls == .last
-                        ? .greaterThan
-                        : .lessThan
-                case (_, .null):
-                    comparison = sortKey.nulls == .last
-                        ? .lessThan
-                        : .greaterThan
-                default:
-                    comparison = try FieldValueComparator.compare(lhsValue, rhsValue)
-                }
-
+                let comparison = try FieldValueComparator.compare(
+                    lhsValue,
+                    rhsValue,
+                    using: sortKey
+                )
                 guard comparison != .equal else { continue }
-                switch sortKey.direction {
-                case .ascending:
-                    return comparison == .lessThan
-                case .descending:
-                    return comparison == .greaterThan
-                }
+                return comparison == .lessThan
             }
             try workMeter.consume(2, at: .sortComparison)
             let lhsFingerprint = try CanonicalRowFingerprint.compute(

@@ -177,60 +177,6 @@ struct OnlineIndexerLargeDataTests {
         }
     }
 
-    // MARK: - MultiTargetOnlineIndexer Tests
-
-    @Test("MultiTarget build with dataset")
-    func testMultiTargetIndexer() async throws {
-        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let ctx = try await LargeDatasetIndexingContext()
-
-            let players = PlayerDatasetGenerator.generatePlayers(count: 100, nameLength: 100)
-            try await ctx.insertPlayers(players)
-
-            // Create multiple indexes
-            let index1 = PlayerIdentifierIndexDefinition.make(name: "multi_idx_1")
-            let index2 = PlayerIdentifierIndexDefinition.make(name: "multi_idx_2")
-
-            let maintainer1 = CountingIndexMaintainer<Player>(
-                indexSubspace: ctx.indexSubspace,
-                indexName: index1.name
-            )
-            let maintainer2 = CountingIndexMaintainer<Player>(
-                indexSubspace: ctx.indexSubspace,
-                indexName: index2.name
-            )
-
-            let lifecycleStore = IndexLifecycleStore(
-                container: ctx.container,
-                subspace: ctx.indexSubspace.subspace("_meta")
-            )
-
-            let targets = [
-                IndexBuildTarget(index: index1, maintainer: maintainer1),
-                IndexBuildTarget(index: index2, maintainer: maintainer2),
-            ]
-
-            let indexer = try MultiTargetOnlineIndexer(
-                container: ctx.container,
-                storeSubspace: ctx.testSubspace,
-                itemType: Player.persistableType,
-                targets: targets,
-                lifecycleStore: lifecycleStore,
-                batchSize: 20
-            )
-
-            try await indexer.buildIndexes(clearFirst: true)
-
-            // Verify both indexes processed all items exactly once
-            #expect(maintainer1.getUniqueProcessedCount() == players.count)
-            #expect(maintainer2.getUniqueProcessedCount() == players.count)
-            #expect(maintainer1.getDuplicateProcessedIds().isEmpty)
-            #expect(maintainer2.getDuplicateProcessedIds().isEmpty)
-
-            try await ctx.cleanup()
-        }
-    }
-
     // MARK: - Edge Cases
 
     @Test("Build index with empty dataset")

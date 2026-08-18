@@ -2,18 +2,49 @@
 import DatabaseKit
 import StorageKit
 
-/// Read-only selector for one named Base Composition.
+private actor CompositionRowResultCollector {
+    private var metadata: CompositionQueryMetadata?
+    private var values: [CompositionResult<QueryRow>] = []
+
+    func receive(
+        _ event: CompositionQueryEvent,
+        workMeter: DatabaseWorkMeter
+    ) throws {
+        switch event {
+        case .began(let value):
+            metadata = value
+        case .row(let value):
+            guard let metadata else {
+                throw CompositionQueryError.workspaceCorrupted
+            }
+            try workMeter.recordOutputRows()
+            values.append(
+                CompositionResult(
+                    composition: metadata.composition,
+                    origin: value.origin,
+                    value: value.row
+                )
+            )
+        }
+    }
+
+    func result() -> [CompositionResult<QueryRow>] {
+        values
+    }
+}
+
+/// Read-only selector for one named or request-scoped Base Composition.
 public struct CompositionDataSource: Sendable {
-    public let id: Base.Composition.ID
+    public let selection: CompositionSelection
     package let container: DBContainer
     package let authorization: AuthorizationContext
 
     package init(
-        id: Base.Composition.ID,
+        selection: CompositionSelection,
         container: DBContainer,
         authorization: AuthorizationContext
     ) {
-        self.id = id
+        self.selection = selection
         self.container = container
         self.authorization = authorization
     }
@@ -27,35 +58,93 @@ public struct CompositionDataSource: Sendable {
         )
     }
 
+    /// Executes canonical relational QueryIR in-process through the same
+    /// semantic planner used by remote adapters.
+    public func execute(
+        _ query: SelectQuery,
+        options: ReadExecutionOptions = .default
+    ) async throws -> [CompositionResult<QueryRow>] {
+        let execution = ReadExecutionContext(
+            options: options,
+            monotonicClock: container.monotonicClock
+        )
+        let collector = CompositionRowResultCollector()
+        try await CompositionQueryPlanner(
+            structuralLimits: execution.queryStructuralLimits
+        ).execute(
+            query,
+            source: self,
+            options: CompositionQueryExecutionOptions(
+                pageSize: try Self.plannerPageSize(options: options),
+                readContext: execution
+            )
+        ) { event in
+            try await collector.receive(
+                event,
+                workMeter: execution.workMeter
+            )
+            return true
+        }
+        return await collector.result()
+    }
+
     /// Acquires the immutable Composition definition and every member Base
     /// lease. Holding all leases prevents a member from retiring while the
     /// caller authorizes or executes the federated operation.
-    private func acquireLease() async throws -> DatabaseCompositionLease {
-        let record: DatabaseCompositionRecord
-        record = try await container.withControlMetadataTransaction(
-            configuration: .readOnly
-        ) { transaction in
-            guard let record = try await container.compositionCatalog.load(
-                id,
-                transaction: transaction.storageAccess
-            ) else {
-                throw DatabaseCompositionAccessError.unavailable(id)
+    package func acquireLease() async throws -> DatabaseCompositionLease {
+        let namedRecord: DatabaseCompositionRecord?
+        let resolution: CompositionResolution
+        switch selection.kind {
+        case .named:
+            guard let id = selection.namedID else {
+                throw DatabaseCompositionAccessError.unavailable(selection)
             }
-            return record
+            let record = try await container.withControlMetadataTransaction(
+                configuration: .readOnly
+            ) { transaction in
+                guard let record = try await container.compositionCatalog.load(
+                    id,
+                    transaction: transaction.storageAccess
+                ) else {
+                    throw DatabaseCompositionAccessError.unavailable(selection)
+                }
+                return record
+            }
+            namedRecord = record
+            do {
+                resolution = try .named(
+                    id: record.composition.id,
+                    generation: record.generation,
+                    bases: record.composition.bases
+                )
+            } catch {
+                throw DatabaseCompositionAccessError.unavailable(selection)
+            }
+        case .derived:
+            guard let bases = selection.bases else {
+                throw DatabaseCompositionAccessError.unavailable(selection)
+            }
+            namedRecord = nil
+            do { resolution = try .derived(bases) }
+            catch {
+                throw DatabaseCompositionAccessError.unavailable(selection)
+            }
         }
         var memberLeases: [DatabaseBaseLease] = []
-        memberLeases.reserveCapacity(record.composition.bases.count)
+        memberLeases.reserveCapacity(resolution.bases.count)
         do {
-            for baseID in record.composition.bases {
+            for baseID in resolution.bases {
                 memberLeases.append(try container.acquireBaseLease(baseID))
             }
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            throw DatabaseCompositionAccessError.unavailable(id)
+            throw DatabaseCompositionAccessError.unavailable(selection)
         }
         return DatabaseCompositionLease(
-            record: record,
+            selection: selection,
+            resolution: resolution,
+            namedRecord: namedRecord,
             members: memberLeases
         )
     }
@@ -79,16 +168,18 @@ public struct CompositionDataSource: Sendable {
             return lease
         } catch is CancellationError {
             throw CancellationError()
+        } catch is DatabaseGrantAuthorizationError {
+            throw DatabaseCompositionAccessError.unavailable(selection)
         } catch {
-            throw DatabaseCompositionAccessError.unavailable(id)
+            throw error
         }
     }
 
     /// Resolves a Composition for metadata operations while preserving the
     /// same all-member authorization contract as execution.
     @_spi(DatabaseExecution)
-    public func resolve() async throws -> DatabaseCompositionRecord {
-        try await acquireReadLease().record
+    public func resolve() async throws -> CompositionResolution {
+        try await acquireReadLease().resolution
     }
 
     /// Opens one read transaction per physical domain and keeps all of them
@@ -124,7 +215,7 @@ public struct CompositionDataSource: Sendable {
         do {
             for domainID in domainIDs {
                 guard let domain = domains[domainID] else {
-                    throw DatabaseCompositionAccessError.unavailable(id)
+                    throw DatabaseCompositionAccessError.unavailable(selection)
                 }
                 let transaction = try domain.transactionExecutor
                     .createOwnedTransaction()
@@ -143,21 +234,20 @@ public struct CompositionDataSource: Sendable {
                 // expose data. This fixes the federated snapshot boundary
                 // without nesting transaction runners.
                 guard let domain = domains[entry.id] else {
-                    throw DatabaseCompositionAccessError.unavailable(id)
+                    throw DatabaseCompositionAccessError.unavailable(selection)
                 }
                 let position: DomainReadPoint.Position
                 if domain.transactionCapabilities.readVersion {
                     guard let version = UInt64(
                         exactly: try await entry.transaction.getReadVersion()
                     ) else {
-                        throw DatabaseCompositionAccessError.unavailable(id)
+                        throw DatabaseCompositionAccessError.unavailable(selection)
                     }
                     position = .version(version)
                 } else {
-                    // This identifier denotes the lifetime of this exact
-                    // transaction snapshot. The durable result spool is the
-                    // ownership boundary that keeps later pages stable after
-                    // the transaction closes.
+                    // This identifier is valid only for the lifetime of this
+                    // exact in-process transaction snapshot. A host adapter
+                    // must own any durable result paging after it closes.
                     position = .opaque(Self.makeOpaqueReadPoint())
                 }
                 transactions[entry.id] = entry.transaction
@@ -170,7 +260,7 @@ public struct CompositionDataSource: Sendable {
             }
             for member in lease.members {
                 guard let transaction = transactions[member.domainID] else {
-                    throw DatabaseCompositionAccessError.unavailable(id)
+                    throw DatabaseCompositionAccessError.unavailable(selection)
                 }
                 try await DatabaseGrantStore(
                     resource: .base(member.baseID),
@@ -215,7 +305,7 @@ public struct CompositionDataSource: Sendable {
                 throw CancellationError()
             }
             if operationError is DatabaseGrantAuthorizationError {
-                throw DatabaseCompositionAccessError.unavailable(id)
+                throw DatabaseCompositionAccessError.unavailable(selection)
             }
             throw operationError
         }
@@ -233,9 +323,9 @@ public struct CompositionDataSource: Sendable {
             any TransactionAccess
         ) async throws -> Result
     ) async throws -> Result {
-        guard snapshot.lease.record.composition.id == id,
+        guard snapshot.lease.selection == selection,
               snapshot.lease.members.contains(where: { $0 === member }) else {
-            throw DatabaseCompositionAccessError.unavailable(id)
+            throw DatabaseCompositionAccessError.unavailable(selection)
         }
         let transaction = try snapshot.transaction(for: member)
         return try await container.withBaseLease(member) {
@@ -255,6 +345,20 @@ public struct CompositionDataSource: Sendable {
         return ByteString((0..<32).map { _ in
             UInt8.random(in: .min ... .max, using: &generator)
         })
+    }
+
+    package static func plannerPageSize(
+        options: ReadExecutionOptions
+    ) throws -> Int {
+        guard let maximumRows = Int(exactly: options.budget.maximumRows),
+              let maximumIntermediateRows = Int(
+                  exactly: options.budget.maximumIntermediateRows
+              ) else {
+            throw CompositionQueryError.invalidExecutionConfiguration(
+                "row limits exceed the current runtime range"
+            )
+        }
+        return max(1, min(maximumRows, maximumIntermediateRows / 4, 256))
     }
 }
 

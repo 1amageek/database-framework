@@ -31,6 +31,43 @@ enum FieldValueComparator {
         return result
     }
 
+    /// Returns the final ordering after applying both direction and NULL
+    /// placement. Explicit NULLS FIRST/LAST describes the final order and is
+    /// therefore not reversed again for descending keys.
+    static func compare(
+        _ lhs: FieldValue,
+        _ rhs: FieldValue,
+        using sortKey: SortKey
+    ) throws(FieldValueComparisonError) -> QueryComparison {
+        if lhs == .null || rhs == .null {
+            if lhs == .null, rhs == .null { return .equal }
+            let nullsFirst: Bool
+            switch sortKey.nulls {
+            case .first:
+                nullsFirst = true
+            case .last:
+                nullsFirst = false
+            case nil:
+                nullsFirst = sortKey.direction == .ascending
+            }
+            if lhs == .null {
+                return nullsFirst ? .lessThan : .greaterThan
+            }
+            return nullsFirst ? .greaterThan : .lessThan
+        }
+
+        let comparison = try compare(lhs, rhs)
+        guard sortKey.direction == .descending else { return comparison }
+        switch comparison {
+        case .lessThan:
+            return .greaterThan
+        case .equal:
+            return .equal
+        case .greaterThan:
+            return .lessThan
+        }
+    }
+
     private static func isNull(_ value: FieldValue) -> Bool {
         if case .null = value { return true }
         return false

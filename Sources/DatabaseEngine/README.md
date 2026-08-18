@@ -310,10 +310,6 @@ let orders = try await context.fetch(TenantOrder.self)
 | Component | Description |
 |-----------|-------------|
 | `OnlineIndexer` | Batch processing with resumable progress |
-| `MultiTargetOnlineIndexer` | Build multiple indexes in single scan |
-| `MutualOnlineIndexer` | Build bidirectional indexes |
-| `OnlineIndexScrubber` | Two-phase consistency verification |
-| `IndexFromIndexBuilder` | Build index from existing index |
 | `AdaptiveThrottler` | Backpressure-aware rate limiting |
 
 ## Query Planning

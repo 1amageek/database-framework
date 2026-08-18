@@ -266,6 +266,15 @@ package struct DatabaseRetainedBuffer<Element: Sendable>: ~Copyable, Sendable {
         return elements
     }
 
+    #if DATABASE_MULTIPLE_BASES
+    /// Ends this unique intermediate owner without promoting its storage to
+    /// an output boundary. This is used after a replacement representation
+    /// has been admitted and constructed under its own reservation.
+    package consuming func discard() {
+        reservation.release()
+    }
+    #endif
+
     /// Moves the Array into an owner that continues to hold its request-memory
     /// reservation. This is used when a package extension point must return an
     /// owned collection to the canonical dispatcher without creating an

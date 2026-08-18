@@ -25,8 +25,24 @@ public final class DatabaseSession: Sendable {
     public func composition(
         _ id: Base.Composition.ID
     ) -> CompositionDataSource {
+        composition(.named(id))
+    }
+
+    public func composition(
+        _ selection: CompositionSelection
+    ) -> CompositionDataSource {
         CompositionDataSource(
-            id: id,
+            selection: selection,
+            container: container,
+            authorization: authorization
+        )
+    }
+
+    public func composition(
+        bases: [Base.ID]
+    ) throws -> CompositionDataSource {
+        CompositionDataSource(
+            selection: try .derived(bases),
             container: container,
             authorization: authorization
         )

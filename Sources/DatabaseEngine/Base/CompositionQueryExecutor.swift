@@ -1,20 +1,9 @@
 #if DATABASE_MULTIPLE_BASES
 import DatabaseKit
-import StorageKit
 
-/// Executes a type-safe, read-only query over every Base in one Composition.
-///
-/// Predicates and projections execute independently inside each Base. Global
-/// ordering, offset, and limit are applied after the member-local reads while
-/// preserving the origin of every returned value.
+/// Executes a type-safe, read-only query through the canonical Composition
+/// planner shared by local applications and remote adapters.
 public struct CompositionQueryExecutor<Model: Persistable>: Sendable {
-    private struct Candidate: Sendable {
-        let baseID: Base.ID
-        let memberOrdinal: Int
-        let rowOrdinal: Int
-        let value: Model
-    }
-
     private let source: CompositionDataSource
     private var query: Query<Model>
 
@@ -72,236 +61,73 @@ public struct CompositionQueryExecutor<Model: Persistable>: Sendable {
         return copy
     }
 
-    /// Executes the query at one simultaneously held read snapshot per domain.
-    public func execute() async throws -> [CompositionResult<Model>] {
-        try QueryResultWindow.validate(
-            limit: query.fetchLimit,
-            offset: query.fetchOffset
-        )
-        let requestedQuery = query
-        let resultLimit = requestedQuery.fetchLimit
-        let resultOffset = requestedQuery.fetchOffset ?? 0
-        let localLimit = Self.localReadLimit(
-            offset: resultOffset,
-            limit: resultLimit
-        )
-
-        return try await source.withReadSnapshot { snapshot in
-            if resultLimit == 0 {
-                return []
-            }
-            var candidates: [Candidate] = []
-            if let localLimit {
-                candidates.reserveCapacity(min(localLimit, 1_024))
-            }
-
-            if requestedQuery.sortDescriptors.isEmpty {
-                var remainingOffset = resultOffset
-                var remainingLimit = resultLimit
-                for (memberOrdinal, member) in
-                    snapshot.lease.members.enumerated()
-                {
-                    if remainingLimit == 0 { break }
-                    var configuredQuery = requestedQuery
-                    configuredQuery.fetchOffset = nil
-                    configuredQuery.fetchLimit = Self.localReadLimit(
-                        offset: remainingOffset,
-                        limit: remainingLimit
-                    )
-                    let memberQuery = configuredQuery
-                    let values = try await source.withMemberContext(
-                        member,
-                        in: snapshot
-                    ) { context, transaction in
-                        try await context.fetch(
-                            memberQuery,
-                            transaction: transaction
-                        )
-                    }
-                    let start = min(remainingOffset, values.count)
-                    remainingOffset -= start
-                    let available = values.count - start
-                    let accepted = min(available, remainingLimit ?? available)
-                    if accepted > 0 {
-                        candidates.reserveCapacity(candidates.count + accepted)
-                        for rowOrdinal in start..<(start + accepted) {
-                            candidates.append(
-                                Candidate(
-                                    baseID: member.baseID,
-                                    memberOrdinal: memberOrdinal,
-                                    rowOrdinal: rowOrdinal,
-                                    value: values[rowOrdinal]
-                                )
-                            )
-                        }
-                    }
-                    if let limit = remainingLimit {
-                        remainingLimit = limit - accepted
-                    }
-                }
-            } else {
-                for (memberOrdinal, member) in
-                    snapshot.lease.members.enumerated()
-                {
-                    var configuredQuery = requestedQuery
-                    configuredQuery.fetchOffset = nil
-                    configuredQuery.fetchLimit = localLimit
-                    let memberQuery = configuredQuery
-                    let values = try await source.withMemberContext(
-                        member,
-                        in: snapshot
-                    ) { context, transaction in
-                        try await context.fetch(
-                            memberQuery,
-                            transaction: transaction
-                        )
-                    }
-                    var memberCandidates: [Candidate] = []
-                    memberCandidates.reserveCapacity(values.count)
-                    for rowOrdinal in values.indices {
-                        memberCandidates.append(
-                            Candidate(
-                                baseID: member.baseID,
-                                memberOrdinal: memberOrdinal,
-                                rowOrdinal: rowOrdinal,
-                                value: values[rowOrdinal]
-                            )
-                        )
-                    }
-                    candidates = try Self.merge(
-                        candidates,
-                        memberCandidates,
-                        descriptors: requestedQuery.sortDescriptors,
-                        maximumCount: localLimit
-                    )
-                }
-                QueryResultWindow.apply(
-                    to: &candidates,
-                    limit: resultLimit,
-                    offset: resultOffset
-                )
-            }
-
-            let composition = snapshot.lease.record
-            return candidates.map { candidate in
-                CompositionResult(
-                    compositionID: composition.composition.id,
-                    generation: composition.generation,
-                    origin: .source(candidate.baseID),
-                    value: candidate.value
-                )
-            }
-        }
-    }
-
-    public func count() async throws -> Int {
-        try QueryResultWindow.validate(
-            limit: query.fetchLimit,
-            offset: query.fetchOffset
-        )
-        let requestedQuery = query
-        return try await source.withReadSnapshot { snapshot in
-            var total = 0
-            var normalizedQuery = requestedQuery
-            normalizedQuery.fetchLimit = nil
-            normalizedQuery.fetchOffset = nil
-            let memberQuery = normalizedQuery
-            for member in snapshot.lease.members {
-                let partial = try await source.withMemberContext(
-                    member,
-                    in: snapshot
-                ) { context, transaction in
-                    try await context.fetchCount(
-                        memberQuery,
-                        transaction: transaction
-                    )
-                }
-                let next = total.addingReportingOverflow(partial)
-                guard !next.overflow else {
-                    throw DatabaseCompositionQueryError.countOverflow
-                }
-                total = next.partialValue
-            }
-            return QueryResultWindow.resultCount(
-                totalCount: total,
-                limit: requestedQuery.fetchLimit,
-                offset: requestedQuery.fetchOffset
+    /// Executes with a bounded request-wide budget. Local applications and
+    /// remote hosts therefore use the same plan, merge, and failure semantics.
+    public func execute(
+        options: ReadExecutionOptions = .default
+    ) async throws -> [CompositionResult<Model>] {
+        let selectQuery = try query.toSelectQuery()
+        return try await source.execute(
+            selectQuery,
+            options: options
+        ).map { result in
+            CompositionResult(
+                composition: result.composition,
+                origin: result.origin,
+                value: try QueryRowCodec.decode(result.value, as: Model.self)
             )
         }
     }
 
-    public func first() async throws -> CompositionResult<Model>? {
-        try await limit(1).execute().first
+    public func count(
+        options: ReadExecutionOptions = .default
+    ) async throws -> Int {
+        let selected = try query.toSelectQuery()
+        let aggregate = SelectQuery(
+            projection: .items([
+                ProjectionItem(
+                    .aggregate(.count(nil, distinct: false)),
+                    alias: "count"
+                ),
+            ]),
+            source: selected.source,
+            accessPath: selected.accessPath,
+            filter: selected.filter,
+            groupBy: nil,
+            having: nil,
+            orderBy: nil,
+            limit: nil,
+            offset: nil,
+            distinct: false,
+            subqueries: selected.subqueries,
+            reduced: false,
+            dataset: selected.dataset
+        )
+        let results = try await source.execute(
+            aggregate,
+            options: options
+        )
+        guard results.count == 1,
+              case .int64(let value)? = results[0].value.fields["count"],
+              value >= 0,
+              let total = Int(exactly: value) else {
+            throw CompositionQueryError.aggregateFailure(
+                "COUNT result is missing or exceeds the current runtime range"
+            )
+        }
+        return QueryResultWindow.resultCount(
+            totalCount: total,
+            limit: query.fetchLimit,
+            offset: query.fetchOffset ?? 0
+        )
     }
 
-    private static func localReadLimit(
-        offset: Int,
-        limit: Int?
-    ) -> Int? {
-        guard let limit else { return nil }
-        let (value, overflow) = offset.addingReportingOverflow(limit)
-        return overflow ? nil : value
+    public func first(
+        options: ReadExecutionOptions = .default
+    ) async throws -> CompositionResult<Model>? {
+        try await limit(1).execute(options: options).first
     }
 
-    private static func merge(
-        _ left: consuming [Candidate],
-        _ right: consuming [Candidate],
-        descriptors: borrowing [SortDescriptor<Model>],
-        maximumCount: Int?
-    ) throws -> [Candidate] {
-        var merged: [Candidate] = []
-        let unboundedCount = left.count + right.count
-        merged.reserveCapacity(min(maximumCount ?? unboundedCount, unboundedCount))
-        var leftIndex = 0
-        var rightIndex = 0
-        while leftIndex < left.count || rightIndex < right.count {
-            if let maximumCount, merged.count == maximumCount { break }
-            if leftIndex == left.count {
-                merged.append(right[rightIndex])
-                rightIndex += 1
-                continue
-            }
-            if rightIndex == right.count {
-                merged.append(left[leftIndex])
-                leftIndex += 1
-                continue
-            }
-            if try isOrderedBefore(
-                left[leftIndex],
-                right[rightIndex],
-                descriptors: descriptors
-            ) {
-                merged.append(left[leftIndex])
-                leftIndex += 1
-            } else {
-                merged.append(right[rightIndex])
-                rightIndex += 1
-            }
-        }
-        return merged
-    }
-
-    private static func isOrderedBefore(
-        _ left: borrowing Candidate,
-        _ right: borrowing Candidate,
-        descriptors: borrowing [SortDescriptor<Model>]
-    ) throws -> Bool {
-        for index in descriptors.indices {
-            let descriptor = descriptors[index]
-            switch try descriptor.orderedComparison(left.value, right.value) {
-            case .lessThan:
-                return true
-            case .greaterThan:
-                return false
-            case .equal:
-                continue
-            }
-        }
-        if left.memberOrdinal != right.memberOrdinal {
-            return left.memberOrdinal < right.memberOrdinal
-        }
-        return left.rowOrdinal < right.rowOrdinal
-    }
 }
 
 #endif

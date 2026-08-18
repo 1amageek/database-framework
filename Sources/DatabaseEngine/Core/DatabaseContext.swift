@@ -1925,15 +1925,8 @@ extension DatabaseContext {
             case .database:
                 return try await container.withDatabaseDataRoot(execute)
             case .base(let baseID):
-                #if DATABASE_MULTIPLE_BASES
                 let lease = try container.acquireBaseLease(baseID)
                 return try await container.withBaseLease(lease, execute)
-                #else
-                _ = baseID
-                throw DatabaseRuntimeError.internalError(
-                    "MultipleBases is not enabled"
-                )
-                #endif
             }
             #else
             return try await RequestAuthorization.$context.withValue(

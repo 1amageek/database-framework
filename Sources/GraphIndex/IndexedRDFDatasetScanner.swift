@@ -9,10 +9,6 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         0x52, 0x44, 0x46, 0x4d, 0x42, 0x4e, 0x01,
     ]
 
-    private enum ScanControl: Error {
-        case logicalLimitReached
-    }
-
     private enum PhysicalGraphConstraint {
         case bound(
             component: RDFQuadIndexComponentWritePlan,

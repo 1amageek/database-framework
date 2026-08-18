@@ -65,7 +65,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     public func fetch<Model: Persistable>(
         _ type: Model.Type,
         identifiedBy id: Model.ID,
-        consistency: DatabaseReadConsistency
+        consistency: TransactionReadConsistency
     ) async throws -> Model? {
         try await performOperation { _ in
             guard let subspaces = try await openSubspaces(for: type) else {
@@ -84,7 +84,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         _ type: Model.Type,
         identifiedBy id: Model.ID,
         in partition: DirectoryPath<Model>,
-        consistency: DatabaseReadConsistency
+        consistency: TransactionReadConsistency
     ) async throws -> Model? {
         try await performOperation { _ in
             guard let subspaces = try await openSubspaces(
@@ -105,7 +105,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     public func fetch<Model: Persistable>(
         _ type: Model.Type,
         identifiedBy ids: [Model.ID],
-        consistency: DatabaseReadConsistency = .serializable
+        consistency: TransactionReadConsistency = .serializable
     ) async throws -> [Model] {
         try await performOperation { _ in
             guard let subspaces = try await openSubspaces(for: type) else {
@@ -132,7 +132,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         in partition: DirectoryPath<Model>,
         after continuation: DatabaseScanContinuation?,
         limit: Int,
-        consistency: DatabaseReadConsistency
+        consistency: TransactionReadConsistency
     ) async throws -> sending DatabaseScanPage<Model> {
         return try await performOperation { _ in
             guard limit > 0, limit < Int.max else {
@@ -1027,7 +1027,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         of type: Model.Type,
         identifiedBy id: Model.ID,
         from subspaces: ResolvedSubspaces,
-        consistency: DatabaseReadConsistency
+        consistency: TransactionReadConsistency
     ) async throws -> Model? {
         let key = subspaces.items
             .subspace(Model.persistableType)

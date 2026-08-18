@@ -154,6 +154,14 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     commonTableNames: commonTableNames,
                     into: &bindings
                 )
+            #if DATABASE_MULTIPLE_BASES
+            case .base(_, let source):
+                collectBindings(
+                    source,
+                    commonTableNames: commonTableNames,
+                    into: &bindings
+                )
+            #endif
             case .graphTable:
                 for entity in schema.entities { includeAll(entity) }
             case .graphPattern, .namedGraph, .service:

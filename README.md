@@ -92,7 +92,7 @@ down the transferred engine independently.
 ## Requirements
 
 - Swift 6.4 development snapshot
-  `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a` with its matching Swift SDK
+  `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a` with its matching Swift SDK
 - macOS 26 or later, iOS 26 or later, or a supported Linux Swift toolchain
 - A `StorageEngine` implementation available for the target runtime
 
@@ -105,7 +105,7 @@ application:
 dependencies: [
     .package(
         url: "https://github.com/1amageek/database-framework.git",
-        from: "26.0814.0",
+        from: "26.0818.0",
         traits: ["SQLite", "ScalarIndexes"]
     )
 ]
@@ -156,7 +156,7 @@ and the `Database` umbrella:
 | `LeaderboardIndexes` | Time-window leaderboard indexes |
 | `Relationships` | Relationship mutation maintenance and reads |
 | `AllRuntimeFeatures` | Every index and relationship feature above |
-| `MultipleBases` | Base lifecycle, placement, persisted Grants, and read-only Composition execution |
+| `MultipleBases` | Base lifecycle, placement, persisted Grants, named/derived read-only Composition execution, and same-domain decision transactions |
 
 `AllRuntimeFeatures` does not enable a backend and does not enable
 `MultipleBases`. Runtime bootstrap validates the selected implementation set
@@ -337,9 +337,16 @@ standard composition
 MultipleBases composition
     DBContainer(control and data domains)
         `-- session(authorization:)
-                +-- base(id)          -> read and mutation
-                `-- composition(id)   -> read only
+                +-- base(id)             -> read and mutation
+                +-- composition(id)      -> named read-only selection
+                `-- composition(bases:)  -> derived read-only selection
 ```
+
+Relational Composition planning belongs to `DatabaseEngine`. RDF/SPARQL
+Composition planning belongs to the optional `GraphIndex` target. A
+standalone server may adapt these same in-process planners to DatabaseWire
+pages, but server dispatch, continuations, and jobs are not framework
+responsibilities.
 
 This is a separate storage and authorization model, not a general runtime
 feature bundle. See [Base and Composition](docs/base-composition.md) for its

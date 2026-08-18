@@ -1,7 +1,8 @@
 # Base and Composition Implementation Design
 
-Status: implemented behind the non-default `MultipleBases` trait; production
-verification in progress. The standard build uses one database data root.
+Status: implemented behind the non-default `MultipleBases` trait. The current
+P0/P1 source changes still require a separately authorized build and behavioral
+verification pass. The standard build uses one database data root.
 
 This document translates the semantic contract in
 [Base and Composition](base-composition.md) into package ownership, public API,
@@ -14,17 +15,18 @@ tree unless a paragraph explicitly describes optional future work.
 Base isolation is an optional execution boundary, not a query predicate. The
 standard package graph has one database root and compiles no Base target,
 topology catalog, placement lease, Composition planner, or persisted Grant
-store. When `MultipleBases` is selected, every data operation enters the server
-runtime with one explicit target, acquires immutable Schema and data-root
+store. When `MultipleBases` is selected, every local or remote data operation
+uses one explicit semantic target, acquires immutable Schema and data-root
 leases, proves the required Grant in the data transaction, and receives only a
-target-bound executor.
+target-bound executor. `database-server` is one adapter over this execution
+contract, not the owner of Composition semantics.
 
 ```mermaid
 flowchart TB
     Standard["Standard graph<br/>target-free Wire v2"] --> Root["One database root"]
     Root --> StandardTransaction["Direct storage transaction"]
 
-    Multiple["MultipleBases graph<br/>target-bound Wire v3"] --> Prepare["Operation preparation<br/>decode + requirement"]
+    Multiple["MultipleBases graph<br/>target-bound Wire v4"] --> Prepare["Operation preparation<br/>decode + requirement"]
     Prepare --> Bind["Execution coordinator<br/>leases + persisted Grant"]
     Bind --> Handler["Target-bound handler"]
     Handler --> Namespace["Authorized Base root<br/>+ relative directory"]
@@ -39,7 +41,7 @@ Base through a target-bound executor.
 
 | Current fact | Evidence | Enforced consequence |
 |---|---|---|
-| The standard Wire v2 envelope has no target field; `DatabaseOperationTarget` and Wire v3 target encoding compile only with `MultipleBases`. | `database-kit/Sources/DatabaseWire/DatabaseWireRequestEnvelope.swift`; `DatabaseOperationTarget.swift`; `EnvelopeWireFormat.swift` | A normal client or server does not carry dormant Base state. |
+| The standard Wire v2 envelope has no target field; `DatabaseOperationTarget` and Wire v4 target encoding compile only with `MultipleBases`. | `database-kit/Sources/DatabaseWire/DatabaseWireRequestEnvelope.swift`; `DatabaseOperationTarget.swift`; `EnvelopeWireFormat.swift` | A normal client or server does not carry dormant Base state. |
 | The standard `DBContainer` claims one injected engine and resolves one database data root directly. | `Sources/DatabaseEngine/Core/DBConfiguration.swift`; `DBContainer.swift`; `DBContainer+DataRootTransaction.swift` | The hot path has no topology dictionary, catalog read, target lease, or persisted Grant lookup. |
 | With `MultipleBases`, a handler prepares the typed payload and exact access/transaction requirement before target execution. | `database-server/Sources/DatabaseServerRuntime/AnyDatabaseOperationHandler.swift`; `DatabaseOperationRequirement.swift` | Target compatibility and access are checked before handler invocation. |
 | With `MultipleBases`, `DatabaseOperationContext` contains a narrow executor and never exposes a raw container. | `database-server/Sources/DatabaseServerRuntime/DatabaseOperationContext.swift`; `DatabaseOperationExecutor.swift` | Data handlers cannot select a second Base. |
@@ -47,8 +49,9 @@ Base through a target-bound executor.
 | Local operations use a database-bound context, or `DatabaseSession` with a Base or Composition selector when `MultipleBases` is enabled. | `Sources/DatabaseEngine/Core/DBContainer.swift`; `Sources/DatabaseEngine/Base/DatabaseSession.swift` | A public unscoped context does not exist. |
 | Base, Composition, placement, Grant, and layout records are persisted catalogs with immutable generations and leases. | `Sources/DatabaseEngine/Base`; `Sources/DatabaseEngine/Security` | Existence and lifecycle come from catalogs rather than backend namespace probes. |
 | Direct and role Grants are unioned in the Base transaction; role-name administration bypasses are absent. | `DatabaseGrantStore.swift`; `DataStoreSecurityDelegate.swift` | Authentication claims alone never grant data access. |
-| Composition reads hold one transaction per physical domain, authorize all members, and retain origin. | `CompositionDataSource.swift`; `DatabaseCompositionQueryPlanner.swift` | Partial authorization and silent member omission are impossible. |
-| Cross-domain continuation is a bounded durable snapshot spool in the control domain. | `DatabaseCompositionSnapshotStore.swift` | Client pages do not retain transactions or carry trusted continuation state. |
+| Composition reads hold one transaction per physical domain, authorize all members, and retain origin. | `CompositionDataSource.swift`; `CompositionQueryPlanner.swift` | Partial authorization and silent member omission are impossible. |
+| RDF/SPARQL Composition semantics compile in `GraphIndex`, while relational semantics compile in `DatabaseEngine`. | `CompositionSPARQLQueryPlanner.swift`; `CompositionSPARQLPlanValidator.swift`; `CompositionRDFQueryPlanner.swift`; `CompositionRDFIdentity.swift`; `CompositionQueryPlanner.swift` | Optional graph semantics do not enter the core relational target. |
+| Cross-domain remote continuation is a bounded durable snapshot spool owned by the server adapter. | `database-server/Sources/DatabaseServerRuntime/DatabaseQuerySnapshotStore.swift` | Client pages do not retain transactions or carry trusted continuation state; the framework does not own Wire paging. |
 | Removed layouts and populated unformatted roots fail before data execution. | `Sources/DatabaseEngine/Format/DatabaseFormatCatalog.swift`; `DatabaseFormatDescriptor.swift` | No namespace probing, compatibility alias, or migration path is retained. |
 
 ## 3. `MultipleBases` Invariants
@@ -76,6 +79,11 @@ The following invariants apply only to the graph compiled with
 13. Unsupported target, consistency, planner, or materialization behavior
     fails with a typed error; no Base is omitted and no weaker plan is selected
     silently.
+14. Named and derived selections resolve to one immutable
+    `CompositionResolution`; derived selections have no synthetic ID or
+    generation.
+15. Server adapters may spool and page framework results, but may not define
+    relational, RDF, SPARQL, aggregate, DISTINCT, or provenance semantics.
 
 ## 4. Public API First
 
@@ -127,6 +135,7 @@ let session = container.session(authorization: authorization)
 
 let companyA = session.base(companyAID)
 let operational = session.composition(operationalID)
+let adHoc = try session.composition(bases: [worldID, companyAID])
 
 let people = try await companyA.query(Person.self).execute()
 let combined = try await operational.query(Person.self).execute()
@@ -143,6 +152,10 @@ public struct DatabaseSession: Sendable {
     public func base(_ id: Base.ID) -> BaseDataSource
     public func composition(_ id: Base.Composition.ID)
         -> CompositionDataSource
+    public func composition(_ selection: CompositionSelection)
+        -> CompositionDataSource
+    public func composition(bases: [Base.ID]) throws
+        -> CompositionDataSource
 }
 
 public struct BaseDataSource: Sendable {
@@ -155,23 +168,33 @@ public struct BaseDataSource: Sendable {
 }
 
 public struct CompositionDataSource: Sendable {
-    public let id: Base.Composition.ID
+    public let selection: CompositionSelection
     public func query<Model: Persistable>(_ type: Model.Type)
         -> CompositionQueryExecutor<Model>
+    public func execute(
+        _ query: SelectQuery,
+        options: ReadExecutionOptions = .default
+    ) async throws -> [CompositionResult<QueryRow>]
 }
 ```
 
-`DatabaseSession.base(_:)` and `composition(_:)` return lightweight value
+`DatabaseSession.base(_:)` and the Composition selectors return lightweight value
 selectors. Selector construction is synchronous and performs no I/O.
 Existence, lifecycle, placement, authorization, and generation are resolved
 when an operation begins. Only `BaseDataSource` exposes mutation context
 creation.
 
-The existing `DatabaseQuery` is refactored to retain an internal
-`AnyDatabaseReadExecution` rather than a `DatabaseContext`. A Base supplies one
-Base-local read execution; a Composition supplies its planner-backed read
-execution. Query syntax and result typing remain shared without granting the
-Composition a mutation context.
+The optional `GraphIndex` target extends this selector with local `ask`,
+`construct`, and `describe` entry points. A server handler adapts those same
+planner results into Wire pages; it is not the only way to execute a
+Composition.
+
+`CompositionQueryExecutor` is a separate, read-only typed facade over the
+existing `Query<Model>` value. The ordinary `QueryExecutor` and
+`DatabaseContext` path remain unchanged, so the standard single-root execution
+path does not gain type erasure or Composition dispatch. Both facades reuse the
+same query syntax and result typing without granting the Composition a mutation
+context.
 
 ### 4.2 Identity and result origin
 
@@ -183,26 +206,20 @@ public struct EntityAddress: Sendable, Hashable {
     public let entity: EntityReference
 }
 
-public struct BaseResult<Value: Sendable>: Sendable {
-    public let baseID: Base.ID
-    public let value: Value
-}
-
-public struct CompositionDerivedResult<Value: Sendable>: Sendable {
-    public let compositionID: Base.Composition.ID
-    public let generation: UInt64
-    public let contributors: [Base.ID]
+public struct CompositionResult<Value: Sendable>: Sendable {
+    public let composition: CompositionResolution
+    public let origin: CompositionOrigin
     public let value: Value
 }
 ```
 
 Exact-Base reads may expose values directly because their origin is already
-fixed by the source. Composition pages use `BaseResult` for source-local entity,
-row, RDF, graph, and domain values. A global aggregate or another result derived
-from multiple Bases uses `CompositionDerivedResult` and lists every contributor;
-it is not assigned a fictitious single Base. RDF quads, graph vertices, and
-entity references are not mutated to carry an unrelated execution concern.
-Their Composition result wrappers retain origin.
+fixed by the source. Composition values use `.source(Base.ID)` for source-local
+rows and `.derived(contributors:)` for aggregates, joins, and other derived
+values. Named execution retains ID and generation in `CompositionResolution`;
+derived execution retains only its canonical Base set. RDF quads, graph
+vertices, and entity references are not mutated to carry an unrelated
+execution concern. Their Composition result wrappers retain origin.
 
 The canonical Wire page encodes its Base identity table once. Per-result origin
 uses bounded ordinal references into that table, so repeated Base ID strings are
@@ -214,12 +231,13 @@ the ownership boundary.
 ```mermaid
 flowchart TB
     CLI["database-cli<br/>options and rendering"] --> Client["database-client<br/>typed invocation"]
-    Client --> Wire["DatabaseWire<br/>v2 standard / v3 MultipleBases"]
+    Client --> Wire["DatabaseWire<br/>v2 standard / v4 MultipleBases"]
     Wire --> Kit["DatabaseKit<br/>semantic values"]
 
-    NativeHost["DatabaseServerHost<br/>native auth and transport"] --> Server["DatabaseServerRuntime<br/>frame + operation + jobs"]
-    Server --> Engine["DatabaseEngine<br/>single root or MultipleBases catalogs"]
+    NativeHost["database-server executable<br/>native auth and transport"] --> Server["internal server adapter<br/>Wire + paging + jobs"]
+    Server --> Engine["DatabaseEngine<br/>relational execution + catalogs"]
     Cloudflare["database-framework-cloudflare<br/>application session"] --> Engine
+    Graph["GraphIndex<br/>RDF/SPARQL Composition semantics"] --> Engine
     Engine --> Kit
     Engine --> Storage["storage-kit<br/>transactions and namespaces"]
 ```
@@ -228,9 +246,10 @@ flowchart TB
 |---|---|---|
 | `Base`, nested identities, Composition validation | `database-kit / DatabaseKit` | Semantic definition changes. |
 | `Security.Access`, `Resource`, `Subject`, `Grant` | `database-kit / DatabaseKit` | Authorization vocabulary changes. |
-| `EntityAddress`, `BaseResult` | `database-kit / DatabaseKit` | Database identity/provenance semantics change. |
+| `EntityAddress`, `CompositionSelection`, `CompositionResolution`, `CompositionResult`, `CompositionOrigin` | `database-kit / DatabaseKit` | Database identity, selection, and provenance semantics change. |
 | `DatabaseOperationTarget`, Base/Composition/Grant operations, codecs | `database-kit / DatabaseWire` | Canonical protocol changes. |
-| Session, data-source interfaces, catalogs, generation leases, placement, planners | `database-framework / DatabaseEngine` | Execution and lifecycle behavior changes. |
+| Session, data-source interfaces, catalogs, generation leases, placement, relational planner, decision transaction | `database-framework / DatabaseEngine` | In-process relational execution and lifecycle behavior changes. |
+| RDF blank-node qualification and SPARQL/ASK/CONSTRUCT/DESCRIBE Composition planner | `database-framework / GraphIndex` | RDF or SPARQL execution semantics change. |
 | Operation requirement resolution and target-bound handler context | `database-server / DatabaseServerRuntime` | Canonical operation dispatch changes. |
 | Namespace resolution and backend transaction behavior | `storage-kit` | Storage semantics or backend behavior changes. |
 | Credentials, TLS, database routing, process lifecycle | `database-server` | Native hosting changes. |
@@ -238,26 +257,45 @@ flowchart TB
 | `--base`, `--composition`, administration commands, output | `database-cli` | User interaction changes. |
 | Durable Object admission and host lifecycle | `database-framework-cloudflare` | Cloudflare hosting changes. |
 
-No new shared runtime package is required. The server runtime and native host
-are internal layers of the standalone `database-server` executable. Platform
-adapters reuse database-framework execution directly and do not consume either
-server layer. Base semantics are not primitive values and
+No new shared runtime package is required. The operation adapter and native
+host are internal layers of the standalone `database-server` executable.
+Platform adapters reuse database-framework execution directly and do not
+consume either server layer. Base semantics are not primitive values and
 must not enter `database-types`; resolved storage prefixes are not Wire values
 and must not enter `database-kit`.
+
+### 5.1 Non-negotiable Composition boundary
+
+The framework package may grow only by behavior required to execute an
+application-owned in-process database. Optional code must stay outside the
+standard compiled graph.
+
+| Layer | Owns | Must not own |
+|---|---|---|
+| `DatabaseKit` | selection/resolution values, Base-qualified QueryIR, provenance and Wire semantics | transactions, planning, storage, host lifecycle |
+| `DatabaseEngine` under `MultipleBases` | member snapshots, Grants, relational merge/aggregate/join semantics, request-local bounded exact DISTINCT, decision transaction | DatabaseWire dispatch, remote pages, durable jobs, RDF/SPARQL algebra |
+| `GraphIndex` under `MultipleBases` + `GraphIndexes` | RDF identity and SPARQL/ASK/CONSTRUCT/DESCRIBE Composition semantics | Wire pages, server jobs, relational planning |
+| internal `database-server` adapter | semantic-event adaptation, result page/spool ownership, continuations, jobs, error mapping | query meaning, provenance rules, Base Grant decisions |
+| platform host adapter | admission, process/runtime lifecycle, byte transfer, storage host ABI | database semantics |
+
+`AllRuntimeFeatures` does not enable `MultipleBases`. `DatabaseEngine` and
+`GraphIndex` source is guarded by `DATABASE_MULTIPLE_BASES`, and the ordinary
+single-root product therefore does not compile the Composition planner,
+catalog, Grant store, topology, or decision transaction.
 
 ## 6. Canonical Wire Contract
 
 ### 6.1 Target belongs only in the `MultipleBases` envelope
 
 When `MultipleBases` is selected, the request envelope receives a required
-semantic target. It is not metadata and has no optional encoding in Wire v3.
+semantic target. It is not metadata and has no optional encoding in Wire v4.
 Without the trait, Wire v2 has no target property or encoded placeholder.
 
 ```swift
 public enum DatabaseOperationTarget: Sendable, Hashable {
     case database
     case base(Base.ID)
-    case composition(Base.Composition.ID)
+    case composition(CompositionSelection)
 }
 
 public struct DatabaseWireRequestEnvelope: Sendable, Hashable {
@@ -271,7 +309,7 @@ public struct DatabaseWireRequestEnvelope: Sendable, Hashable {
 
 The two build graphs intentionally expose different canonical protocols. The
 standard graph uses target-free Wire v2. The `MultipleBases` graph uses
-target-bound Wire v3. A single binary never accepts both forms and neither
+target-bound Wire v4. A single binary never accepts both forms and neither
 graph contains a compatibility decoder.
 
 `DatabaseClient.execute` requires the target explicitly. Higher-level client
@@ -398,8 +436,13 @@ DBContainer
 | `DatabaseBaseLeaseToken` | Finish one operation lease exactly once | `Mutex<Bool>` |
 | `DatabaseStorageTopologyLifecycle` | Claim and shut down every engine exactly once | `Mutex<Phase>`; shutdown I/O occurs outside the lock |
 | `DatabaseExecutionCoordinator` | Acquire leases, choose domain, open transaction, authorize, invoke | Stateless coordinator plus immutable request-local bindings |
-| `DatabaseCompositionSnapshotStore` | Reserve, write, publish, page, and expire durable snapshots | Storage transactions; no process-local cache |
 | Persistent lifecycle jobs | Serialize resumable Base transitions through owner/checkpoint records | Storage transaction conflicts and persisted revision/owner checks |
+
+Remote snapshot spooling is deliberately absent from this container graph.
+`DatabaseQuerySnapshotStore` belongs to the internal `database-server` adapter
+because its reasons to change are Wire paging, continuation lifetime, and
+remote result delivery. Local framework execution streams semantic events and
+does not manufacture a server continuation.
 
 Base lifecycle ordering is durable and distributed: catalog revisions,
 transaction conflicts, and persistent job ownership are authoritative. It is
@@ -414,11 +457,14 @@ the same declarations and access paths.
 |---|---|---|---|---|---|---|
 | Storage topology phase | `Mutex<Phase>` | `Mutex<Phase>` | `Mutex<Phase>` | `withLock` admission check | `claim`, `finishOpening`, `requestShutdown` | async shutdown outside lock, then terminal `closed` |
 | Base generation and lease counts | `Mutex<State>` | `Mutex<State>` | `Mutex<State>` | `acquire` / `snapshot` | `publish` / `stopAdmissionAndDrain` | exactly-once lease token decrements count and resumes waiters |
-| Layout status | `Mutex<DatabaseLayoutStatus>` | same | same | container status accessor | migration cutover | retained by container until topology shutdown |
 | Active Base binding | immutable `@TaskLocal` lease | same | same | request task only | `withBaseLease` binding boundary | task-local value ends with operation |
 | Active transaction binding | immutable `@TaskLocal` binding | same | same | transaction attempt only | coordinator binding boundary | task-local value ends before transaction release |
 | Authorization and field plan | immutable `@TaskLocal` values | same | same | current request only | admission/coordinator binding | cleared automatically at request boundary |
-| Catalog, Grant, snapshot, and job state | storage transaction | same | same | bounded transactional read | revision-checked transactional write | backend-authoritative lifecycle |
+| Composition result collector | request-local actor | same | same | actor-isolated result read | semantic event callback | actor ends with the local call |
+| Exact DISTINCT entries and lineage | request-local actor with hard byte limit | same | same | sealed actor iteration | actor-isolated insert | `removeAll` clears retained entries on success and failure |
+| Decision capability admission | `TransactionOperationGate` / `Mutex<State>` | same | same | `enter` | `leave` / `closeAndWait` | closes before the physical transaction can finish |
+| Ordered merge window and RDF sequence | short `Mutex<Value>` access | same | same | `withLock` | `withLock` | request-local owner release; no lock crosses `await` |
+| Catalog and Grant state | storage transaction | same | same | bounded transactional read | revision-checked transactional write | backend-authoritative lifecycle |
 
 There is no `hasFeature(Embedded)` or `canImport(Synchronization)` branch in
 these sources. Embedded does not replace synchronized state with raw mutable
@@ -445,9 +491,10 @@ package enum ResolvedDatabaseTarget: Sendable {
 
 `ResolvedBaseLease` retains the logical Base identity, catalog revision,
 placement generation, storage-domain handle, owned root `Subspace`, and
-lifecycle state. `ResolvedCompositionLease` retains the Composition generation
-and its ordered set of `ResolvedBaseLease` values. Old leases remain valid
-until their in-flight operation ends.
+lifecycle state. `DatabaseCompositionLease` retains a
+`CompositionResolution` and its ordered `DatabaseBaseLease` values. A named
+resolution retains its catalog generation; a derived resolution has no catalog
+identity. Old named leases remain valid until their in-flight operation ends.
 
 `DatabaseOperationContext` no longer exposes a public `container`. It contains
 request metadata plus the target-bound lease and narrow execution services.
@@ -613,8 +660,12 @@ Composition execution cannot run a complete SQL query independently in every
 Base and concatenate results. That would change `ORDER BY`, `LIMIT`,
 `DISTINCT`, aggregate, join, graph, and ranking semantics.
 
-`DatabaseCompositionQueryPlanner` splits a supported plan into Base-local
-pushdown and global merge stages:
+`DatabaseEngine.CompositionQueryPlanner` splits a supported relational plan
+into Base-local pushdown and global merge stages. Its domain-neutral row merger
+also accepts a feature-owned `CompositionMemberQueryExecutor` through SPI.
+`GraphIndex` owns SPARQL source validation, Base-local SPARQL execution, and RDF
+identity qualification, then delegates only global row merging to the engine.
+The local typed executor and the server adapter invoke these same planners:
 
 ```mermaid
 flowchart LR
@@ -634,21 +685,46 @@ flowchart LR
 | Filter/projection | Push to every Base; preserve Base origin. |
 | Ordered scan | Concurrent Base-local cursors plus bounded k-way merge. |
 | Limit/offset | Apply globally after order semantics. |
-| Distinct | Include provenance in source identity unless the query explicitly projects it away; never remove it implicitly. |
+| Distinct | Compare exact projected row values, retain the first representative row, and merge every contributing Base into its origin. Digest collisions never define equality. |
 | Aggregate | Use decomposable partial aggregates only where mathematically valid; return multi-Base contributor provenance. Otherwise execute a bounded global aggregate or fail resource limits. |
-| Join | Initial support is Base-local so each source row has one Base origin. Cross-Base joins remain unsupported until row/column lineage is specified. |
+| Join | Base-local joins preserve one source origin. The bounded cross-Base v1 shape is two explicitly Base-qualified tables joined by `INNER JOIN`; every output row carries both contributors. Outer, lateral, nested, or implicitly routed cross-Base joins fail explicitly. |
 | Vector/full-text/rank | Normalize and merge only when index scoring contracts are comparable. |
 | RDF | Preserve Base origin and Base-qualified blank-node identity. |
 | Graph algorithm | Advertise only algorithms with defined cross-Base vertex/edge identity and merge semantics. |
 
 The common ordered path holds one cursor head per Base plus one output page.
-It does not materialize all Base results. Large payloads remain one owned
-`ByteString` plus bounded views until Wire output requires ownership.
+Operators that require global state retain only request-local state admitted by
+the shared row/byte/work budget; the planner never falls back to unmetered
+materialization.
 
 Unsupported plan shapes return a typed `compositionPlanUnsupported` error.
 They never fall back to an unbounded full scan or semantically different merge.
 
-### 10.1 Continuations
+### 10.1 Read-decide-write transaction
+
+Composition remains a read-only data source. The separate
+`withDecisionTransaction(writingTo:)` capability addresses the common
+"world + tenant read, then tenant write" workflow without pretending that a
+multi-domain operation is atomic.
+
+```mermaid
+flowchart LR
+    Resolve["Resolve selected Bases"] --> Domain{"One storage domain?"}
+    Domain -->|No| Fail["multipleStorageDomains"]
+    Domain -->|Yes| Transaction["One physical write transaction"]
+    Transaction --> Grants["read Grant on every member<br/>write Grant on writer"]
+    Grants --> Read["member-bound reads"]
+    Read --> Write["writer-bound mutations"]
+    Write --> Commit["one commit or rollback"]
+```
+
+The capability exposes member-bound fetch and writer-bound save/delete only;
+it does not expose a raw transaction or another Base mutation selector.
+Concurrent capability use is rejected, and returning from the operation closes
+the capability before commit. A selection spanning more than one storage
+domain fails before application work begins.
+
+### 10.2 Continuations
 
 A Composition continuation is an opaque, unguessable identifier for a bounded
 server-side snapshot record. Trusted state never round-trips through the
@@ -656,8 +732,8 @@ client:
 
 ```text
 opaque continuation
-    -> control-domain snapshot manifest
-        -> target and Composition generation
+    -> database-server control-domain snapshot manifest
+        -> Composition resolution and every member placement generation
         -> Schema generation and plan fingerprint
         -> per-domain read points and watermark
         -> chunked origin-preserving result spool
@@ -667,6 +743,11 @@ The first page is returned only after the manifest is readable. Every later
 page reloads the trusted record, reauthorizes every member Base, and rejects
 expired, stale, revoked, or mismatched state. Partial spools are removed on
 failure and cancellation and by scheduled expiry cleanup.
+
+This continuation contract is a server-adapter responsibility. Framework
+planners expose resolution, consistency, row/quad origin, and semantic result
+events; they do not own opaque remote tokens, client page storage, or spool
+accounting.
 
 ## 11. Storage Domains and Distributed Reads
 
@@ -736,11 +817,12 @@ ownership violations are internal failures, not missing-resource results.
 
 ### `database-kit` with `MultipleBases`
 
-- Compile Base, Composition, persisted Grant vocabulary, EntityAddress, and
-  origin-preserving result values only into the `MultipleBases` graph.
+- Compile Base, Composition, persisted Grant vocabulary, EntityAddress,
+  named/derived selection and resolution, and origin-preserving result values
+  only into the `MultipleBases` graph.
 - Rename Schema directory metadata to its relative meaning and update macros,
   manifest JSON, compatibility analysis, and tests.
-- Add required Wire v3 target encoding only in that graph; preserve target-free
+- Add required Wire v4 target encoding only in that graph; preserve target-free
   Wire v2 in the standard graph.
 - Add Base, Composition, and Grant operation families and capabilities.
 - Extend result pages and continuation contracts with provenance and generation
@@ -755,12 +837,16 @@ ownership violations are internal failures, not missing-resource results.
 - Bind every `DatabaseContext`, transaction, store cache, partition catalog,
   index state, relationship, graph, RDF, ontology, and SHACL path to one Base.
 - Split control-plane transaction execution from Base data contexts.
-- Change operation preparation so target requirement is known before dispatch.
-- Remove raw container access from operation contexts and migrate every handler.
 - Remove role-name administrator bypass and enforce field rules on every
   production read/write projection path.
-- Add Composition planner, streaming merge, result provenance, continuations,
-  consistency metadata, jobs, and cancellation cleanup.
+- Add the relational Composition planner, streaming merge, request-local
+  bounded exact DISTINCT workspace, result provenance, consistency metadata,
+  named/derived resolution,
+  and same-domain decision transaction to `DatabaseEngine`.
+- Add RDF blank-node qualification and SPARQL/ASK/CONSTRUCT/DESCRIBE
+  Composition planning to the optional `GraphIndex` target.
+- Expose semantic execution events for adapters; do not add DatabaseWire
+  dispatch, opaque continuation storage, remote jobs, or host lifecycle.
 - Reject removed global namespaces and descriptor versions explicitly. No
   migration job, reinterpretation, probe, or alias remains in the runtime.
 
@@ -774,19 +860,22 @@ ownership violations are internal failures, not missing-resource results.
 
 ### `database-client` with `MultipleBases`
 
-- Require a target for raw Wire v3 execution and provide Base/Composition-bound typed
+- Require a target for raw Wire v4 execution and provide Base/Composition-bound typed
   facades.
 - Preserve target and provenance across paging and cancellation.
 - Keep HTTP, WebSocket, JavaScript, and framed-stream transports byte-oriented.
 
 ### `database-server`
 
-- `DatabaseServerRuntime` owns Wire dispatch, operations, jobs, and schema
-  administration; `DatabaseServerHost` owns credentials, TLS, routing,
+- The package's internal operation adapter owns Wire dispatch, operation
+  preparation, error mapping, opaque result paging/spooling, jobs, and schema
+  administration; its internal native host owns credentials, TLS, routing,
   listeners, process lifecycle, and native engine construction.
 - The standard host injects one engine. With `MultipleBases`, it injects one or
   more named storage domains.
-- Do not evaluate Base Grants or parse query semantics.
+- Invoke framework/GraphIndex semantic planners and adapt their events. Do not
+  evaluate Base Grants or implement relational, aggregate, DISTINCT, RDF,
+  SPARQL, provenance, or transaction semantics.
 
 ### `database-cli` with `MultipleBases`
 
@@ -838,6 +927,33 @@ flowchart LR
 | G | Typed clients, CLI, native host, and platform adapters | Each host preserves the same framework semantics and typed failures through its owned protocol boundary. |
 | H | URL-dependency release graph | Required backend counts, target builds, lifecycle, and artifact checks pass. |
 
+Phase H is a staged publication, not one simultaneous manifest edit. A
+downstream manifest must not name a version until that upstream tag exists and
+resolves to its pushed main commit:
+
+```mermaid
+flowchart LR
+    Kit["1. database-kit<br/>Wire v4 + selection/resolution"]
+    Client["2a. database-client"]
+    Framework["2b. database-framework"]
+    Server["3a. database-server"]
+    CLI["3b. database-cli"]
+    Cloudflare["3c. database-framework-cloudflare"]
+    Kit --> Client
+    Kit --> Framework
+    Kit --> Server
+    Kit --> CLI
+    Kit --> Cloudflare
+    Framework --> Server
+    Framework --> CLI
+    Framework --> Cloudflare
+    Client --> CLI
+```
+
+After each upstream tag is published, only its direct downstream manifests are
+updated and resolved against URL dependencies. Local paths and nonexistent
+future version requirements are not valid intermediate release states.
+
 Estimated critical path before convergence loops is 34 engineer-days. Phases B
 catalog encoding and client API scaffolding can proceed after A in parallel,
 but production path migration and security review remain sequential because
@@ -861,7 +977,9 @@ cancel, and lifecycle races contain no bypass or partial result.
 | Security | direct/role Grant union, partial revoke, no role bypass, database/Base non-inheritance |
 | Entity policy | list/get/create/update/delete success and denial inside bound transaction |
 | Field policy | typed and schema-driven read/write projections, graph/RDF paths, remote operations |
-| Composition | all-member authorization before output, ambiguity, origin, order, limit, distinct, aggregates |
+| Composition | named/derived resolution, all-member authorization before output, ambiguity, origin, order, limit, distinct, aggregates |
+| Decision transaction | same-domain shared snapshot and commit, rollback, writer confinement, multi-domain preflight failure |
+| Cross-Base join | explicit qualification, INNER success and lineage, unsupported shape failure, row/byte/work budget failure, local/server semantic parity |
 | Continuation | generation/target/plan mismatch, tampering, reauthorization, bounded per-Base cursors |
 | Jobs | target persisted, every step reauthorized, cancel and result access |
 | Consistency | one-domain snapshot and multi-domain watermark contract |
@@ -894,11 +1012,12 @@ The feature is not production-ready until all of the following are true:
 
 ## 18. Intentionally Unadvertised Composition Semantics
 
-The initial runtime deliberately returns typed unsupported failures for the
-following Composition operations because a backend-independent semantic
-contract is not defined:
+The runtime deliberately returns typed unsupported failures for the following
+Composition operations because a backend-independent semantic contract is not
+defined:
 
-- cross-Base joins;
+- cross-Base outer, lateral, nested, or implicitly routed joins beyond the
+  bounded explicitly qualified two-table `INNER JOIN` contract;
 - graph algorithms with cross-Base vertex or edge identity;
 - heterogeneous full-text corpus ranking;
 - vector search across different dimension, metric, or scoring contracts; and

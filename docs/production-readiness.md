@@ -101,14 +101,16 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3715 \
+    --expected-count 3651 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
 
+export TOOLCHAINS=org.swift.64202608141a
+
 for product in Database; do
   swift build \
-    --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm \
+    --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a_wasm \
     --product "$product" \
     --disable-default-traits \
     --traits AllRuntimeFeatures \
@@ -118,13 +120,15 @@ done
 
 for product in Database; do
   swift build \
-    --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm-embedded \
+    --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a_wasm-embedded \
     --product "$product" \
     --disable-default-traits \
     --traits AllRuntimeFeatures \
     -c release \
     -debug-info-format none
 done
+
+export TOOLCHAINS=org.swift.64202607231a
 
 for product in Database; do
   swift build \
@@ -148,11 +152,14 @@ successfully. Do not replace these invocations with a direct package-wide
 the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
-The release gate uses database-kit tag 26.0814.0 (normalized by SwiftPM as
-26.814.0), storage-kit 26.0807.0, and swift-hnsw 1.1.4. Record the exact
-framework commit, result bundles, backend service identities, and platform
-build logs in the release report; do not preserve a previous release's results
-as evidence for a later source revision.
+The framework release gate resolves database-kit 26.0818.0. That published tag
+contains the `CompositionSelection`, `CompositionResolution`, and DatabaseWire
+v4 contracts consumed by this source revision and resolves to database-kit main
+commit `768390a4859916a89e147f6b2e259608f81ed9f6`. The remaining release
+dependencies are storage-kit 26.0807.0 and swift-hnsw 1.1.4. Record every
+resolved version and revision, the framework commit, result bundles, backend
+service identities, and platform build logs in the release report; do not
+preserve a previous release's results as evidence for a later source revision.
 
 Command-line portability and process verification belong to the independent
 [`database-cli`](https://github.com/1amageek/database-cli) package. This

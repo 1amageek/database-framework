@@ -14,8 +14,6 @@ public enum OnlineIndexBuildError:
     case invalidThrottleDelayMilliseconds(Int)
     case invalidMaximumConcurrency(Int)
     case invalidChunkSizeBytes(Int)
-    case emptyTargetSet
-    case duplicateTargetIndexName(String)
     case unsupportedCustomBuildStrategy(indexName: String)
     case unsupportedUniqueCustomBuildStrategy(indexName: String)
     case unsupportedUniquenessConstraint(indexName: String)
@@ -43,10 +41,6 @@ public enum OnlineIndexBuildError:
             return "Online index maximum concurrency must be greater than zero; received \(value)"
         case .invalidChunkSizeBytes(let value):
             return "Online index chunk size must be greater than zero; received \(value)"
-        case .emptyTargetSet:
-            return "An online index build requires at least one target index"
-        case .duplicateTargetIndexName(let name):
-            return "Online index target '\(name)' is registered more than once"
         case .unsupportedCustomBuildStrategy(let indexName):
             return "Online index target '\(indexName)' requires a custom strategy that this builder cannot execute"
         case .unsupportedUniqueCustomBuildStrategy(let indexName):

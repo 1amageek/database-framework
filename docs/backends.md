@@ -47,7 +47,7 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3715 \
+    --expected-count 3651 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -65,7 +65,7 @@ independent.
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0814.0",
+    from: "26.0818.0",
     traits: ["SQLite", "GraphIndexes"]
 )
 ~~~
@@ -78,7 +78,7 @@ Enable the data-partitioning feature independently:
 ~~~swift
 .package(
     url: "https://github.com/1amageek/database-framework.git",
-    from: "26.0814.0",
+    from: "26.0818.0",
     traits: ["SQLite", "AllRuntimeFeatures", "MultipleBases"]
 )
 ~~~

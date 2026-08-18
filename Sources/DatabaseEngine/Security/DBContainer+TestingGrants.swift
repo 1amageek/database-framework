@@ -40,7 +40,6 @@ extension DBContainer {
         }
     }
 
-    #if DATABASE_MULTIPLE_BASES
     /// Installs missing access through the production Base Grant store while
     /// retaining an explicitly authorized administration lease.
     @_spi(Testing)
@@ -82,6 +81,5 @@ extension DBContainer {
             }
         }
     }
-    #endif
 }
 #endif

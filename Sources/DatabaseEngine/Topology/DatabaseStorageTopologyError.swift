@@ -1,7 +1,5 @@
 #if DATABASE_MULTIPLE_BASES
-#if DATABASE_MULTIPLE_BASES
 import DatabaseKit
-#endif
 
 /// Validation and lifecycle failures for a container-owned storage topology.
 public enum DatabaseStorageTopologyError: Error, Sendable, Equatable {
@@ -15,7 +13,6 @@ public enum DatabaseStorageTopologyError: Error, Sendable, Equatable {
     case missingControlDomain(DatabaseStorageDomain.ID)
     case emptyDomainNamespace(domainID: DatabaseStorageDomain.ID)
     case emptyNamespaceComponent(domainID: DatabaseStorageDomain.ID)
-    #if DATABASE_MULTIPLE_BASES
     case noPlacements
     case duplicatePlacementID(Base.Placement.ID)
     case duplicatePlacementDestination(
@@ -29,7 +26,6 @@ public enum DatabaseStorageTopologyError: Error, Sendable, Equatable {
     case missingDefaultPlacement(Base.Placement.ID)
     case emptyPlacementPath(placementID: Base.Placement.ID)
     case emptyPlacementPathComponent(placementID: Base.Placement.ID)
-    #endif
     case configurationAlreadyClaimed
 }
 #endif

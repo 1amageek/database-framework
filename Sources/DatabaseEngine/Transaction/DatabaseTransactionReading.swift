@@ -5,14 +5,14 @@ public protocol DatabaseTransactionReading: Sendable {
     func fetch<Model: Persistable>(
         _ type: Model.Type,
         identifiedBy id: Model.ID,
-        consistency: DatabaseReadConsistency
+        consistency: TransactionReadConsistency
     ) async throws -> Model?
 
     func fetch<Model: Persistable>(
         _ type: Model.Type,
         identifiedBy id: Model.ID,
         in partition: DirectoryPath<Model>,
-        consistency: DatabaseReadConsistency
+        consistency: TransactionReadConsistency
     ) async throws -> Model?
 
     func scan<Model: Persistable>(
@@ -20,7 +20,7 @@ public protocol DatabaseTransactionReading: Sendable {
         in partition: DirectoryPath<Model>,
         after continuation: DatabaseScanContinuation?,
         limit: Int,
-        consistency: DatabaseReadConsistency
+        consistency: TransactionReadConsistency
     ) async throws -> sending DatabaseScanPage<Model>
 }
 

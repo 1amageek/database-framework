@@ -133,7 +133,7 @@ public protocol IndexMaintainer<Item>: Sendable {
     /// Compute expected index keys for an item
     ///
     /// This method computes the index keys that should exist for a given item
-    /// WITHOUT actually writing them. Used by OnlineIndexScrubber for verification.
+    /// without actually writing them for verification and diagnostics.
     ///
     /// - Parameters:
     ///   - item: The item to compute keys for
