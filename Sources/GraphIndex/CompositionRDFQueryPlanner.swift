@@ -2,7 +2,7 @@
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
-import Synchronization
+import StorageKit
 
 /// Base-local RDF graph form accepted by the Composition planner.
 @_spi(DatabaseExecution)
@@ -110,12 +110,13 @@ public struct CompositionRDFQueryPlanner: Sendable {
                     consistency: .federated(try await snapshot.readPoints())
                 )
                 guard try await emit(.began(metadata)) else { return }
-                let sequence = Mutex<UInt64>(0)
+                var nextSequence: UInt64 = 0
                 for member in snapshot.lease.members {
-                    try await source.withMemberContext(
+                    let memberSequenceStart = nextSequence
+                    nextSequence = try await source.withMemberContext(
                         member,
                         in: snapshot
-                    ) { databaseContext, transaction in
+                    ) { [memberSequenceStart] databaseContext, transaction in
                         let graph: DatabaseRetainedRDFGraph
                         switch statement {
                         case .construct(let query):
@@ -144,6 +145,7 @@ public struct CompositionRDFQueryPlanner: Sendable {
                                     transaction: transaction
                                 )
                         }
+                        var memberSequence = memberSequenceStart
                         for index in 0..<graph.count {
                             let quad = try graph.withElement(at: index) {
                                 value in
@@ -152,23 +154,19 @@ public struct CompositionRDFQueryPlanner: Sendable {
                                     baseID: member.baseID
                                 )
                             }
-                            let currentSequence = try sequence.withLock {
-                                value in
-                                let current = value
-                                let next = value.addingReportingOverflow(1)
-                                guard !next.overflow else {
-                                    throw CompositionQueryError
-                                        .workspaceCorrupted
-                                }
-                                value = next.partialValue
-                                return current
+                            let currentSequence = memberSequence
+                            let next = memberSequence.addingReportingOverflow(1)
+                            guard !next.overflow else {
+                                throw CompositionQueryError.workspaceCorrupted
                             }
+                            memberSequence = next.partialValue
                             try await workspace.insert(
                                 try Self.row(from: quad),
                                 origin: .source(member.baseID),
                                 sequence: currentSequence
                             )
                         }
+                        return memberSequence
                     }
                 }
                 try await workspace.forEachResult(batchSize: 64) { result in
