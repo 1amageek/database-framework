@@ -1,4 +1,5 @@
 #if DATABASE_MULTI_BASE
+import DatabaseKit
 import StorageKit
 import Synchronization
 

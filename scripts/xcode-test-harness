@@ -6,6 +6,8 @@ SCHEME="database-framework-Package"
 DESTINATION="platform=macOS,arch=arm64"
 TRAITS=""
 EXPECTED_TEST_COUNT=""
+TOOLCHAIN_IDENTIFIER="org.swift.64202608141a"
+XCODE_TOOLCHAIN_IDENTIFIER="com.apple.dt.toolchain.XcodeDefault"
 REQUIRE_ZERO_SKIPS=false
 REQUIRE_ZERO_EXPECTED_FAILURES=false
 REQUIRE_ZERO_RUNTIME_WARNINGS=false
@@ -288,11 +290,7 @@ inject_environment() {
   local testing_library_path=""
   local fdb_library_path=""
 
-  if [[ -n "${TOOLCHAINS:-}" ]]; then
-    swiftc="$(xcrun --toolchain "$TOOLCHAINS" --find swiftc)"
-  else
-    swiftc="$(xcrun --find swiftc)"
-  fi
+  swiftc="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
   toolchain_root="$(cd "$(dirname "$swiftc")/../.." && pwd)"
   if [[ -f "$toolchain_root/usr/lib/swift/macosx/testing/libTesting.dylib" ]]; then
     testing_library_path="$toolchain_root/usr/lib/swift/macosx/testing"
@@ -387,6 +385,8 @@ for command in cmp jq shasum swift xcodebuild xcrun plutil perl rg rsync tee; do
     exit 1
   fi
 done
+
+PINNED_SWIFTC="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
 
 traits_literal="$(trait_literal "$TRAITS")"
 if [[ -n "$REUSE_WORK_ROOT" ]]; then
@@ -500,7 +500,8 @@ if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
 else
   (
     cd "$source_copy"
-    timeout_command "$RESOLVE_TIMEOUT_SECONDS" swift package resolve
+    timeout_command "$RESOLVE_TIMEOUT_SECONDS" \
+      xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swift package resolve
   )
 fi
 jq -S '[.pins[] | {identity, kind, location, state}] | sort_by(.identity)' \
@@ -526,13 +527,10 @@ build_fingerprint="$({
   printf 'traits=%s\n' "$TRAITS"
   printf 'scheme=%s\n' "$SCHEME"
   printf 'destination=%s\n' "$DESTINATION"
-  printf 'toolchains=%s\n' "${TOOLCHAINS:-}"
+  printf 'manifest-toolchain=%s\n' "$XCODE_TOOLCHAIN_IDENTIFIER"
+  printf 'swift-toolchain=%s\n' "$TOOLCHAIN_IDENTIFIER"
   xcodebuild -version
-  if [[ -n "${TOOLCHAINS:-}" ]]; then
-    xcrun --toolchain "$TOOLCHAINS" swiftc -version
-  else
-    xcrun swiftc -version
-  fi
+  xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swiftc -version
   printf 'fdb-include=%s\n' "${FDB_CLIENT_INCLUDE_DIRECTORY:-}"
   printf 'fdb-library=%s\n' "${FDB_CLIENT_LIBRARY_DIRECTORY:-}"
   printf 'additional-build-argument=%s\n' \
@@ -576,7 +574,9 @@ test_log="$RESULT_DIRECTORY/Test-$run_identifier.log"
 
 reject_internal_tool_errors() {
   local log_path="$1"
-  if rg -n 'Internal Error:|LLVM Profile Error:' "$log_path" >&2; then
+  if rg -n \
+      'Internal Error:|LLVM Profile Error:|warning: input verification failed' \
+      "$log_path" >&2; then
     echo "error: internal tool failure detected in $log_path" >&2
     return 1
   fi
@@ -625,12 +625,21 @@ else
   set +e
   (
     cd "$source_copy"
-    timeout_command "$BUILD_TIMEOUT_SECONDS" xcodebuild "${build_arguments[@]}" \
+    # Xcode 27 evaluates package manifests with its bundled Swift 6.4
+    # toolchain. SWIFT_EXEC keeps every Swift target on the pinned snapshot.
+    timeout_command "$BUILD_TIMEOUT_SECONDS" env \
+      TOOLCHAINS="$XCODE_TOOLCHAIN_IDENTIFIER" \
+      xcodebuild "${build_arguments[@]}" \
+      SWIFT_EXEC="$PINNED_SWIFTC" \
       2>&1 | tee "$build_log"
   )
   build_status=$?
   set -e
   reject_internal_tool_errors "$build_log"
+  if ! rg -F "SWIFT_EXEC = $PINNED_SWIFTC" "$build_log" >/dev/null; then
+    echo "error: Xcode did not record the pinned Swift compiler" >&2
+    exit 1
+  fi
   if (( build_status != 0 )); then
     echo "error: xcodebuild build-for-testing exited with status $build_status" >&2
     exit "$build_status"
@@ -689,7 +698,9 @@ fi
 echo "Test result: $test_result"
 echo "Test log: $test_log"
 set +e
-timeout_command "$TEST_TIMEOUT_SECONDS" xcodebuild "${test_arguments[@]}" \
+timeout_command "$TEST_TIMEOUT_SECONDS" env \
+  TOOLCHAINS="$XCODE_TOOLCHAIN_IDENTIFIER" \
+  xcodebuild "${test_arguments[@]}" \
   2>&1 | tee "$test_log"
 test_status=$?
 set -e
