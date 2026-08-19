@@ -1,4 +1,4 @@
-/// Runtime services required to expose an index kind's complete behavior.
+/// Runtime services required to expose an index type's complete behavior.
 public struct IndexRuntimeRequirements: Sendable, Equatable {
     public let requiresEntityReadExecutor: Bool
     public let requiresPolymorphicReadExecutor: Bool

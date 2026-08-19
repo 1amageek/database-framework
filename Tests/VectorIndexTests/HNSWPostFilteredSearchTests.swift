@@ -1,12 +1,13 @@
 // HNSWPostFilteredSearchTests.swift
 // Tests for expanded HNSW candidate search followed by predicate evaluation
 
-import Testing
-import TestHeartbeat
-import Foundation
-import StorageKit
 import DatabaseKit
 import DatabaseTypes
+import Foundation
+import StorageKit
+import TestHeartbeat
+import Testing
+
 @testable import DatabaseEngine
 @testable import VectorIndex
 
@@ -46,17 +47,17 @@ private struct PostFilteredSearchContext {
         self.itemsSubspace = subspace.subspace("R")
         self.blobsSubspace = subspace.subspace("B")
 
-        let metadata = vectorIndexMetadata(
+        let definition = vectorIndexDefinition(
             fieldNumber: 5,
             dimensions: dimensions,
             metric: .cosine
         )
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: PostFilteredProduct.self,
             name: indexName,
-            kind: metadata,
+            definition: definition,
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: indexName,
             itemTypes: Set(["PostFilteredProduct"])
         )
 
@@ -262,7 +263,7 @@ struct HNSWPostFilteredSearchTests {
             PostFilteredProduct(
                 id: "p4", name: "Desk", category: "furniture", price: 300,
                 embedding: try Vector(float32: normalizedVector([0.7, 0.3, 0.0, 0.0]))
-            )
+            ),
         ]
 
         try await ctx.insertProducts(products)
@@ -310,7 +311,7 @@ struct HNSWPostFilteredSearchTests {
             PostFilteredProduct(
                 id: "furniture", name: "Furniture", category: "furniture", price: 50,
                 embedding: try Vector(float32: normalizedVector([0.99, 0.01, 0.0, 0.0]))
-            )
+            ),
         ]
 
         try await ctx.insertProducts(products)
@@ -353,7 +354,7 @@ struct HNSWPostFilteredSearchTests {
             PostFilteredProduct(id: "p3", name: "Cheap Furniture", category: "furniture", price: 50,
                              embedding: try Vector(float32: normalizedVector([0.8, 0.2, 0.0, 0.0]))),
             PostFilteredProduct(id: "p4", name: "Mid Furniture", category: "furniture", price: 500,
-                             embedding: try Vector(float32: normalizedVector([0.7, 0.3, 0.0, 0.0])))
+                             embedding: try Vector(float32: normalizedVector([0.7, 0.3, 0.0, 0.0]))),
         ]
 
         try await ctx.insertProducts(products)
@@ -417,7 +418,7 @@ struct HNSWPostFilteredSearchTests {
             PostFilteredProduct(id: "p1", name: "Product 1", category: "electronics", price: 100,
                              embedding: try Vector(float32: normalizedVector([1.0, 0.0, 0.0, 0.0]))),
             PostFilteredProduct(id: "p2", name: "Product 2", category: "electronics", price: 200,
-                             embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0])))
+                             embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0]))),
         ]
 
         try await ctx.insertProducts(products)
@@ -495,7 +496,7 @@ struct HNSWPostFilteredSearchTests {
             PostFilteredProduct(id: "e2", name: "Electronics 2", category: "electronics", price: 300,
                              embedding: try Vector(float32: normalizedVector([0.9, 0.1, 0.0, 0.0]))),
             PostFilteredProduct(id: "f2", name: "Furniture 2", category: "furniture", price: 400,
-                             embedding: try Vector(float32: normalizedVector([0.85, 0.15, 0.0, 0.0])))
+                             embedding: try Vector(float32: normalizedVector([0.85, 0.15, 0.0, 0.0]))),
         ]
 
         try await ctx.insertProducts(products)

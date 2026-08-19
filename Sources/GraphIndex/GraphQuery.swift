@@ -3,9 +3,9 @@
 //
 // Provides DatabaseContext extension and query builder following the standard pattern.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 // MARK: - Graph Entry Point
@@ -91,7 +91,7 @@ public struct GraphEntryPoint<T: Persistable>: Sendable {
         )
     }
 
-    /// Use the default graph index (first GraphIndexKind found)
+    /// Use the first declared property-graph index.
     ///
     /// - Returns: Graph query builder configured with the default index
     public func defaultIndex() throws -> GraphQueryBuilder<T> {
@@ -603,8 +603,8 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
             )
             let scanner = GraphPropertyScanner(
                 indexSubspace: resolvedIndex.indexSubspace,
-                strategy: resolvedIndex.metadata.strategy,
-                storedFieldNames: resolvedIndex.storedFieldNames,
+                strategy: resolvedIndex.configuration.strategy,
+                includedFieldNames: resolvedIndex.includedFieldNames,
                 snapshot: snapshot
             )
             let stream = scanner.scanEdges(

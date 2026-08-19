@@ -1,4 +1,4 @@
-#if MultipleBases
+#if MultiBase
 @_spi(DatabaseExecution) @testable import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
@@ -92,7 +92,7 @@ struct DatabaseBaseDeletionTests {
                         subject: .principal("test-runner"),
                         resource: .base(baseID),
                         access: .all
-                    ),
+                    )
                 ],
                 expectedRevision: 0
             )
@@ -169,10 +169,14 @@ struct DatabaseBaseDeletionTests {
             testing: schema,
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         BaseDeletionEntity.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled

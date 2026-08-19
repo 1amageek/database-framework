@@ -54,7 +54,13 @@ struct DatabaseContextFoundationDBTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(ContextUser.self), try DatabaseFrameworkRuntime.entity(ContextProduct.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(ContextUser.self), try DatabaseFrameworkRuntime.entity(ContextProduct.self),
+                ]),
             security: .testingDisabled,
         )
     }
@@ -209,7 +215,7 @@ struct DatabaseContextFoundationDBTests {
         let users = [
             ContextUser(name: "User1", email: "user1@example.com", age: 20),
             ContextUser(name: "User2", email: "user2@example.com", age: 25),
-            ContextUser(name: "User3", email: "user3@example.com", age: 30)
+            ContextUser(name: "User3", email: "user3@example.com", age: 30),
         ]
         for user in users {
             try context.insert(user)
@@ -474,7 +480,7 @@ struct DatabaseContextFoundationDBTests {
 
         let users = [
             ContextUser(name: "User1", email: "user1@example.com", age: 20),
-            ContextUser(name: "User2", email: "user2@example.com", age: 25)
+            ContextUser(name: "User2", email: "user2@example.com", age: 25),
         ]
         for user in users {
             try context.insert(user)

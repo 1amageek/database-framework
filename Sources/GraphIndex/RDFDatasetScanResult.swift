@@ -1,27 +1,27 @@
 import DatabaseEngine
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 package struct RDFDatasetScanStorageRow: Sendable, Hashable {
     package let quad: RDFQuad
     package let coveringValue: ByteString
-    package let storedFieldNames: [String]
+    package let includedFieldNames: [String]
 
     package init(
         quad: RDFQuad,
         coveringValue: ByteString = ByteString(),
-        storedFieldNames: [String] = []
+        includedFieldNames: [String] = []
     ) {
         self.quad = quad
         self.coveringValue = coveringValue
-        self.storedFieldNames = storedFieldNames
+        self.includedFieldNames = includedFieldNames
     }
 
     package func decodeProperties() throws -> [String: FieldValue] {
         try CoveringValueBuilder.decode(
             coveringValue,
-            storedFieldNames: storedFieldNames
+            includedFieldNames: includedFieldNames
         )
     }
 }

@@ -19,10 +19,9 @@ import DatabaseRuntime
 @Persistable
 struct IndexedUser {
     #Index(
-        .scalar,
-        fields: [\IndexedUser.email],
-        unique: true,
-        name: "IndexedUser_email"
+        .ordered(
+            name: "IndexedUser_email", keys: [.ascending(\IndexedUser.email)],
+        unique: true)
     )
 
     var id: String = UUID().uuidString
@@ -49,7 +48,12 @@ private struct IndexStateContext {
         let container = try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexedUser.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexedUser.self)]),
             security: .testingDisabled
         )
         let dataStore = try await container.testBaseStore(for: IndexedUser.self)
@@ -70,7 +74,10 @@ private struct IndexStateContext {
 
     /// Count index entries
     func countIndexEntries(indexName: String) async throws -> Int {
-        let indexSubspace = subspace.subspace("I").subspace(indexName)
+        let indexSubspace = try IndexLifecycleStore(
+            container: container,
+            subspace: subspace
+        ).indexSubspace(for: indexName)
         return try await database.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
             return try await transaction.collectRange(
@@ -319,7 +326,7 @@ struct IndexStateBehaviorTests {
             try await ctx.container.withTestBaseOperation {
 
                 let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-                let indexName = "test_index"
+                let indexName = "IndexedUser_email"
 
             try await indexLifecycleStore.disable(indexName)
             let state1 = try await indexLifecycleStore.state(of: indexName)
@@ -353,7 +360,7 @@ struct IndexStateBehaviorTests {
             try await ctx.container.withTestBaseOperation {
 
                 let indexLifecycleStore = IndexLifecycleStore(container: ctx.container, subspace: ctx.subspace)
-                let indexName = "test_invalid"
+                let indexName = "IndexedUser_email"
 
             try await indexLifecycleStore.disable(indexName)
             try await indexLifecycleStore.enable(indexName)
@@ -392,9 +399,9 @@ struct IndexStateBehaviorTests {
             let users = [
                 IndexedUser(id: "batch1", email: "batch1@example.com", name: "Batch 1"),
                 IndexedUser(id: "batch2", email: "batch2@example.com", name: "Batch 2"),
-                IndexedUser(id: "batch3", email: "batch3@example.com", name: "Batch 3")
-            ]
-            try await ctx.dataStore.executeBatch(inserts: users, deletes: [])
+                IndexedUser(id: "batch3", email: "batch3@example.com", name: "Batch 3"),
+                ]
+                try await ctx.dataStore.executeBatch(inserts: users, deletes: [])
 
             // Verify no index entries created
             let indexEntryCount = try await ctx.countIndexEntries(indexName: indexName)

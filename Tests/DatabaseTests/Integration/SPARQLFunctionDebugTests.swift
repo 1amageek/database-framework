@@ -37,11 +37,12 @@ struct SPARQLFunctionDebugTests {
         var object: RDFTerm
 
         #Index(
-            .rdfDataset,
-            from: \SPARQLDebugTriple.subject,
-            edge: \SPARQLDebugTriple.predicate,
-            to: \SPARQLDebugTriple.object
-        )
+            .graph(
+                name: "SPARQLDebugTriple_rdf_quad_subject_predicate_object",
+                definition: .rdf(
+                    subject: \SPARQLDebugTriple.subject,
+                    predicate: \SPARQLDebugTriple.predicate,
+                    object: \SPARQLDebugTriple.object, graph: nil)))
 
         init(
             subject: String,
@@ -66,7 +67,13 @@ struct SPARQLFunctionDebugTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLDebugUser.self), try DatabaseFrameworkRuntime.entity(SPARQLDebugTriple.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLDebugUser.self), try DatabaseFrameworkRuntime.entity(SPARQLDebugTriple.self),
+                ]),
             security: .testingDisabled,
         )
         try await container.resetTestBaseData()

@@ -12,12 +12,11 @@ import Database
 @Persistable
 struct User {
     #Directory<User>("app", "users")
-    #Index(
-        .scalar,
-        fields: [\User.email],
-        unique: true,
-        name: "User_email"
-    )
+    #Index(.ordered(
+        name: "User_email",
+        keys: [.ascending(\User.email)],
+        unique: true
+    ))
 
     var id: String = ""
     var email: String
@@ -29,9 +28,18 @@ let schema = try Schema(
     version: .init(1, 0, 0)
 )
 let runtime = try DatabaseFrameworkRuntime.configuration(
+    executionIdentity: DatabaseExecutionRuntimeIdentity(
+        identifier: "application",
+        revision: 1
+    ),
     entityRuntimes: [try DatabaseFrameworkRuntime.entity(User.self)]
 )
 ~~~
+
+Keep the execution identity identifier stable for the application and increase
+its revision whenever executable runtime behavior changes without a schema
+change. This prevents continuations from being reused across incompatible
+authorization or execution behavior.
 
 database-kit owns model metadata and index declarations. The framework
 registers that metadata and provides the execution path.
@@ -93,11 +101,11 @@ requirements. The clocks are explicit runtime dependencies: native
 applications may use Foundation-backed adapters, while Embedded targets inject
 their platform implementations without linking Foundation.
 
-The consuming package selects optional capabilities. `Database` remains the
-umbrella import; traits change what enters that umbrella's dependency graph.
-`GraphIndexes` includes ScalarIndex, GraphIndex, and OntologyIndex.
-`Relationships` is selected separately when the schema declares relationship
-maintenance.
+The consuming package selects optional capabilities. `DatabaseRuntime` is the
+lightweight runtime-composition import, while `Database` is the broader
+umbrella import. `GraphIndexes` makes ScalarIndex, GraphIndex, and OntologyIndex
+available through both. `Relationships` is selected separately when the schema
+declares relationship maintenance.
 
 ~~~swift
 .package(
@@ -127,7 +135,7 @@ that database. Engine ownership transfers through
 `DBConfiguration(storageEngine:)`; opening failure, explicit shutdown, and
 deinitialization converge on the same exactly-once release path.
 
-When the consuming package explicitly enables `MultipleBases`, use a session
+When the consuming package explicitly enables `MultiBase`, use a session
 to select the Base. That trait adds storage topology, Base and Composition
 catalogs, target leases, and persisted Grants:
 
@@ -136,7 +144,7 @@ let session = container.session(authorization: authorization)
 let context = session.base(baseID).newContext()
 ~~~
 
-`MultipleBases` is not implied by `AllRuntimeFeatures` and does not affect the
+`MultiBase` is not implied by `AllRuntimeFeatures` and does not affect the
 default transaction path.
 
 ## 4. Queries
@@ -197,11 +205,12 @@ Declare indexes with the model:
 @Persistable
 struct Document {
     #Directory<Document>("app", "documents")
-    #Index(
-        .vector(dimensions: 1536),
+    #Index(.vector(
+        name: "Document_embedding",
         embedding: \Document.embedding,
-        name: "Document_embedding"
-    )
+        dimensions: 1536,
+        metric: .cosine
+    ))
 
     var id: String = ""
     var title: String
@@ -210,8 +219,7 @@ struct Document {
 ~~~
 
 Available index modules include Scalar, Vector, FullText, Spatial, Rank,
-Graph, Aggregation, Version, Bitmap, Leaderboard, Permuted, Relationship, and
-Ontology.
+Graph, Aggregation, Version, Bitmap, Leaderboard, Relationship, and Ontology.
 
 Module-specific query APIs are documented in the corresponding
 Sources/*Index/README.md files.
@@ -233,6 +241,16 @@ let migration = Migration(
 Migrations run through the configured StorageEngine. Administrative
 provisioning, such as creating a PostgreSQL table for a DML-only role, remains
 a deployment concern.
+
+Opening a container with a migration plan activates a container-scoped
+admission boundary. Run `migrateIfNeeded()` before serving application traffic;
+ordinary data operations remain unavailable after a bounded partial run or a
+failed stage and are admitted only after the complete plan succeeds. Containers
+opened without a migration plan do not allocate or lock this migration gate.
+With `MultiBase`, each Base migrates through its own `AdminContext`, and
+container-wide data admission reopens only after every active Base matches the
+compiled schema and physical index generation. The database-wide execution
+runtime is published only after that condition holds.
 
 ## 8. Client And Server
 

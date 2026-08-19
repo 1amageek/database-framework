@@ -37,16 +37,13 @@ extension DBContainer {
         for schema: Schema,
         configuration: SQLiteStorageEngine.Configuration,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
         let engine = try SQLiteStorageEngine(configuration: configuration)
         return try await open(
             for: schema,
             configuration: try .testing(
-                storageEngine: engine,
-                indexConfigurations: indexConfigurations
-            ),
+                storageEngine: engine),
             runtimeConfiguration: runtimeConfiguration,
             security: security
         )
@@ -57,17 +54,14 @@ extension DBContainer {
         migrationPlan: P.Type,
         configuration: SQLiteStorageEngine.Configuration,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
         let engine = try SQLiteStorageEngine(configuration: configuration)
         return try await open(
             for: schema,
             migrationPlan: migrationPlan,
             configuration: try .testing(
-                storageEngine: engine,
-                indexConfigurations: indexConfigurations
-            ),
+                storageEngine: engine),
             runtimeConfiguration: runtimeConfiguration,
             security: security
         )
@@ -76,16 +70,13 @@ extension DBContainer {
     static func inMemory(
         for schema: Schema,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         return try await open(
             for: schema,
             configuration: try .testing(
-                storageEngine: engine,
-                indexConfigurations: indexConfigurations
-            ),
+                storageEngine: engine),
             runtimeConfiguration: runtimeConfiguration,
             security: security
         )
@@ -95,16 +86,13 @@ extension DBContainer {
         for schema: Schema,
         path: String,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
         let engine = try SQLiteStorageEngine(configuration: .file(path))
         return try await open(
             for: schema,
             configuration: try .testing(
-                storageEngine: engine,
-                indexConfigurations: indexConfigurations
-            ),
+                storageEngine: engine),
             runtimeConfiguration: runtimeConfiguration,
             security: security
         )

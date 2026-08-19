@@ -84,10 +84,9 @@ struct PGMigratedUserV1 {
 struct PGMigratedUserV2 {
     #Directory<PGMigratedUserV2>("test", "pg-migration", "migrated-user")
     #Index(
-        .scalar,
-        fields: [\PGMigratedUserV2.fullName],
-        name: "PGMigratedUser_fullName"
-    )
+        .ordered(
+            name: "PGMigratedUser_fullName", keys: [.ascending(\PGMigratedUserV2.fullName)],
+            unique: false))
 
     var id: String = ""
     var fullName: String
@@ -171,7 +170,12 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
                 for: PGSchemaEvolutionSchemaV2.self,
                 migrationPlan: PGAppendOnlyMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGSchemaEvolutionUserV2.self)])
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGSchemaEvolutionUserV2.self)])
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -269,7 +273,12 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
                 for: PGMigrationSchemaV2.self,
                 migrationPlan: PGCustomMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV2.self)])
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV2.self)])
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -324,7 +333,12 @@ struct SchemaEvolutionMigrationPostgreSQLTests {
                 for: PGMigrationSchemaV2.self,
                 migrationPlan: PGCustomMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV2.self)])
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGMigratedUserV2.self)])
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 

@@ -1,4 +1,4 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 import DatabaseKit
 
 /// Executes a type-safe, read-only query through the canonical Composition

@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 enum RankReadParameter {
@@ -51,7 +51,7 @@ private func validatePercentile(_ value: Double) throws {
 }
 
 private struct RankReadExecutor: IndexReadExecutor {
-    let kindIdentifier = "rank"
+    let indexType: IndexType = .rank
 
     func executeRows(
         context: DatabaseContext,
@@ -71,8 +71,8 @@ private struct RankReadExecutor: IndexReadExecutor {
             requested: options.consistency,
             default: .snapshot
         )
-        guard index.kindIdentifier == kindIdentifier,
-              index.fieldNames == [fieldName] else {
+        guard index.type == indexType,
+            index.fieldNames == [fieldName] else {
             throw RankReadError.invalidParameter(RankReadParameter.fieldName)
         }
         try context.authorizeCanonicalListAccess(
@@ -81,7 +81,7 @@ private struct RankReadExecutor: IndexReadExecutor {
         )
         return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
-            kindIdentifier: kindIdentifier,
+            indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
             configuration: execution.transactionConfiguration
@@ -229,12 +229,12 @@ private struct RankReadExecutor: IndexReadExecutor {
 }
 
 private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
-    let kindIdentifier = "rank"
+    let indexType: IndexType = .rank
 
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
-        index: PolymorphicIndexMetadata,
+        index: IndexDeclaration<String>,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
@@ -244,8 +244,8 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
         let fieldName = try parameters.requireString(
             named: RankReadParameter.fieldName
         )
-        guard index.kindIdentifier == kindIdentifier,
-              index.fieldNames == [fieldName] else {
+        guard index.type == indexType,
+            index.fieldNames == [fieldName] else {
             throw RankReadError.invalidParameter(
                 RankReadParameter.fieldName
             )
@@ -336,9 +336,9 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
                                     .string(entity.typeName),
                                 PolymorphicRowAnnotation.typeCode:
                                     .int64(entity.typeCode),
-                                "rank": .int64(Int64(rankedKey.rank))
-                            ]
-                        )
+                                "rank": .int64(Int64(rankedKey.rank)),
+                                ]
+                            )
                     )
                 }
             }

@@ -24,11 +24,12 @@ struct SocialEdgeForGroupBy {
     var object: RDFTerm = .string("")
 
     #Index(
-        .rdfDataset,
-        from: \SocialEdgeForGroupBy.subject,
-        edge: \SocialEdgeForGroupBy.predicate,
-        to: \SocialEdgeForGroupBy.object
-    )
+        .graph(
+            name: "SocialEdgeForGroupBy_rdf_quad_subject_predicate_object",
+            definition: .rdf(
+                subject: \SocialEdgeForGroupBy.subject,
+                predicate: \SocialEdgeForGroupBy.predicate,
+                object: \SocialEdgeForGroupBy.object, graph: nil)))
 }
 
 // MARK: - Test Suite
@@ -86,7 +87,12 @@ struct SPARQLGroupByTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdgeForGroupBy.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdgeForGroupBy.self)]),
             security: .testingDisabled,
         )
         try await container.resetTestBaseData()
@@ -683,7 +689,7 @@ struct SPARQLGroupByTests {
 
         // Single value: 42
         let edges = [
-            try makeEdge(from: item, relationship: predicate, to: .integer(42)),
+            try makeEdge(from: item, relationship: predicate, to: .integer(42))
         ]
 
         try await insertEdges(edges, context: context)

@@ -97,7 +97,13 @@ struct RelationshipIndexPerformanceTests {
         let container = try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PerfCustomer.self), try DatabaseFrameworkRuntime.entity(PerfOrder.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PerfCustomer.self), try DatabaseFrameworkRuntime.entity(PerfOrder.self),
+                ]),
             security: .testingDisabled
             )
 

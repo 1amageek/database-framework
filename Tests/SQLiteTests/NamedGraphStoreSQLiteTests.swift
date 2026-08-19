@@ -16,13 +16,13 @@ private struct SQLiteNamedGraphStatement {
         "statements"
     )
     #Index(
-        .rdfDataset,
-        from: \SQLiteNamedGraphStatement.subject,
-        edge: \SQLiteNamedGraphStatement.predicate,
-        to: \SQLiteNamedGraphStatement.object,
-        graph: \SQLiteNamedGraphStatement.graph,
-        name: "rdf_quad"
-    )
+        .graph(
+            name: "rdf_quad",
+            definition: .rdf(
+                subject: \SQLiteNamedGraphStatement.subject,
+                predicate: \SQLiteNamedGraphStatement.predicate,
+                object: \SQLiteNamedGraphStatement.object,
+        graph: \SQLiteNamedGraphStatement.graph)))
 
     var id: String = UUID().uuidString
     var subject: RDFTerm = .iri(.xsdString)
@@ -206,7 +206,11 @@ struct NamedGraphStoreSQLiteTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteNamedGraphStatement.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteNamedGraphStatement.self)]
             ),
             security: .testingDisabled
         )
@@ -223,7 +227,7 @@ struct NamedGraphStoreSQLiteTests {
     ) async throws -> IndexedRDFDatasetScanner {
         let readableIndex = try await context.indexQueryContext.withReadableIndex(
             named: "rdf_quad",
-            kindIdentifier: IndexDefinition.rdfDataset.identifier,
+            indexType: .graph(.rdf),
             for: SQLiteNamedGraphStatement.self
         ) { index, _ in
             index

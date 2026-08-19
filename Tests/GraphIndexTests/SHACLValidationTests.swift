@@ -33,11 +33,13 @@ struct SHACLValidationStatement {
     var object: RDFTerm = .iri(.xsdString)
 
     #Index(
-        .rdfDataset,
-        from: \SHACLValidationStatement.subject,
-        edge: \SHACLValidationStatement.predicate,
-        to: \SHACLValidationStatement.object
-    )
+        .graph(
+            name: "SHACLValidationStatement_rdf_quad_subject_predicate_object",
+            definition: .rdf(
+                subject: \SHACLValidationStatement.subject,
+                predicate: \SHACLValidationStatement.predicate,
+                object: \SHACLValidationStatement.object,
+                graph: nil)))
 }
 
 // MARK: - Test Suite
@@ -59,7 +61,12 @@ struct SHACLValidationTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SHACLValidationStatement.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SHACLValidationStatement.self)]),
             security: .testingDisabled,
         )
     }
@@ -582,10 +589,10 @@ struct SHACLValidationTests {
                             path: .predicate(try predicateIRI("ex:name")),
                             constraints: [
                                 .datatype(XSDDatatype.integer.iri.rawValue)
-                            ]
-                        ),
-                    ]
-                ))
+                                ]
+                            )
+                        ]
+                    ))
             ]
         )
         try await context.shacl.loadShapes(wrongShapes)
@@ -631,10 +638,10 @@ struct SHACLValidationTests {
                             path: .predicate(try predicateIRI("ex:knows")),
                             constraints: [
                                 .datatype(XSDDatatype.string.iri.rawValue)
-                            ]
-                        ),
-                    ]
-                ))
+                                ]
+                            )
+                        ]
+                    ))
             ]
         )
         try await context.shacl.loadShapes(shapesGraph)
@@ -1027,8 +1034,8 @@ struct SHACLValidationTests {
 
         // Insert data: Alice has rdf:type ex:Person but NOT ex:Agent (both are IRIs)
         try await insertStatements([
-            try makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: try iri("ex:Person")),
-        ], context: context)
+            try makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: try iri("ex:Person"))
+            ], context: context)
 
         // Shape: every Person must have rdf:type ex:Agent as well
         let shapesGraph = SHACLShapesGraph(
@@ -1308,8 +1315,8 @@ struct SHACLValidationTests {
 
         // Insert data: Dave is a Person with no name (would normally violate)
         try await insertStatements([
-            try makeStatement(subject: "ex:Dave", predicate: Self.rdfType, object: try iri("ex:Person")),
-        ], context: context)
+            try makeStatement(subject: "ex:Dave", predicate: Self.rdfType, object: try iri("ex:Person"))
+            ], context: context)
 
         // Shape: deactivated PersonShape
         let shapesGraph = SHACLShapesGraph(
@@ -1606,8 +1613,8 @@ struct SHACLValidationTests {
 
         // Insert some data (doesn't matter what)
         try await insertStatements([
-            try makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: try iri("ex:Person")),
-        ], context: context)
+            try makeStatement(subject: "ex:Alice", predicate: Self.rdfType, object: try iri("ex:Person"))
+            ], context: context)
 
         // Validate against a shapes graph that does not exist
         do {

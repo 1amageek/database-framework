@@ -11,6 +11,7 @@ public enum DatabaseSchemaPublicationError: Error, Sendable, Equatable,
     case invalidIdempotencyKey
     case persistentIndexBuildJobRequired
     case generationOverflow
+    case generationConflict(expected: UInt64, actual: UInt64)
     case corruptedState(String)
 
     public var description: String {
@@ -27,6 +28,8 @@ public enum DatabaseSchemaPublicationError: Error, Sendable, Equatable,
             return "Schema publication requires an atomic persistent index-build job"
         case .generationOverflow:
             return "Schema generation exhausted UInt64"
+        case .generationConflict:
+            return "The expected schema generation does not match the active generation"
         case .corruptedState(let reason):
             return "Persisted schema publication state is invalid: \(reason)"
         }

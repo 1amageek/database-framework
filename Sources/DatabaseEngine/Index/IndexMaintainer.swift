@@ -1,6 +1,6 @@
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
-import DatabaseKit
 
 /// Protocol for maintaining an index
 ///
@@ -202,7 +202,7 @@ extension IndexMaintainer {
     ) async throws {}
 
     /// Default: verification is unsupported until the maintainer implements the
-    /// physical expectation for its index kind.
+    /// physical expectation for its index type.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple

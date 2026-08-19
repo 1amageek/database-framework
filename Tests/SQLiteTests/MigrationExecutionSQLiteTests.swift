@@ -1,5 +1,6 @@
 #if SQLITE
 import DatabaseTypes
+@_spi(DatabaseExecution) import DatabaseEngine
 import TestSupport
 import Testing
 import Foundation
@@ -78,10 +79,9 @@ struct SQLiteStageBoundaryUserV2 {
 @Persistable(type: "SQLiteStageBoundaryUser")
 struct SQLiteStageBoundaryUserV3 {
     #Index(
-        .scalar,
-        fields: [\SQLiteStageBoundaryUserV3.fullName],
-        name: "SQLiteStageBoundaryUser_fullName"
-    )
+        .ordered(
+            name: "SQLiteStageBoundaryUser_fullName",
+            keys: [.ascending(\SQLiteStageBoundaryUserV3.fullName)], unique: false))
 
     var id: String = ""
     var fullName: String
@@ -121,7 +121,7 @@ enum SQLiteStageBoundaryMigrationPlan: SchemaMigrationPlan {
         [
             SQLiteStageBoundarySchemaV1.self,
             SQLiteStageBoundarySchemaV2.self,
-            SQLiteStageBoundarySchemaV3.self
+            SQLiteStageBoundarySchemaV3.self,
         ]
     }
 
@@ -136,7 +136,7 @@ enum SQLiteStageBoundaryMigrationPlan: SchemaMigrationPlan {
                 toVersion: SQLiteStageBoundarySchemaV3.self,
                 willMigrate: migrateUsers,
                 didMigrate: auditStage
-            )
+            ),
         ]
     }
 
@@ -171,15 +171,14 @@ enum SQLiteStageBoundaryMigrationPlan: SchemaMigrationPlan {
 @Persistable(type: "SQLiteIndexLifecycleUser")
 struct SQLiteIndexLifecycleUserV2 {
     #Index(
-        .scalar,
-        fields: [\SQLiteIndexLifecycleUserV2.email],
-        name: "SQLiteIndexLifecycleUser_email"
-    )
+        .ordered(
+            name: "SQLiteIndexLifecycleUser_email",
+            keys: [.ascending(\SQLiteIndexLifecycleUserV2.email)], unique: false))
     #Index(
-        .scalar,
-        fields: [\SQLiteIndexLifecycleUserV2.age],
-        name: "SQLiteIndexLifecycleUser_age"
-    )
+        .ordered(
+            name: "SQLiteIndexLifecycleUser_age",
+            keys: [.ascending(\SQLiteIndexLifecycleUserV2.age)],
+            unique: false))
 
     var id: String = ""
     var name: String
@@ -190,15 +189,13 @@ struct SQLiteIndexLifecycleUserV2 {
 @Persistable(type: "SQLiteIndexLifecycleUser")
 struct SQLiteIndexLifecycleUserV3 {
     #Index(
-        .scalar,
-        fields: [\SQLiteIndexLifecycleUserV3.email],
-        name: "SQLiteIndexLifecycleUser_email"
-    )
+        .ordered(
+            name: "SQLiteIndexLifecycleUser_email",
+            keys: [.ascending(\SQLiteIndexLifecycleUserV3.email)], unique: false))
     #Index(
-        .scalar,
-        fields: [\SQLiteIndexLifecycleUserV3.createdAt],
-        name: "SQLiteIndexLifecycleUser_createdAt"
-    )
+        .ordered(
+            name: "SQLiteIndexLifecycleUser_createdAt",
+            keys: [.ascending(\SQLiteIndexLifecycleUserV3.createdAt)], unique: false))
 
     var id: String = ""
     var name: String
@@ -295,7 +292,7 @@ enum SQLiteStageFailureMigrationPlan: SchemaMigrationPlan {
         [
             SQLiteStageFailureSchemaV1.self,
             SQLiteStageFailureSchemaV2.self,
-            SQLiteStageFailureSchemaV3.self
+            SQLiteStageFailureSchemaV3.self,
         ]
     }
 
@@ -310,7 +307,7 @@ enum SQLiteStageFailureMigrationPlan: SchemaMigrationPlan {
                 toVersion: SQLiteStageFailureSchemaV3.self,
                 willMigrate: failStage,
                 didMigrate: nil
-            )
+            ),
         ]
     }
 
@@ -332,7 +329,12 @@ struct MigrationExecutionSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteStageBoundarySchemaV1.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV1.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -349,11 +351,87 @@ struct MigrationExecutionSQLiteTests {
             for: SQLiteStageBoundarySchemaV3.self,
             migrationPlan: SQLiteStageBoundaryMigrationPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)]),
             security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
-        try await migratedContainer.testBaseAdmin().migrateIfNeeded()
+        let migratedContext = migratedContainer.testBaseContext()
+        let staleLeaseCaptured = AsyncStream<UInt64>.makeStream()
+        let releaseStaleLease = AsyncStream<Void>.makeStream()
+        let staleLeaseOperation = Task {
+            try await migratedContainer.withSchemaLease { lease in
+                staleLeaseCaptured.continuation.yield(lease.generation)
+                staleLeaseCaptured.continuation.finish()
+                for await _ in releaseStaleLease.stream {
+                    break
+                }
+                try Task.checkCancellation()
+                return try await migratedContext
+                    .fetch(SQLiteStageBoundaryUserV3.self)
+                    .execute()
+            }
+        }
+        defer {
+            releaseStaleLease.continuation.yield(())
+            releaseStaleLease.continuation.finish()
+            staleLeaseOperation.cancel()
+        }
+        var staleLeaseIterator = staleLeaseCaptured.stream.makeAsyncIterator()
+        let staleGeneration = try #require(await staleLeaseIterator.next())
+        await #expect(
+            throws: DatabaseMigrationAdmissionError.migrationRequired
+        ) {
+            _ =
+                try await migratedContext
+                .fetch(SQLiteStageBoundaryUserV3.self)
+                .execute()
+        }
+
+        let admin = migratedContainer.testBaseAdmin()
+        let firstSlice = try await admin.runMigrations(
+            targetVersion: nil,
+            maximumStageCount: 1
+        )
+        #expect(firstSlice.completedStageCount == 1)
+        #expect(!firstSlice.isComplete)
+        await #expect(
+            throws: DatabaseMigrationAdmissionError.migrationRequired
+        ) {
+            _ =
+                try await migratedContext
+                .fetch(SQLiteStageBoundaryUserV3.self)
+                .execute()
+        }
+
+        let finalSlice = try await admin.runMigrations(
+            targetVersion: nil,
+            maximumStageCount: .max
+        )
+        #expect(finalSlice.completedStageCount == 1)
+        #expect(finalSlice.isComplete)
+        let publishedGeneration = migratedContainer
+            .acquirePublishedSchemaLease().generation
+        #expect(staleGeneration < publishedGeneration)
+        releaseStaleLease.continuation.yield(())
+        releaseStaleLease.continuation.finish()
+        await #expect(
+            throws: DatabaseMigrationAdmissionError.staleSchemaGeneration(
+                required: publishedGeneration,
+                actual: staleGeneration
+            )
+        ) {
+            _ = try await staleLeaseOperation.value
+        }
+        let admittedUsers =
+            try await migratedContext
+            .fetch(SQLiteStageBoundaryUserV3.self)
+            .execute()
+        #expect(admittedUsers.count == 1)
 
         let events = await sqliteMigrationEventRecorder.snapshot()
         let currentVersion = try await migratedContainer.testBaseCurrentSchemaVersion()
@@ -362,7 +440,12 @@ struct MigrationExecutionSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLiteStageBoundarySchemaV3.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)]),
             security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
@@ -386,7 +469,12 @@ struct MigrationExecutionSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteIndexLifecycleSchemaV2.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteIndexLifecycleUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteIndexLifecycleUserV2.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -395,6 +483,10 @@ struct MigrationExecutionSQLiteTests {
         )
         let ageIndexSubspace = subspace
             .subspace(SubspaceKey.indexes)
+            .subspace("SQLiteIndexLifecycleUser_age")
+        let ageIndexStateSubspace =
+            subspace
+            .subspace("state")
             .subspace("SQLiteIndexLifecycleUser_age")
         let createdAtIndexSubspace = subspace
             .subspace(SubspaceKey.indexes)
@@ -423,7 +515,12 @@ struct MigrationExecutionSQLiteTests {
             for: SQLiteIndexLifecycleSchemaV3.self,
             migrationPlan: SQLiteIndexLifecycleMigrationPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteIndexLifecycleUserV3.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteIndexLifecycleUserV3.self)]),
             security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
@@ -440,14 +537,6 @@ struct MigrationExecutionSQLiteTests {
             for: formerIndexKey,
             engine: migratedContainer.engine
         )
-        let indexRegistry = DatabaseIndexRegistry(container: migratedContainer, subspace: subspace)
-        let removedIndexState = try await migratedContainer
-            .withTestBaseOperation {
-                try await indexRegistry.state(
-                    of: "SQLiteIndexLifecycleUser_age"
-                )
-            }
-
         let migratedUsers = try await migratedContainer.testBaseContext()
             .fetch(SQLiteIndexLifecycleUserV3.self)
             .execute()
@@ -465,11 +554,16 @@ struct MigrationExecutionSQLiteTests {
         )
         #expect(
             try await countKeys(
+                in: ageIndexStateSubspace,
+                engine: migratedContainer.engine
+            ) == 0
+        )
+        #expect(
+            try await countKeys(
                 in: createdAtIndexSubspace,
                 engine: migratedContainer.engine
             ) > 0
         )
-        #expect(removedIndexState == .disabled)
         #expect(migratedUser?.age == 42)
         #expect(migratedUser?.createdAt == 0)
     }
@@ -483,7 +577,12 @@ struct MigrationExecutionSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteStageFailureSchemaV1.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV1.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -500,7 +599,12 @@ struct MigrationExecutionSQLiteTests {
             for: SQLiteStageFailureSchemaV3.self,
             migrationPlan: SQLiteStageFailureMigrationPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV3.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV3.self)]),
             security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
@@ -521,7 +625,12 @@ struct MigrationExecutionSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLiteStageFailureSchemaV2.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageFailureUserV2.self)]),
             security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
@@ -546,7 +655,12 @@ struct MigrationExecutionSQLiteTests {
             for: SQLiteStageBoundarySchemaV3.self,
             migrationPlan: SQLiteStageBoundaryMigrationPlan.self,
             configuration: .inMemory,
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStageBoundaryUserV3.self)]),
             security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }

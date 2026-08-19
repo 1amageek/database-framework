@@ -23,9 +23,38 @@ extension DBContainer {
     /// application. Existing complete state is validated, never overwritten.
     package func initializeSchemaCatalogIfNeeded(
         _ schema: Schema,
-        fingerprint targetFingerprint: SchemaFingerprint
-    ) async throws {
-        #if DATABASE_MULTIPLE_BASES
+        fingerprint targetFingerprint: SchemaFingerprint,
+        indexPhysicalFingerprint: ByteString,
+        executionRuntimeFingerprint: ByteString,
+        indexPhysicalLayouts: [String: IndexPhysicalLayout]
+    ) async throws -> UInt64 {
+        #if DATABASE_MULTI_BASE
+        let unversionedEntityRanges:
+            [(
+                entity: String,
+                range: (begin: ByteString, end: ByteString)
+            )] = []
+        #else
+        var resolvedUnversionedEntityRanges:
+            [(
+                entity: String,
+                range: (begin: ByteString, end: ByteString)
+            )] = []
+        for entity in schema.entities where !entity.hasDynamicDirectory {
+            let subspace = try await resolveDirectory(for: entity)
+            resolvedUnversionedEntityRanges.append(
+                (
+                    entity: entity.name,
+                    range:
+                        subspace
+                        .subspace(SubspaceKey.items)
+                        .subspace(entity.name)
+                        .range()
+                ))
+        }
+        let unversionedEntityRanges = resolvedUnversionedEntityRanges
+        #endif
+        #if DATABASE_MULTI_BASE
         let schemaEngine = storageTopology.controlDomain.engine
         let schemaRoot = storageTopology.controlDomain.root
         let schemaTransactionExecutor = controlTransactionExecutor
@@ -39,7 +68,7 @@ extension DBContainer {
             root: schemaRoot,
             clock: monotonicClock
         )
-        try await schemaTransactionExecutor.withTransaction(
+        return try await schemaTransactionExecutor.withTransaction(
             configuration: .default,
             clock: monotonicClock
         ) { transaction in
@@ -56,17 +85,83 @@ extension DBContainer {
                 metadataSubspace: self.metadataSubspace,
                 transaction: transaction
             )
+            let persistedExecutionRuntimeFingerprint =
+                try await Self
+                .loadActiveExecutionRuntimeFingerprint(
+                    metadataSubspace: self.metadataSubspace,
+                    transaction: transaction
+                )
+            let persistedIndexPhysicalFingerprint =
+                try await Self
+                .loadActiveIndexPhysicalFingerprint(
+                    metadataSubspace: self.metadataSubspace,
+                    transaction: transaction
+                )
+            let persistedLayouts =
+                try await Self
+                .loadActiveIndexLayoutFingerprints(
+                    metadataSubspace: self.metadataSubspace,
+                    transaction: transaction
+                )
 
-            if entities.isEmpty,
-               version == nil,
-               fingerprint == nil,
-               generation == nil {
+            if entities.isEmpty, fingerprint == nil, generation == nil {
+                guard version == nil || version == schema.version else {
+                    throw DatabaseSchemaPublicationError.corruptedState(
+                        "bootstrap schema version does not match the compiled schema"
+                    )
+                }
+                guard
+                    persistedExecutionRuntimeFingerprint == nil
+                        || persistedExecutionRuntimeFingerprint
+                            == executionRuntimeFingerprint
+                else {
+                    throw DatabaseSchemaRestorationError
+                        .executionRuntimeFingerprintMismatch
+                }
+                guard
+                    persistedIndexPhysicalFingerprint == nil
+                        || persistedIndexPhysicalFingerprint
+                            == indexPhysicalFingerprint
+                else {
+                    throw DatabaseSchemaRestorationError
+                        .indexPhysicalFingerprintMismatch
+                }
+                guard
+                    persistedLayouts.isEmpty
+                        || persistedLayouts
+                            == indexPhysicalLayouts.mapValues({
+                                $0.fingerprint
+                            })
+                else {
+                    throw DatabaseSchemaRestorationError
+                        .indexPhysicalFingerprintMismatch
+                }
+                for entityRange in unversionedEntityRanges {
+                    let rows = try await TransactionRangeCollection.collect(
+                        using: transaction,
+                        from: .firstGreaterOrEqual(entityRange.range.begin),
+                        to: .firstGreaterOrEqual(entityRange.range.end),
+                        limit: 1,
+                        snapshot: false,
+                        streamingMode: .small
+                    )
+                    guard rows.isEmpty else {
+                        throw
+                            MigrationPlanError
+                            .unversionedStoreContainsEntities(
+                                entity: entityRange.entity
+                            )
+                    }
+                }
                 try await registry.persistInitialSchema(
                     schema,
                     transaction: transaction
                 )
                 try Self.setCurrentSchemaSnapshot(
                     schema,
+                    indexPhysicalFingerprint: indexPhysicalFingerprint,
+                    executionRuntimeFingerprint: executionRuntimeFingerprint,
+                    indexPhysicalLayouts: indexPhysicalLayouts,
                     metadataSubspace: self.metadataSubspace,
                     transaction: transaction
                 )
@@ -82,7 +177,7 @@ extension DBContainer {
                         metadataSubspace: self.metadataSubspace
                     )
                 )
-                return
+                return UInt64(0)
             }
 
             guard let version else {
@@ -91,8 +186,16 @@ extension DBContainer {
             guard let fingerprint else {
                 throw DatabaseSchemaRestorationError.missingFingerprint
             }
-            guard generation != nil else {
+            guard let generation else {
                 throw DatabaseSchemaRestorationError.invalidGeneration
+            }
+            guard let persistedIndexPhysicalFingerprint else {
+                throw DatabaseSchemaRestorationError
+                    .missingIndexPhysicalFingerprint
+            }
+            guard let persistedExecutionRuntimeFingerprint else {
+                throw DatabaseSchemaRestorationError
+                    .missingExecutionRuntimeFingerprint
             }
             let persistedSchema = try Schema(
                 entities: entities,
@@ -110,47 +213,45 @@ extension DBContainer {
                     actual: fingerprint
                 )
             }
-        }
-    }
-
-    package func storedSchemaPublication(
-        idempotencyKey: String,
-        matching targetFingerprint: SchemaFingerprint,
-        authorization: AuthorizationContext
-    ) async throws -> DatabaseSchemaPublicationResult? {
-        guard !idempotencyKey.isEmpty else {
-            throw DatabaseSchemaPublicationError.invalidIdempotencyKey
-        }
-        #if DATABASE_MULTIPLE_BASES
-        let schemaTransactionExecutor = controlTransactionExecutor
-        #else
-        let schemaTransactionExecutor = transactionExecutor
-        _ = authorization
-        #endif
-        return try await schemaTransactionExecutor.withTransaction(
-            configuration: .readOnly,
-            clock: monotonicClock
-        ) { transaction in
-            #if DATABASE_MULTIPLE_BASES
-            try await self.databaseGrantStore.require(
-                .administer,
-                authorization: authorization,
-                transaction: transaction
-            )
-            #endif
-            guard let stored = try await Self.loadSchemaPublication(
-                idempotencyKey: idempotencyKey,
+            guard
+                persistedIndexPhysicalFingerprint
+                    == indexPhysicalFingerprint
+            else {
+                throw DatabaseSchemaRestorationError
+                    .indexPhysicalFingerprintMismatch
+            }
+            guard
+                persistedLayouts
+                    == indexPhysicalLayouts.mapValues({ $0.fingerprint })
+            else {
+                throw DatabaseSchemaRestorationError
+                    .indexPhysicalFingerprintMismatch
+            }
+            guard
+                persistedExecutionRuntimeFingerprint
+                    != executionRuntimeFingerprint
+            else {
+                return generation
+            }
+            let incremented = generation.addingReportingOverflow(1)
+            guard !incremented.overflow else {
+                throw DatabaseSchemaPublicationError.generationOverflow
+            }
+            try Self.setCurrentSchemaSnapshot(
+                schema,
+                indexPhysicalFingerprint: indexPhysicalFingerprint,
+                executionRuntimeFingerprint: executionRuntimeFingerprint,
+                indexPhysicalLayouts: indexPhysicalLayouts,
                 metadataSubspace: self.metadataSubspace,
                 transaction: transaction
-            ) else {
-                return nil
-            }
-            guard stored.fingerprint == targetFingerprint else {
-                throw DatabaseSchemaPublicationError.idempotencyKeyReused(
-                    idempotencyKey
+            )
+            try transaction.setValue(
+                Tuple(incremented.partialValue).pack(),
+                for: Self.schemaGenerationKey(
+                    metadataSubspace: self.metadataSubspace
                 )
-            }
-            return stored
+            )
+            return incremented.partialValue
         }
     }
 
@@ -167,15 +268,16 @@ extension DBContainer {
             throw DatabaseSchemaPublicationError.invalidIdempotencyKey
         }
 
-        try validateSchemaGeneration(
+        let preparedGeneration = try prepareSchemaGeneration(
             schema,
             runtimeConfiguration: targetRuntimeConfiguration
         )
+        let indexPhysicalLayouts = preparedGeneration.indexPhysicalLayouts
 
         let publishedLease = acquirePublishedSchemaLease()
         let leasedFingerprint = publishedLease.fingerprint.detached()
         let leasedGeneration = publishedLease.generation
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         let schemaEngine = storageTopology.controlDomain.engine
         let schemaRoot = storageTopology.controlDomain.root
         let schemaTransactionExecutor = controlTransactionExecutor
@@ -195,7 +297,7 @@ extension DBContainer {
             clock: monotonicClock,
             executionDeadline: nil
         ) { transaction in
-            #if DATABASE_MULTIPLE_BASES
+            #if DATABASE_MULTI_BASE
             try await self.databaseGrantStore.require(
                 .administer,
                 authorization: authorization,
@@ -207,110 +309,166 @@ extension DBContainer {
                 container: self
             )
             do {
-            if let stored = try await Self.loadSchemaPublication(
-                idempotencyKey: idempotencyKey,
-                metadataSubspace: self.metadataSubspace,
-                transaction: transaction
-            ) {
-                guard stored.fingerprint == targetFingerprint else {
-                    throw DatabaseSchemaPublicationError.idempotencyKeyReused(
-                        idempotencyKey
-                    )
-                }
-                let activeFingerprint = try await Self
-                    .loadActiveSchemaFingerprint(
-                        metadataSubspace: self.metadataSubspace,
-                        transaction: transaction
-                    )
-                let activeGeneration = try await Self
-                    .loadPersistedSchemaGeneration(
-                        metadataSubspace: self.metadataSubspace,
-                        transaction: transaction
-                    )
-                guard activeFingerprint != nil, activeGeneration != nil else {
-                    throw DatabaseSchemaPublicationError.corruptedState(
-                        "idempotent publication exists without active schema state"
-                    )
-                }
-                let outcome = SchemaPublicationTransactionOutcome(
-                    publication: stored,
-                    shouldPublishGeneration:
+                if let stored = try await Self.loadSchemaPublication(
+                    idempotencyKey: idempotencyKey,
+                    metadataSubspace: self.metadataSubspace,
+                    transaction: transaction
+                ) {
+                    guard stored.fingerprint == targetFingerprint,
+                        stored.indexPhysicalFingerprint
+                            == preparedGeneration.indexPhysicalFingerprint,
+                        stored.executionRuntimeFingerprint
+                            == preparedGeneration.executionRuntimeFingerprint
+                    else {
+                        throw DatabaseSchemaPublicationError.idempotencyKeyReused(
+                            idempotencyKey
+                        )
+                    }
+                    let activeFingerprint =
+                        try await Self
+                        .loadActiveSchemaFingerprint(
+                            metadataSubspace: self.metadataSubspace,
+                            transaction: transaction
+                        )
+                    let activeGeneration =
+                        try await Self
+                        .loadPersistedSchemaGeneration(
+                            metadataSubspace: self.metadataSubspace,
+                            transaction: transaction
+                        )
+                    let activeExecutionRuntimeFingerprint =
+                        try await Self
+                        .loadActiveExecutionRuntimeFingerprint(
+                            metadataSubspace: self.metadataSubspace,
+                            transaction: transaction
+                        )
+                    let activeIndexPhysicalFingerprint =
+                        try await Self
+                        .loadActiveIndexPhysicalFingerprint(
+                            metadataSubspace: self.metadataSubspace,
+                            transaction: transaction
+                        )
+                    let activeIndexLayoutFingerprints =
+                        try await Self
+                        .loadActiveIndexLayoutFingerprints(
+                            metadataSubspace: self.metadataSubspace,
+                            transaction: transaction
+                        )
+                    guard activeFingerprint != nil, activeGeneration != nil,
+                        activeIndexPhysicalFingerprint != nil,
+                        activeExecutionRuntimeFingerprint != nil
+                    else {
+                        throw DatabaseSchemaPublicationError.corruptedState(
+                            "idempotent publication exists without active schema state"
+                        )
+                    }
+                    let matchesActivePublication =
                         activeFingerprint == stored.fingerprint
-                            && activeGeneration == stored.generation
-                )
-                try await databaseTransaction.prepareForCommit()
-                return outcome
-            }
+                        && activeGeneration == stored.generation
+                        && activeIndexPhysicalFingerprint
+                            == stored.indexPhysicalFingerprint
+                        && activeExecutionRuntimeFingerprint
+                            == stored.executionRuntimeFingerprint
+                    if matchesActivePublication,
+                        activeIndexLayoutFingerprints
+                            != indexPhysicalLayouts.mapValues({
+                                $0.fingerprint
+                            })
+                    {
+                        throw DatabaseSchemaPublicationError.corruptedState(
+                            "idempotent publication index layouts do not match the active generation"
+                        )
+                    }
+                    let outcome = SchemaPublicationTransactionOutcome(
+                        publication: stored,
+                        shouldPublishGeneration: matchesActivePublication
+                            && stored.executionRuntimeFingerprint
+                                == preparedGeneration.executionRuntimeFingerprint
+                    )
+                    try await databaseTransaction.prepareForCommit()
+                    return outcome
+                }
 
-            let actualFingerprint = try await Self.loadActiveSchemaFingerprint(
-                metadataSubspace: self.metadataSubspace,
-                transaction: transaction
-            ) ?? leasedFingerprint
-            guard actualFingerprint == expectedFingerprint else {
-                throw DatabaseSchemaPublicationError.fingerprintConflict(
-                    expected: expectedFingerprint,
-                    actual: actualFingerprint
-                )
-            }
+                let actualFingerprint =
+                    try await Self.loadActiveSchemaFingerprint(
+                        metadataSubspace: self.metadataSubspace,
+                        transaction: transaction
+                    ) ?? leasedFingerprint
+                guard actualFingerprint == expectedFingerprint else {
+                    throw DatabaseSchemaPublicationError.fingerprintConflict(
+                        expected: expectedFingerprint,
+                        actual: actualFingerprint
+                    )
+                }
 
-            let storedGeneration = try await Self.loadPersistedSchemaGeneration(
-                metadataSubspace: self.metadataSubspace,
-                transaction: transaction
-            )
-            let currentGeneration = storedGeneration ?? leasedGeneration
-            let nextGeneration: UInt64
-            if actualFingerprint == targetFingerprint {
-                nextGeneration = currentGeneration
-            } else {
+                let storedGeneration = try await Self.loadPersistedSchemaGeneration(
+                    metadataSubspace: self.metadataSubspace,
+                    transaction: transaction
+                )
+                let currentGeneration = storedGeneration ?? leasedGeneration
+                guard currentGeneration == leasedGeneration else {
+                    throw DatabaseSchemaPublicationError.generationConflict(
+                        expected: leasedGeneration,
+                        actual: currentGeneration
+                    )
+                }
                 let incremented = currentGeneration.addingReportingOverflow(1)
                 guard !incremented.overflow else {
                     throw DatabaseSchemaPublicationError.generationOverflow
                 }
-                nextGeneration = incremented.partialValue
-            }
+                let nextGeneration = incremented.partialValue
 
-            try await registry.persist(
-                schema,
-                mode: .strict,
-                transaction: transaction
-            )
-            try Self.setCurrentSchemaSnapshot(
-                schema,
-                metadataSubspace: self.metadataSubspace,
-                transaction: transaction
-            )
-            try transaction.setValue(
-                targetFingerprint.bytes,
-                for: Self.activeSchemaFingerprintKey(
-                    metadataSubspace: self.metadataSubspace
+                try await registry.persist(
+                    schema,
+                    mode: .strict,
+                    transaction: transaction
                 )
-            )
-            try transaction.setValue(
-                Tuple(nextGeneration).pack(),
-                for: Self.schemaGenerationKey(
-                    metadataSubspace: self.metadataSubspace
+                try Self.setCurrentSchemaSnapshot(
+                    schema,
+                    indexPhysicalFingerprint:
+                        preparedGeneration.indexPhysicalFingerprint,
+                    executionRuntimeFingerprint:
+                        preparedGeneration.executionRuntimeFingerprint,
+                    indexPhysicalLayouts: indexPhysicalLayouts,
+                    metadataSubspace: self.metadataSubspace,
+                    transaction: transaction
                 )
-            )
+                try transaction.setValue(
+                    targetFingerprint.bytes,
+                    for: Self.activeSchemaFingerprintKey(
+                        metadataSubspace: self.metadataSubspace
+                    )
+                )
+                try transaction.setValue(
+                    Tuple(nextGeneration).pack(),
+                    for: Self.schemaGenerationKey(
+                        metadataSubspace: self.metadataSubspace
+                    )
+                )
 
-            let result = DatabaseSchemaPublicationResult(
-                previousFingerprint: actualFingerprint,
-                fingerprint: targetFingerprint,
-                schemaVersion: schema.version,
-                generation: nextGeneration
-            )
-            try transaction.setValue(
-                Self.encodeSchemaPublication(result),
-                for: Self.schemaPublicationKey(
-                    idempotencyKey: idempotencyKey,
-                    metadataSubspace: self.metadataSubspace
+                let result = DatabaseSchemaPublicationResult(
+                    previousFingerprint: actualFingerprint,
+                    fingerprint: targetFingerprint,
+                    schemaVersion: schema.version,
+                    generation: nextGeneration,
+                    indexPhysicalFingerprint:
+                        preparedGeneration.indexPhysicalFingerprint,
+                    executionRuntimeFingerprint:
+                        preparedGeneration.executionRuntimeFingerprint
                 )
-            )
-            let outcome = SchemaPublicationTransactionOutcome(
-                publication: result,
-                shouldPublishGeneration: true
-            )
-            try await databaseTransaction.prepareForCommit()
-            return outcome
+                try transaction.setValue(
+                    Self.encodeSchemaPublication(result),
+                    for: Self.schemaPublicationKey(
+                        idempotencyKey: idempotencyKey,
+                        metadataSubspace: self.metadataSubspace
+                    )
+                )
+                let outcome = SchemaPublicationTransactionOutcome(
+                    publication: result,
+                    shouldPublishGeneration: true
+                )
+                try await databaseTransaction.prepareForCommit()
+                return outcome
             } catch {
                 await databaseTransaction.invalidate()
                 throw error
@@ -321,7 +479,12 @@ extension DBContainer {
             publishSchemaGeneration(
                 schema,
                 fingerprint: outcome.publication.fingerprint,
+                indexPhysicalFingerprint:
+                    outcome.publication.indexPhysicalFingerprint,
+                executionRuntimeFingerprint:
+                    outcome.publication.executionRuntimeFingerprint,
                 runtimeConfiguration: targetRuntimeConfiguration,
+                indexPhysicalLayouts: indexPhysicalLayouts,
                 generation: outcome.publication.generation
             )
         }
@@ -329,62 +492,56 @@ extension DBContainer {
     }
 
     @_spi(DatabaseExecution)
-    public func validateSchemaGeneration(
+    public func prepareSchemaGeneration(
         _ schema: Schema,
         runtimeConfiguration: DatabaseRuntimeConfiguration
-    ) throws {
+    ) throws -> DatabasePreparedSchemaGeneration {
         try runtimeConfiguration.validate(schema: schema)
         try runtimeConfiguration.validateStorageRequirements(
             schema: schema,
             transactionCapabilities: transactionCapabilities
         )
-        try IndexRuntimeConfigurationValidator.validate(
-            configuration.indexConfigurations,
+        let layouts = try IndexRuntimeConfigurationValidator.validate(
             schema: schema,
-            entityRuntimes: runtimeConfiguration.entityRuntimes
+            runtimeConfiguration: runtimeConfiguration
+        )
+        return try DatabasePreparedSchemaGeneration(
+            schemaFingerprint: SchemaManifest(schema: schema).fingerprint(),
+            runtimeConfiguration: runtimeConfiguration,
+            securityConfiguration: securityConfiguration,
+            indexPhysicalLayouts: layouts
+        )
+    }
+
+    /// Resolves one migration stage against the installed runtime providers.
+    /// Runtime policies for later stages are ignored until their index names
+    /// become part of the candidate schema.
+    package func prepareMigrationSchemaGeneration(
+        _ schema: Schema
+    ) throws -> DatabasePreparedSchemaGeneration {
+        let layouts = try IndexRuntimeConfigurationValidator.validate(
+            schema: schema,
+            runtimeConfiguration: runtimeConfiguration,
+            allowingConfigurationsOutsideSchema: true
+        )
+        return try DatabasePreparedSchemaGeneration(
+            schemaFingerprint: SchemaManifest(schema: schema).fingerprint(),
+            runtimeConfiguration: runtimeConfiguration,
+            securityConfiguration: securityConfiguration,
+            indexPhysicalLayouts: layouts
         )
     }
 
     @_spi(DatabaseExecution)
-    public func initializeNewSchemaIndexStates(
-        from previous: Schema,
-        to target: Schema,
+    public func initializeSchemaIndexStates(
+        for target: Schema,
+        indexPhysicalLayouts: [String: IndexPhysicalLayout],
         transaction: any TransactionAccess
     ) async throws -> Bool {
         var requiresPersistentBuild = false
-        for entity in target.entities where previous.entity(named: entity.name) == nil {
-            guard !entity.hasDynamicDirectory,
-                  !entity.indexDescriptors.isEmpty else {
-                continue
-            }
-            let subspace = try await resolveDirectory(
-                for: entity,
-                declaredIn: target,
-                transaction: transaction
-            )
-            try await IndexLifecycleStore(
-                container: self,
-                subspace: subspace
-            ).ensureReadable(
-                entity.indexDescriptors.map { $0.name },
-                entityRange: subspace
-                    .subspace(SubspaceKey.items)
-                    .subspace(entity.name)
-                    .range(),
-                transaction: transaction
-            )
-        }
-
         for targetEntity in target.entities {
-            guard let previousEntity = previous.entity(named: targetEntity.name)
-            else { continue }
-            let previousIndexNames = Set(
-                previousEntity.indexDescriptors.map { $0.name }
-            )
-            let addedIndexes = targetEntity.indexDescriptors.filter {
-                !previousIndexNames.contains($0.name)
-            }
-            guard !addedIndexes.isEmpty else { continue }
+            let indexes = targetEntity.indexDescriptors
+            guard !indexes.isEmpty else { continue }
 
             if targetEntity.hasDynamicDirectory {
                 guard try await partitionCatalogContainsEntries(
@@ -393,10 +550,12 @@ extension DBContainer {
                 ) else {
                     continue
                 }
-                for descriptor in addedIndexes {
+                for descriptor in indexes {
                     try markSchemaIndexBuildPending(
                         entity: targetEntity.name,
                         index: descriptor.name,
+                        schema: target,
+                        indexPhysicalLayouts: indexPhysicalLayouts,
                         transaction: transaction
                     )
                 }
@@ -411,42 +570,85 @@ extension DBContainer {
             )
             let lifecycleStore = IndexLifecycleStore(
                 container: self,
-                subspace: subspace
+                subspace: subspace,
+                schema: target,
+                indexPhysicalLayouts: indexPhysicalLayouts
             )
             let entityRange = subspace
                 .subspace(SubspaceKey.items)
                 .subspace(targetEntity.name)
                 .range()
-            for descriptor in addedIndexes {
+            for descriptor in indexes {
+                let pending = try await isSchemaIndexBuildPending(
+                    scope: Self.entityIndexBuildScope(targetEntity),
+                    identity: try DatabaseIndexStorageIdentity.resolve(
+                        named: descriptor.name,
+                        in: target,
+                        physicalLayout: try physicalLayout(
+                            for: descriptor.name,
+                            in: indexPhysicalLayouts
+                        )
+                    ),
+                    transaction: transaction
+                )
                 let needsBuild = try await lifecycleStore.prepareSchemaBuild(
                     descriptor.name,
                     entityRange: entityRange,
+                    resumesPendingBuild: pending,
                     transaction: transaction
                 )
                 guard needsBuild else { continue }
                 try markSchemaIndexBuildPending(
                     entity: targetEntity.name,
                     index: descriptor.name,
+                    schema: target,
+                    indexPhysicalLayouts: indexPhysicalLayouts,
                     transaction: transaction
                 )
                 requiresPersistentBuild = true
             }
         }
 
-        for group in target.polymorphicGroups
-        where previous.polymorphicGroup(identifier: group.identifier) == nil
-            && !group.indexes.isEmpty {
+        for group in target.polymorphicGroups where !group.indexes.isEmpty {
             let subspace = try operationDataSubspace(
                 relativePath: group.resolvedDirectoryPath()
             )
-            try await IndexLifecycleStore(
+            let lifecycleStore = IndexLifecycleStore(
                 container: self,
-                subspace: subspace
-            ).ensureReadable(
-                group.indexes.map { $0.name },
-                entityRange: subspace.subspace(SubspaceKey.items).range(),
-                transaction: transaction
+                subspace: subspace,
+                schema: target,
+                indexPhysicalLayouts: indexPhysicalLayouts
             )
+            let entityRange = subspace.subspace(SubspaceKey.items).range()
+            for declaration in group.indexes {
+                let pending = try await isSchemaIndexBuildPending(
+                    scope: try Self.polymorphicIndexBuildScope(group),
+                    identity: try DatabaseIndexStorageIdentity.resolve(
+                        named: declaration.name,
+                        in: target,
+                        physicalLayout: try physicalLayout(
+                            for: declaration.name,
+                            in: indexPhysicalLayouts
+                        )
+                    ),
+                    transaction: transaction
+                )
+                let needsBuild = try await lifecycleStore.prepareSchemaBuild(
+                    declaration.name,
+                    entityRange: entityRange,
+                    resumesPendingBuild: pending,
+                    transaction: transaction
+                )
+                guard needsBuild else { continue }
+                try markSchemaPolymorphicIndexBuildPending(
+                    group: group.identifier,
+                    index: declaration.name,
+                    schema: target,
+                    indexPhysicalLayouts: indexPhysicalLayouts,
+                    transaction: transaction
+                )
+                requiresPersistentBuild = true
+            }
         }
         return requiresPersistentBuild
     }
@@ -457,13 +659,27 @@ extension DBContainer {
         transaction: any TransactionAccess
     ) async throws -> Set<String> {
         let schemaMetadataSubspace = try dataRootSchemaMetadataSubspace()
+        guard let entityDeclaration = schema.entity(named: entity) else {
+            throw DatabaseSchemaPublicationError.corruptedState(
+                "schema index build entity is not declared"
+            )
+        }
+        let scope = Self.entityIndexBuildScope(entityDeclaration)
         var pending = Set<String>()
         pending.reserveCapacity(indexes.count)
         for index in indexes {
+            let identity = try DatabaseIndexStorageIdentity.resolve(
+                named: index,
+                in: schema,
+                physicalLayout: try physicalLayout(
+                    for: index,
+                    in: indexPhysicalLayouts
+                )
+            )
             if try await transaction.getValue(
                 for: Self.schemaIndexBuildPendingKey(
-                    entity: entity,
-                    index: index,
+                    scope: scope,
+                    identity: identity,
                     metadataSubspace: schemaMetadataSubspace
                 ),
                 snapshot: false
@@ -474,52 +690,119 @@ extension DBContainer {
         return pending
     }
 
-    package func pendingSchemaIndexBuilds(
-        in schema: Schema
-    ) async throws -> [String: Set<String>] {
-        try await transactionExecutor.withTransaction(
-            configuration: .default,
-            clock: monotonicClock
-        ) { transaction in
-            try await self.pendingSchemaIndexBuilds(
-                in: schema,
-                transaction: transaction
+    package func pendingSchemaPolymorphicIndexBuilds(
+        group: String,
+        indexes: [String],
+        transaction: any TransactionAccess
+    ) async throws -> Set<String> {
+        let schemaMetadataSubspace = try dataRootSchemaMetadataSubspace()
+        guard
+            let groupDeclaration = schema.polymorphicGroup(
+                identifier: group
+            )
+        else {
+            throw DatabaseSchemaPublicationError.corruptedState(
+                "schema index build polymorphic group is not declared"
             )
         }
-    }
-
-    @_spi(DatabaseExecution)
-    public func pendingSchemaIndexBuilds(
-        in schema: Schema,
-        transaction: any TransactionAccess
-    ) async throws -> [String: Set<String>] {
-        var result: [String: Set<String>] = [:]
-        for entity in schema.entities {
-            let pending = try await pendingSchemaIndexBuilds(
-                entity: entity.name,
-                indexes: entity.indexDescriptors.map { $0.name },
-                transaction: transaction
+        let scope = try Self.polymorphicIndexBuildScope(groupDeclaration)
+        var pending = Set<String>()
+        pending.reserveCapacity(indexes.count)
+        for index in indexes {
+            let identity = try DatabaseIndexStorageIdentity.resolve(
+                named: index,
+                in: schema,
+                physicalLayout: try physicalLayout(
+                    for: index,
+                    in: indexPhysicalLayouts
+                )
             )
-            if !pending.isEmpty {
-                result[entity.name] = pending
+            if try await transaction.getValue(
+                for: Self.schemaIndexBuildPendingKey(
+                    scope: scope,
+                    identity: identity,
+                    metadataSubspace: schemaMetadataSubspace
+                ),
+                snapshot: false
+            ) != nil {
+                pending.insert(index)
             }
         }
-        return result
+        return pending
     }
 
     @_spi(DatabaseExecution)
     public func completeSchemaIndexBuild(
-        entity: String,
-        index: String,
+        _ target: DatabaseIndexTransitionPlan.Target,
         transaction: any TransactionAccess
     ) throws {
-        let schemaMetadataSubspace = try dataRootSchemaMetadataSubspace()
+        let lease = acquireActiveSchemaLease()
+        let activeTarget: DatabaseIndexTransitionPlan.Target
+        switch target.scope {
+        case .entity(let entity, _):
+            guard let declaration = lease.schema.entity(named: entity) else {
+                throw DatabaseSchemaPublicationError.corruptedState(
+                    "completed schema index build entity is not declared"
+                )
+            }
+            activeTarget = try DatabaseIndexTransitionPlan.Target(
+                scope: Self.entityIndexBuildScope(declaration),
+                identity: try DatabaseIndexStorageIdentity.resolve(
+                    named: target.identity.name,
+                    in: lease.schema,
+                    physicalLayout: try physicalLayout(
+                        for: target.identity.name,
+                        in: lease.indexPhysicalLayouts
+                    )
+                )
+            )
+        case .polymorphicGroup(let group, _):
+            guard
+                let declaration = lease.schema.polymorphicGroup(
+                    identifier: group
+                )
+            else {
+                throw DatabaseSchemaPublicationError.corruptedState(
+                    "completed schema index build group is not declared"
+                )
+            }
+            activeTarget = try DatabaseIndexTransitionPlan.Target(
+                scope: try Self.polymorphicIndexBuildScope(declaration),
+                identity: try DatabaseIndexStorageIdentity.resolve(
+                    named: target.identity.name,
+                    in: lease.schema,
+                    physicalLayout: try physicalLayout(
+                        for: target.identity.name,
+                        in: lease.indexPhysicalLayouts
+                    )
+                )
+            )
+        }
+        guard activeTarget == target else {
+            throw DatabaseSchemaPublicationError.corruptedState(
+                "completed schema index build does not match the active physical generation"
+            )
+        }
         try transaction.clear(
             key: Self.schemaIndexBuildPendingKey(
-                entity: entity,
-                index: index,
-                metadataSubspace: schemaMetadataSubspace
+                scope: target.scope,
+                identity: target.identity,
+                metadataSubspace: try dataRootSchemaMetadataSubspace()
             )
+        )
+    }
+
+    package func clearSchemaIndexBuildPending(
+        scope: DatabaseIndexStorageScope,
+        index: String,
+        selection: DatabaseIndexStorageRetirement,
+        transaction: any TransactionAccess
+    ) throws {
+        try clearSchemaIndexBuildPending(
+            storageScope: scope,
+            index: index,
+            selection: selection,
+            transaction: transaction
         )
     }
 
@@ -528,8 +811,17 @@ extension DBContainer {
         _ schema: Schema,
         transaction: any TransactionAccess
     ) throws {
+        let lease = acquireActiveSchemaLease()
+        guard lease.schema == schema else {
+            throw DatabaseSchemaPublicationError.corruptedState(
+                "data-root schema snapshot does not match the active generation"
+            )
+        }
         try Self.setCurrentSchemaSnapshot(
             schema,
+            indexPhysicalFingerprint: lease.indexPhysicalFingerprint,
+            executionRuntimeFingerprint: lease.executionRuntimeFingerprint,
+            indexPhysicalLayouts: lease.indexPhysicalLayouts,
             metadataSubspace: activeDataRootMetadataSubspace(),
             transaction: transaction
         )
@@ -538,14 +830,77 @@ extension DBContainer {
     private func markSchemaIndexBuildPending(
         entity: String,
         index: String,
+        schema: Schema,
+        indexPhysicalLayouts: [String: IndexPhysicalLayout],
         transaction: any TransactionAccess
     ) throws {
         let schemaMetadataSubspace = try dataRootSchemaMetadataSubspace()
+        guard let entityDeclaration = schema.entity(named: entity) else {
+            throw DatabaseSchemaPublicationError.corruptedState(
+                "pending schema index build entity is not declared"
+            )
+        }
         try transaction.setValue(
             [1],
             for: Self.schemaIndexBuildPendingKey(
-                entity: entity,
-                index: index,
+                scope: Self.entityIndexBuildScope(entityDeclaration),
+                identity: try DatabaseIndexStorageIdentity.resolve(
+                    named: index,
+                    in: schema,
+                    physicalLayout: try physicalLayout(
+                        for: index,
+                        in: indexPhysicalLayouts
+                    )
+                ),
+                metadataSubspace: schemaMetadataSubspace
+            )
+        )
+    }
+
+    private func isSchemaIndexBuildPending(
+        scope: DatabaseIndexStorageScope,
+        identity: DatabaseIndexStorageIdentity,
+        transaction: any TransactionAccess
+    ) async throws -> Bool {
+        try await transaction.getValue(
+            for: Self.schemaIndexBuildPendingKey(
+                scope: scope,
+                identity: identity,
+                metadataSubspace: try dataRootSchemaMetadataSubspace()
+            ),
+            snapshot: false
+        ) != nil
+    }
+
+    private func markSchemaPolymorphicIndexBuildPending(
+        group: String,
+        index: String,
+        schema: Schema,
+        indexPhysicalLayouts: [String: IndexPhysicalLayout],
+        transaction: any TransactionAccess
+    ) throws {
+        let schemaMetadataSubspace = try dataRootSchemaMetadataSubspace()
+        guard
+            let groupDeclaration = schema.polymorphicGroup(
+                identifier: group
+            )
+        else {
+            throw DatabaseSchemaPublicationError.corruptedState(
+                "pending schema index build group is not declared"
+            )
+        }
+        try transaction.setValue(
+            [1],
+            for: Self.schemaIndexBuildPendingKey(
+                scope: try Self.polymorphicIndexBuildScope(groupDeclaration),
+                identity: try DatabaseIndexStorageIdentity.resolve(
+                    named: index,
+                    in: schema,
+                    physicalLayout: try physicalLayout(
+                        for: index,
+                        in: indexPhysicalLayouts
+                    )
+                ),
                 metadataSubspace: schemaMetadataSubspace
             )
         )
@@ -565,22 +920,96 @@ extension DBContainer {
     }
 
     private static func schemaIndexBuildPendingKey(
-        entity: String,
-        index: String,
+        scope: DatabaseIndexStorageScope,
+        identity: DatabaseIndexStorageIdentity,
         metadataSubspace: Subspace
     ) -> ByteString {
         metadataSubspace
             .subspace("schema")
             .subspace("index-build")
-            .pack(Tuple(entity, index))
+            .pack(
+                Tuple(
+                    scope.stableOrderingKey,
+                    identity.name,
+                    identity.definitionFingerprint.bytes,
+                    identity.layoutFingerprint
+                )
+            )
     }
 
-    private func dataRootSchemaMetadataSubspace() throws -> Subspace {
+    private func clearSchemaIndexBuildPending(
+        storageScope: DatabaseIndexStorageScope,
+        index: String,
+        selection: DatabaseIndexStorageRetirement,
+        transaction: any TransactionAccess
+    ) throws {
+        let builds = try dataRootSchemaMetadataSubspace()
+            .subspace("schema")
+            .subspace("index-build")
+        let scope = storageScope.stableOrderingKey
+        switch selection {
+        case .allGenerations:
+            let range = builds.subspace(scope).subspace(index).range()
+            try transaction.clearRange(
+                beginKey: range.begin,
+                endKey: range.end
+            )
+        case .physicalGeneration(
+            let definitionFingerprint,
+            let layoutFingerprint
+        ):
+            let range =
+                builds
+                .subspace(scope)
+                .subspace(index)
+                .subspace(definitionFingerprint.bytes)
+                .subspace(layoutFingerprint)
+                .range()
+            try transaction.clearRange(
+                beginKey: range.begin,
+                endKey: range.end
+            )
+        }
+    }
+
+    private func physicalLayout(
+        for indexName: String,
+        in layouts: [String: IndexPhysicalLayout]
+    ) throws -> IndexPhysicalLayout {
+        guard let layout = layouts[indexName] else {
+            throw
+                DatabaseIndexStorageIdentityError
+                .physicalLayoutNotResolved(
+                    indexName
+                )
+        }
+        return layout
+    }
+
+    private static func entityIndexBuildScope(
+        _ entity: Schema.Entity
+    ) -> DatabaseIndexStorageScope {
+        .entity(
+            name: entity.name,
+            directoryComponents: entity.directoryComponents
+        )
+    }
+
+    private static func polymorphicIndexBuildScope(
+        _ group: PolymorphicGroup
+    ) throws -> DatabaseIndexStorageScope {
+        .polymorphicGroup(
+            identifier: group.identifier,
+            directoryPath: try group.resolvedDirectoryPath()
+        )
+    }
+
+    package func dataRootSchemaMetadataSubspace() throws -> Subspace {
         try activeDataRootInternalMetadataSubspace()
     }
 
     private func activeDataRootMetadataSubspace() throws -> Subspace {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         try requireActiveDataRoot().root.subspace("metadata")
         #else
         databaseRoot.subspace("metadata")
@@ -588,7 +1017,7 @@ extension DBContainer {
     }
 
     private func activeDataRootInternalMetadataSubspace() throws -> Subspace {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         try requireActiveDataRoot().root.subspace("_metadata")
         #else
         databaseRoot.subspace("_metadata")
@@ -601,6 +1030,22 @@ extension DBContainer {
         metadataSubspace
             .subspace("schema")
             .pack(Tuple("wireFingerprint"))
+    }
+
+    package static func activeExecutionRuntimeFingerprintKey(
+        metadataSubspace: Subspace
+    ) -> ByteString {
+        metadataSubspace
+            .subspace("schema")
+            .pack(Tuple("executionRuntimeFingerprint"))
+    }
+
+    package static func activeIndexPhysicalFingerprintKey(
+        metadataSubspace: Subspace
+    ) -> ByteString {
+        metadataSubspace
+            .subspace("schema")
+            .pack(Tuple("indexPhysicalFingerprint"))
     }
 
     static func restoreSchemaState(
@@ -632,10 +1077,25 @@ extension DBContainer {
                     metadataSubspace: metadataSubspace,
                     transaction: transaction
                 )
+                let executionRuntimeFingerprint = try await loadActiveExecutionRuntimeFingerprint(
+                    metadataSubspace: metadataSubspace,
+                    transaction: transaction
+                )
+                let indexPhysicalFingerprint = try await loadActiveIndexPhysicalFingerprint(
+                    metadataSubspace: metadataSubspace,
+                    transaction: transaction
+                )
+                let indexLayoutFingerprints = try await loadActiveIndexLayoutFingerprints(
+                    metadataSubspace: metadataSubspace,
+                    transaction: transaction
+                )
                 if entities.isEmpty,
-                   version == nil,
-                   fingerprint == nil,
-                   generation == nil {
+                    version == nil,
+                    fingerprint == nil,
+                    generation == nil,
+                    indexPhysicalFingerprint == nil,
+                    executionRuntimeFingerprint == nil
+                {
                     let emptySchema = try Schema(
                         entities: [],
                         version: Schema.Version(0, 0, 0)
@@ -645,7 +1105,10 @@ extension DBContainer {
                     return DatabaseRestoredSchemaState(
                         schema: emptySchema,
                         fingerprint: fingerprint,
-                        generation: 0
+                        generation: 0,
+                        indexPhysicalFingerprint: nil,
+                        executionRuntimeFingerprint: nil,
+                        indexLayoutFingerprints: [:]
                     )
                 }
 
@@ -658,6 +1121,14 @@ extension DBContainer {
                 guard let generation else {
                     throw DatabaseSchemaRestorationError.invalidGeneration
                 }
+                guard executionRuntimeFingerprint != nil else {
+                    throw DatabaseSchemaRestorationError
+                        .missingExecutionRuntimeFingerprint
+                }
+                guard indexPhysicalFingerprint != nil else {
+                    throw DatabaseSchemaRestorationError
+                        .missingIndexPhysicalFingerprint
+                }
                 let schema = try Schema(entities: entities, version: version)
                 let computed = try SchemaManifest(schema: schema).fingerprint()
                 guard computed == fingerprint else {
@@ -666,7 +1137,10 @@ extension DBContainer {
                 return DatabaseRestoredSchemaState(
                     schema: schema,
                     fingerprint: fingerprint,
-                    generation: generation
+                    generation: generation,
+                    indexPhysicalFingerprint: indexPhysicalFingerprint,
+                    executionRuntimeFingerprint: executionRuntimeFingerprint,
+                    indexLayoutFingerprints: indexLayoutFingerprints
                 )
             }
     }
@@ -675,23 +1149,27 @@ extension DBContainer {
         metadataSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> Schema.Version? {
-        let key = metadataSubspace
+        let key =
+            metadataSubspace
             .subspace("schema")
             .pack(Tuple("version"))
-        guard let bytes = try await transaction.getValue(
-            for: key,
-            snapshot: false
-        ) else {
+        guard
+            let bytes = try await transaction.getValue(
+                for: key,
+                snapshot: false
+            )
+        else {
             return nil
         }
         let tuple = try Tuple(packed: bytes)
         guard tuple.count == 3,
-              case .signedInteger(let major) = try tuple.value(at: 0),
-              case .signedInteger(let minor) = try tuple.value(at: 1),
-              case .signedInteger(let patch) = try tuple.value(at: 2),
-              let majorValue = UInt32(exactly: major),
-              let minorValue = UInt32(exactly: minor),
-              let patchValue = UInt32(exactly: patch) else {
+            case .signedInteger(let major) = try tuple.value(at: 0),
+            case .signedInteger(let minor) = try tuple.value(at: 1),
+            case .signedInteger(let patch) = try tuple.value(at: 2),
+            let majorValue = UInt32(exactly: major),
+            let minorValue = UInt32(exactly: minor),
+            let patchValue = UInt32(exactly: patch)
+        else {
             throw DatabaseSchemaRestorationError.missingVersion
         }
         return Schema.Version(majorValue, minorValue, patchValue)
@@ -711,10 +1189,12 @@ extension DBContainer {
         metadataSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> SchemaFingerprint? {
-        guard let bytes = try await transaction.getValue(
-            for: activeSchemaFingerprintKey(metadataSubspace: metadataSubspace),
-            snapshot: false
-        ) else {
+        guard
+            let bytes = try await transaction.getValue(
+                for: activeSchemaFingerprintKey(metadataSubspace: metadataSubspace),
+                snapshot: false
+            )
+        else {
             return nil
         }
         do {
@@ -730,22 +1210,140 @@ extension DBContainer {
         metadataSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> UInt64? {
-        guard let bytes = try await transaction.getValue(
-            for: schemaGenerationKey(metadataSubspace: metadataSubspace),
-            snapshot: false
-        ) else {
+        guard
+            let bytes = try await transaction.getValue(
+                for: schemaGenerationKey(metadataSubspace: metadataSubspace),
+                snapshot: false
+            )
+        else {
             return nil
         }
         let tuple = try Tuple(packed: bytes)
         guard tuple.count == 1,
-              let generation = unsignedInteger(
-                  try tuple.value(at: 0)
-              ) else {
+            let generation = unsignedInteger(
+                try tuple.value(at: 0)
+            )
+        else {
             throw DatabaseSchemaPublicationError.corruptedState(
                 "generation has an invalid tuple encoding"
             )
         }
         return generation
+    }
+
+    package static func loadActiveExecutionRuntimeFingerprint(
+        metadataSubspace: Subspace,
+        transaction: any TransactionAccess
+    ) async throws -> ByteString? {
+        guard
+            let bytes = try await transaction.getValue(
+                for: activeExecutionRuntimeFingerprintKey(
+                    metadataSubspace: metadataSubspace
+                ),
+                snapshot: false
+            )
+        else {
+            return nil
+        }
+        guard bytes.count == SHA256Accumulator.digestByteCount else {
+            throw DatabaseSchemaPublicationError.corruptedState(
+                "execution runtime fingerprint has an invalid length"
+            )
+        }
+        return bytes
+    }
+
+    package static func loadActiveIndexPhysicalFingerprint(
+        metadataSubspace: Subspace,
+        transaction: any TransactionAccess
+    ) async throws -> ByteString? {
+        guard
+            let bytes = try await transaction.getValue(
+                for: activeIndexPhysicalFingerprintKey(
+                    metadataSubspace: metadataSubspace
+                ),
+                snapshot: false
+            )
+        else {
+            return nil
+        }
+        guard bytes.count == SHA256Accumulator.digestByteCount else {
+            throw DatabaseSchemaPublicationError.corruptedState(
+                "index physical fingerprint has an invalid length"
+            )
+        }
+        return bytes
+    }
+
+    package static func loadActiveIndexLayoutFingerprints(
+        metadataSubspace: Subspace,
+        transaction: any TransactionAccess
+    ) async throws -> [String: ByteString] {
+        let storage = activeIndexPhysicalLayoutSubspace(
+            metadataSubspace: metadataSubspace
+        )
+        let range = storage.range()
+        let maximumCount = DatabaseWireLimits.default.maximumCollectionCount
+        let rows = try await TransactionRangeCollection.collect(
+            using: transaction,
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
+            limit: maximumCount + 1,
+            snapshot: false,
+            streamingMode: .wantAll
+        )
+        guard rows.count <= maximumCount else {
+            throw DatabaseSchemaPublicationError.corruptedState(
+                "index layout fingerprint count exceeds the wire limit"
+            )
+        }
+        var result: [String: ByteString] = [:]
+        result.reserveCapacity(rows.count)
+        for (key, value) in rows {
+            let tuple = try storage.unpack(key)
+            guard tuple.count == 1,
+                case .string(let name) = try tuple.value(at: 0),
+                !name.isEmpty,
+                value.count == SHA256Accumulator.digestByteCount,
+                result.updateValue(value, forKey: name) == nil
+            else {
+                throw DatabaseSchemaPublicationError.corruptedState(
+                    "index layout fingerprint entry is invalid"
+                )
+            }
+        }
+        return result
+    }
+
+    package static func setActiveIndexPhysicalLayouts(
+        _ layouts: [String: IndexPhysicalLayout],
+        metadataSubspace: Subspace,
+        transaction: any TransactionAccess
+    ) throws {
+        let storage = activeIndexPhysicalLayoutSubspace(
+            metadataSubspace: metadataSubspace
+        )
+        let range = storage.range()
+        try transaction.clearRange(beginKey: range.begin, endKey: range.end)
+        for name in layouts.keys.sorted() {
+            guard !name.isEmpty, let layout = layouts[name] else {
+                throw DatabaseSchemaPublicationError.corruptedState(
+                    "index physical layout is invalid"
+                )
+            }
+            try transaction.setValue(
+                layout.fingerprint,
+                for: storage.pack(Tuple(name))
+            )
+        }
+    }
+
+    private static func activeIndexPhysicalLayoutSubspace(
+        metadataSubspace: Subspace
+    ) -> Subspace {
+        metadataSubspace
+            .subspace("schema")
+            .subspace("index-layout")
     }
 
     private static func loadSchemaPublication(
@@ -769,11 +1367,13 @@ extension DBContainer {
         _ publication: DatabaseSchemaPublicationResult
     ) -> ByteString {
         return Tuple(
-            UInt64(3),
+            UInt64(6),
             publication.previousFingerprint != nil,
             publication.previousFingerprint?.bytes ?? ByteString(),
             publication.fingerprint.bytes,
             publication.generation,
+            publication.indexPhysicalFingerprint,
+            publication.executionRuntimeFingerprint,
             UInt64(publication.schemaVersion.major),
             UInt64(publication.schemaVersion.minor),
             UInt64(publication.schemaVersion.patch)
@@ -785,15 +1385,25 @@ extension DBContainer {
     ) throws -> DatabaseSchemaPublicationResult {
         do {
             let tuple = try Tuple(packed: bytes)
-            guard tuple.count == 8,
-                  unsignedInteger(try tuple.value(at: 0)) == 3,
-                  case .boolean(let hasPrevious) = try tuple.value(at: 1),
-                  case .bytes(let previousBytes) = try tuple.value(at: 2),
-                  case .bytes(let fingerprintBytes) = try tuple.value(at: 3),
-                  let generation = unsignedInteger(try tuple.value(at: 4)),
-                  let major = unsignedInteger(try tuple.value(at: 5)),
-                  let minor = unsignedInteger(try tuple.value(at: 6)),
-                  let patch = unsignedInteger(try tuple.value(at: 7)),
+            guard tuple.count == 10,
+                unsignedInteger(try tuple.value(at: 0)) == 6,
+                case .boolean(let hasPrevious) = try tuple.value(at: 1),
+                case .bytes(let previousBytes) = try tuple.value(at: 2),
+                case .bytes(let fingerprintBytes) = try tuple.value(at: 3),
+                let generation = unsignedInteger(try tuple.value(at: 4)),
+                case .bytes(let indexPhysicalFingerprint) = try tuple.value(
+                    at: 5
+                ),
+                indexPhysicalFingerprint.count
+                    == SHA256Accumulator.digestByteCount,
+                case .bytes(let executionRuntimeFingerprint) = try tuple.value(
+                    at: 6
+                ),
+                executionRuntimeFingerprint.count
+                    == SHA256Accumulator.digestByteCount,
+                let major = unsignedInteger(try tuple.value(at: 7)),
+                let minor = unsignedInteger(try tuple.value(at: 8)),
+                let patch = unsignedInteger(try tuple.value(at: 9)),
                   let majorValue = UInt32(exactly: major),
                   let minorValue = UInt32(exactly: minor),
                   let patchValue = UInt32(exactly: patch) else {
@@ -812,7 +1422,9 @@ extension DBContainer {
                     minorValue,
                     patchValue
                 ),
-                generation: generation
+                generation: generation,
+                indexPhysicalFingerprint: indexPhysicalFingerprint,
+                executionRuntimeFingerprint: executionRuntimeFingerprint
             )
         } catch let publicationError as DatabaseSchemaPublicationError {
             throw publicationError

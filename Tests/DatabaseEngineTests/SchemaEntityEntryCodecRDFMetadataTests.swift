@@ -15,7 +15,15 @@ struct SchemaEntityEntryCodecRDFMetadataTests {
         let decoded = try SchemaEntityEntryCodec.decode(encoded)
 
         #expect(decoded == entity)
-        #expect(decoded.indexes[0].kind.metadata["graph"] == .rdfTerm(graph))
+        guard
+            case .graph(
+                .ontologyProjection(_, let decodedGraph), _
+            ) = decoded.indexes[0].declaration.definition
+        else {
+            Issue.record("Expected an ontology projection index")
+            return
+        }
+        #expect(decodedGraph?.term == graph)
         #expect(
             decoded.ontology?.propertyDescriptors == entity.ontology?.propertyDescriptors
         )
@@ -77,19 +85,38 @@ struct SchemaEntityEntryCodecRDFMetadataTests {
             ],
             directoryComponents: [.staticPath("calendar")],
             indexes: [
-                IndexDescriptorMetadata(
+                try IndexDescriptor(
                     entityName: "CalendarEvent",
-                    name: "calendar_graph",
-                    kind: IndexKindMetadata(
-                        identifier: "owl_class_rdf",
-                        subspaceStructure: .hierarchical,
-                        fields: [],
-                        metadata: [
-                            "individualIRIBase": .string("urn:calendar:event:"),
-                            "graph": .rdfTerm(graph),
-                        ]
-                    )
-                ),
+                    declaration: IndexDeclaration(
+                        name: "calendar_graph",
+                        definition: .graph(
+                            .ontologyProjection(
+                                individualIRIBase: "urn:calendar:event:",
+                                graph: try RDFGraphName(graph)
+                            ),
+                            includedFields: []
+                        )
+                    ),
+                    fieldSchemas: [
+                        FieldSchema(
+                            name: "id",
+                            fieldNumber: 1,
+                            type: .string
+                        ),
+                        FieldSchema(
+                            name: "title",
+                            fieldNumber: 2,
+                            type: .string
+                        ),
+                        FieldSchema(
+                            name: "calendar",
+                            fieldNumber: 3,
+                            type: .reference,
+                            isOptional: true,
+                            referenceTargetEntity: "Calendar"
+                        ),
+                    ]
+                )
             ],
             ontology: .owlClass(
                 iri: "urn:calendar:Event",

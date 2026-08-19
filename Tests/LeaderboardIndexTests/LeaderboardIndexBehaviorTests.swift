@@ -43,16 +43,16 @@ private struct LeaderboardIndexContext {
         // Build expression for score field
         let rootExpression: KeyExpression = FieldKeyExpression(fieldName: "score")
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: GameScore.self,
             name: indexName,
-            kind: timeWindowLeaderboardIndexMetadata(
+            definition: timeWindowLeaderboardIndexDefinition(
                 scoreFieldName: "score",
                 scoreFieldNumber: 3,
                 window: window,
                 windowCount: windowCount
             ),
             rootExpression: rootExpression,
-            subspaceKey: indexName,
             itemTypes: Set(["GameScore"])
         )
 
@@ -94,46 +94,20 @@ private struct LeaderboardIndexContext {
     }
 }
 
-func timeWindowLeaderboardIndexMetadata(
+func timeWindowLeaderboardIndexDefinition(
     scoreFieldName: String,
     scoreFieldNumber: Int,
     window: LeaderboardWindowType,
     windowCount: Int
-) -> IndexKindMetadata {
-    let windowName: String
-    var metadata: [String: FieldValue]
-    switch window {
-    case .hourly:
-        windowName = "hourly"
-        metadata = [:]
-    case .daily:
-        windowName = "daily"
-        metadata = [:]
-    case .weekly:
-        windowName = "weekly"
-        metadata = [:]
-    case .monthly:
-        windowName = "monthly"
-        metadata = [:]
-    case .custom(let duration):
-        windowName = "custom"
-        metadata = ["windowDurationSeconds": .float64(duration)]
-    }
-    metadata["window"] = .string(windowName)
-    metadata["windowCount"] = .int64(Int64(windowCount))
-
-    return IndexKindMetadata(
-        identifier: "time_window_leaderboard",
-        subspaceStructure: .hierarchical,
-        fields: [
-            IndexFieldMetadata(
-                identity: FieldIdentity(
-                    name: scoreFieldName,
-                    number: scoreFieldNumber
-                )
-            )
-        ],
-        metadata: metadata
+) -> IndexDefinition<FieldIdentity> {
+    .leaderboard(
+        groupBy: [],
+        score: FieldIdentity(
+            name: scoreFieldName,
+            number: scoreFieldNumber
+        ),
+        window: window,
+        windowCount: windowCount
     )
 }
 
@@ -174,7 +148,7 @@ struct LeaderboardIndexInsertTests {
                 GameScore(id: "g1", playerId: "player1", score: 500),
                 GameScore(id: "g2", playerId: "player2", score: 1500),
                 GameScore(id: "g3", playerId: "player3", score: 1000),
-                GameScore(id: "g4", playerId: "player4", score: 2000)
+                GameScore(id: "g4", playerId: "player4", score: 2000),
             ]
 
             try await ctx.database.withTransaction { transaction in
@@ -249,7 +223,7 @@ struct LeaderboardIndexDeleteTests {
             let scores = [
                 GameScore(id: "g1", playerId: "player1", score: 1000),
                 GameScore(id: "g2", playerId: "player2", score: 2000),
-                GameScore(id: "g3", playerId: "player3", score: 3000)
+                GameScore(id: "g3", playerId: "player3", score: 3000),
             ]
 
             // Insert all
@@ -295,7 +269,7 @@ struct LeaderboardIndexUpdateTests {
             let scores = [
                 GameScore(id: "g1", playerId: "player1", score: 1000),
                 GameScore(id: "g2", playerId: "player2", score: 2000),
-                GameScore(id: "g3", playerId: "player3", score: 3000)
+                GameScore(id: "g3", playerId: "player3", score: 3000),
             ]
 
             // Insert all
@@ -456,7 +430,7 @@ struct LeaderboardIndexRankTests {
             let scores = [
                 GameScore(id: "g1", playerId: "player1", score: 100),
                 GameScore(id: "g2", playerId: "player2", score: 500),
-                GameScore(id: "g3", playerId: "player3", score: 1000)
+                GameScore(id: "g3", playerId: "player3", score: 1000),
             ]
 
             try await ctx.database.withTransaction { transaction in
@@ -520,7 +494,7 @@ struct LeaderboardIndexTiesTests {
                 GameScore(id: "g1", playerId: "player1", score: 1000),
                 GameScore(id: "g2", playerId: "player2", score: 1000),
                 GameScore(id: "g3", playerId: "player3", score: 1000),
-                GameScore(id: "g4", playerId: "player4", score: 500)
+                GameScore(id: "g4", playerId: "player4", score: 500),
             ]
 
             try await ctx.database.withTransaction { transaction in
@@ -617,7 +591,7 @@ struct LeaderboardIndexScanItemTests {
 
             let scores = [
                 GameScore(id: "g1", playerId: "player1", score: 1000),
-                GameScore(id: "g2", playerId: "player2", score: 2000)
+                GameScore(id: "g2", playerId: "player2", score: 2000),
             ]
 
             try await ctx.database.withTransaction { transaction in
@@ -653,7 +627,7 @@ struct LeaderboardIndexEdgeCasesTests {
             let scores = [
                 GameScore(id: "g1", playerId: "player1", score: Int64.max - 100),
                 GameScore(id: "g2", playerId: "player2", score: Int64.max - 200),
-                GameScore(id: "g3", playerId: "player3", score: Int64.max - 50)
+                GameScore(id: "g3", playerId: "player3", score: Int64.max - 50),
             ]
 
             try await ctx.database.withTransaction { transaction in
@@ -682,7 +656,7 @@ struct LeaderboardIndexEdgeCasesTests {
             let scores = [
                 GameScore(id: "g1", playerId: "player1", score: 0),
                 GameScore(id: "g2", playerId: "player2", score: 100),
-                GameScore(id: "g3", playerId: "player3", score: 0)
+                GameScore(id: "g3", playerId: "player3", score: 0),
             ]
 
             try await ctx.database.withTransaction { transaction in
@@ -713,7 +687,7 @@ struct LeaderboardIndexEdgeCasesTests {
             let scores = [
                 GameScore(id: "g1", playerId: "player1", score: -100),
                 GameScore(id: "g2", playerId: "player2", score: 100),
-                GameScore(id: "g3", playerId: "player3", score: -50)
+                GameScore(id: "g3", playerId: "player3", score: -50),
             ]
 
             try await ctx.database.withTransaction { transaction in

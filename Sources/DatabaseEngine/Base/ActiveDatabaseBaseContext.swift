@@ -1,4 +1,4 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 /// Request-local immutable Base placement used by all relative data paths.
 package enum ActiveDatabaseBaseContext {
     @TaskLocal package static var lease: DatabaseBaseLease?

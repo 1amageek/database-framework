@@ -1,4 +1,4 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 import DatabaseTypes
 
 /// One durable checkpoint produced by a bounded placement-transfer scan.

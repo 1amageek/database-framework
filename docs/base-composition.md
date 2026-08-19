@@ -1,6 +1,6 @@
 # Base and Composition
 
-Status: implemented behind the non-default `MultipleBases` SwiftPM trait.
+Status: implemented behind the non-default `MultiBase` SwiftPM trait.
 The P0/P1 responsibility-boundary changes described here have not yet received
 the separately authorized build and behavioral verification pass.
 
@@ -10,7 +10,7 @@ implementation order, and verification gates are defined in
 
 This document defines the optional contract for isolating and composing data
 inside one logical database. The standard build retains one database data root.
-Enabling `MultipleBases` adds Base and Composition execution without replacing
+Enabling `MultiBase` adds Base and Composition execution without replacing
 the schema model. The default compiled path still has one engine and does not
 carry a topology, target lease, Base catalog, persisted Grant store, or
 Composition planner.
@@ -18,9 +18,9 @@ Composition planner.
 | Trait selection | Execution boundary |
 |---|---|
 | standard / `AllRuntimeFeatures` | One implicit database root; no target type or target field is compiled |
-| `MultipleBases` | Explicit `.database`, `.base(Base.ID)`, and `.composition(CompositionSelection)` targets |
+| `MultiBase` | Explicit `.database`, `.base(Base.ID)`, and `.composition(CompositionSelection)` targets |
 
-`AllRuntimeFeatures` does not imply `MultipleBases`.
+`AllRuntimeFeatures` does not imply `MultiBase`.
 
 ## Design Conclusion
 
@@ -113,7 +113,7 @@ operations retain the generation acquired at operation start.
 
 ## Public Operation Surface
 
-When `MultipleBases` is enabled, an authenticated local session selects one
+When `MultiBase` is enabled, an authenticated local session selects one
 Base explicitly:
 
 ~~~swift
@@ -550,7 +550,7 @@ must not silently present a federated read as transactionally atomic.
 The runtime implements Base lifecycle and offline placement movement,
 target-bound request execution, Base-local Grants, field authorization,
 Composition provenance, and durable federated paging. Removed storage layouts
-are rejected; the MultipleBases runtime does not probe, alias, or migrate them.
+are rejected; the MultiBase runtime does not probe, alias, or migrate them.
 It only advertises Composition operations whose merge semantics are
 implemented.
 

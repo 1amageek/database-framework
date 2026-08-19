@@ -15,6 +15,7 @@ import DatabaseTypes
 @testable import DatabaseKit
 @testable import DatabaseEngine
 import DatabaseRuntime
+import VectorIndex
 
 /// Tests for DBConfiguration and runtime index configuration.
 @Suite("DBConfiguration Tests", .foundationDBScenario, .serialized, .heartbeat)
@@ -26,15 +27,17 @@ struct DBConfigurationTests {
     struct IndexConfigurationUser {
         #Directory<IndexConfigurationUser>("config_tests", "users")
         #Index(
-            .fullText(),
-            fields: [\IndexConfigurationUser.name],
-            name: "IndexConfigurationUser_name"
-        )
+            .text(
+                name: "IndexConfigurationUser_name", fields: [\IndexConfigurationUser.name],
+                mode: .fullText(
+                    tokenizer: .simple, storePositions: true, ngramSize: 3,
+                    minimumTermLength: 2)))
         #Index(
-            .vector(dimensions: 3),
-            embedding: \IndexConfigurationUser.embedding,
-            name: "IndexConfigurationUser_embedding"
-        )
+            .vector(
+                name: "IndexConfigurationUser_embedding",
+                embedding: \IndexConfigurationUser.embedding,
+                dimensions: 3
+            ))
 
         var id: String = ""
         var name: String = ""
@@ -43,7 +46,7 @@ struct DBConfigurationTests {
 
     // MARK: - Single Configuration API Tests
 
-    @Test("DBContainer accepts indexConfigurations")
+    @Test("Runtime generation retains indexConfigurations")
     func singleConfigurationAPI() async throws {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
@@ -53,49 +56,69 @@ struct DBConfigurationTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: try .testing(
-                storageEngine: database,
-                indexConfigurations: [
-                    ContainerEmbeddingConfiguration(
-                        fieldName: "embedding",
-                        entityName: "IndexConfigurationUser",
-                        profileIdentifier: "single-config-test"
+                storageEngine: database),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        IndexConfigurationUser.self
                     )
-                ]
-            ),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
+                ],
+                indexConfigurations: [
+                    VectorIndexConfiguration(
+                        indexName: "IndexConfigurationUser_embedding",
+                        algorithm: .flat
+                    )
+                ]),
             security: .testingDisabled,
         )
 
-        #expect(container.indexConfigurations.count == 1)
-        #expect(container.indexConfigurations["IndexConfigurationUser_embedding"] != nil)
-        #expect(container.indexConfigurations["IndexConfigurationUser_embedding"]?.count == 1)
+        #expect(container.runtimeConfiguration.indexConfigurations.count == 1)
+        #expect(
+            container.runtimeConfiguration.indexConfigurations(
+                named: "IndexConfigurationUser_embedding"
+            ).count == 1)
     }
 
-    @Test("DBContainer groups multiple configurations by indexName")
-    func multipleConfigurationsGroupedByIndexName() async throws {
+    @Test("Provider preflight rejects duplicate exclusive configurations")
+    func duplicateConfigurationsFailBeforeInitialization() async throws {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try IndexConfigurationUser.schemaEntity])
 
-        let container = try await DBContainer.open(
+        await #expect(throws: IndexRuntimeConfigurationError.self) {
+            _ = try await DBContainer.open(
             testing: schema,
             configuration: try .testing(
-                storageEngine: database,
-                indexConfigurations: [
-                    ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "en"),
-                    ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "ja"),
-                    ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "zh"),
-                    ContainerEmbeddingConfiguration(fieldName: "embedding", entityName: "IndexConfigurationUser", profileIdentifier: "test")
-                ]
-            ),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
-            security: .testingDisabled,
-        )
-
-        #expect(container.indexConfigurations.count == 2)
-        #expect(container.indexConfigurations["IndexConfigurationUser_name"]?.count == 3)
-        #expect(container.indexConfigurations["IndexConfigurationUser_embedding"]?.count == 1)
+                storageEngine: database),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [
+                        try DatabaseFrameworkRuntime.entity(
+                            IndexConfigurationUser.self
+                        )
+                    ],
+                    indexConfigurations: [
+                        VectorIndexConfiguration(
+                            indexName: "IndexConfigurationUser_embedding",
+                            algorithm: .flat
+                        ),
+                        VectorIndexConfiguration(
+                            indexName: "IndexConfigurationUser_embedding",
+                            algorithm: .hnsw(.default)
+                        ),
+                    ]
+                ),
+            security: .testingDisabled
+            )
+        }
     }
 
     @Test("DBContainer with empty indexConfigurations")
@@ -108,40 +131,48 @@ struct DBConfigurationTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
             security: .testingDisabled,
         )
 
-        #expect(container.indexConfigurations.isEmpty)
+        #expect(container.runtimeConfiguration.indexConfigurations.isEmpty)
     }
 
-    @Test("Runtime configuration rejects an index kind mismatch")
+    @Test("Runtime configuration rejects an index type mismatch")
     func configurationKindMismatch() throws {
         let schema = try Schema(
             entities: [try IndexConfigurationUser.schemaEntity]
         )
-        let entityRuntimes = try DatabaseFrameworkRuntime.configuration(
+        let configuration = ContainerLocalizedTextConfiguration(
+            indexName: "IndexConfigurationUser_embedding",
+            language: "en"
+        )
+        let runtimeConfiguration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)
-            ]
-        ).entityRuntimes
-        let configuration = ContainerLocalizedTextConfiguration(
-            fieldName: "embedding",
-            entityName: "IndexConfigurationUser",
-            language: "en"
+            ],
+            indexConfigurations: [configuration]
         )
 
         #expect(
-            throws: IndexRuntimeConfigurationError.indexKindMismatch(
+            throws: IndexRuntimeConfigurationError.indexTypeMismatch(
                 indexName: "IndexConfigurationUser_embedding",
-                expected: "vector",
-                actual: "fulltext"
+                expected: .vector,
+                actual: .text(.fullText)
             )
         ) {
             try IndexRuntimeConfigurationValidator.validate(
-                [configuration],
                 schema: schema,
-                entityRuntimes: entityRuntimes
+                runtimeConfiguration: runtimeConfiguration
             )
         }
     }
@@ -151,15 +182,19 @@ struct DBConfigurationTests {
         let schema = try Schema(
             entities: [try IndexConfigurationUser.schemaEntity]
         )
-        let entityRuntimes = try DatabaseFrameworkRuntime.configuration(
+        let configuration = ContainerEmbeddingConfiguration(
+            indexName: "IndexConfigurationUser_missing",
+            profileIdentifier: "unknown-index"
+        )
+        let runtimeConfiguration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)
-            ]
-        ).entityRuntimes
-        let configuration = ContainerEmbeddingConfiguration(
-            fieldName: "missing",
-            entityName: "IndexConfigurationUser",
-            profileIdentifier: "unknown-index"
+            ],
+            indexConfigurations: [configuration]
         )
 
         #expect(
@@ -168,9 +203,8 @@ struct DBConfigurationTests {
             )
         ) {
             try IndexRuntimeConfigurationValidator.validate(
-                [configuration],
                 schema: schema,
-                entityRuntimes: entityRuntimes
+                runtimeConfiguration: runtimeConfiguration
             )
         }
     }
@@ -187,88 +221,103 @@ struct DBConfigurationTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: try .testing(
-                storageEngine: database,
-                indexConfigurations: [
-                    ContainerEmbeddingConfiguration(
-                        fieldName: "embedding",
-                        entityName: "IndexConfigurationUser",
-                        profileIdentifier: "typed-access"
+                storageEngine: database),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        IndexConfigurationUser.self
                     )
-                ]
-            ),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
+                ],
+                indexConfigurations: [
+                    VectorIndexConfiguration(
+                        indexName: "IndexConfigurationUser_embedding",
+                        algorithm: .hnsw(.default)
+                    )
+                ]),
             security: .testingDisabled,
         )
 
-        let vectorConfig = container.indexConfigurations[
-            "IndexConfigurationUser_embedding"
-        ]?.first as? ContainerEmbeddingConfiguration
+        let vectorConfig =
+            container.runtimeConfiguration
+            .indexConfigurations(named: "IndexConfigurationUser_embedding")
+            .first as? VectorIndexConfiguration
 
         #expect(vectorConfig != nil)
-        #expect(vectorConfig?.profileIdentifier == "typed-access")
+        guard let vectorConfig, case .hnsw = vectorConfig.algorithm else {
+            Issue.record("Expected the retained HNSW runtime policy")
+            return
+        }
     }
 
-    @Test("Grouped index configurations preserve every matching policy")
-    func groupedIndexConfigurationsPreserveMatchingPolicies() async throws {
+    @Test("A provider must explicitly accept runtime configuration")
+    func unhandledProviderConfigurationFailsPreflight() async throws {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
 
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try IndexConfigurationUser.schemaEntity])
 
-        let container = try await DBContainer.open(
+        await #expect(throws: IndexRuntimeConfigurationError.self) {
+            _ = try await DBContainer.open(
             testing: schema,
             configuration: try .testing(
-                storageEngine: database,
-                indexConfigurations: [
-                    ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "en"),
-                    ContainerLocalizedTextConfiguration(fieldName: "name", entityName: "IndexConfigurationUser", language: "ja")
-                ]
-            ),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexConfigurationUser.self)]),
-            security: .testingDisabled,
-        )
-
-        let ftConfigs = container.indexConfigurations[
-            "IndexConfigurationUser_name"
-        ]?.compactMap { configuration in
-            configuration as? ContainerLocalizedTextConfiguration
-        } ?? []
-
-        #expect(ftConfigs.count == 2)
-        let languages = Set(ftConfigs.map { $0.language })
-        #expect(languages.contains("en"))
-        #expect(languages.contains("ja"))
+                storageEngine: database),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [
+                        try DatabaseFrameworkRuntime.entity(
+                            IndexConfigurationUser.self
+                        )
+                    ],
+                    indexConfigurations: [
+                        ContainerLocalizedTextConfiguration(
+                            indexName: "IndexConfigurationUser_name",
+                            language: "en"
+                        )
+                    ]
+                ),
+            security: .testingDisabled
+            )
+        }
     }
 }
 
 // MARK: - Test Runtime Configurations
 
 struct ContainerEmbeddingConfiguration: IndexRuntimeConfiguration, Sendable {
-    static var kindIdentifier: String { IndexDefinition.vector(dimensions: 1).identifier }
+    static let indexType: IndexType = .vector
 
-    let fieldName: String
-    let entityName: String
+    let indexName: String
 
     let profileIdentifier: String
 
-    init(fieldName: String, entityName: String, profileIdentifier: String) {
-        self.fieldName = fieldName
-        self.entityName = entityName
+    init(
+        indexName: String,
+        profileIdentifier: String
+    ) {
+        self.indexName = indexName
         self.profileIdentifier = profileIdentifier
     }
 }
 
 struct ContainerLocalizedTextConfiguration: IndexRuntimeConfiguration, Sendable {
-    static var kindIdentifier: String { IndexDefinition.fullText().identifier }
+    static let indexType: IndexType = .text(.fullText)
 
-    let fieldName: String
-    let entityName: String
+    let indexName: String
 
     let language: String
 
-    init(fieldName: String, entityName: String, language: String) {
-        self.fieldName = fieldName
-        self.entityName = entityName
+    init(
+        indexName: String,
+        language: String
+    ) {
+        self.indexName = indexName
         self.language = language
     }
 }

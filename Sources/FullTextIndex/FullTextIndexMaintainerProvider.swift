@@ -1,23 +1,23 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for full-text indexes.
 public struct FullTextIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "fulltext"
+    public let indexType: IndexType = .text(.fullText)
     public let runtimeRequirements: IndexRuntimeRequirements = .entityAndPolymorphicReads
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
         let configuration = try FullTextIndexConfiguration(
-            metadata: index.kind
+            definition: index.definition
         )
         return FullTextIndexMaintainer<Item>(
             index: index,

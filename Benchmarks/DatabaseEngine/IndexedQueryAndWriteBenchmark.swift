@@ -33,12 +33,13 @@ struct SingleIndexBenchmarkEntity {
         "single-index-entities"
     )
     #Index(
-        .scalar,
-        fields: [
-            \SingleIndexBenchmarkEntity.runID,
-            \SingleIndexBenchmarkEntity.category,
-        ],
-        name: "single_category"
+        .ordered(
+            name: "single_category",
+            keys: [
+                .ascending(\SingleIndexBenchmarkEntity.runID),
+                .ascending(\SingleIndexBenchmarkEntity.category),
+            ]
+        )
     )
 
     var id: String = UUID().uuidString
@@ -56,29 +57,33 @@ struct TripleIndexBenchmarkEntity {
         "triple-index-entities"
     )
     #Index(
-        .scalar,
-        fields: [
-            \TripleIndexBenchmarkEntity.runID,
-            \TripleIndexBenchmarkEntity.category,
-        ],
-        name: "triple_category"
+        .ordered(
+            name: "triple_category",
+            keys: [
+                .ascending(\TripleIndexBenchmarkEntity.runID),
+                .ascending(\TripleIndexBenchmarkEntity.category),
+            ]
+        )
     )
     #Index(
-        .scalar,
-        fields: [
-            \TripleIndexBenchmarkEntity.runID,
-            \TripleIndexBenchmarkEntity.age,
-        ],
-        name: "triple_age"
+        .ordered(
+            name: "triple_age",
+            keys: [
+                .ascending(\TripleIndexBenchmarkEntity.runID),
+                .ascending(\TripleIndexBenchmarkEntity.age),
+            ]
+        )
     )
     #Index(
-        .sum,
+        .aggregate(
+            name: "triple_score_by_category",
+            function: .sum,
         groupBy: [
-            \TripleIndexBenchmarkEntity.runID,
-            \TripleIndexBenchmarkEntity.category,
-        ],
-        value: \TripleIndexBenchmarkEntity.score,
-        name: "triple_score_by_category"
+                .ascending(\TripleIndexBenchmarkEntity.runID),
+                .ascending(\TripleIndexBenchmarkEntity.category),
+            ],
+        value: \TripleIndexBenchmarkEntity.score
+        )
     )
 
     var id: String = UUID().uuidString
@@ -114,7 +119,12 @@ private struct IndexedBenchmarkContext: Sendable {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PlainBenchmarkEntity.self), try DatabaseFrameworkRuntime.entity(SingleIndexBenchmarkEntity.self), try DatabaseFrameworkRuntime.entity(TripleIndexBenchmarkEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PlainBenchmarkEntity.self), try DatabaseFrameworkRuntime.entity(SingleIndexBenchmarkEntity.self), try DatabaseFrameworkRuntime.entity(TripleIndexBenchmarkEntity.self),
+                ]
             ),
             security: .testingDisabled
         )

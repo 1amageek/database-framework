@@ -44,8 +44,8 @@ public protocol AdminContextProtocol: Sendable {
 
     /// Returns statistics for one index.
     ///
-    /// - Parameter indexName: Index name.
-    /// - Returns: Index statistics.
+    /// - Parameter indexName: ResolvedIndex name.
+    /// - Returns: ResolvedIndex statistics.
     func indexStatistics(
         _ indexName: String
     ) async throws -> AdminIndexStatistics
@@ -83,7 +83,7 @@ public protocol AdminContextProtocol: Sendable {
     /// Rebuilds an index.
     ///
     /// - Parameters:
-    ///   - indexName: Index to rebuild.
+    ///   - indexName: ResolvedIndex to rebuild.
     ///   - progress: Progress callback receiving values from 0.0 through 1.0.
     func rebuildIndex(_ indexName: String, progress: (@Sendable (Double) -> Void)?) async throws
 

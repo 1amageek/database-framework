@@ -85,7 +85,10 @@ struct FDBStageBoundaryUserV2 {
 @Persistable(type: "FDBStageBoundaryUser")
 struct FDBStageBoundaryUserV3 {
     #Directory<FDBStageBoundaryUserV3>("test", "migration", "stage-boundary")
-    #Index(.scalar, fields: [\FDBStageBoundaryUserV3.fullName], name: "FDBStageBoundaryUser_fullName")
+    #Index(
+        .ordered(
+            name: "FDBStageBoundaryUser_fullName",
+            keys: [.ascending(\FDBStageBoundaryUserV3.fullName)], unique: false))
 
     var id: String = ""
     var fullName: String
@@ -116,7 +119,8 @@ enum FDBStageBoundarySchemaV3: VersionedSchema {
 
 enum FDBStageBoundaryMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [FDBStageBoundarySchemaV1.self, FDBStageBoundarySchemaV2.self, FDBStageBoundarySchemaV3.self]
+        [FDBStageBoundarySchemaV1.self, FDBStageBoundarySchemaV2.self, FDBStageBoundarySchemaV3.self,
+        ]
     }
 
     static var stages: [MigrationStage] {
@@ -130,7 +134,7 @@ enum FDBStageBoundaryMigrationPlan: SchemaMigrationPlan {
                 toVersion: FDBStageBoundarySchemaV3.self,
                 willMigrate: migrateUsers,
                 didMigrate: auditStage
-            )
+            ),
         ]
     }
 
@@ -165,8 +169,16 @@ enum FDBStageBoundaryMigrationPlan: SchemaMigrationPlan {
 @Persistable(type: "FDBIndexLifecycleUser")
 struct FDBIndexLifecycleUserV2 {
     #Directory<FDBIndexLifecycleUserV2>("test", "migration", "index-lifecycle")
-    #Index(.scalar, fields: [\FDBIndexLifecycleUserV2.email], name: "FDBIndexLifecycleUser_email")
-    #Index(.scalar, fields: [\FDBIndexLifecycleUserV2.age], name: "FDBIndexLifecycleUser_age")
+    #Index(
+        .ordered(
+            name: "FDBIndexLifecycleUser_email",
+            keys: [.ascending(\FDBIndexLifecycleUserV2.email)],
+            unique: false))
+    #Index(
+        .ordered(
+            name: "FDBIndexLifecycleUser_age",
+            keys: [.ascending(\FDBIndexLifecycleUserV2.age)],
+            unique: false))
 
     var id: String = ""
     var name: String
@@ -177,8 +189,15 @@ struct FDBIndexLifecycleUserV2 {
 @Persistable(type: "FDBIndexLifecycleUser")
 struct FDBIndexLifecycleUserV3 {
     #Directory<FDBIndexLifecycleUserV3>("test", "migration", "index-lifecycle")
-    #Index(.scalar, fields: [\FDBIndexLifecycleUserV3.email], name: "FDBIndexLifecycleUser_email")
-    #Index(.scalar, fields: [\FDBIndexLifecycleUserV3.createdAt], name: "FDBIndexLifecycleUser_createdAt")
+    #Index(
+        .ordered(
+            name: "FDBIndexLifecycleUser_email",
+            keys: [.ascending(\FDBIndexLifecycleUserV3.email)],
+            unique: false))
+    #Index(
+        .ordered(
+            name: "FDBIndexLifecycleUser_createdAt",
+            keys: [.ascending(\FDBIndexLifecycleUserV3.createdAt)], unique: false))
 
     var id: String = ""
     var name: String
@@ -268,7 +287,8 @@ enum FDBStageFailureSchemaV3: VersionedSchema {
 
 enum FDBStageFailureMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [FDBStageFailureSchemaV1.self, FDBStageFailureSchemaV2.self, FDBStageFailureSchemaV3.self]
+        [FDBStageFailureSchemaV1.self, FDBStageFailureSchemaV2.self, FDBStageFailureSchemaV3.self,
+        ]
     }
 
     static var stages: [MigrationStage] {
@@ -282,7 +302,7 @@ enum FDBStageFailureMigrationPlan: SchemaMigrationPlan {
                 toVersion: FDBStageFailureSchemaV3.self,
                 willMigrate: failStage,
                 didMigrate: nil
-            )
+            ),
         ]
     }
 
@@ -314,7 +334,12 @@ struct MigrationExecutionFDBTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: engine
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV1.self)]),
                 security: .testingDisabled
             )
             let initialContext = initialContainer.testBaseContext()
@@ -332,7 +357,12 @@ struct MigrationExecutionFDBTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: engine
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -345,7 +375,12 @@ struct MigrationExecutionFDBTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: engine
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
                 security: .testingDisabled
             )
             let migratedUsers = try await verificationContainer.testBaseContext()
@@ -372,12 +407,21 @@ struct MigrationExecutionFDBTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: engine
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV2.self)]),
                 security: .testingDisabled
             )
             let subspace = try await initialContainer.testBaseDirectory(for: FDBIndexLifecycleUserV2.self)
             let ageIndexSubspace = subspace
                 .subspace(SubspaceKey.indexes)
+                .subspace("FDBIndexLifecycleUser_age")
+            let ageIndexStateSubspace =
+                subspace
+                .subspace("state")
                 .subspace("FDBIndexLifecycleUser_age")
             let createdAtIndexSubspace = subspace
                 .subspace(SubspaceKey.indexes)
@@ -399,7 +443,12 @@ struct MigrationExecutionFDBTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: engine
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV3.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV3.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -412,16 +461,18 @@ struct MigrationExecutionFDBTests {
                 .subspace("formerIndexes")
                 .pack(Tuple("FDBIndexLifecycleUser_age"))
             let formerIndexValue = try await value(for: formerIndexKey, engine: engine)
-            let indexRegistry = DatabaseIndexRegistry(container: migratedContainer, subspace: subspace)
-            let removedIndexState = try await indexRegistry.state(of: "FDBIndexLifecycleUser_age")
-
             let verificationContainer = try await DBContainer.open(
                 for: FDBIndexLifecycleSchemaV3.makeSchema(),
                 configuration: .testing(
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: engine
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV3.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBIndexLifecycleUserV3.self)]),
                 security: .testingDisabled
             )
             let migratedUsers = try await verificationContainer.testBaseContext()
@@ -434,8 +485,12 @@ struct MigrationExecutionFDBTests {
             #expect(entity?.fieldMapByName["age"]?.fieldNumber == 4)
             #expect(formerIndexValue != nil)
             #expect(try await countKeys(in: ageIndexSubspace, engine: engine) == 0)
+            #expect(try await countKeys(
+                    in: ageIndexStateSubspace,
+                    engine: engine
+                ) == 0
+            )
             #expect(try await countKeys(in: createdAtIndexSubspace, engine: engine) > 0)
-            #expect(removedIndexState == .disabled)
             #expect(migratedUser?.age == 42)
             #expect(migratedUser?.createdAt == 0)
         }
@@ -454,7 +509,12 @@ struct MigrationExecutionFDBTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: engine
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV1.self)]),
                 security: .testingDisabled
             )
             let initialContext = initialContainer.testBaseContext()
@@ -472,7 +532,12 @@ struct MigrationExecutionFDBTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: engine
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV3.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV3.self)]),
             )
 
             do {
@@ -494,7 +559,12 @@ struct MigrationExecutionFDBTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: engine
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageFailureUserV2.self)]),
                 security: .testingDisabled
             )
             let migratedUsers = try await verificationContainer.testBaseContext()
@@ -525,7 +595,12 @@ struct MigrationExecutionFDBTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: engine
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBStageBoundaryUserV3.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 

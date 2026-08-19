@@ -34,7 +34,9 @@ struct QueryPlanTests {
                 bounds: .exact([.string("Alice")])
             )),
             cost: QueryCost(startup: 0, total: 10, rows: 1, width: 50),
-            indexes: [IndexUsage(indexName: "idx_name", kind: .scalar, accessPattern: .exactMatch)],
+            indexes: [IndexUsage(indexName: "idx_name",
+                    type: .ordered,
+                    accessPattern: .exactMatch)],
             statistics: PlanStatistics(planningTimeMs: 1.0, alternativesConsidered: 3)
         )
 
@@ -237,7 +239,7 @@ struct GraphPlanTests {
             PathPattern(elements: [
                 .node(NodePattern(variable: "a")),
                 .edge(EdgePattern(direction: .outgoing)),
-                .node(NodePattern(variable: "b"))
+                .node(NodePattern(variable: "b")),
             ])
         ])
 
@@ -367,7 +369,7 @@ struct TransformationPlanTests {
             input: input,
             columns: [
                 ProjectionItem(.column(ColumnRef(column: "name")), alias: "user_name"),
-                ProjectionItem(.column(ColumnRef(column: "email")))
+                ProjectionItem(.column(ColumnRef(column: "email"))),
             ]
         )
 
@@ -381,7 +383,7 @@ struct TransformationPlanTests {
             input: input,
             keys: [
                 SortKey(.column(ColumnRef(column: "name")), direction: .ascending),
-                SortKey(.column(ColumnRef(column: "created_at")), direction: .descending)
+                SortKey(.column(ColumnRef(column: "created_at")), direction: .descending),
             ],
             limit: 100
         )
@@ -418,7 +420,7 @@ struct TransformationPlanTests {
             groupBy: [.column(ColumnRef(column: "customer_id"))],
             aggregates: [
                 .sum(.column(ColumnRef(column: "amount")), distinct: false),
-                .count(nil, distinct: false)
+                .count(nil, distinct: false),
             ]
         )
 
@@ -527,7 +529,7 @@ struct SpecialPlanTests {
             columns: ["x", "y", "z"],
             rows: [
                 [.int(1), .int(2), .int(3)],
-                [.int(4), .int(5), .int(6)]
+                [.int(4), .int(5), .int(6)],
             ]
         )
 

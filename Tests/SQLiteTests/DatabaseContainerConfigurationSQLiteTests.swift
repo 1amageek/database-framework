@@ -1,4 +1,4 @@
-#if SQLITE && !MultipleBases
+#if SQLITE && !MultiBase
 import Foundation
 import Database
 import Testing
@@ -68,7 +68,11 @@ struct DatabaseContainerConfigurationSQLiteTests {
             for: schema,
             configuration: SQLiteStorageEngine.Configuration.inMemory,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV1.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV1.self)]
             ),
             security: .testingDisabled
         )
@@ -102,7 +106,12 @@ struct DatabaseContainerConfigurationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV1.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV1.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -117,7 +126,12 @@ struct DatabaseContainerConfigurationSQLiteTests {
             for: SQLiteFacadeSchemaV2.self,
             migrationPlan: SQLiteFacadeMigrationPlan.self,
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)]),
             security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
@@ -126,7 +140,12 @@ struct DatabaseContainerConfigurationSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLiteFacadeSchemaV2.makeSchema(),
             configuration: SQLiteStorageEngine.Configuration.file(dbPath),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteFacadeUserV2.self)]),
             security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }

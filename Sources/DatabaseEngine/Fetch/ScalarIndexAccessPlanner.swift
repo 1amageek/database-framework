@@ -42,8 +42,8 @@ enum ScalarIndexAccessPlanner {
         }
 
         for descriptor in candidates {
-            guard descriptor.kindIdentifier == "scalar",
-                  descriptor.fieldNames.count > 1 else {
+            guard descriptor.type == .ordered,
+                descriptor.fieldNames.count > 1 else {
                 continue
             }
             var equalityPrefix: [ScalarIndexClause] = []
@@ -68,7 +68,7 @@ enum ScalarIndexAccessPlanner {
 
         for clause in clauses where clause.comparison == .equal {
             if let descriptor = candidates.first(where: {
-                $0.kindIdentifier == "scalar"
+                $0.type == .ordered
                     && $0.fieldNames.first == clause.fieldName
             }) {
                 return ScalarIndexAccessSelection(
@@ -84,7 +84,7 @@ enum ScalarIndexAccessPlanner {
 
         for clause in clauses {
             if let descriptor = candidates.first(where: {
-                $0.kindIdentifier == "scalar"
+                $0.type == .ordered
                     && $0.fieldNames.first == clause.fieldName
             }) {
                 return ScalarIndexAccessSelection(
@@ -116,9 +116,9 @@ enum ScalarIndexAccessPlanner {
                 "Forced index '\(forcedIndexName)' not found on type '\(typeName)'"
             )
         }
-        guard descriptor.kindIdentifier == "scalar" else {
+        guard descriptor.type == .ordered else {
             throw CanonicalReadError.unsupportedAccessPath(
-                "Forced index '\(forcedIndexName)' has kind '\(descriptor.kindIdentifier)'; typed model queries require a scalar index"
+                "Forced index '\(forcedIndexName)' has type '\(descriptor.type.diagnosticName)'; typed model queries require an ordered index"
             )
         }
         return [descriptor]

@@ -37,11 +37,11 @@ private struct VersionIndexContext {
         self.subspace = Subspace(prefix: Tuple("test", "version", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: VersionedDocument.self,
             name: indexName,
-            kind: versionIndexMetadata(strategy: strategy),
+            definition: versionIndexDefinition(strategy: strategy),
             rootExpression: FieldKeyExpression(fieldName: "id"),
-            subspaceKey: indexName,
             itemTypes: Set(["VersionedDocument"])
         )
 

@@ -37,21 +37,20 @@ private struct SumIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         // Expression: category + amount (grouping + sum value)
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: RegionalSale.self,
             name: indexName,
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .sum,
                 groupingFields: [
                     FieldIdentity(name: "category", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 4),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "category"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: indexName,
             itemTypes: Set(["RegionalSale"])
         )
 
@@ -128,7 +127,7 @@ struct SumIndexBehaviorTests {
         let sales = [
             RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
             RegionalSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 1500.0),
-            RegionalSale(id: "sale3", category: "Electronics", region: "Kyoto", amount: 500.0)
+            RegionalSale(id: "sale3", category: "Electronics", region: "Kyoto", amount: 500.0),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -155,7 +154,7 @@ struct SumIndexBehaviorTests {
         let sales = [
             RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
             RegionalSale(id: "sale2", category: "Clothing", region: "Tokyo", amount: 500.0),
-            RegionalSale(id: "sale3", category: "Electronics", region: "Osaka", amount: 1500.0)
+            RegionalSale(id: "sale3", category: "Electronics", region: "Osaka", amount: 1500.0),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -328,7 +327,7 @@ struct SumIndexBehaviorTests {
         let sales = [
             RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 99.99),
             RegionalSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 149.50),
-            RegionalSale(id: "sale3", category: "Electronics", region: "Kyoto", amount: 0.01)
+            RegionalSale(id: "sale3", category: "Electronics", region: "Kyoto", amount: 0.01),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -356,7 +355,7 @@ struct SumIndexBehaviorTests {
         let sales = [
             RegionalSale(id: "sale1", category: "Returns", region: "Tokyo", amount: -500.0),
             RegionalSale(id: "sale2", category: "Returns", region: "Osaka", amount: -300.0),
-            RegionalSale(id: "sale3", category: "Returns", region: "Kyoto", amount: 100.0)
+            RegionalSale(id: "sale3", category: "Returns", region: "Kyoto", amount: 100.0),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -386,7 +385,7 @@ struct SumIndexBehaviorTests {
         let sales = [
             RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
             RegionalSale(id: "sale2", category: "Clothing", region: "Osaka", amount: 500.0),
-            RegionalSale(id: "sale3", category: "Food", region: "Kyoto", amount: 200.0)
+            RegionalSale(id: "sale3", category: "Food", region: "Kyoto", amount: 200.0),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -435,23 +434,22 @@ struct SumIndexBehaviorTests {
         let indexSubspace = subspace.subspace("I").subspace("RegionalSale_region_category_amount")
 
         // Expression: region + category + amount
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: RegionalSale.self,
             name: "RegionalSale_region_category_amount",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .sum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 3),
                     FieldIdentity(name: "category", number: 2),
                 ],
                 valueField: FieldIdentity(name: "amount", number: 4),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "RegionalSale_region_category_amount",
             itemTypes: Set(["RegionalSale"])
         )
 
@@ -465,7 +463,7 @@ struct SumIndexBehaviorTests {
             RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
             RegionalSale(id: "sale2", category: "Electronics", region: "Tokyo", amount: 500.0),
             RegionalSale(id: "sale3", category: "Clothing", region: "Tokyo", amount: 300.0),
-            RegionalSale(id: "sale4", category: "Electronics", region: "Osaka", amount: 800.0)
+            RegionalSale(id: "sale4", category: "Electronics", region: "Osaka", amount: 800.0),
         ]
 
         try await database.withTransaction { transaction in
@@ -522,7 +520,7 @@ struct SumIndexBehaviorTests {
 
         let sales = [
             RegionalSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
-            RegionalSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 500.0)
+            RegionalSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 500.0),
         ]
 
         try await ctx.database.withTransaction { transaction in

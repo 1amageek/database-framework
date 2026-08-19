@@ -40,14 +40,14 @@ private struct BitmapIndexContext {
         self.subspace = Subspace(prefix: Tuple("test", "bitmap", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: BitmapIndexedProduct.self,
             name: indexName,
-            kind: bitmapIndexMetadata(
+            definition: bitmapIndexDefinition(
                 fieldName: "category",
                 fieldNumber: 2
             ),
             rootExpression: FieldKeyExpression(fieldName: "category"),
-            subspaceKey: indexName,
             itemTypes: Set(["BitmapIndexedProduct"])
         )
 
@@ -385,7 +385,7 @@ struct BitmapIndexMaintainerBehaviorTests {
         let products = [
             BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
             BitmapIndexedProduct(id: "p2", category: "electronics", brand: "Samsung"),
-            BitmapIndexedProduct(id: "p3", category: "electronics", brand: "LG")
+            BitmapIndexedProduct(id: "p3", category: "electronics", brand: "LG"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -412,7 +412,7 @@ struct BitmapIndexMaintainerBehaviorTests {
         let products = [
             BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
             BitmapIndexedProduct(id: "p2", category: "clothing", brand: "Nike"),
-            BitmapIndexedProduct(id: "p3", category: "books", brand: "Penguin")
+            BitmapIndexedProduct(id: "p3", category: "books", brand: "Penguin"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -483,7 +483,7 @@ struct BitmapIndexMaintainerBehaviorTests {
         let products = [
             BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
             BitmapIndexedProduct(id: "p2", category: "electronics", brand: "Samsung"),
-            BitmapIndexedProduct(id: "p3", category: "electronics", brand: "LG")
+            BitmapIndexedProduct(id: "p3", category: "electronics", brand: "LG"),
         ]
 
         // Insert all
@@ -598,14 +598,14 @@ struct BitmapIndexMaintainerBehaviorTests {
         let brandIndexSubspace = subspace.subspace("I").subspace("brand_idx")
 
         let categoryMaintainer = BitmapIndexMaintainer<BitmapIndexedProduct>(
-            index: Index(
+            index: try ResolvedIndex(
+                for: BitmapIndexedProduct.self,
                 name: "category_idx",
-                kind: bitmapIndexMetadata(
+                definition: bitmapIndexDefinition(
                     fieldName: "category",
                     fieldNumber: 2
                 ),
                 rootExpression: FieldKeyExpression(fieldName: "category"),
-                subspaceKey: "category_idx",
                 itemTypes: Set(["BitmapIndexedProduct"])
             ),
             subspace: categoryIndexSubspace,
@@ -613,14 +613,14 @@ struct BitmapIndexMaintainerBehaviorTests {
         )
 
         let brandMaintainer = BitmapIndexMaintainer<BitmapIndexedProduct>(
-            index: Index(
+            index: try ResolvedIndex(
+                for: BitmapIndexedProduct.self,
                 name: "brand_idx",
-                kind: bitmapIndexMetadata(
+                definition: bitmapIndexDefinition(
                     fieldName: "brand",
                     fieldNumber: 3
                 ),
                 rootExpression: FieldKeyExpression(fieldName: "brand"),
-                subspaceKey: "brand_idx",
                 itemTypes: Set(["BitmapIndexedProduct"])
             ),
             subspace: brandIndexSubspace,
@@ -631,7 +631,7 @@ struct BitmapIndexMaintainerBehaviorTests {
             BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
             BitmapIndexedProduct(id: "p2", category: "electronics", brand: "Samsung"),
             BitmapIndexedProduct(id: "p3", category: "clothing", brand: "Sony"),
-            BitmapIndexedProduct(id: "p4", category: "clothing", brand: "Nike")
+            BitmapIndexedProduct(id: "p4", category: "clothing", brand: "Nike"),
         ]
 
         // Insert into both indexes
@@ -684,7 +684,7 @@ struct BitmapIndexMaintainerBehaviorTests {
         let products = [
             BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
             BitmapIndexedProduct(id: "p2", category: "clothing", brand: "Nike"),
-            BitmapIndexedProduct(id: "p3", category: "books", brand: "Penguin")
+            BitmapIndexedProduct(id: "p3", category: "books", brand: "Penguin"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -714,7 +714,7 @@ struct BitmapIndexMaintainerBehaviorTests {
             BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
             BitmapIndexedProduct(id: "p2", category: "clothing", brand: "Nike"),
             BitmapIndexedProduct(id: "p3", category: "books", brand: "Penguin"),
-            BitmapIndexedProduct(id: "p4", category: "electronics", brand: "Samsung")
+            BitmapIndexedProduct(id: "p4", category: "electronics", brand: "Samsung"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -746,7 +746,7 @@ struct BitmapIndexMaintainerBehaviorTests {
         let products = [
             BitmapIndexedProduct(id: "product-001", category: "electronics", brand: "Sony"),
             BitmapIndexedProduct(id: "product-002", category: "electronics", brand: "Samsung"),
-            BitmapIndexedProduct(id: "product-003", category: "clothing", brand: "Nike")
+            BitmapIndexedProduct(id: "product-003", category: "clothing", brand: "Nike"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -781,7 +781,7 @@ struct BitmapIndexMaintainerBehaviorTests {
 
         let products = [
             BitmapIndexedProduct(id: "p1", category: "electronics", brand: "Sony"),
-            BitmapIndexedProduct(id: "p2", category: "electronics", brand: "Samsung")
+            BitmapIndexedProduct(id: "p2", category: "electronics", brand: "Samsung"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -894,7 +894,7 @@ struct BitmapIndexEdgeCasesTests {
         let products = [
             BitmapIndexedProduct(id: "p1", category: "electronics & gadgets", brand: "Sony"),
             BitmapIndexedProduct(id: "p2", category: "home/kitchen", brand: "KitchenAid"),
-            BitmapIndexedProduct(id: "p3", category: "toys (kids)", brand: "LEGO")
+            BitmapIndexedProduct(id: "p3", category: "toys (kids)", brand: "LEGO"),
         ]
 
         try await ctx.database.withTransaction { transaction in

@@ -2,10 +2,10 @@
 // SpatialIndex - Spatial search query for Fusion
 //
 // This file is part of SpatialIndex module, not DatabaseEngine.
-// DatabaseEngine does not know about SpatialIndexKind.
+// DatabaseEngine dispatches spatial semantics without depending on this module.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -133,10 +133,10 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Index Discovery
 
-    /// Find the index descriptor using kindIdentifier and fieldName
+    /// Finds the spatial index descriptor for the requested field.
     private func findIndexDescriptor() -> IndexDescriptor? {
         queryContext.schema.indexDescriptors(for: T.persistableType).first {
-            $0.kind.identifier == "spatial"
+            $0.type == .spatial
                 && $0.fieldNames == [field.name]
         }
     }
@@ -151,14 +151,14 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         // Find index descriptor
         guard let descriptor = findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
-                type: T.persistableType,
+                entity: T.persistableType,
                 field: field.name,
-                kind: "spatial"
+                indexType: .spatial
             )
         }
 
         let (encoding, level) = try spatialConfiguration(
-            descriptor.kind
+            descriptor
         )
 
         let indexName = descriptor.name
@@ -166,7 +166,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         // Execute spatial search
         let primaryKeys: [Tuple] = try await queryContext.withReadableIndex(
             named: indexName,
-            kindIdentifier: descriptor.kindIdentifier,
+            indexType: descriptor.type,
             for: T.self
         ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -319,14 +319,14 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     }
 
     private func spatialConfiguration(
-        _ metadata: IndexKindMetadata
+        _ descriptor: IndexDescriptor
     ) throws -> (encoding: SpatialEncoding, level: Int) {
-        let definition = try IndexDefinition(metadata: metadata)
-        guard case .spatial(let encoding, let level) = definition else {
+        let definition = descriptor.declaration.definition
+        guard case .spatial(_, let encoding, let level) = definition else {
             throw FusionQueryError.indexNotFound(
-                type: T.persistableType,
+                entity: T.persistableType,
                 field: field.name,
-                kind: "spatial"
+                indexType: .spatial
             )
         }
         return (encoding, level)

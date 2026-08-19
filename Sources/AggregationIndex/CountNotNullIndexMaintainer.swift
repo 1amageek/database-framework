@@ -4,9 +4,9 @@
 // Tracks counts of non-null values grouped by other fields.
 // Reference: FDB Record Layer COUNT_NOT_NULL index type
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for COUNT_NOT_NULL indexes
@@ -36,7 +36,7 @@ import StorageKit
 public struct CountNotNullIndexMaintainer<Item: PersistedEntityValue>: CountAggregationMaintainer {
     // MARK: - Properties
 
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -53,7 +53,7 @@ public struct CountNotNullIndexMaintainer<Item: PersistedEntityValue>: CountAggr
     // MARK: - Initialization
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         groupByFieldNames: [String],
@@ -77,14 +77,14 @@ public struct CountNotNullIndexMaintainer<Item: PersistedEntityValue>: CountAggr
         let newKey = try contributionKey(from: newItem)
 
         switch (oldKey, newKey) {
-        case let (old?, new?) where old == new:
+        case (let old?, let new?) where old == new:
             break
-        case let (old?, new?):
+        case (let old?, let new?):
             try await decrementCount(key: old, transaction: transaction)
             try await incrementCount(key: new, transaction: transaction)
-        case let (nil, new?):
+        case (nil, let new?):
             try await incrementCount(key: new, transaction: transaction)
-        case let (old?, nil):
+        case (let old?, nil):
             try await decrementCount(key: old, transaction: transaction)
         case (nil, nil):
             break
@@ -146,11 +146,12 @@ public struct CountNotNullIndexMaintainer<Item: PersistedEntityValue>: CountAggr
               ) else {
             return nil
         }
-        guard index.kind.fieldNames.dropLast().elementsEqual(
+        guard
+            index.fieldNames.dropLast().elementsEqual(
                   groupByFieldNames
               ),
               fields.grouping.count == groupByFieldNames.count,
-              index.kind.fieldNames.last == valueFieldName else {
+            index.fieldNames.last == valueFieldName else {
             throw AggregationIndexError.invalidStructure(
                 "Count-not-null index '\(index.name)' has inconsistent field metadata"
             )

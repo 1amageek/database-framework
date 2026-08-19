@@ -4,7 +4,7 @@
 
 - This package owns in-process database execution semantics: DBContainer, transactions, persisted models and documents, relationships, indexes, graph and SPARQL behavior, ontology, SHACL, algorithms, migrations, and maintenance primitives.
 - It consumes database semantic contracts and an injected StorageEngine. It does not own DatabaseWire operation dispatch, remote command registries, durable server jobs, network transports, native server lifecycle, Cloudflare lifecycle code, or application-specific schemas.
-- The default configuration owns one engine and one ordinary database root. Base, Composition, storage topology, placement, persisted Grant evaluation, and target leases exist only when the non-default `MultipleBases` trait is selected. `AllRuntimeFeatures` must not enable it.
+- The default configuration owns one engine and one ordinary database root. Base, Composition, storage topology, placement, persisted Grant evaluation, and target leases exist only when the non-default `MultiBase` trait is selected. `AllRuntimeFeatures` must not enable it.
 - Every mutation path must apply preconditions, idempotency, relationship rules, and index updates in the same transaction.
 
 ## Naming
@@ -39,8 +39,8 @@
   only inside one test process, so separate bundles must not concurrently
   share the same disposable service. Target compilation and Swift Testing
   inside each bundle retain their normal parallelism.
-- The strict SQLite contracts are 111 tests without `MultipleBases` and 114
-  tests with it. The existing `MultipleBases` backend contracts are 3,651
+- The strict SQLite contracts are 111 tests without `MultiBase` and 114
+  tests with it. The existing `MultiBase` backend contracts are 3,607
   FoundationDB tests and 72 PostgreSQL tests. PostgreSQL tests require an
   isolated real server.
 - `POSTGRES_TEST_UNIX_SOCKET` is the complete PostgreSQL socket file path, such

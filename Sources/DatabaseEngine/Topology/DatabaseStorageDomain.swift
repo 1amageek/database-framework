@@ -1,4 +1,4 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 import StorageKit
 
 /// One independently transacted storage domain owned by a database container.

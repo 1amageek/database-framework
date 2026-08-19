@@ -37,13 +37,13 @@ private struct ScalarIndexContext {
         self.subspace = Subspace(prefix: Tuple("test", "scalar", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: ScalarIndexedUser.self,
             name: indexName,
-            kind: scalarIndexMetadata(
+            definition: scalarIndexDefinition(
                 fields: [FieldIdentity(name: "email", number: 2)]
             ),
             rootExpression: FieldKeyExpression(fieldName: "email"),
-            subspaceKey: indexName,
             itemTypes: Set(["ScalarIndexedUser"])
         )
 
@@ -124,7 +124,7 @@ struct ScalarIndexBehaviorTests {
         let users = [
             ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo"),
             ScalarIndexedUser(id: "user2", email: "bob@example.com", age: 30, city: "Osaka"),
-            ScalarIndexedUser(id: "user3", email: "charlie@example.com", age: 35, city: "Kyoto")
+            ScalarIndexedUser(id: "user3", email: "charlie@example.com", age: 35, city: "Kyoto"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -315,7 +315,7 @@ struct ScalarIndexBehaviorTests {
         let users = [
             ScalarIndexedUser(id: "user3", email: "charlie@example.com", age: 35, city: "Kyoto"),
             ScalarIndexedUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo"),
-            ScalarIndexedUser(id: "user2", email: "bob@example.com", age: 30, city: "Osaka")
+            ScalarIndexedUser(id: "user2", email: "bob@example.com", age: 30, city: "Osaka"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -351,9 +351,10 @@ struct ScalarIndexBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "scalar", "composite", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("ScalarIndexedUser_city_age")
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: ScalarIndexedUser.self,
             name: "ScalarIndexedUser_city_age",
-            kind: scalarIndexMetadata(
+            definition: scalarIndexDefinition(
                 fields: [
                     FieldIdentity(name: "city", number: 4),
                     FieldIdentity(name: "age", number: 3),
@@ -361,9 +362,8 @@ struct ScalarIndexBehaviorTests {
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "city"),
-                FieldKeyExpression(fieldName: "age")
+                FieldKeyExpression(fieldName: "age"),
             ]),
-            subspaceKey: "ScalarIndexedUser_city_age",
             itemTypes: Set(["ScalarIndexedUser"])
         )
 
@@ -376,7 +376,7 @@ struct ScalarIndexBehaviorTests {
         let users = [
             ScalarIndexedUser(id: "user1", email: "a@example.com", age: 25, city: "Tokyo"),
             ScalarIndexedUser(id: "user2", email: "b@example.com", age: 30, city: "Tokyo"),
-            ScalarIndexedUser(id: "user3", email: "c@example.com", age: 25, city: "Osaka")
+            ScalarIndexedUser(id: "user3", email: "c@example.com", age: 25, city: "Osaka"),
         ]
 
         try await database.withTransaction { transaction in

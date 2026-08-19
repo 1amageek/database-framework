@@ -19,10 +19,10 @@ import TestSupport
 @Persistable
 struct GraphFusionPerson {
     #Index(
-        .scalar,
-        fields: [\GraphFusionPerson.userId],
-        name: "GraphTestPerson_userId"
-    )
+        .ordered(
+            name: "GraphTestPerson_userId",
+            keys: [.ascending(\GraphFusionPerson.userId)]
+        ))
 
     var id: String = UUID().uuidString
     var userId: String
@@ -34,12 +34,16 @@ struct GraphFusionPerson {
 @Persistable
 struct GraphFusionFollow {
     #Index(
-        .propertyGraph(strategy: .adjacency),
-        from: \GraphFusionFollow.follower,
-        edge: \GraphFusionFollow.edgeType,
-        to: \GraphFusionFollow.followee,
-        name: "GraphTestFollow_graph"
-    )
+        .graph(
+            name: "GraphTestFollow_graph",
+            definition: .property(
+                source: \GraphFusionFollow.follower,
+                label: .field(\GraphFusionFollow.edgeType),
+                target: \GraphFusionFollow.followee,
+                graph: nil,
+                strategy: .adjacency
+            )
+        ))
 
     var id: String = UUID().uuidString
     var follower: String
@@ -70,28 +74,23 @@ private struct GraphFusionContext {
         self.itemsSubspace = subspace.subspace("R")
         self.blobsSubspace = subspace.subspace("B")
 
-        let descriptor = try IndexDescriptor(
-            name: indexName,
-            definition: .propertyGraph(strategy: strategy),
-            fields: [
-                GraphFusionFollow.fields.follower.ascending,
-                GraphFusionFollow.fields.edgeType.ascending,
-                GraphFusionFollow.fields.followee.ascending,
-            ]
-        )
-        let metadata = try PropertyGraphIndexMetadata(
-            canonical: descriptor.kind
+        let definition = GraphIndexDefinition<FieldIdentity>.property(
+            source: GraphFusionFollow.fields.follower.identity,
+            label: .field(GraphFusionFollow.fields.edgeType.identity),
+            target: GraphFusionFollow.fields.followee.identity,
+            graph: nil,
+            strategy: strategy
         )
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: GraphFusionFollow.self,
             name: indexName,
-            kind: descriptor.kind,
+            definition: .graph(definition, includedFields: []),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "follower"),
                 FieldKeyExpression(fieldName: "edgeType"),
-                FieldKeyExpression(fieldName: "followee")
+                FieldKeyExpression(fieldName: "followee"),
             ]),
-            subspaceKey: indexName,
             itemTypes: Set(["GraphFusionFollow"])
         )
 
@@ -99,7 +98,7 @@ private struct GraphFusionContext {
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            metadata: metadata
+            definition: definition
         )
     }
 
@@ -135,7 +134,7 @@ struct GraphFusionUnitTests {
 
     @Test("Property graph definition identifier is 'graph'")
     func testPropertyGraphDefinitionIdentifier() {
-        #expect(IndexDefinition.propertyGraph().identifier == "graph")
+        #expect(IndexType.graph(.property).diagnosticName == "graph.property")
     }
 
     @Test("Connected.Direction enum values")
@@ -159,20 +158,19 @@ struct GraphFusionUnitTests {
 
         let graphIndex = descriptors[0]
         #expect(graphIndex.name == "GraphTestFollow_graph")
-        #expect(graphIndex.kindIdentifier == "graph")
-
-        #expect(graphIndex.kind.fieldNames.contains("follower"))
-        #expect(graphIndex.kind.fieldNames.contains("followee"))
-        #expect(graphIndex.kind.fieldNames.contains("edgeType"))
+        #expect(graphIndex.type == .graph(.property))
+        #expect(graphIndex.fieldNames.contains("follower"))
+        #expect(graphIndex.fieldNames.contains("followee"))
+        #expect(graphIndex.fieldNames.contains("edgeType"))
     }
 
     @Test("Scalar index for userId lookup")
     func testScalarIndexForUserIdLookup() throws {
         let descriptors = try GraphFusionPerson.indexDescriptors
-        let scalarIndex = descriptors.first { $0.kindIdentifier == "scalar" }
+        let scalarIndex = descriptors.first { $0.type == .ordered }
 
         #expect(scalarIndex != nil)
-        #expect(scalarIndex?.kind.fieldNames.contains("userId") == true)
+        #expect(scalarIndex?.fieldNames.contains("userId") == true)
     }
 }
 
@@ -210,7 +208,7 @@ struct GraphFusionScoringTests {
         let connections = [
             (node: "David", hops: 3),
             (node: "Bob", hops: 1),
-            (node: "Charlie", hops: 2)
+            (node: "Charlie", hops: 2),
         ]
 
         var results: [(name: String, score: Double)] = connections.map { conn in
@@ -241,7 +239,7 @@ struct GraphFusionBFSTests {
         let neighbors: [String: [String]] = [
             "Alice": ["Bob", "Charlie"],
             "Bob": ["David"],
-            "Charlie": ["Eve"]
+            "Charlie": ["Eve"],
         ]
 
         let maxHops = 1
@@ -280,7 +278,7 @@ struct GraphFusionBFSTests {
         let neighbors: [String: [String]] = [
             "Alice": ["Bob"],
             "Bob": ["Charlie"],
-            "Charlie": ["David"]
+            "Charlie": ["David"],
         ]
 
         let maxHops = 3
@@ -321,7 +319,7 @@ struct GraphFusionBFSTests {
         let neighbors: [String: [String]] = [
             "Alice": ["Bob"],
             "Bob": ["Charlie"],
-            "Charlie": ["Alice"]
+            "Charlie": ["Alice"],
         ]
 
         let maxHops = 5
@@ -360,7 +358,7 @@ struct GraphFusionBFSTests {
             "A": ["B"],
             "B": ["C"],
             "C": ["D"],
-            "D": ["E"]
+            "D": ["E"],
         ]
 
         let maxHops = 2
@@ -493,7 +491,7 @@ struct GraphFusionIntegrationTests {
                 let follows = [
                     GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob"),
                     GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "charlie"),
-                    GraphFusionFollow(id: uniqueID("f"), follower: "bob", followee: "charlie")
+                    GraphFusionFollow(id: uniqueID("f"), follower: "bob", followee: "charlie"),
                 ]
 
                 for follow in follows {
@@ -520,7 +518,7 @@ struct GraphFusionIntegrationTests {
                 let follows = [
                     GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "follows"),
                     GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "likes"),
-                    GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "blocks")
+                    GraphFusionFollow(id: uniqueID("f"), follower: "alice", followee: "bob", edgeType: "blocks"),
                 ]
 
                 for follow in follows {
@@ -633,17 +631,16 @@ struct GraphFusionEdgeCaseTests {
 @Suite("Graph Fusion - Index Discovery", .heartbeat)
 struct GraphFusionIndexDiscoveryTests {
 
-    @Test("findIndexDescriptor matches by kindIdentifier")
+    @Test("findIndexDescriptor matches by typed graph index family")
     func testFindIndexDescriptorByKindIdentifier() throws {
         let descriptors = try GraphFusionFollow.indexDescriptors
 
         let graphDescriptor = descriptors.first { descriptor in
-            descriptor.kindIdentifier
-                == IndexDefinition.propertyGraph().identifier
+            descriptor.type == .graph(.property)
         }
 
         #expect(graphDescriptor != nil)
-        #expect(graphDescriptor?.kindIdentifier == "graph")
+        #expect(graphDescriptor?.type == .graph(.property))
     }
 
     @Test("findIndexDescriptor matches by fieldName")
@@ -652,9 +649,8 @@ struct GraphFusionIndexDiscoveryTests {
         let fieldName = "follower"
 
         let matchingDescriptor = descriptors.first { descriptor in
-            descriptor.kindIdentifier
-                == IndexDefinition.propertyGraph().identifier
-                && descriptor.kind.fieldNames.contains(fieldName)
+            descriptor.type == .graph(.property)
+                && descriptor.fieldNames.contains(fieldName)
         }
 
         #expect(matchingDescriptor != nil)
@@ -665,8 +661,8 @@ struct GraphFusionIndexDiscoveryTests {
         let descriptors = try GraphFusionPerson.indexDescriptors
 
         let scalarDescriptor = descriptors.first { descriptor in
-            descriptor.kindIdentifier == "scalar"
-                && descriptor.kind.fieldNames.contains("userId")
+            descriptor.type == .ordered
+                && descriptor.fieldNames.contains("userId")
         }
 
         #expect(scalarDescriptor != nil)

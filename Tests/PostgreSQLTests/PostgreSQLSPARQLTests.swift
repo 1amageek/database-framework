@@ -27,11 +27,11 @@ struct PGStatement {
     var object: RDFTerm = .iri(.xsdString)
 
     #Index(
-        .rdfDataset,
-        from: \PGStatement.subject,
-        edge: \PGStatement.predicate,
-        to: \PGStatement.object
-    )
+        .graph(
+            name: "PGStatement_rdf_quad_subject_predicate_object",
+            definition: .rdf(
+                subject: \PGStatement.subject, predicate: \PGStatement.predicate, object: \PGStatement.object,
+                graph: nil)))
 }
 
 @Suite("PostgreSQL SPARQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
@@ -220,7 +220,7 @@ struct PostgreSQLSPARQLTests {
             let (_, context) = try await makeScenario()
 
             let stmts = [
-                try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
+                try makeStatement(subject: "Alice", predicate: "knows", object: "Bob")
             ]
             try await insertStatements(stmts, context: context)
 

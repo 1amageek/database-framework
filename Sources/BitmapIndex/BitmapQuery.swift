@@ -3,8 +3,8 @@
 //
 // Provides DatabaseContext extension and query builder for set operations.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 // MARK: - Bitmap Entry Point
@@ -270,10 +270,10 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         guard descriptor.fieldNames == [fieldName] else {
             throw BitmapQueryError.invalidIndex(indexName)
         }
-        _ = try BitmapIndexSpecification(descriptor.kind)
+        guard descriptor.type == .bitmap else { throw BitmapQueryError.invalidIndex(descriptor.name) }
         return try await queryContext.withReadableIndex(
             named: indexName,
-            kindIdentifier: BitmapIndexSpecification.identifier,
+            indexType: .bitmap,
             for: T.self,
             configuration: configuration
         ) { readableIndex, transaction in
@@ -304,7 +304,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
 
     private func resolveIndexName() throws -> String {
         let matches = queryContext.indexDescriptors(for: T.self).filter {
-            $0.kindIdentifier == BitmapIndexSpecification.identifier
+            $0.type == .bitmap
                 && $0.fieldNames == [fieldName]
         }
         if let selectedIndexName {
@@ -367,7 +367,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             accessPath: .index(
                 IndexScanSource(
                     indexName: try resolveIndexName(),
-                    kindIdentifier: BitmapIndexSpecification.identifier,
+                    indexType: .bitmap,
                     parameters: parameters
                 )
             ),
@@ -417,7 +417,7 @@ public enum BitmapQueryError: Error, CustomStringConvertible {
     /// Index not found
     case indexNotFound(String)
 
-    /// Index metadata does not match the requested bitmap field.
+    /// The resolved index definition does not match the requested bitmap field.
     case invalidIndex(String)
 
     /// More than one bitmap index targets the requested field.
@@ -433,7 +433,7 @@ public enum BitmapQueryError: Error, CustomStringConvertible {
         case .indexNotFound(let name):
             return "Bitmap index not found: \(name)"
         case .invalidIndex(let name):
-            return "Bitmap index metadata is invalid: \(name)"
+            return "Bitmap index definition is invalid: \(name)"
         case .ambiguousIndexes(let entity, let field):
             return "Multiple bitmap indexes target \(entity).\(field)"
         case .indexedItemMissing(let index, let primaryKey):

@@ -28,7 +28,7 @@ package struct DatabasePartitionCatalog: Sendable {
     /// Opens the pre-Base partition catalog whose namespace root was resolved
     /// through the backend namespace service. This exists only for the explicit
     /// layout-v1 migration path. Standard execution uses the single database
-    /// root; `MultipleBases` execution uses the operation-bound Base root.
+    /// root; `MultiBase` execution uses the operation-bound Base root.
     package init(
         legacyEngine engine: any StorageEngine,
         resolvedCatalogRoot: Subspace,

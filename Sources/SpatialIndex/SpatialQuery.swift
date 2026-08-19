@@ -306,7 +306,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         }
 
         let (encoding, level) = try spatialConfiguration(
-            descriptor.kind
+            descriptor
         )
 
         let indexName = descriptor.name
@@ -315,7 +315,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         let scanResult: SpatialScanResult = try await queryContext
             .withReadableIndex(
                 named: indexName,
-                kindIdentifier: descriptor.kindIdentifier,
+                indexType: descriptor.type,
                 for: T.self
             ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -413,10 +413,10 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         return results.items.map { $0.item }
     }
 
-    /// Find the index descriptor using kindIdentifier and fieldName
+    /// Finds the spatial index descriptor for the requested field.
     private func findIndexDescriptor() -> IndexDescriptor? {
         queryContext.schema.indexDescriptors(for: T.persistableType).first {
-            $0.kind.identifier == "spatial"
+            $0.type == .spatial
                 && $0.fieldNames == [field.name]
         }
     }
@@ -427,10 +427,10 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     }
 
     private func spatialConfiguration(
-        _ metadata: IndexKindMetadata
+        _ descriptor: IndexDescriptor
     ) throws -> (encoding: SpatialEncoding, level: Int) {
-        let definition = try IndexDefinition(metadata: metadata)
-        guard case .spatial(let encoding, let level) = definition else {
+        let definition = descriptor.declaration.definition
+        guard case .spatial(_, let encoding, let level) = definition else {
             throw SpatialQueryError.indexNotFound(
                 requestedIndexIdentity
             )
@@ -729,7 +729,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         }
 
         let (encoding, level) = try spatialConfiguration(
-            descriptor.kind
+            descriptor
         )
 
         let indexName = descriptor.name
@@ -764,7 +764,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             let scanResult: SpatialScanResult? = try await queryContext
                 .withReadableIndex(
                     named: indexName,
-                    kindIdentifier: descriptor.kindIdentifier,
+                    indexType: descriptor.type,
                     for: T.self
                 ) { readableIndex, transaction in
                 guard let readableIndex else {
@@ -930,7 +930,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         }
 
         let (encoding, level) = try spatialConfiguration(
-            descriptor.kind
+            descriptor
         )
 
         let indexName = descriptor.name
@@ -939,7 +939,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         let results: [(item: T, distance: Double)] = try await queryContext
             .withReadableIndex(
                 named: indexName,
-                kindIdentifier: descriptor.kindIdentifier,
+                indexType: descriptor.type,
                 for: T.self
             ) { readableIndex, transaction in
             guard let readableIndex else {

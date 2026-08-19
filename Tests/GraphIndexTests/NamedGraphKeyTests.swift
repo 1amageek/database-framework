@@ -46,21 +46,24 @@ private struct NamedGraphKeyContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.strategy = strategy
 
-        let index = Index(
+        let definition = propertyGraphIndexDefinition(
+            source: NamedGraphQuad.fields.subject.identity,
+            label: NamedGraphQuad.fields.predicate.identity,
+            target: NamedGraphQuad.fields.object.identity,
+            namespace: graphField == nil
+                ? nil
+                : NamedGraphQuad.fields.graph.identity,
+            strategy: strategy
+        )
+        let index = try ResolvedIndex(
+            for: NamedGraphQuad.self,
             name: indexName,
-            kind: propertyGraphIndexMetadata(
-                sourceFieldName: "subject",
-                labelFieldName: "predicate",
-                targetFieldName: "object",
-                namespaceFieldName: graphField,
-                strategy: strategy
-            ),
+            definition: .graph(definition, includedFields: []),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
                 FieldKeyExpression(fieldName: "predicate"),
                 FieldKeyExpression(fieldName: "object"),
             ]),
-            subspaceKey: indexName,
             itemTypes: Set(["NamedGraphQuad"])
         )
 
@@ -68,7 +71,7 @@ private struct NamedGraphKeyContext {
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            metadata: try PropertyGraphIndexMetadata(canonical: index.kind)
+            definition: definition
         )
     }
 

@@ -1,12 +1,13 @@
 // VectorAlgorithmMaintainerTests.swift
 // Tests for non-default VectorIndex algorithm maintainers
 
-import Testing
-import TestHeartbeat
-import Foundation
-import StorageKit
 import DatabaseKit
 import DatabaseTypes
+import Foundation
+import StorageKit
+import TestHeartbeat
+import Testing
+
 @testable import DatabaseEngine
 @testable import VectorIndex
 
@@ -127,7 +128,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("IVF serves exact results while untrained and preserves state transitions")
     func ivfUntrainedLifecycle() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "ivf-untrained-lifecycle")
+        let context = try makeContext(name: "ivf-untrained-lifecycle")
         let maintainer = IVFIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -186,7 +187,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("PQ serves exact results while untrained and preserves state transitions")
     func pqUntrainedLifecycle() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "pq-untrained-lifecycle")
+        let context = try makeContext(name: "pq-untrained-lifecycle")
         let maintainer = try PQIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -245,7 +246,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("IVF training rejects invalid input without marking the index trained")
     func ivfTrainingRejectsInvalidInput() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "ivf-invalid-training")
+        let context = try makeContext(name: "ivf-invalid-training")
         let maintainer = IVFIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -314,7 +315,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("IVF training and retraining atomically redistribute stored vectors")
     func ivfTrainingRedistributesStoredVectors() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "ivf-retraining")
+        let context = try makeContext(name: "ivf-retraining")
         let maintainer = IVFIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -377,7 +378,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("IVF deletion rejects malformed assignment identifiers")
     func ivfDeletionRejectsMalformedAssignmentIdentifiers() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "ivf-malformed-assignment")
+        let context = try makeContext(name: "ivf-malformed-assignment")
         let maintainer = IVFIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -423,7 +424,7 @@ struct VectorAlgorithmMaintainerTests {
     func ivfTrainingRejectsOutOfRangeClusterIdentifiers() async throws {
         for corruptListKey in [false, true] {
             let database = InMemoryEngine()
-            let context = makeContext(
+            let context = try makeContext(
                 name: corruptListKey
                     ? "ivf-list-cluster-out-of-range"
                     : "ivf-assignment-cluster-out-of-range"
@@ -488,7 +489,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("IVF rejects non-contiguous persisted centroid keys")
     func ivfRejectsNonContiguousCentroidKeys() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "ivf-centroid-key-corrupt")
+        let context = try makeContext(name: "ivf-centroid-key-corrupt")
         let maintainer = IVFIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -535,7 +536,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("IVF stores contiguous Float32 vector payloads and returns nearest neighbors after training")
     func ivfStoresContiguousFloat32VectorPayloadsAndSearchesAfterTraining() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "ivf")
+        let context = try makeContext(name: "ivf")
         let maintainer = IVFIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -573,7 +574,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("IVF rejects malformed stored vector payloads")
     func ivfRejectsMalformedStoredVectorPayloads() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "ivf-corrupt")
+        let context = try makeContext(name: "ivf-corrupt")
         let maintainer = IVFIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -615,7 +616,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("PQ stores vector payloads, compressed codes, and searches after training")
     func pqStoresVectorPayloadsAndCompressedCodesAndSearchesAfterTraining() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "pq")
+        let context = try makeContext(name: "pq")
         let maintainer = try PQIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -656,7 +657,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("PQ rejects malformed compressed codes")
     func pqRejectsMalformedCompressedCodes() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "pq-corrupt")
+        let context = try makeContext(name: "pq-corrupt")
         let maintainer = try PQIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -697,7 +698,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("PQ retraining replaces every persisted compressed code")
     func pqRetrainingRebuildsPersistedCodes() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "pq-retraining")
+        let context = try makeContext(name: "pq-retraining")
         let maintainer = try PQIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -741,7 +742,7 @@ struct VectorAlgorithmMaintainerTests {
     @Test("PQ rejects non-contiguous persisted codebook keys")
     func pqRejectsNonContiguousCodebookKeys() async throws {
         let database = InMemoryEngine()
-        let context = makeContext(name: "pq-codebook-key-corrupt")
+        let context = try makeContext(name: "pq-codebook-key-corrupt")
         let maintainer = try PQIndexMaintainer<HNSWDocument>(
             index: context.index,
             dimensions: 4,
@@ -781,15 +782,17 @@ struct VectorAlgorithmMaintainerTests {
         }
     }
 
-    private func makeContext(name: String) -> (index: Index, indexSubspace: Subspace) {
+    private func makeContext(name: String
+    ) throws -> (index: ResolvedIndex, indexSubspace: Subspace) {
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "vector-algorithm", name, String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWDocument_embedding")
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: HNSWDocument.self,
             name: "HNSWDocument_embedding",
-            kind: vectorIndexMetadata(dimensions: 4, metric: .euclidean),
+            definition: vectorIndexDefinition(
+                dimensions: 4, metric: .euclidean),
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
             itemTypes: Set(["HNSWDocument"])
         )
         return (index, indexSubspace)
@@ -800,7 +803,7 @@ struct VectorAlgorithmMaintainerTests {
             HNSWDocument(id: "exact", title: "Exact", embedding: try Vector(float32: [1, 0, 0, 0])),
             HNSWDocument(id: "near", title: "Near", embedding: try Vector(float32: [0.9, 0.1, 0, 0])),
             HNSWDocument(id: "orthogonal", title: "Orthogonal", embedding: try Vector(float32: [0, 1, 0, 0])),
-            HNSWDocument(id: "opposite", title: "Opposite", embedding: try Vector(float32: [-1, 0, 0, 0]))
+            HNSWDocument(id: "opposite", title: "Opposite", embedding: try Vector(float32: [-1, 0, 0, 0])),
         ]
     }
 

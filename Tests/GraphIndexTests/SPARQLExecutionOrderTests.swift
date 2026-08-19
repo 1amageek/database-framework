@@ -28,11 +28,11 @@ struct ExecOrderEdge {
     var object: RDFTerm = .string("")
 
     #Index(
-        .rdfDataset,
-        from: \ExecOrderEdge.subject,
-        edge: \ExecOrderEdge.predicate,
-        to: \ExecOrderEdge.object
-    )
+        .graph(
+            name: "ExecOrderEdge_rdf_quad_subject_predicate_object",
+            definition: .rdf(
+                subject: \ExecOrderEdge.subject, predicate: \ExecOrderEdge.predicate,
+                object: \ExecOrderEdge.object, graph: nil)))
 }
 
 // MARK: - Test Suite
@@ -88,7 +88,12 @@ struct SPARQLExecutionOrderTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(ExecOrderEdge.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(ExecOrderEdge.self)]),
             security: .testingDisabled,
         )
     }

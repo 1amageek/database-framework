@@ -1,9 +1,9 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
-// This SPI is the execution-facing boundary for the optional MultipleBases
+// This SPI is the execution-facing boundary for the optional MultiBase
 // runtime. Hosts may orchestrate operations and durable jobs, while catalog
 // ownership, placement state, leases, and lifecycle transitions remain inside
 // DatabaseEngine.

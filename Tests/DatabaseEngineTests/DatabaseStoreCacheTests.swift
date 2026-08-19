@@ -37,7 +37,7 @@ struct DatabaseStoreCacheTests {
         entity: String,
         components: [String]
     ) -> DatabaseStoreCacheKey {
-        #if MultipleBases
+        #if MultiBase
         DatabaseStoreCacheKey(
             basePlacementGeneration: 1,
             entity: entity,

@@ -17,16 +17,13 @@ import TestSupport
 
 /// Type without a property-graph index (for error testing)
 @Persistable
-fileprivate struct NoGraphIndexType {
+private struct NoGraphIndexType {
     #Directory<NoGraphIndexType>("graph_table_no_graph_index")
     var id: String = UUID().uuidString
     var name: String = ""
 
     #Index(
-        .scalar,
-        fields: [\NoGraphIndexType.name],
-        name: "name_index"
-    )
+        .ordered(name: "name_index", keys: [.ascending(\NoGraphIndexType.name)], unique: false))
 }
 
 @Suite("GraphTable Executor Integration Tests", .serialized, .foundationDBScenario, .heartbeat)
@@ -47,17 +44,16 @@ struct GraphTableExecutorTests {
         var score: Double = 0.0
 
         #Index(
-            .propertyGraph(strategy: .tripleStore),
-            from: \SocialEdge.from,
-            edge: \SocialEdge.label,
-            to: \SocialEdge.target,
-            storedFields: [
+            .graph(
+                name: "social_executor_index",
+                definition: .property(
+                    source: \SocialEdge.from, label: .field(\SocialEdge.label),
+                    target: \SocialEdge.target,
+                    graph: nil, strategy: .tripleStore),
+                includedFields: [
                 \SocialEdge.since,
                 \SocialEdge.status,
-                \SocialEdge.score,
-            ],
-            name: "social_executor_index"
-        )
+                \SocialEdge.score]))
     }
 
     // MARK: - Setup
@@ -85,7 +81,13 @@ struct GraphTableExecutorTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self), try DatabaseFrameworkRuntime.entity(NoGraphIndexType.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self), try DatabaseFrameworkRuntime.entity(NoGraphIndexType.self),
+                ]),
             security: .testingDisabled,
         )
 
@@ -121,7 +123,7 @@ struct GraphTableExecutorTests {
                 PathPattern(elements: [
                     .node(NodePattern(variable: "a")),
                     .edge(EdgePattern(labels: ["KNOWS"], direction: .outgoing)),
-                    .node(NodePattern(variable: "b"))
+                    .node(NodePattern(variable: "b")),
                 ])
             ])
         )
@@ -157,7 +159,7 @@ struct GraphTableExecutorTests {
                         properties: [PropertyBinding(key: "since", value: .literal(.int(2020)))],  // Filter: since = 2020
                         direction: .outgoing
                     )),
-                    .node(NodePattern(variable: "b"))
+                    .node(NodePattern(variable: "b")),
                 ])
             ])
         )
@@ -195,7 +197,7 @@ struct GraphTableExecutorTests {
                         properties: [PropertyBinding(key: "since", value: .greaterThanOrEqual(.column(ColumnRef(column: "since")), .literal(.int(2020))))],
                         direction: .outgoing
                     )),
-                    .node(NodePattern(variable: "b"))
+                    .node(NodePattern(variable: "b")),
                 ])
             ])
         )
@@ -234,11 +236,11 @@ struct GraphTableExecutorTests {
                         labels: ["KNOWS"],
                         properties: [
                             PropertyBinding(key: "since", value: .literal(.int(2020))),
-                            PropertyBinding(key: "status", value: .literal(.string("active")))
-                        ],
+                            PropertyBinding(key: "status", value: .literal(.string("active"))),
+                            ],
                         direction: .outgoing
                     )),
-                    .node(NodePattern(variable: "b"))
+                    .node(NodePattern(variable: "b")),
                 ])
             ])
         )
@@ -270,7 +272,7 @@ struct GraphTableExecutorTests {
                         )))],
                         direction: .outgoing
                     )),
-                    .node(NodePattern(variable: "b"))
+                    .node(NodePattern(variable: "b")),
                 ])
             ])
         )
@@ -299,7 +301,13 @@ struct GraphTableExecutorTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self), try DatabaseFrameworkRuntime.entity(NoGraphIndexType.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self), try DatabaseFrameworkRuntime.entity(NoGraphIndexType.self),
+                ]),
             security: .testingDisabled,
         )
         let subspace = try await container.testBaseDirectory(for: NoGraphIndexType.self)
@@ -314,7 +322,7 @@ struct GraphTableExecutorTests {
                 PathPattern(elements: [
                     .node(NodePattern(variable: "a")),
                     .edge(EdgePattern(direction: .outgoing)),
-                    .node(NodePattern(variable: "b"))
+                    .node(NodePattern(variable: "b")),
                 ])
             ])
         )
@@ -363,7 +371,7 @@ struct GraphTableExecutorTests {
                         properties: [PropertyBinding(key: "since", value: .literal(.array([.int(2020), .int(2021)])))],
                         direction: .outgoing
                     )),
-                    .node(NodePattern(variable: "b"))
+                    .node(NodePattern(variable: "b")),
                 ])
             ])
         )
@@ -401,7 +409,7 @@ struct GraphTableExecutorTests {
                         properties: [PropertyBinding(key: "since", value: .literal(.int(2020)))],
                         direction: .outgoing
                     )),
-                    .node(NodePattern(variable: "b"))
+                    .node(NodePattern(variable: "b")),
                 ])
             ])
         )

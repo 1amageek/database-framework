@@ -1,35 +1,39 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for time-window leaderboard indexes.
 public struct TimeWindowLeaderboardIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "time_window_leaderboard"
+    public let indexType: IndexType = .leaderboard
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        guard index.kind.identifier == kindIdentifier else {
-            throw IndexMaintainerProviderError.kindMismatch(
-                registered: kindIdentifier,
-                actual: index.kind.identifier
+        guard
+            case .leaderboard(
+                _,
+                _,
+                let window,
+                let windowCount
+            ) = index.definition
+        else {
+            throw IndexMaintainerProviderError.typeMismatch(
+                registered: indexType,
+                actual: index.type
             )
         }
-        let configuration = try TimeWindowLeaderboardConfiguration(
-            metadata: index.kind
-        )
         return TimeWindowLeaderboardIndexMaintainer<Item>(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            window: configuration.window,
-            windowCount: configuration.windowCount,
+            window: window,
+            windowCount: windowCount,
             wallClock: wallClock
         )
     }

@@ -4,8 +4,8 @@
 // Reference: Trie data structure for prefix matching
 // Knuth, "The Art of Computer Programming", Vol. 3
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Maintainer for autocomplete/typeahead indexes using prefix-based storage
@@ -51,7 +51,7 @@ import StorageKit
 /// // ["laptop", "laptop bag", "lap desk"]
 /// ```
 public struct AutocompleteMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -72,7 +72,7 @@ public struct AutocompleteMaintainer<Item: PersistedEntityValue>: IndexMaintaine
     ///   - minPrefixLength: Minimum prefix length to store (default: 1)
     ///   - maxPrefixLength: Maximum prefix length to store (default: 10)
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         fields: [FieldIdentity],

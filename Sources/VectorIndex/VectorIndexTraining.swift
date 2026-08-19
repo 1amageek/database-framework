@@ -15,19 +15,23 @@ extension IndexQueryContext {
     ) async throws {
         let descriptor = try indexDescriptor(
             named: indexName,
-            kindIdentifier: VectorIndexSpecification.identifier,
+            indexType: .vector,
             for: type
         )
-        let specification = try VectorIndexSpecification(descriptor.kind)
-        guard specification.metadata.fieldNames.count == 1,
-              let fieldName = specification.metadata.fieldNames.first else {
+        let specification = try VectorIndexSpecification(
+            descriptor.declaration.definition
+        )
+        guard descriptor.fieldNames.count == 1,
+              let fieldName = descriptor.fieldNames.first else {
             throw VectorIndexError.invalidStructure(
                 "Vector training requires exactly one indexed field"
             )
         }
 
-        let configurations = context.container.indexConfigurations[indexName] ?? []
-        guard let runtimePolicy = try VectorRuntimePolicy.resolve(
+        let configurations = context.container.runtimeConfiguration
+            .indexConfigurations(named: indexName)
+        guard
+            let runtimePolicy = try VectorRuntimePolicy.resolve(
             in: configurations
         ) else {
             throw VectorIndexError.invalidArgument(
@@ -37,7 +41,7 @@ extension IndexQueryContext {
 
         try await withReadableIndex(
             named: indexName,
-            kindIdentifier: VectorIndexSpecification.identifier,
+            indexType: .vector,
             for: type,
             configuration: configuration
         ) { readableIndex, transaction in
@@ -46,20 +50,10 @@ extension IndexQueryContext {
                     "Vector index is not readable; complete migration before training"
                 )
             }
-            let indexSubspace: Subspace
-            if let subspaceKey = runtimePolicy.subspaceKey {
-                indexSubspace = readableIndex.subspace.subspace(subspaceKey)
-            } else {
-                indexSubspace = readableIndex.subspace
-            }
-            let index = Index(
-                name: descriptor.name,
-                kind: descriptor.kind,
+            let index = ResolvedIndex(
+                descriptor: descriptor,
                 rootExpression: FieldKeyExpression(fieldName: fieldName),
-                subspaceKey: descriptor.name,
                 itemTypes: Set([Model.persistableType]),
-                isUnique: descriptor.isUnique,
-                storedFieldNames: descriptor.storedFieldNames
             )
             let identifier = FieldKeyExpression(fieldName: "id")
 
@@ -69,7 +63,7 @@ extension IndexQueryContext {
                     index: index,
                     dimensions: specification.dimensions,
                     metric: specification.metric,
-                    subspace: indexSubspace,
+                    subspace: readableIndex.subspace,
                     idExpression: identifier,
                     parameters: IVFParameters(
                         nlist: parameters.nlist,
@@ -86,7 +80,7 @@ extension IndexQueryContext {
                     index: index,
                     dimensions: specification.dimensions,
                     metric: specification.metric,
-                    subspace: indexSubspace,
+                    subspace: readableIndex.subspace,
                     idExpression: identifier,
                     parameters: PQParameters(
                         m: parameters.m,

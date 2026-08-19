@@ -3,9 +3,9 @@
 //
 // Provides exact nearest neighbor search using brute force linear scan.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for flat scan vector indexes
@@ -33,7 +33,7 @@ import StorageKit
 /// )
 /// ```
 public struct FlatVectorIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -41,7 +41,7 @@ public struct FlatVectorIndexMaintainer<Item: PersistedEntityValue>: IndexMainta
     private let metric: VectorMetric
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         dimensions: Int,
         metric: VectorMetric,
         subspace: Subspace,

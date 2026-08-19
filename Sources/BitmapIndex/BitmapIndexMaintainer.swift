@@ -4,8 +4,8 @@
 // Provides efficient set operations on low-cardinality fields using Roaring Bitmaps.
 // Reference: Lemire et al., "Roaring Bitmaps", 2016
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -63,7 +63,7 @@ public struct BitmapIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMa
     // MARK: - Properties
 
     /// Index definition
-    public let index: Index
+    public let index: ResolvedIndex
 
     /// Subspace for index storage
     public let subspace: Subspace
@@ -81,7 +81,7 @@ public struct BitmapIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMa
     // MARK: - Initialization
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {

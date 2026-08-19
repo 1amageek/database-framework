@@ -1,3 +1,4 @@
+import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
 

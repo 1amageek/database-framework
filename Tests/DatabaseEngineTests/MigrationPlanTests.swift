@@ -15,7 +15,7 @@ import DatabaseTypes
 /// V1: Basic user with email index
 @Persistable(type: "TestUser")
 struct UserV1 {
-    #Index(.scalar, fields: [\UserV1.email], unique: true, name: "TestUser_email")
+    #Index(.ordered(name: "TestUser_email", keys: [.ascending(\UserV1.email)], unique: true))
 
     var id: String = ""
     var name: String
@@ -25,8 +25,8 @@ struct UserV1 {
 /// V2: User with additional age field and index
 @Persistable(type: "TestUser")
 struct UserV2 {
-    #Index(.scalar, fields: [\UserV2.email], unique: true, name: "TestUser_email")
-    #Index(.scalar, fields: [\UserV2.age], name: "TestUser_age")
+    #Index(.ordered(name: "TestUser_email", keys: [.ascending(\UserV2.email)], unique: true))
+    #Index(.ordered(name: "TestUser_age", keys: [.ascending(\UserV2.age)], unique: false))
 
     var id: String = ""
     var name: String
@@ -37,8 +37,8 @@ struct UserV2 {
 /// V3: User with removed age index, added createdAt
 @Persistable(type: "TestUser")
 struct UserV3 {
-    #Index(.scalar, fields: [\UserV3.email], unique: true, name: "TestUser_email")
-    #Index(.scalar, fields: [\UserV3.createdAt], name: "TestUser_createdAt")
+    #Index(.ordered(name: "TestUser_email", keys: [.ascending(\UserV3.email)], unique: true))
+    #Index(.ordered(name: "TestUser_createdAt", keys: [.ascending(\UserV3.createdAt)], unique: false))
 
     var id: String = ""
     var name: String
@@ -50,11 +50,27 @@ struct UserV3 {
 /// V2b: User with reordered fields (unsafe without explicit migration)
 @Persistable(type: "TestUser")
 struct UserV2Reordered {
-    #Index(.scalar, fields: [\UserV2Reordered.email], unique: true, name: "TestUser_email")
+    #Index(.ordered(name: "TestUser_email", keys: [.ascending(\UserV2Reordered.email)], unique: true))
 
     var id: String = ""
     var email: String
     var name: String
+}
+
+private func addedIndexNames(_ changes: [IndexChange]) -> Set<String> {
+    Set(
+        changes.compactMap { change in
+            guard case .added(let descriptor) = change else { return nil }
+            return descriptor.name
+        })
+}
+
+private func removedIndexNames(_ changes: [IndexChange]) -> Set<String> {
+    Set(
+        changes.compactMap { change in
+            guard case .removed(let descriptor) = change else { return nil }
+            return descriptor.name
+        })
 }
 
 /// Tests for Migration API
@@ -181,8 +197,8 @@ struct MigrationPlanTests {
             from: MigrationSchemaV1.self
         )
 
-        #expect(changes.added == Set(["TestUser_age"]))
-        #expect(changes.removed.isEmpty)
+        #expect(addedIndexNames(changes) == Set(["TestUser_age"]))
+        #expect(removedIndexNames(changes).isEmpty)
     }
 
     /// Test: VersionedSchema detects lightweight migration possibility
@@ -311,12 +327,8 @@ struct MigrationPlanTests {
         )
 
         let changes = try stage.indexChanges
-        #expect(changes.added == Set(["TestUser_age"]))
-        #expect(changes.removed.isEmpty)
-
-        let addedDescriptors = try stage.addedIndexDescriptors
-        #expect(addedDescriptors.count == 1)
-        #expect(addedDescriptors.first?.name == "TestUser_age")
+        #expect(addedIndexNames(changes) == Set(["TestUser_age"]))
+        #expect(removedIndexNames(changes).isEmpty)
     }
 
     /// Test: MigrationStage detects index removal
@@ -328,8 +340,8 @@ struct MigrationPlanTests {
         )
 
         let changes = try stage.indexChanges
-        #expect(changes.added == Set(["TestUser_createdAt"]))
-        #expect(changes.removed == Set(["TestUser_age"]))
+        #expect(addedIndexNames(changes) == Set(["TestUser_createdAt"]))
+        #expect(removedIndexNames(changes) == Set(["TestUser_age"]))
     }
 
     /// Test: MigrationStage.automatic selects lightweight when possible

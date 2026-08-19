@@ -1,10 +1,10 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for scalar indexes.
 public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "scalar"
+    public let indexType: IndexType = .ordered
     public let supportsUniquenessConstraints = true
 
     public var physicalEntryCapabilities: IndexPhysicalEntryCapabilities? {
@@ -18,7 +18,7 @@ public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
@@ -35,7 +35,7 @@ public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
     }
 
     public func makeIndexUniquenessMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration]
@@ -49,23 +49,11 @@ public struct ScalarIndexMaintainerProvider: IndexMaintainerProvider {
         )
     }
 
-    private func validateIndexDefinition(_ index: Index) throws {
-        guard index.kind.identifier == kindIdentifier else {
-            throw IndexMaintainerProviderError.kindMismatch(
-                registered: kindIdentifier,
-                actual: index.kind.identifier
-            )
-        }
-        guard !index.kind.fieldNames.isEmpty else {
-            throw IndexMaintainerProviderError.invalidMetadata(
-                kindIdentifier: kindIdentifier,
-                key: "fieldNames"
-            )
-        }
-        guard index.kind.metadata.isEmpty else {
-            throw IndexMaintainerProviderError.invalidMetadata(
-                kindIdentifier: kindIdentifier,
-                key: "metadata"
+    private func validateIndexDefinition(_ index: ResolvedIndex) throws {
+        guard case .ordered = index.definition else {
+            throw IndexMaintainerProviderError.typeMismatch(
+                registered: indexType,
+                actual: index.type
             )
         }
     }

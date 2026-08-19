@@ -4,9 +4,9 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for Product Quantization vector indexes
@@ -48,7 +48,7 @@ public struct PQIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
 
     // MARK: - Properties
 
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -62,14 +62,14 @@ public struct PQIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     /// Create PQ index maintainer
     ///
     /// - Parameters:
-    ///   - index: Index definition
+    ///   - index: ResolvedIndex definition
     ///   - dimensions: Vector dimensions (must be divisible by m)
     ///   - metric: Distance metric
     ///   - subspace: FDB subspace for this index
     ///   - idExpression: Expression for extracting item's unique identifier
     ///   - parameters: PQ algorithm parameters
     public init(
-        index: Index,
+        index: ResolvedIndex,
         dimensions: Int,
         metric: VectorMetric,
         subspace: Subspace,

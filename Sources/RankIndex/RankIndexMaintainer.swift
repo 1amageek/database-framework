@@ -3,9 +3,9 @@
 //
 // Maintains score-ordered entries and an atomic entry count for rank queries.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for RANK indexes with compile-time type safety
@@ -43,7 +43,7 @@ public struct RankIndexMaintainer<
     Item: PersistedEntityValue,
     Score: IndexNumericValue & TupleDecodable
 >: SubspaceIndexMaintainer {
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -54,7 +54,7 @@ public struct RankIndexMaintainer<
     private let countKey: ByteString
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {

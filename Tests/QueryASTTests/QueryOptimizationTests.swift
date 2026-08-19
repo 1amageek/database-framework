@@ -103,7 +103,9 @@ struct QueryOptimizationTests {
         #expect(indexScanCost.total < tableScanCost.total)
 
         // Verify index usage tracking
-        let indexUsage = IndexUsage(indexName: "idx_email", kind: .scalar, accessPattern: .exactMatch)
+        let indexUsage = IndexUsage(indexName: "idx_email",
+            type: .ordered,
+            accessPattern: .exactMatch)
         #expect(indexUsage.accessPattern == .exactMatch)
     }
 
@@ -118,7 +120,9 @@ struct QueryOptimizationTests {
             bounds: .range(from: [.int(20)], to: [.int(30)], inclusive: true)
         )
 
-        let indexUsage = IndexUsage(indexName: "idx_age", kind: .scalar, accessPattern: .rangeScan(direction: .forward))
+        let indexUsage = IndexUsage(indexName: "idx_age",
+            type: .ordered,
+            accessPattern: .rangeScan(direction: .forward))
 
         #expect(indexScan.bounds.lower == [.int(20)])
         #expect(indexScan.bounds.upper == [.int(30)])
@@ -135,7 +139,9 @@ struct QueryOptimizationTests {
             bounds: .prefix([.string("John")])
         )
 
-        let indexUsage = IndexUsage(indexName: "idx_name", kind: .scalar, accessPattern: .prefixScan)
+        let indexUsage = IndexUsage(indexName: "idx_name",
+            type: .ordered,
+            accessPattern: .prefixScan)
 
         #expect(indexScan.bounds.lower == [.string("John")])
         #expect(indexScan.bounds.upper == [.string("John")])
@@ -274,7 +280,7 @@ struct QueryOptimizationTests {
             input: .tableScan(scan),
             columns: [
                 ProjectionItem(.column(ColumnRef(column: "name"))),
-                ProjectionItem(.column(ColumnRef(column: "email")))
+                ProjectionItem(.column(ColumnRef(column: "email"))),
             ]
         )
 
@@ -300,7 +306,7 @@ struct QueryOptimizationTests {
             input: .tableScan(TableScanPlan(schema: "users")),
             columns: [
                 ProjectionItem(.column(ColumnRef(column: "id"))),
-                ProjectionItem(.column(ColumnRef(column: "name")))
+                ProjectionItem(.column(ColumnRef(column: "name"))),
             ]
         )
 
@@ -308,7 +314,7 @@ struct QueryOptimizationTests {
             input: .tableScan(TableScanPlan(schema: "orders")),
             columns: [
                 ProjectionItem(.column(ColumnRef(column: "user_id"))),
-                ProjectionItem(.column(ColumnRef(column: "amount")))
+                ProjectionItem(.column(ColumnRef(column: "amount"))),
             ]
         )
 

@@ -59,10 +59,10 @@ struct PGStageBoundaryUserV2 {
 struct PGStageBoundaryUserV3 {
     #Directory<PGStageBoundaryUserV3>("test", "pg-migration", "stage-boundary")
     #Index(
-        .scalar,
-        fields: [\PGStageBoundaryUserV3.fullName],
-        name: "PGStageBoundaryUser_fullName"
-    )
+        .ordered(
+            name: "PGStageBoundaryUser_fullName",
+            keys: [.ascending(\PGStageBoundaryUserV3.fullName)],
+            unique: false))
 
     var id: String = ""
     var fullName: String
@@ -99,7 +99,8 @@ enum PGStageBoundarySchemaV3: VersionedSchema {
 
 enum PGStageBoundaryMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [PGStageBoundarySchemaV1.self, PGStageBoundarySchemaV2.self, PGStageBoundarySchemaV3.self]
+        [PGStageBoundarySchemaV1.self, PGStageBoundarySchemaV2.self, PGStageBoundarySchemaV3.self,
+        ]
     }
 
     static var stages: [MigrationStage] {
@@ -113,7 +114,7 @@ enum PGStageBoundaryMigrationPlan: SchemaMigrationPlan {
                 toVersion: PGStageBoundarySchemaV3.self,
                 willMigrate: migrateUsers,
                 didMigrate: auditStage
-            )
+            ),
         ]
     }
 
@@ -217,7 +218,7 @@ enum PGStageFailureMigrationPlan: SchemaMigrationPlan {
                 toVersion: PGStageFailureSchemaV3.self,
                 willMigrate: failStage,
                 didMigrate: nil
-            )
+            ),
         ]
     }
 
@@ -252,7 +253,12 @@ struct MigrationExecutionPostgreSQLTests {
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -298,7 +304,12 @@ struct MigrationExecutionPostgreSQLTests {
                 for: PGStageFailureSchemaV3.self,
                 migrationPlan: PGStageFailureMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageFailureUserV3.self)])
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageFailureUserV3.self)])
             )
 
             do {
@@ -342,7 +353,12 @@ struct MigrationExecutionPostgreSQLTests {
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -381,7 +397,12 @@ struct MigrationExecutionPostgreSQLTests {
                 for: PGStageBoundarySchemaV3.self,
                 migrationPlan: PGStageBoundaryMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGStageBoundaryUserV3.self)])
             )
 
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()

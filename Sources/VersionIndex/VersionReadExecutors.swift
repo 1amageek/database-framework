@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 enum VersionReadParameter {
@@ -25,7 +25,7 @@ private enum VersionReadError: Error, Sendable {
 }
 
 private struct VersionReadExecutor: IndexReadExecutor {
-    let kindIdentifier = "version"
+    let indexType: IndexType = .history
 
     func executeRows(
         context: DatabaseContext,
@@ -60,7 +60,7 @@ private struct VersionReadExecutor: IndexReadExecutor {
         let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
         let rawResults = try await context.indexQueryContext.withReadableIndex(
             named: index.name,
-            kindIdentifier: kindIdentifier,
+            indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
             configuration: execution.transactionConfiguration
@@ -118,12 +118,12 @@ private struct VersionReadExecutor: IndexReadExecutor {
 }
 
 private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
-    let kindIdentifier = "version"
+    let indexType: IndexType = .history
 
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
-        index: PolymorphicIndexMetadata,
+        index: IndexDeclaration<String>,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
@@ -219,7 +219,7 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
                                 .string(runtime.entity.name),
                             PolymorphicRowAnnotation.typeCode:
                                 .int64(typeCode),
-                            "version": .bytes(result.version.bytes)
+                            "version": .bytes(result.version.bytes),
                         ]
                     )
                 )

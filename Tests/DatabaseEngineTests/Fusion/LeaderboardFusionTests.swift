@@ -27,15 +27,19 @@ struct LeaderboardFusionScore {
     var region: String = "global"
 
     #Index(
-        .timeWindowLeaderboard(window: .daily, windowCount: 7),
-        field: \LeaderboardFusionScore.score
-    )
+        .leaderboard(
+            name: "LeaderboardFusionScore_leaderboard_score",
+            score: \LeaderboardFusionScore.score,
+            window: .daily, windowCount: 7
+        ))
 
     #Index(
-        .timeWindowLeaderboard(window: .daily, windowCount: 7),
-        groupBy: [\LeaderboardFusionScore.region],
-        field: \LeaderboardFusionScore.score
-    )
+        .leaderboard(
+            name: "LeaderboardFusionScore_leaderboard_region_score",
+            groupBy: [.ascending(\LeaderboardFusionScore.region)],
+            score: \LeaderboardFusionScore.score,
+            window: .daily, windowCount: 7
+        ))
 }
 
 // MARK: - Unit Tests (No FDB)
@@ -43,12 +47,9 @@ struct LeaderboardFusionScore {
 @Suite("Leaderboard - Unit Tests", .heartbeat)
 struct LeaderboardUnitTests {
 
-    @Test("Time-window leaderboard definition identifier")
-    func testLeaderboardDefinitionIdentifier() {
-        #expect(
-            IndexDefinition.timeWindowLeaderboard().identifier
-                == "time_window_leaderboard"
-        )
+    @Test("Leaderboard definition selects the leaderboard index type")
+    func leaderboardDefinitionSelectsLeaderboardType() {
+        #expect(IndexType.leaderboard.diagnosticName == "leaderboard")
     }
 
     @Test("LeaderboardWindowType durations")
@@ -56,7 +57,7 @@ struct LeaderboardUnitTests {
         #expect(LeaderboardWindowType.hourly.durationSeconds == 3600)
         #expect(LeaderboardWindowType.daily.durationSeconds == 86400)
         #expect(LeaderboardWindowType.weekly.durationSeconds == 604800)
-        #expect(LeaderboardWindowType.monthly.durationSeconds == 2592000)
+        #expect(LeaderboardWindowType.monthly.durationSeconds == 2_592_000)
         #expect(LeaderboardWindowType.custom(duration: 7200).durationSeconds == 7200)
     }
 
@@ -99,7 +100,7 @@ struct LeaderboardUnitTests {
         let scores = [
             LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 500),
             LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 1000),
-            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 750)
+            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 750),
         ]
 
         let sorted = scores.sorted { $0.score > $1.score }
@@ -114,7 +115,7 @@ struct LeaderboardUnitTests {
         let scores = [
             LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 1000, region: "asia"),
             LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 800, region: "europe"),
-            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 900, region: "asia")
+            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 900, region: "asia"),
         ]
 
         let asiaScores = scores.filter { $0.region == "asia" }
@@ -127,7 +128,7 @@ struct LeaderboardUnitTests {
         let scores = [
             LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 1000, region: "asia"),
             LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 800, region: "europe"),
-            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 900, region: "asia")
+            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 900, region: "asia"),
         ]
 
         let grouped = Dictionary(grouping: scores, by: \.region)
@@ -195,7 +196,7 @@ struct LeaderboardEdgeCaseTests {
     func testKLargerThanResults() {
         let scores = [
             LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 1000),
-            LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 900)
+            LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 900),
         ]
 
         let k = 100
@@ -214,7 +215,12 @@ struct LeaderboardIntegrationTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try LeaderboardFusionScore.schemaEntity])
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(LeaderboardFusionScore.self)]), security: .testingDisabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(LeaderboardFusionScore.self)]), security: .testingDisabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
@@ -259,7 +265,7 @@ struct LeaderboardIntegrationTests {
         let scores = [
             LeaderboardFusionScore(playerId: "p1", playerName: "Alice", score: 1000),
             LeaderboardFusionScore(playerId: "p2", playerName: "Bob", score: 900),
-            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 800)
+            LeaderboardFusionScore(playerId: "p3", playerName: "Charlie", score: 800),
         ]
 
         for score in scores {
@@ -383,9 +389,7 @@ struct LeaderboardIndexDescriptorTests {
         let descriptors = try LeaderboardFusionScore.indexDescriptors
 
         // Should have at least the leaderboard indexes
-        let leaderboardIndexes = descriptors.filter {
-            $0.kindIdentifier == "time_window_leaderboard"
-        }
+        let leaderboardIndexes = descriptors.filter { $0.type == .leaderboard }
 
         #expect(leaderboardIndexes.count >= 1, "Should have at least one leaderboard index")
     }
@@ -395,9 +399,8 @@ struct LeaderboardIndexDescriptorTests {
         let descriptors = try LeaderboardFusionScore.indexDescriptors
 
         let scoreIndex = descriptors.first { descriptor in
-            descriptor.kindIdentifier
-                == IndexDefinition.timeWindowLeaderboard().identifier
-                && descriptor.kind.fieldNames == ["score"]
+            descriptor.type == .leaderboard
+                && descriptor.fieldNames == ["score"]
         }
 
         #expect(scoreIndex != nil, "Should have a score-only leaderboard index")
@@ -408,9 +411,8 @@ struct LeaderboardIndexDescriptorTests {
         let descriptors = try LeaderboardFusionScore.indexDescriptors
 
         let regionIndex = descriptors.first { descriptor in
-            descriptor.kindIdentifier
-                == IndexDefinition.timeWindowLeaderboard().identifier
-                && descriptor.kind.fieldNames == ["region", "score"]
+            descriptor.type == .leaderboard
+                && descriptor.fieldNames == ["region", "score"]
         }
 
         #expect(regionIndex != nil, "Should have a region-grouped leaderboard index")
@@ -425,9 +427,9 @@ struct LeaderboardErrorTests {
     @Test("FusionQueryError descriptions")
     func testFusionQueryErrorDescriptions() {
         let error = FusionQueryError.indexNotFound(
-            type: "LeaderboardFusionScore",
+            entity: "LeaderboardFusionScore",
             field: "unknownField",
-            kind: "leaderboard"
+            indexType: .leaderboard
         )
 
         #expect(error.description.contains("leaderboard"))

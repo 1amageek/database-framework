@@ -23,7 +23,13 @@ struct PartitionedDirectoryTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try Player.schemaEntity, try TenantOrder.schemaEntity], version: Schema.Version(1, 0, 0))
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self), try DatabaseFrameworkRuntime.entity(TenantOrder.self)]), security: .testingDisabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self), try DatabaseFrameworkRuntime.entity(TenantOrder.self),
+                ]), security: .testingDisabled)
     }
 
     // MARK: - hasDynamicDirectory Tests

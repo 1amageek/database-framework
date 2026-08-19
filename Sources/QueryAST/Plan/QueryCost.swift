@@ -5,6 +5,7 @@
 /// - PostgreSQL Cost Model (src/backend/optimizer/path/costsize.c)
 /// - FoundationDB Record Layer Cost Estimation
 
+import DatabaseKit
 import DatabaseMath
 
 /// Query execution cost estimate
@@ -344,8 +345,8 @@ public struct IndexUsage: Sendable, Equatable {
     /// Index name
     public let indexName: String
 
-    /// Index kind
-    public let kind: IndexKind
+    /// Semantic index type.
+    public let type: IndexType
 
     /// Access pattern
     public let accessPattern: IndexAccessPattern
@@ -355,27 +356,15 @@ public struct IndexUsage: Sendable, Equatable {
 
     public init(
         indexName: String,
-        kind: IndexKind,
+        type: IndexType,
         accessPattern: IndexAccessPattern,
         selectivity: Double = 1.0
     ) {
         self.indexName = indexName
-        self.kind = kind
+        self.type = type
         self.accessPattern = accessPattern
         self.selectivity = selectivity
     }
-}
-
-/// Index kind
-public enum IndexKind: String, Sendable, Equatable {
-    case scalar
-    case vector
-    case fullText
-    case spatial
-    case graph
-    case bitmap
-    case composite
-    case unique
 }
 
 /// Index access pattern

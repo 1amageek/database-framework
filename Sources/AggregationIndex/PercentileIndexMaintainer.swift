@@ -1,6 +1,6 @@
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 private struct PercentileIndexSubspaces: Sendable {
@@ -51,7 +51,7 @@ private struct PercentileIndexReadGroup {
 public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
     SubspaceIndexMaintainer,
     GroupingKeySupport {
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -65,7 +65,7 @@ public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
     private var maximumScannedBytes: Int { 16 * 1_024 * 1_024 }
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         compression: Double

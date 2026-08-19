@@ -27,11 +27,12 @@ struct FilterEdge {
     var to: RDFTerm = .string("")
 
     #Index(
-        .rdfDataset,
-        from: \FilterEdge.from,
-        edge: \FilterEdge.relationship,
-        to: \FilterEdge.to
-    )
+        .graph(
+            name: "FilterEdge_rdf_quad_from_relationship_to",
+            definition: .rdf(
+                subject: \FilterEdge.from, predicate: \FilterEdge.relationship,
+                object: \FilterEdge.to,
+                graph: nil)))
 }
 
 // MARK: - Test Suite
@@ -58,7 +59,12 @@ struct ComplexFilterTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FilterEdge.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(FilterEdge.self)]),
             security: .testingDisabled,
         )
     }

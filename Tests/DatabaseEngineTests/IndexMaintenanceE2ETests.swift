@@ -35,7 +35,13 @@ struct E2EFullTextArticle {
     var content: String = ""
 
     // Full-text index on content field
-    #Index(.fullText(tokenizer: .simple), fields: [\E2EFullTextArticle.content])
+    #Index(
+        .text(
+            name: "E2EFullTextArticle_fulltext_content",
+            fields: [\E2EFullTextArticle.content],
+            mode: .fullText(
+                tokenizer: .simple, storePositions: true, ngramSize: 3, minimumTermLength: 2
+            )))
 }
 
 /// Edge with GraphIndex for testing CRUD path
@@ -50,11 +56,11 @@ struct E2EGraphEdge {
 
     // Graph index with adjacency strategy
     #Index(
-        .propertyGraph(strategy: .adjacency),
-        from: \E2EGraphEdge.source,
-        edge: \E2EGraphEdge.relation,
-        to: \E2EGraphEdge.target
-    )
+        .graph(
+            name: "E2EGraphEdge_graph_source_relation_target",
+            definition: .property(
+                source: \E2EGraphEdge.source, label: .field(\E2EGraphEdge.relation),
+                target: \E2EGraphEdge.target, graph: nil, strategy: .adjacency)))
 }
 
 /// Simple model with ScalarIndex for baseline comparison
@@ -67,7 +73,10 @@ struct E2EScalarUser {
     var city: String = ""
 
     // Scalar index on email (works correctly via default case)
-    #Index(.scalar, fields: [\E2EScalarUser.email])
+    #Index(
+        .ordered(
+            name: "E2EScalarUser_email", keys: [.ascending(\E2EScalarUser.email)],
+            unique: false))
 }
 
 /// Model with CountIndex for testing aggregation path
@@ -80,7 +89,9 @@ struct E2ECountItem {
     var value: Int64 = 0
 
     // Count index grouped by category (works correctly via explicit case)
-    #Index(.count, groupBy: [\E2ECountItem.category])
+    #Index(
+        .aggregate(
+            name: "E2ECountItem_count_category", function: .count, groupBy: [.ascending(\E2ECountItem.category)]))
 }
 
 // MARK: - Test Suite
@@ -102,7 +113,13 @@ struct IndexMaintenanceE2ETests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(E2EFullTextArticle.self), try DatabaseFrameworkRuntime.entity(E2EGraphEdge.self), try DatabaseFrameworkRuntime.entity(E2EScalarUser.self), try DatabaseFrameworkRuntime.entity(E2ECountItem.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(E2EFullTextArticle.self), try DatabaseFrameworkRuntime.entity(E2EGraphEdge.self), try DatabaseFrameworkRuntime.entity(E2EScalarUser.self), try DatabaseFrameworkRuntime.entity(E2ECountItem.self),
+                ]),
             security: .testingDisabled,
         )
     }
@@ -166,16 +183,21 @@ struct IndexMaintenanceE2ETests {
 
         // Get the index subspace and count entries
         let typeSubspace = try await container.testBaseDirectory(for: E2EScalarUser.self)
-        let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: typeSubspace
+        )
 
         let scalarIndexName = try E2EScalarUser.indexDescriptors.first { descriptor in
-            descriptor.kindIdentifier == "scalar"
+            descriptor.type == .ordered
         }?.name
 
         #expect(scalarIndexName != nil, "E2EScalarUser should have a scalar index")
 
         if let indexName = scalarIndexName {
-            let scalarIndexSubspace = indexSubspace.subspace(indexName)
+            let scalarIndexSubspace = try lifecycleStore.indexSubspace(
+                for: indexName
+            )
             let entryCount = try await countEntriesInSubspace(
                 database: container.engine,
                 subspace: scalarIndexSubspace
@@ -217,16 +239,21 @@ struct IndexMaintenanceE2ETests {
 
         // Get the index subspace
         let typeSubspace = try await container.testBaseDirectory(for: E2ECountItem.self)
-        let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: typeSubspace
+        )
 
         let countIndexName = try E2ECountItem.indexDescriptors.first { descriptor in
-            descriptor.kindIdentifier == "count"
+            descriptor.type == .aggregate(.count)
         }?.name
 
         #expect(countIndexName != nil, "E2ECountItem should have a count index")
 
         if let indexName = countIndexName {
-            let countIndexSubspace = indexSubspace.subspace(indexName)
+            let countIndexSubspace = try lifecycleStore.indexSubspace(
+                for: indexName
+            )
 
             // Count index should have entries (2 groups: electronics and books)
             let entryCount = try await countEntriesInSubspace(
@@ -264,16 +291,21 @@ struct IndexMaintenanceE2ETests {
 
         // Get the index subspace and count entries
         let typeSubspace = try await container.testBaseDirectory(for: E2EFullTextArticle.self)
-        let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: typeSubspace
+        )
 
         let fullTextIndexName = try E2EFullTextArticle.indexDescriptors.first { descriptor in
-            descriptor.kindIdentifier == "fulltext"
+            descriptor.type == .text(.fullText)
         }?.name
 
         #expect(fullTextIndexName != nil, "E2EFullTextArticle should have a fullText index")
 
         if let indexName = fullTextIndexName {
-            let fullTextIndexSubspace = indexSubspace.subspace(indexName)
+            let fullTextIndexSubspace = try lifecycleStore.indexSubspace(
+                for: indexName
+            )
 
             // Debug: dump keys
             try await dumpSubspaceKeys(
@@ -324,16 +356,21 @@ struct IndexMaintenanceE2ETests {
 
         // Get the index subspace and count entries
         let typeSubspace = try await container.testBaseDirectory(for: E2EGraphEdge.self)
-        let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: typeSubspace
+        )
 
         let graphIndexName = try E2EGraphEdge.indexDescriptors.first { descriptor in
-            descriptor.kindIdentifier == "graph"
+            descriptor.type == .graph(.property)
         }?.name
 
         #expect(graphIndexName != nil, "E2EGraphEdge should have a graph index")
 
         if let indexName = graphIndexName {
-            let graphIndexSubspace = indexSubspace.subspace(indexName)
+            let graphIndexSubspace = try lifecycleStore.indexSubspace(
+                for: indexName
+            )
 
             // Debug: dump keys
             try await dumpSubspaceKeys(
@@ -378,14 +415,19 @@ struct IndexMaintenanceE2ETests {
 
         // Get index count before delete
         let typeSubspace = try await container.testBaseDirectory(for: E2EGraphEdge.self)
-        let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: typeSubspace
+        )
         let graphIndexName = try E2EGraphEdge.indexDescriptors.first { descriptor in
-            descriptor.kindIdentifier == "graph"
+            descriptor.type == .graph(.property)
         }?.name
 
         var countBeforeDelete = 0
         if let indexName = graphIndexName {
-            let graphIndexSubspace = indexSubspace.subspace(indexName)
+            let graphIndexSubspace = try lifecycleStore.indexSubspace(
+                for: indexName
+            )
             countBeforeDelete = try await countEntriesInSubspace(
                 database: container.engine,
                 subspace: graphIndexSubspace
@@ -402,7 +444,9 @@ struct IndexMaintenanceE2ETests {
 
         // Verify ALL index entries were removed
         if let indexName = graphIndexName {
-            let graphIndexSubspace = indexSubspace.subspace(indexName)
+            let graphIndexSubspace = try lifecycleStore.indexSubspace(
+                for: indexName
+            )
             let countAfterDelete = try await countEntriesInSubspace(
                 database: container.engine,
                 subspace: graphIndexSubspace
@@ -426,22 +470,24 @@ struct IndexMaintenanceE2ETests {
 
         // Part 1: Direct IndexMaintainer usage (should work)
         let typeSubspace = try await container.testBaseDirectory(for: E2EGraphEdge.self)
-        let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: typeSubspace
+        )
 
         guard let graphIndexDescriptor = try E2EGraphEdge.indexDescriptors.first(where: { descriptor in
-            descriptor.kindIdentifier == "graph"
-        }) else {
+                descriptor.type == .graph(.property)
+            }) else {
             Issue.record("Expected graph index descriptor")
             return
         }
 
-        let graphIndexSubspace = indexSubspace.subspace(graphIndexDescriptor.name)
+        let graphIndexSubspace = try lifecycleStore.indexSubspace(
+            for: graphIndexDescriptor.name)
 
-        let index = Index(
-            name: graphIndexDescriptor.name,
-            kind: graphIndexDescriptor.kind,
+        let index = ResolvedIndex(
+            descriptor: graphIndexDescriptor,
             rootExpression: FieldKeyExpression(fieldName: "source"),  // Placeholder
-            subspaceKey: graphIndexDescriptor.name,
             itemTypes: Set([E2EGraphEdge.persistableType])
         )
 

@@ -1,6 +1,6 @@
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 public struct ScalarIndexPhysicalEntryDecoder: IndexPhysicalEntryDecoder {
@@ -9,9 +9,9 @@ public struct ScalarIndexPhysicalEntryDecoder: IndexPhysicalEntryDecoder {
     public func decode(
         key: ByteString,
         in indexSubspace: Subspace,
-        index: Index
+        index: ResolvedIndex
     ) throws -> IndexPhysicalEntry {
-        let indexedFieldCount = index.kind.fieldNames.count
+        let indexedFieldCount = index.fieldNames.count
         guard indexedFieldCount > 0 else {
             throw ScalarIndexPhysicalEntryError.invalidIndexedFieldCount(
                 indexedFieldCount

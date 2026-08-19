@@ -36,15 +36,15 @@ private struct CountIndexContext {
         self.subspace = Subspace(prefix: Tuple("test", "count", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: CountIndexedUser.self,
             name: indexName,
-            kind: countIndexMetadata(
+            definition: countIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "city", number: 2)
                 ]
             ),
             rootExpression: FieldKeyExpression(fieldName: "city"),
-            subspaceKey: indexName,
             itemTypes: Set(["CountIndexedUser"])
         )
 
@@ -114,7 +114,7 @@ struct CountIndexBehaviorTests {
         let users = [
             CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering"),
             CountIndexedUser(id: "user2", city: "Tokyo", department: "Sales"),
-            CountIndexedUser(id: "user3", city: "Tokyo", department: "Marketing")
+            CountIndexedUser(id: "user3", city: "Tokyo", department: "Marketing"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -142,7 +142,7 @@ struct CountIndexBehaviorTests {
             CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering"),
             CountIndexedUser(id: "user2", city: "Tokyo", department: "Sales"),
             CountIndexedUser(id: "user3", city: "Osaka", department: "Marketing"),
-            CountIndexedUser(id: "user4", city: "Kyoto", department: "Engineering")
+            CountIndexedUser(id: "user4", city: "Kyoto", department: "Engineering"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -319,7 +319,7 @@ struct CountIndexBehaviorTests {
         let users = [
             CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering"),
             CountIndexedUser(id: "user2", city: "Tokyo", department: "Sales"),
-            CountIndexedUser(id: "user3", city: "Osaka", department: "Marketing")
+            CountIndexedUser(id: "user3", city: "Osaka", department: "Marketing"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -352,7 +352,7 @@ struct CountIndexBehaviorTests {
             CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering"),
             CountIndexedUser(id: "user2", city: "Tokyo", department: "Sales"),
             CountIndexedUser(id: "user3", city: "Osaka", department: "Marketing"),
-            CountIndexedUser(id: "user4", city: "Kyoto", department: "Engineering")
+            CountIndexedUser(id: "user4", city: "Kyoto", department: "Engineering"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -396,9 +396,10 @@ struct CountIndexBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "count", "composite", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("CountIndexedUser_city_department")
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: CountIndexedUser.self,
             name: "CountIndexedUser_city_department",
-            kind: countIndexMetadata(
+            definition: countIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "city", number: 2),
                     FieldIdentity(name: "department", number: 3),
@@ -406,9 +407,8 @@ struct CountIndexBehaviorTests {
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "city"),
-                FieldKeyExpression(fieldName: "department")
+                FieldKeyExpression(fieldName: "department"),
             ]),
-            subspaceKey: "CountIndexedUser_city_department",
             itemTypes: Set(["CountIndexedUser"])
         )
 
@@ -422,7 +422,7 @@ struct CountIndexBehaviorTests {
             CountIndexedUser(id: "user1", city: "Tokyo", department: "Engineering"),
             CountIndexedUser(id: "user2", city: "Tokyo", department: "Engineering"),
             CountIndexedUser(id: "user3", city: "Tokyo", department: "Sales"),
-            CountIndexedUser(id: "user4", city: "Osaka", department: "Engineering")
+            CountIndexedUser(id: "user4", city: "Osaka", department: "Engineering"),
         ]
 
         try await database.withTransaction { transaction in

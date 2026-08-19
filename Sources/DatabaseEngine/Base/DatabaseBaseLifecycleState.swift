@@ -1,4 +1,4 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 /// Durable lifecycle state controlling admission to one Base.
 @_spi(DatabaseExecution)
 public enum DatabaseBaseLifecycleState: UInt8, Sendable, Hashable {

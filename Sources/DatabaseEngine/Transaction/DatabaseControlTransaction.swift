@@ -14,7 +14,7 @@ extension DBContainer {
             DatabaseTransaction
         ) async throws -> Result
     ) async throws -> Result {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         let selectedTransactionExecutor = controlTransactionExecutor
         #else
         let selectedTransactionExecutor = transactionExecutor
@@ -39,7 +39,7 @@ extension DBContainer {
         }
     }
 
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     /// Executes a control-domain transaction after evaluating the persisted
     /// database Grant in the same transaction attempt.
     @_spi(DatabaseExecution)

@@ -1,5 +1,5 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Backend-specific container configuration used by the `Database` facade.
@@ -11,8 +11,7 @@ import StorageKit
 public protocol DatabaseContainerConfiguration: Sendable {
     func makeDBConfiguration(
         monotonicClock: any StorageMonotonicClock,
-        wallClock: any WallClock,
-        indexConfigurations: [any IndexRuntimeConfiguration]
+        wallClock: any WallClock
     ) async throws -> DBConfiguration
 }
 
@@ -27,13 +26,11 @@ extension DBContainer {
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
         let dbConfiguration = try await configuration.makeDBConfiguration(
             monotonicClock: monotonicClock,
-            wallClock: wallClock,
-            indexConfigurations: indexConfigurations
+            wallClock: wallClock
         )
         return try await open(
             for: schema,
@@ -54,13 +51,11 @@ extension DBContainer {
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
         let dbConfiguration = try await configuration.makeDBConfiguration(
             monotonicClock: monotonicClock,
-            wallClock: wallClock,
-            indexConfigurations: indexConfigurations
+            wallClock: wallClock
         )
         return try await open(
             for: schema,

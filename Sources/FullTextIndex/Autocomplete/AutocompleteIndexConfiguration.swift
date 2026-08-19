@@ -4,11 +4,16 @@ struct AutocompleteIndexConfiguration: Sendable, Hashable {
     let minPrefixLength: Int
     let maxPrefixLength: Int
 
-    init(metadata: IndexKindMetadata) throws {
-        guard case .autocomplete(
+    init(definition: IndexDefinition<FieldIdentity>) throws {
+        guard
+            case .text(
+                _,
+                .autocomplete(
             let minPrefixLength,
             let maxPrefixLength
-        ) = try IndexDefinition(metadata: metadata) else {
+                )
+            ) = definition
+        else {
             throw AutocompleteError.invalidIndexConfiguration
         }
         self.minPrefixLength = minPrefixLength

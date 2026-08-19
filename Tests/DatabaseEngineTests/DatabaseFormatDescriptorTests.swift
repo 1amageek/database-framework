@@ -30,7 +30,7 @@ struct DatabaseFormatDescriptorTests {
     @Test("A rebased retained view decodes without copying")
     func retainedSlice() throws {
         let descriptor = DatabaseFormatDescriptor.current(
-            layoutKind: .multipleBases,
+            layoutKind: .multiBase,
             itemStorage: .v1
         )
         let framed = ByteString([0xFF])

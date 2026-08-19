@@ -4,10 +4,11 @@ import DatabaseTypes
 @Persistable
 struct RuntimeConfigurationVectorEntity {
     #Index(
-        .vector(dimensions: 3),
-        embedding: \RuntimeConfigurationVectorEntity.embedding,
-        name: "RuntimeConfigurationVectorEntity_embedding"
-    )
+        .vector(
+            name: "RuntimeConfigurationVectorEntity_embedding",
+            embedding: \RuntimeConfigurationVectorEntity.embedding,
+            dimensions: 3
+        ))
 
     var id: String = ""
     var embedding: Vector

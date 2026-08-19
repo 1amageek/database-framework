@@ -143,7 +143,7 @@ struct FieldSecuritySQLiteTests {
         }
     }
 
-    #if MultipleBases
+    #if MultiBase
     @Test("A transaction binding cannot be reused by another session")
     func transactionBindingIsSessionBound() async throws {
         let container = try await makeContainer()
@@ -169,7 +169,7 @@ struct FieldSecuritySQLiteTests {
 
     private func makeContainer() async throws -> DBContainer {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
-        #if MultipleBases
+        #if MultiBase
         let baseID = try Base.ID("field-security")
         let configuration = DBConfiguration(
             testingName: "field-security",
@@ -197,13 +197,17 @@ struct FieldSecuritySQLiteTests {
             ),
             configuration: configuration,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         FieldSecuritySQLiteRecord.self
-                    ),
+                    )
                 ],
                 authorizationPolicies: [
-                    AuthorizationPolicyHandler(FieldSecuritySQLiteRecord.self),
+                    AuthorizationPolicyHandler(FieldSecuritySQLiteRecord.self)
                 ]
             ),
             security: .enabled()
@@ -220,7 +224,7 @@ struct FieldSecuritySQLiteTests {
                 roles: roles.union(["admin"])
             )
         )
-        #if MultipleBases
+        #if MultiBase
         do {
             return container.session(authorization: authorization)
                 .base(try Base.ID("field-security"))

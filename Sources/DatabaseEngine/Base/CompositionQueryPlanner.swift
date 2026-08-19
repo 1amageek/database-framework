@@ -1,4 +1,4 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -759,7 +759,8 @@ public struct CompositionQueryPlanner: Sendable {
             let matchesLeft = leftQualifiers.contains(qualifier)
             let matchesRight = rightQualifiers.contains(qualifier)
             guard matchesLeft != matchesRight,
-                  (matchesLeft ? leftHasField : rightHasField) else {
+                matchesLeft ? leftHasField : rightHasField
+            else {
                 throw CompositionQueryError.unsupportedPlan(
                     "cross-Base JOIN column qualification is ambiguous or invalid"
                 )
@@ -1210,7 +1211,7 @@ public struct CompositionQueryPlanner: Sendable {
                     row,
                     workMeter: workMeter
                 )
-            ),
+            )
         ]
     }
 
@@ -1612,7 +1613,8 @@ public struct CompositionQueryPlanner: Sendable {
     ) throws -> IndexScanSource? {
         guard let accessPath = query.accessPath else { return nil }
         guard case .index(let scan) = accessPath,
-              scan.kindIdentifier == "vector" else {
+            scan.indexType == .vector
+        else {
             return nil
         }
         guard !scan.indexName.isEmpty,

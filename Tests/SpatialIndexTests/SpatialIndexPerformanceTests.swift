@@ -54,16 +54,16 @@ private struct BenchmarkContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.level = level
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: BenchmarkLocation.self,
             name: indexName,
-            kind: spatialIndexMetadata(
+            definition: spatialIndexDefinition(
                 fieldName: "location",
                 fieldNumber: 3,
                 encoding: encoding,
                 level: level
             ),
             rootExpression: FieldKeyExpression(fieldName: "location"),
-            subspaceKey: indexName,
             itemTypes: Set(["BenchmarkLocation"])
         )
 

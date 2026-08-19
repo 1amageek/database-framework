@@ -38,14 +38,14 @@ private struct BitmapBenchmarkContext {
         self.subspace = Subspace(prefix: Tuple("test", "bitmap_perf", String(testId), testName).pack())
 
         let indexSubspace = subspace.subspace("I").subspace(indexName)
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: BitmapBenchmarkProduct.self,
             name: indexName,
-            kind: bitmapIndexMetadata(
+            definition: bitmapIndexDefinition(
                 fieldName: "category",
                 fieldNumber: 2
             ),
             rootExpression: FieldKeyExpression(fieldName: "category"),
-            subspaceKey: indexName,
             itemTypes: Set(["BitmapBenchmarkProduct"])
         )
 
@@ -445,14 +445,14 @@ struct BitmapIndexFDBPerformanceTests {
 
         // Create two indexes: category and brand
         let categoryMaintainer = BitmapIndexMaintainer<BitmapBenchmarkProduct>(
-            index: Index(
+            index: try ResolvedIndex(
+                for: BitmapBenchmarkProduct.self,
                 name: "category_idx",
-                kind: bitmapIndexMetadata(
+                definition: bitmapIndexDefinition(
                     fieldName: "category",
                     fieldNumber: 2
                 ),
                 rootExpression: FieldKeyExpression(fieldName: "category"),
-                subspaceKey: "category_idx",
                 itemTypes: Set(["BitmapBenchmarkProduct"])
             ),
             subspace: subspace.subspace("I").subspace("category_idx"),
@@ -460,14 +460,14 @@ struct BitmapIndexFDBPerformanceTests {
         )
 
         let brandMaintainer = BitmapIndexMaintainer<BitmapBenchmarkProduct>(
-            index: Index(
+            index: try ResolvedIndex(
+                for: BitmapBenchmarkProduct.self,
                 name: "brand_idx",
-                kind: bitmapIndexMetadata(
+                definition: bitmapIndexDefinition(
                     fieldName: "brand",
                     fieldNumber: 3
                 ),
                 rootExpression: FieldKeyExpression(fieldName: "brand"),
-                subspaceKey: "brand_idx",
                 itemTypes: Set(["BitmapBenchmarkProduct"])
             ),
             subspace: subspace.subspace("I").subspace("brand_idx"),

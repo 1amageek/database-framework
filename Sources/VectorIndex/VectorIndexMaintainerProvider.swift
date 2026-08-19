@@ -1,5 +1,5 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Container-scoped vector maintenance provider.
@@ -7,7 +7,7 @@ import StorageKit
 /// The provider owns the immutable HNSW snapshot cache used by maintainers it
 /// creates. Separate provider instances never share cached database state.
 public struct VectorIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "vector"
+    public let indexType: IndexType = .vector
 
     public var runtimeRequirements: IndexRuntimeRequirements {
         .entityAndPolymorphicReads
@@ -29,14 +29,30 @@ public struct VectorIndexMaintainerProvider: IndexMaintainerProvider {
         self.trainingResourceLimits = trainingResourceLimits
     }
 
+    public func physicalLayout(
+        for index: ResolvedIndex,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> IndexPhysicalLayout {
+        let matchingConfigurations = configurations.filter {
+            $0.indexType == .vector && $0.indexName == index.name
+        }
+        return try VectorRuntimePolicy.resolve(
+            in: matchingConfigurations
+        )?.physicalLayout
+            ?? IndexPhysicalLayout(
+                name: "vector.flat",
+                revision: 1
+            )
+    }
+
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        let specification = try VectorIndexSpecification(index.kind)
+        let specification = try VectorIndexSpecification(index.definition)
         return try specification.makeIndexMaintainer(
             index: index,
             subspace: subspace,

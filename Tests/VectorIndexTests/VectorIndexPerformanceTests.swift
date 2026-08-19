@@ -1,12 +1,13 @@
 // VectorIndexPerformanceTests.swift
 // Performance benchmarks for VectorIndex
 
-import Testing
-import TestHeartbeat
-import Foundation
 import DatabaseKit
 import DatabaseTypes
+import Foundation
 import StorageKit
+import TestHeartbeat
+import Testing
+
 @testable import DatabaseEngine
 @testable import VectorIndex
 
@@ -42,16 +43,16 @@ private struct BenchmarkContext {
         self.subspace = Subspace(prefix: Tuple("benchmark", "vector", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let metadata = vectorIndexMetadata(
+        let definition = vectorIndexDefinition(
             dimensions: dimensions,
             metric: metric
         )
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: BenchmarkDocument.self,
             name: indexName,
-            kind: metadata,
+            definition: definition,
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: indexName,
             itemTypes: Set(["BenchmarkDocument"])
         )
 

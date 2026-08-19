@@ -1,32 +1,32 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for percentile indexes.
 public struct PercentileIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "percentile"
+    public let indexType: IndexType = .aggregate(.percentile)
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        try index.kind.validateIdentity(
-            identifier: kindIdentifier,
-            subspaceStructure: .aggregation
-        )
-        try index.kind.validateMetadataKeys(required: ["compression"])
-        try index.kind.validateFieldCount(minimum: 1)
-        let compression = try index.kind.requireDouble("compression")
+        let definition = try index.aggregateDefinition(.percentile)
+        guard case .percentile(let compression) = definition.function else {
+            throw IndexMaintainerProviderError.typeMismatch(
+                registered: indexType,
+                actual: index.type
+            )
+        }
         guard compression.isFinite,
               TDigest.supportedCompression.contains(compression) else {
-            throw IndexMaintainerProviderError.invalidMetadata(
-                kindIdentifier: kindIdentifier,
-                key: "compression"
+            throw IndexMaintainerProviderError.invalidDefinition(
+                indexType: indexType,
+                reason: "Percentile compression is unsupported"
             )
         }
         return PercentileIndexMaintainer<Item>(

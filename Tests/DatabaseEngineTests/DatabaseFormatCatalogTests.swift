@@ -100,7 +100,7 @@ struct DatabaseFormatCatalogTests {
             itemStorage: .v1
         )
         let expected = DatabaseFormatDescriptor.current(
-            layoutKind: .multipleBases,
+            layoutKind: .multiBase,
             itemStorage: .v1
         )
         _ = try await catalog.installIfEmptyOrValidate(stored)

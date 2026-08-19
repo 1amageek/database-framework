@@ -26,8 +26,12 @@ struct DelInsUser {
     var email: String = ""
     var city: String = ""
 
-    #Index(.scalar, fields: [\DelInsUser.email])
-    #Index(.scalar, fields: [\DelInsUser.city])
+    #Index(
+        .ordered(
+            name: "DelInsUser_email", keys: [.ascending(\DelInsUser.email)], unique: false))
+    #Index(
+        .ordered(
+            name: "DelInsUser_city", keys: [.ascending(\DelInsUser.city)], unique: false))
 }
 
 /// FullTextIndex-backed model: content is a tokenized text field.
@@ -39,7 +43,12 @@ struct DelInsArticle {
     var title: String = ""
     var content: String = ""
 
-    #Index(.fullText(tokenizer: .simple), fields: [\DelInsArticle.content])
+    #Index(
+        .text(
+            name: "DelInsArticle_fulltext_content", fields: [\DelInsArticle.content],
+            mode: .fullText(
+                tokenizer: .simple, storePositions: true, ngramSize: 3, minimumTermLength: 2
+            )))
 }
 
 // MARK: - Test Suite
@@ -59,7 +68,13 @@ struct ContextMutationIntentTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DelInsUser.self), try DatabaseFrameworkRuntime.entity(DelInsArticle.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DelInsUser.self), try DatabaseFrameworkRuntime.entity(DelInsArticle.self),
+                ]),
             security: .testingDisabled,
         )
     }
@@ -70,7 +85,13 @@ struct ContextMutationIntentTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DelInsUser.self), try DatabaseFrameworkRuntime.entity(DelInsArticle.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DelInsUser.self), try DatabaseFrameworkRuntime.entity(DelInsArticle.self),
+                ]),
             security: .testingDisabled,
         )
     }

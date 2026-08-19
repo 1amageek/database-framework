@@ -1,11 +1,11 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 import DatabaseKit
 import StorageKit
 
 /// Immutable storage root retained for the duration of one data operation.
 ///
 /// The root represents the database itself in the single-root runtime and a
-/// selected Base when the `MultipleBases` trait is enabled. Query, mutation,
+/// selected Base when the `MultiBase` trait is enabled. Query, mutation,
 /// and index execution consume this type and do not depend on Base lifecycle
 /// semantics.
 package struct DatabaseDataRootLease: Sendable {

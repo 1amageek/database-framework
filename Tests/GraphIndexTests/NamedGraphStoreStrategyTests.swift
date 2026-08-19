@@ -1,9 +1,10 @@
-import Foundation
-import Testing
-import TestSupport
 import DatabaseKit
 import DatabaseTypes
+import Foundation
 import StorageKit
+import TestSupport
+import Testing
+
 @testable import DatabaseEngine
 @testable import GraphIndex
 
@@ -26,28 +27,31 @@ struct NamedGraphStoreStrategyTests {
         let indexSubspace = Subspace(prefix: Tuple("test", "namedGraphStore").pack())
             .subspace("I")
             .subspace(indexName)
-        let index = Index(
+        let definition = propertyGraphIndexDefinition(
+            source: NamedGraphStoreQuad.fields.subject.identity,
+            label: NamedGraphStoreQuad.fields.predicate.identity,
+            target: NamedGraphStoreQuad.fields.object.identity,
+            namespace: graphField == nil
+                ? nil
+                : NamedGraphStoreQuad.fields.graph.identity,
+            strategy: .namedGraphStore
+        )
+        let index = try ResolvedIndex(
+            for: NamedGraphStoreQuad.self,
             name: indexName,
-            kind: propertyGraphIndexMetadata(
-                sourceFieldName: "subject",
-                labelFieldName: "predicate",
-                targetFieldName: "object",
-                namespaceFieldName: graphField,
-                strategy: .namedGraphStore
-            ),
+            definition: .graph(definition, includedFields: []),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
                 FieldKeyExpression(fieldName: "predicate"),
                 FieldKeyExpression(fieldName: "object"),
             ]),
-            subspaceKey: indexName,
             itemTypes: Set(["NamedGraphStoreQuad"])
         )
         let maintainer = try GraphIndexMaintainer<NamedGraphStoreQuad>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            metadata: try PropertyGraphIndexMetadata(canonical: index.kind)
+            definition: definition
         )
         return (maintainer, indexSubspace)
     }

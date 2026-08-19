@@ -103,13 +103,13 @@ struct OWLClassRDFDescriptorTests {
         #expect(descriptors.count == 1)
 
         #expect(descriptors[0].name == "OntoPerson_owl_rdf")
-        #expect(descriptors[0].kindIdentifier == "owl_class_rdf")
+        #expect(descriptors[0].type == .graph(.ontologyProjection))
     }
 
     @Test("Entity and RDF descriptors are merged")
     func descriptorsMerge() throws {
         let rdfIndex = try OntoPerson.indexDescriptors.first {
-            $0.kindIdentifier == "owl_class_rdf"
+            $0.type == .graph(.ontologyProjection)
         }
         #expect(rdfIndex?.name == "OntoPerson_owl_rdf")
     }
@@ -118,7 +118,7 @@ struct OWLClassRDFDescriptorTests {
     func plainEntityHasNoProjection() throws {
         #expect(
             try PlainItem.indexDescriptors.allSatisfy {
-                $0.kindIdentifier != "owl_class_rdf"
+                $0.type != .graph(.ontologyProjection)
             }
         )
     }
@@ -241,7 +241,12 @@ struct OWLClassRDFSQLiteIntegrationTests {
         return try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntoPerson.self), try DatabaseFrameworkRuntime.entity(OntoOrganization.self), try DatabaseFrameworkRuntime.entity(PlainItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntoPerson.self), try DatabaseFrameworkRuntime.entity(OntoOrganization.self), try DatabaseFrameworkRuntime.entity(PlainItem.self),
+                ]
             ),
             security: .testingDisabled
         )

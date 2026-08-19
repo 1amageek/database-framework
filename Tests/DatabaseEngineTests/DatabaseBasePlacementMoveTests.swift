@@ -1,4 +1,4 @@
-#if MultipleBases
+#if MultiBase
 @_spi(DatabaseExecution) @testable import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
@@ -197,10 +197,14 @@ struct DatabaseBasePlacementMoveTests {
             ),
             configuration: configuration,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         BasePlacementMoveEntity.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -213,7 +217,7 @@ struct DatabaseBasePlacementMoveTests {
                     subject: .principal(principal.identifier),
                     resource: .base(baseID),
                     access: .all
-                ),
+                )
             ],
             expectedRevision: 0
         )

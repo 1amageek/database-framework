@@ -9,10 +9,10 @@ import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
-private func productExtremumIndexMetadata(
-    _ definition: IndexDefinition,
+private func productExtremumIndexDefinition(
+    _ function: AggregateIndexFunction,
     groupedByCategory: Bool
-) -> IndexKindMetadata {
+) -> IndexDefinition<FieldIdentity> {
     var groupingFields = [
         FieldIdentity(name: "region", number: 2)
     ]
@@ -21,11 +21,10 @@ private func productExtremumIndexMetadata(
             FieldIdentity(name: "category", number: 3)
         )
     }
-    return numericAggregationIndexMetadata(
-        definition,
+    return numericAggregationIndexDefinition(
+        function,
         groupingFields: groupingFields,
         valueField: FieldIdentity(name: "price", number: 4),
-        valueType: .int64
     )
 }
 
@@ -55,18 +54,18 @@ struct MinMaxEdgeCaseTests {
         let indexSubspace = Subspace(prefix: Tuple("test", "min_composite_grouping", testId).pack())
 
         // Index with composite grouping: region + category
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Product.self,
             name: "product_min_by_region_category",
-            kind: productExtremumIndexMetadata(
+            definition: productExtremumIndexDefinition(
                 .minimum,
                 groupedByCategory: true
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
-                FieldKeyExpression(fieldName: "price")
+                FieldKeyExpression(fieldName: "price"),
             ]),
-            subspaceKey: "product_min_by_region_category",
             itemTypes: Set(["Product"])
         )
 
@@ -123,18 +122,18 @@ struct MinMaxEdgeCaseTests {
         let indexSubspace = Subspace(prefix: Tuple("test", "max_composite_grouping", testId).pack())
 
         // Index with composite grouping: region + category
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Product.self,
             name: "product_max_by_region_category",
-            kind: productExtremumIndexMetadata(
+            definition: productExtremumIndexDefinition(
                 .maximum,
                 groupedByCategory: true
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
-                FieldKeyExpression(fieldName: "price")
+                FieldKeyExpression(fieldName: "price"),
             ]),
-            subspaceKey: "product_max_by_region_category",
             itemTypes: Set(["Product"])
         )
 
@@ -190,18 +189,18 @@ struct MinMaxEdgeCaseTests {
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_batch_composite", testId).pack())
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Product.self,
             name: "product_min_by_region_category",
-            kind: productExtremumIndexMetadata(
+            definition: productExtremumIndexDefinition(
                 .minimum,
                 groupedByCategory: true
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
-                FieldKeyExpression(fieldName: "price")
+                FieldKeyExpression(fieldName: "price"),
             ]),
-            subspaceKey: "product_min_by_region_category",
             itemTypes: Set(["Product"])
         )
 
@@ -264,18 +263,18 @@ struct MinMaxEdgeCaseTests {
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_batch_composite", testId).pack())
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Product.self,
             name: "product_max_by_region_category",
-            kind: productExtremumIndexMetadata(
+            definition: productExtremumIndexDefinition(
                 .maximum,
                 groupedByCategory: true
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
-                FieldKeyExpression(fieldName: "price")
+                FieldKeyExpression(fieldName: "price"),
             ]),
-            subspaceKey: "product_max_by_region_category",
             itemTypes: Set(["Product"])
         )
 
@@ -340,17 +339,17 @@ struct MinMaxEdgeCaseTests {
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_empty_group", testId).pack())
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Product.self,
             name: "product_min_by_region",
-            kind: productExtremumIndexMetadata(
+            definition: productExtremumIndexDefinition(
                 .minimum,
                 groupedByCategory: false
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "price")
+                FieldKeyExpression(fieldName: "price"),
             ]),
-            subspaceKey: "product_min_by_region",
             itemTypes: Set(["Product"])
         )
 
@@ -400,17 +399,17 @@ struct MinMaxEdgeCaseTests {
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_empty_group", testId).pack())
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Product.self,
             name: "product_max_by_region",
-            kind: productExtremumIndexMetadata(
+            definition: productExtremumIndexDefinition(
                 .maximum,
                 groupedByCategory: false
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "price")
+                FieldKeyExpression(fieldName: "price"),
             ]),
-            subspaceKey: "product_max_by_region",
             itemTypes: Set(["Product"])
         )
 
@@ -460,17 +459,17 @@ struct MinMaxEdgeCaseTests {
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_batch_empty", testId).pack())
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Product.self,
             name: "product_min_by_region",
-            kind: productExtremumIndexMetadata(
+            definition: productExtremumIndexDefinition(
                 .minimum,
                 groupedByCategory: false
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "price")
+                FieldKeyExpression(fieldName: "price"),
             ]),
-            subspaceKey: "product_min_by_region",
             itemTypes: Set(["Product"])
         )
 
@@ -532,17 +531,17 @@ struct MinMaxEdgeCaseTests {
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_group_move", testId).pack())
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Product.self,
             name: "product_min_by_region",
-            kind: productExtremumIndexMetadata(
+            definition: productExtremumIndexDefinition(
                 .minimum,
                 groupedByCategory: false
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "price")
+                FieldKeyExpression(fieldName: "price"),
             ]),
-            subspaceKey: "product_min_by_region",
             itemTypes: Set(["Product"])
         )
 
@@ -626,17 +625,17 @@ struct MinMaxEdgeCaseTests {
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_group_move", testId).pack())
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Product.self,
             name: "product_max_by_region",
-            kind: productExtremumIndexMetadata(
+            definition: productExtremumIndexDefinition(
                 .maximum,
                 groupedByCategory: false
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "price")
+                FieldKeyExpression(fieldName: "price"),
             ]),
-            subspaceKey: "product_max_by_region",
             itemTypes: Set(["Product"])
         )
 

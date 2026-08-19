@@ -3,9 +3,9 @@
 //
 // Maintains counts with checked transactional read/replace mutations.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for COUNT aggregation indexes
@@ -23,18 +23,18 @@ import StorageKit
 public struct CountIndexMaintainer<Item: PersistedEntityValue>: CountAggregationMaintainer {
     // MARK: - Properties
 
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
     public var groupingFieldCount: Int {
-        index.kind.fieldNames.count
+        index.fieldNames.count
     }
 
     // MARK: - Initialization
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
@@ -62,20 +62,20 @@ public struct CountIndexMaintainer<Item: PersistedEntityValue>: CountAggregation
         }
 
         switch (oldKey, newKey) {
-        case let (.some(old), .some(new)) where old == new:
+        case (.some(let old), .some(let new)) where old == new:
             // Same group - no change needed
             break
 
-        case let (.some(old), .some(new)):
+        case (.some(let old), .some(let new)):
             // Different groups - decrement old, increment new
             try await decrementCount(key: old, transaction: transaction)
             try await incrementCount(key: new, transaction: transaction)
 
-        case let (nil, .some(new)):
+        case (nil, .some(let new)):
             // Insert - increment new group
             try await incrementCount(key: new, transaction: transaction)
 
-        case let (.some(old), nil):
+        case (.some(let old), nil):
             // Delete - decrement old group
             try await decrementCount(key: old, transaction: transaction)
 
@@ -132,7 +132,8 @@ public struct CountIndexMaintainer<Item: PersistedEntityValue>: CountAggregation
     private func groupingValues(
         from item: Item
     ) throws -> [any TupleElement] {
-        guard index.kind.fieldNames.count
+        guard
+            index.fieldNames.count
                 == index.rootExpression.columnCount else {
             throw AggregationIndexError.invalidStructure(
                 "Count index '\(index.name)' has inconsistent field metadata"
@@ -140,7 +141,7 @@ public struct CountIndexMaintainer<Item: PersistedEntityValue>: CountAggregation
         }
         return try AggregationFieldExtractor.grouping(
             from: item,
-            fieldNames: index.kind.fieldNames,
+            fieldNames: index.fieldNames,
             indexName: index.name
         )
     }

@@ -4,9 +4,9 @@
 // Provides high-performance approximate nearest neighbor search using the
 // SwiftHNSW library (https://github.com/1amageek/swift-hnsw).
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 import SwiftHNSW
 
@@ -106,7 +106,7 @@ public struct HNSWSearchParameters: Sendable {
 /// - For small datasets (<10K vectors): inline indexing via updateIndex()
 /// - For large datasets: batch indexing via OnlineIndexer with scanItems()
 public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -121,7 +121,7 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     private var nextLabelKey: ByteString { storage.nextLabelKey }
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         dimensions: Int,
         metric: VectorMetric,
         subspace: Subspace,
@@ -142,7 +142,7 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     }
 
     internal init(
-        index: Index,
+        index: ResolvedIndex,
         dimensions: Int,
         metric: VectorMetric,
         subspace: Subspace,

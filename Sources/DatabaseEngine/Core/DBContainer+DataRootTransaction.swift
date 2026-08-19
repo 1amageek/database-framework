@@ -3,7 +3,7 @@ import StorageKit
 
 extension DBContainer {
     /// Executes one database transaction through the container-owned engine.
-    /// When `MultipleBases` is enabled, the selected Base and its persisted
+    /// When `MultiBase` is enabled, the selected Base and its persisted
     /// Grant are resolved inside the same transaction attempt.
     package func withDatabaseTransaction<Result: Sendable>(
         requiredAccess: Security.Access,
@@ -13,7 +13,7 @@ extension DBContainer {
             any TransactionAccess
         ) async throws -> Result
     ) async throws -> Result {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         let lease = try requireActiveDataRoot()
         let authorization = RequestAuthorization.context
         let selectedTransactionExecutor = lease.transactionExecutor
@@ -26,7 +26,7 @@ extension DBContainer {
             clock: monotonicClock,
             executionDeadline: executionDeadline
         ) { transaction in
-            #if DATABASE_MULTIPLE_BASES
+            #if DATABASE_MULTI_BASE
             try await DatabaseGrantStore(
                 resource: lease.resource,
                 root: lease.root

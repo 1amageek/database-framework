@@ -1,22 +1,22 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
 /// Canonical runtime provider for maximum indexes.
 public struct MaxIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "max"
+    public let indexType: IndexType = .aggregate(.maximum)
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        let valueType = try validate(kind: index.kind)
+        let valueType = try index.aggregateValueType(.maximum)
         switch valueType {
 
         case .int8:
@@ -49,10 +49,4 @@ public struct MaxIndexMaintainerProvider: IndexMaintainerProvider {
         }
     }
 
-    private func validate(kind: IndexKindMetadata) throws -> IndexScalarType {
-        try kind.validateIdentity(identifier: kindIdentifier, subspaceStructure: .flat)
-        try kind.validateMetadataKeys(required: ["valueType"])
-        try kind.validateFieldCount(minimum: 1)
-        return try kind.requireScalarType("valueType")
-    }
 }

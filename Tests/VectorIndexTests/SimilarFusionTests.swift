@@ -16,10 +16,11 @@ private struct SimilarFusionDocument {
     var embedding: Vector
 
     #Index(
-        .vector(dimensions: 2, metric: .dotProduct),
-        embedding: \SimilarFusionDocument.embedding,
-        name: "SimilarFusionDocument_embedding"
-    )
+        .vector(
+            name: "SimilarFusionDocument_embedding",
+            embedding: \SimilarFusionDocument.embedding,
+            dimensions: 2, metric: .dotProduct
+        ))
 }
 
 @Suite("Similar fusion query", .serialized)
@@ -168,7 +169,7 @@ struct SimilarFusionTests {
         let indexSubspace = try await context.indexQueryContext
             .withReadableIndex(
                 named: indexName,
-                kindIdentifier: VectorIndexSpecification.identifier,
+                indexType: .vector,
                 for: SimilarFusionDocument.self
             ) { readableIndex, _ in
                 guard let readableIndex else {
@@ -216,18 +217,21 @@ struct SimilarFusionTests {
         return try await DBContainer.open(
             for: schema,
             configuration: .testing(
-                storageEngine: engine,
-                indexConfigurations: [
-                    VectorIndexConfiguration<SimilarFusionDocument>(
-                        field: SimilarFusionDocument.fields.embedding,
-                        algorithm: algorithm
-                    )
-                ]
-            ),
+                storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SimilarFusionDocument.self
+                    )
+                ],
+                indexConfigurations: [
+                    VectorIndexConfiguration(
+                        indexName: "SimilarFusionDocument_embedding",
+                        algorithm: algorithm
                     )
                 ]
             ),

@@ -36,11 +36,11 @@ private struct RankIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         // Expression: score
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: RankedPlayer.self,
             name: indexName,
-            kind: rankIndexMetadata(scoreType: .int64),
+            definition: rankIndexDefinition(fieldNumber: 3),
             rootExpression: FieldKeyExpression(fieldName: "score"),
-            subspaceKey: indexName,
             itemTypes: Set(["RankedPlayer"])
         )
 
@@ -113,7 +113,7 @@ struct RankIndexBehaviorTests {
         let players = [
             RankedPlayer(id: "p1", name: "Alice", score: 1000),
             RankedPlayer(id: "p2", name: "Bob", score: 1500),
-            RankedPlayer(id: "p3", name: "Charlie", score: 800)
+            RankedPlayer(id: "p3", name: "Charlie", score: 800),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -228,7 +228,7 @@ struct RankIndexBehaviorTests {
             RankedPlayer(id: "p1", name: "Low", score: 100),
             RankedPlayer(id: "p2", name: "Medium", score: 500),
             RankedPlayer(id: "p3", name: "High", score: 1000),
-            RankedPlayer(id: "p4", name: "VeryHigh", score: 2000)
+            RankedPlayer(id: "p4", name: "VeryHigh", score: 2000),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -264,7 +264,7 @@ struct RankIndexBehaviorTests {
         let players = [
             RankedPlayer(id: "p1", name: "Third", score: 100),
             RankedPlayer(id: "p2", name: "Second", score: 500),
-            RankedPlayer(id: "p3", name: "First", score: 1000)
+            RankedPlayer(id: "p3", name: "First", score: 1000),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -304,7 +304,7 @@ struct RankIndexBehaviorTests {
             RankedPlayer(id: "p1", name: "Alice", score: 1000),
             RankedPlayer(id: "p2", name: "Bob", score: 1000),
             RankedPlayer(id: "p3", name: "Charlie", score: 1000),
-            RankedPlayer(id: "p4", name: "Low", score: 500)
+            RankedPlayer(id: "p4", name: "Low", score: 500),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -340,7 +340,7 @@ struct RankIndexBehaviorTests {
 
         let players = [
             RankedPlayer(id: "p1", name: "Alice", score: 1000),
-            RankedPlayer(id: "p2", name: "Bob", score: 500)
+            RankedPlayer(id: "p2", name: "Bob", score: 500),
         ]
 
         try await ctx.database.withTransaction { transaction in

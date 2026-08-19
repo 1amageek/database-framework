@@ -5,6 +5,7 @@
 // and canonical row dispatcher flows through this single enum so callers
 // have one catch arm for canonical-read concerns.
 
+import DatabaseKit
 
 /// Errors raised while translating or executing a canonical `SelectQuery`.
 ///
@@ -53,8 +54,8 @@ public enum CanonicalReadError: Error, Sendable {
 
     // MARK: Executor registry
 
-    /// No executor is registered for the requested kind identifier.
-    case executorNotRegistered(String)
+    /// No executor is registered for the requested semantic index type.
+    case executorNotRegistered(IndexType)
 
     // MARK: Pagination
 
@@ -79,14 +80,14 @@ public enum CanonicalReadError: Error, Sendable {
     ///     (avoid storing the raw `any Sendable` to keep the error `Sendable`).
     case unencodablePredicateValue(field: String, valueDescription: String)
 
-    // MARK: Index annotations
+    // MARK: ResolvedIndex annotations
 
     /// An index-produced row was missing an annotation the caller expects
     /// (e.g., FullText BM25 `score`, Vector `distance`). Replaces the
     /// previous `?? 0` silent default that produced misleading ranking.
     case missingAnnotation(String)
 
-    // MARK: Index integrity
+    // MARK: ResolvedIndex integrity
 
     /// An index entry's key could not be decoded back into a primary-key
     /// tuple. The entry is physically corrupt; skipping it would silently

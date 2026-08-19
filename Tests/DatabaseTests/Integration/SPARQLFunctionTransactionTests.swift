@@ -22,11 +22,12 @@ private struct SPARQLTransactionUser {
 private struct SPARQLTransactionStatement {
     #Directory<SPARQLTransactionStatement>("sparql_transaction_statements")
     #Index(
-        .rdfDataset,
-        from: \SPARQLTransactionStatement.subject,
-        edge: \SPARQLTransactionStatement.predicate,
-        to: \SPARQLTransactionStatement.object
-    )
+        .graph(
+            name: "SPARQLTransactionStatement_rdf_quad_subject_predicate_object",
+            definition: .rdf(
+                subject: \SPARQLTransactionStatement.subject,
+                predicate: \SPARQLTransactionStatement.predicate,
+                object: \SPARQLTransactionStatement.object, graph: nil)))
 
     var id: String = ""
     var subject: RDFTerm = .iri(.xsdString)
@@ -170,6 +171,10 @@ struct SPARQLFunctionTransactionTests {
             ),
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SPARQLTransactionUser.self

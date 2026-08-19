@@ -56,7 +56,6 @@ general-purpose database value type in this package.
 | `FullTextIndex` | Full-text search, facets, and autocomplete |
 | `SpatialIndex` | Spatial indexing and spatial queries |
 | `RankIndex` | Rank maintenance and rank queries |
-| `PermutedIndex` | Permuted compound-key indexes |
 | `GraphIndex` | RDF graph storage, SPARQL, SQL/PGQ, SHACL data access, and graph algorithms |
 | `OntologyIndex` | Ontology storage and reasoning |
 | `RelationshipIndex` | Relationship maintenance, inverse lookup, referential integrity, and delete rules |
@@ -195,7 +194,7 @@ APIs only.
 
 New index behavior is registered through explicit protocols:
 
-- `IndexMaintainerProvider` creates typed maintainers for declared index kinds.
+- `IndexMaintainerProvider` creates typed maintainers for declared `IndexType` values.
 - `IndexMaintainer` updates physical entries inside the caller's transaction.
 - `IndexReadExecutor` and `PolymorphicIndexReadExecutor` implement reads.
 - `FusionReadExecutor` participates in fusion queries.

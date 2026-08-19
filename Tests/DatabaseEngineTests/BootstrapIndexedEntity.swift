@@ -1,15 +1,11 @@
 import DatabaseKit
-import DatabaseTypes
 import DatabaseRuntime
+import DatabaseTypes
 
 @Persistable
 struct BootstrapIndexedEntity {
     #Directory<BootstrapIndexedEntity>("test", "schema-bootstrap")
-    #Index(
-        .scalar,
-        fields: [\BootstrapIndexedEntity.value],
-        name: "bootstrap_value"
-    )
+    #Index(.ordered(name: "bootstrap_value", keys: [.ascending(\BootstrapIndexedEntity.value)], unique: false))
 
     var id: String = ""
     var value: String = ""

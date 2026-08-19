@@ -55,15 +55,19 @@ public protocol FusionQuery<Item>: Sendable {
 /// Error type for FusionQuery implementations
 public enum FusionQueryError: Error, CustomStringConvertible {
     /// Index not found for the specified field
-    case indexNotFound(type: String, field: String, kind: String)
+    case indexNotFound(
+        entity: String, field: String,
+        indexType: IndexType
+    )
 
     /// Query not properly configured
     case invalidConfiguration(String)
 
     public var description: String {
         switch self {
-        case .indexNotFound(let type, let field, let kind):
-            return "No \(kind) index found for field '\(field)' on type '\(type)'"
+        case .indexNotFound(let entity, let field, let indexType):
+            return "No \(indexType.diagnosticName) index found for field "
+                + "'\(field)' on entity '\(entity)'"
         case .invalidConfiguration(let reason):
             return "Invalid query configuration: \(reason)"
         }

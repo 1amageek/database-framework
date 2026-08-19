@@ -1,4 +1,4 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 import StorageKit
 
 /// Prepared execution state for one claimed storage domain.

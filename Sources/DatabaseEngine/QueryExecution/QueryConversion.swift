@@ -76,7 +76,7 @@ extension Query {
             AccessPath.index(
                 IndexScanSource(
                     indexName: $0.indexName,
-                    kindIdentifier: "scalar"
+                    indexType: .ordered
                 )
             )
         }

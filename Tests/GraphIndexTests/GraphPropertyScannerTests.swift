@@ -30,31 +30,28 @@ struct GraphPropertyScannerTests {
         var score: Double = 0.0
 
         #Index(
-            .propertyGraph(strategy: .tripleStore),
-            from: \SocialEdge.from,
-            edge: \SocialEdge.label,
-            to: \SocialEdge.target,
-            storedFields: [
+            .graph(
+                name: "social_graph_index",
+                definition: .property(
+                    source: \SocialEdge.from, label: .field(\SocialEdge.label),
+                    target: \SocialEdge.target,
+                    graph: nil, strategy: .tripleStore),
+                includedFields: [
                 \SocialEdge.since,
                 \SocialEdge.status,
-                \SocialEdge.score,
-            ],
-            name: "social_graph_index"
-        )
+                \SocialEdge.score]))
 
         #Index(
-            .propertyGraph(strategy: .adjacency),
-            from: \SocialEdge.from,
-            edge: \SocialEdge.label,
-            to: \SocialEdge.target,
-            graph: \SocialEdge.id,
-            storedFields: [
+            .graph(
+                name: "adjacency_graph_index",
+                definition: .property(
+                    source: \SocialEdge.from, label: .field(\SocialEdge.label),
+                    target: \SocialEdge.target,
+            graph: \SocialEdge.id, strategy: .adjacency),
+                includedFields: [
                 \SocialEdge.since,
                 \SocialEdge.status,
-                \SocialEdge.score,
-            ],
-            name: "adjacency_graph_index"
-        )
+                \SocialEdge.score]))
     }
 
     // MARK: - Setup
@@ -86,7 +83,12 @@ struct GraphPropertyScannerTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self)]),
             security: .testingDisabled,
         )
 
@@ -101,10 +103,14 @@ struct GraphPropertyScannerTests {
         strategy: GraphIndexStrategy
     ) async throws -> GraphPropertyScanner {
         let subspace = try await container.testBaseDirectory(for: SocialEdge.self)
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: subspace
+        )
         return GraphPropertyScanner(
-            indexSubspace: subspace.subspace("I").subspace(indexName),
+            indexSubspace: try lifecycleStore.indexSubspace(for: indexName),
             strategy: strategy,
-            storedFieldNames: ["since", "status", "score"]
+            includedFieldNames: ["since", "status", "score"]
         )
     }
 

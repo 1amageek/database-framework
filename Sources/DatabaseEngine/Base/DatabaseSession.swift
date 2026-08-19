@@ -1,4 +1,4 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 import DatabaseKit
 
 /// Explicit authorization boundary for all local database data operations.

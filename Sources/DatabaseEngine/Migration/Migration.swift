@@ -1,6 +1,6 @@
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
-import DatabaseKit
 
 /// Migration Definition
 ///
@@ -19,12 +19,6 @@ import DatabaseKit
 ///     toVersion: Schema.Version(2, 0, 0),
 ///     description: "Add email index"
 /// ) { context in
-///     let emailIndex = try IndexDescriptor(
-///         name: "email_index",
-///         definition: .scalar,
-///         fields: [User.fields.email.ascending],
-///         commonOptions: .init()
-///     )
 ///     try await context.addIndex(emailIndex)
 /// }
 /// ```
@@ -75,15 +69,11 @@ package struct MigrationStoreInfo: Sendable {
     /// Root subspace for the store
     package let subspace: Subspace
 
-    /// Index subspace for the store
-    package let indexSubspace: Subspace
-
     /// Blobs subspace for the store (large value chunks)
     package let blobsSubspace: Subspace
 
-    package init(subspace: Subspace, indexSubspace: Subspace, blobsSubspace: Subspace) {
+    package init(subspace: Subspace, blobsSubspace: Subspace) {
         self.subspace = subspace
-        self.indexSubspace = indexSubspace
         self.blobsSubspace = blobsSubspace
     }
 }
@@ -122,11 +112,11 @@ public struct MigrationContext: Sendable {
     /// the fallback lookup for data operations.
     private let targetStoreRegistry: [String: MigrationStoreInfo]
 
-    /// Index configurations from DBContainer
-    ///
-    /// Maps index names to their runtime configurations (HNSW params, full-text settings, etc.)
-    /// Used when building indexes via EntityIndexBuilder.
-    internal let indexConfigurations: [String: [any IndexRuntimeConfiguration]]
+    /// Runtime registrations and index policy for the target generation.
+    internal let runtimeConfiguration: DatabaseRuntimeConfiguration
+
+    /// Physical layouts paired with `schema` for this migration stage.
+    private let targetIndexPhysicalLayouts: [String: IndexPhysicalLayout]
 
     // MARK: - Initialization
 
@@ -137,7 +127,8 @@ public struct MigrationContext: Sendable {
         metadataSubspace: Subspace,
         sourceStoreRegistry: [String: MigrationStoreInfo],
         targetStoreRegistry: [String: MigrationStoreInfo],
-        indexConfigurations: [String: [any IndexRuntimeConfiguration]] = [:]
+        runtimeConfiguration: DatabaseRuntimeConfiguration? = nil,
+        targetIndexPhysicalLayouts: [String: IndexPhysicalLayout]? = nil
     ) {
         self.container = container
         self.schema = schema
@@ -145,7 +136,12 @@ public struct MigrationContext: Sendable {
         self.metadataSubspace = metadataSubspace
         self.sourceStoreRegistry = sourceStoreRegistry
         self.targetStoreRegistry = targetStoreRegistry
-        self.indexConfigurations = indexConfigurations
+        self.runtimeConfiguration =
+            runtimeConfiguration
+            ?? container.runtimeConfiguration
+        self.targetIndexPhysicalLayouts =
+            targetIndexPhysicalLayouts
+            ?? container.indexPhysicalLayouts
     }
 
     /// Convenience initializer for callers that use a single registry for both sides.
@@ -155,7 +151,8 @@ public struct MigrationContext: Sendable {
         sourceSchema: Schema? = nil,
         metadataSubspace: Subspace,
         storeRegistry: [String: MigrationStoreInfo],
-        indexConfigurations: [String: [any IndexRuntimeConfiguration]] = [:]
+        runtimeConfiguration: DatabaseRuntimeConfiguration? = nil,
+        targetIndexPhysicalLayouts: [String: IndexPhysicalLayout]? = nil
     ) {
         self.init(
             container: container,
@@ -164,7 +161,8 @@ public struct MigrationContext: Sendable {
             metadataSubspace: metadataSubspace,
             sourceStoreRegistry: storeRegistry,
             targetStoreRegistry: storeRegistry,
-            indexConfigurations: indexConfigurations
+            runtimeConfiguration: runtimeConfiguration,
+            targetIndexPhysicalLayouts: targetIndexPhysicalLayouts
         )
     }
 
@@ -198,9 +196,9 @@ public struct MigrationContext: Sendable {
     /// - If multiple entities have indexes with the same name, an error is thrown
     ///
     /// **Implementation**:
-    /// 1. Identify target entity from index name or keyPaths
-    /// 2. Convert IndexDescriptor to Index with proper itemTypes
-    /// 3. Register index with DatabaseIndexRegistry for target entity store only
+    /// 1. Identify the target entity from descriptor ownership
+    /// 2. Resolve the descriptor with its key expression and item types
+    /// 3. Bind lifecycle state to the target schema and physical layout
     /// 4. Enable index (sets to writeOnly via IndexLifecycleStore)
     /// 5. Build index (via OnlineIndexer using EntityIndexBuilder)
     /// 6. Mark as readable (automatically done by OnlineIndexer after build completes)
@@ -225,30 +223,27 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let indexRegistry = DatabaseIndexRegistry(
-            container: container,
-            subspace: info.subspace
-        )
-
         // 3. Convert IndexDescriptor to Index with itemTypes
-        let index = try convertDescriptorToIndex(
+        let index = try resolveIndex(
             indexDescriptor,
             itemTypes: Set([targetEntity.name])
         )
 
-        // 4. Register the compiled definition in this migration-scoped registry.
-        // Migration idempotency is represented by persisted lifecycle state below;
-        // a conflicting in-memory definition must never be treated as success.
-        try indexRegistry.register(index: index)
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: info.subspace,
+            schema: schema,
+            indexPhysicalLayouts: targetIndexPhysicalLayouts
+        )
 
         // 5. Enable index (disabled → writeOnly)
         // Check current state first to ensure idempotency
-        let currentState = try await indexRegistry.state(of: index.name)
+        let currentState = try await lifecycleStore.state(of: index.name)
 
         switch currentState {
         case .disabled:
             // Normal case: enable the index
-            try await indexRegistry.enable(index.name)
+            try await lifecycleStore.enable(index.name)
         case .readable:
             // Index already built - nothing to do
             return
@@ -257,13 +252,16 @@ public struct MigrationContext: Sendable {
             break
         }
 
-        // 6. Build the index from the container-scoped runtime type registry.
+        // 6. Build the index from the target generation's runtime registry.
 
         // Get configurations for this index (HNSW params, full-text settings, etc.)
-        let configs = indexConfigurations[index.name] ?? []
+        let configs = runtimeConfiguration.indexConfigurations(
+            named: index.name
+        )
 
-        guard let entityRuntime = container.runtimeConfiguration
-            .entityRuntimes.registration(named: targetEntity.name) else {
+        guard
+            let entityRuntime = runtimeConfiguration
+                .entityRuntimes.registration(named: targetEntity.name) else {
             throw DatabaseRuntimeError.internalError(
                 "Entity '\(targetEntity.name)' has no registered runtime type"
             )
@@ -273,7 +271,7 @@ public struct MigrationContext: Sendable {
             container: container,
             storeSubspace: info.subspace,
             index: index,
-            indexLifecycleStore: indexRegistry.lifecycleStore,
+            indexLifecycleStore: lifecycleStore,
             batchSize: batchSize,
             configurations: configs
         )
@@ -294,8 +292,8 @@ public struct MigrationContext: Sendable {
     /// **Implementation** (all in single atomic transaction):
     /// 1. Identify target entity from Schema
     /// 2. Create FormerIndex metadata entry
-    /// 3. Disable index (via IndexLifecycleStore)
-    /// 4. Clear all index data (range clear)
+    /// 3. Clear every physical data and lifecycle-state generation
+    /// 4. Clear pending build metadata
     ///
     /// - Parameters:
     ///   - indexName: Name of the index to remove
@@ -305,10 +303,27 @@ public struct MigrationContext: Sendable {
         indexName: String,
         addedVersion: Schema.Version
     ) async throws {
+        try await withAuthorizedTransaction(configuration: .batch) {
+            transaction in
+            try removeIndex(
+                indexName: indexName,
+                addedVersion: addedVersion,
+                transaction: transaction
+            )
+        }
+    }
+
+    package func removeIndex(
+        indexName: String,
+        addedVersion: Schema.Version,
+        transaction: any TransactionAccess
+    ) throws {
         // 1. Find index descriptor in source schema to identify target entity
         guard let indexDescriptor = sourceSchema.indexDescriptor(named: indexName) else {
             if let group = sourceSchema.polymorphicGroup(containingIndexNamed: indexName) {
-                try await removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion)
+                try removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion,
+                    transaction: transaction
+                )
                 return
             }
             throw DatabaseRuntimeError.indexNotFound(
@@ -317,7 +332,9 @@ public struct MigrationContext: Sendable {
         }
 
         if let group = try identifyPolymorphicTargetGroup(for: indexDescriptor, in: sourceSchema) {
-            try await removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion)
+            try removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion,
+                transaction: transaction
+            )
             return
         }
 
@@ -332,42 +349,82 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let indexRegistry = DatabaseIndexRegistry(
-            container: container,
-            subspace: info.subspace
-        )
-
-        // 4. Atomic transaction: FormerIndex entry + disable + clear data
+        // 4. Atomic transaction: FormerIndex entry + clear every retained
+        // generation owned by the removed logical declaration.
         let formerIndexKey = info.subspace
             .subspace("storeInfo")
             .subspace("formerIndexes")
             .pack(Tuple(indexName))
 
-        let indexRange = info.indexSubspace.subspace(indexName).range()
+        let timestamp = container.wallClock.now
+        try transaction.setValue(
+            Tuple(
+                Int64(addedVersion.major),
+                Int64(addedVersion.minor),
+                Int64(addedVersion.patch),
+                timestamp.secondsSinceUnixEpoch,
+                UInt64(timestamp.nanoseconds)
+            ).pack(),
+            for: formerIndexKey
+        )
+        try IndexStorageRetirer.retire(
+            indexName: indexName,
+            selection: .allGenerations,
+            storeSubspace: info.subspace,
+            transaction: transaction
+        )
+        try container.clearSchemaIndexBuildPending(
+            scope: .entity(
+                name: targetEntity.name,
+                directoryComponents: targetEntity.directoryComponents
+            ),
+            index: indexName,
+            selection: .allGenerations,
+            transaction: transaction
+        )
+    }
 
-        try await withAuthorizedTransaction(configuration: .batch) { transaction in
-            // Write FormerIndex entry
-            let timestamp = container.wallClock.now
-            try transaction.setValue(
-                Tuple(
-                    Int64(addedVersion.major),
-                    Int64(addedVersion.minor),
-                    Int64(addedVersion.patch),
-                    timestamp.secondsSinceUnixEpoch,
-                    UInt64(timestamp.nanoseconds)
-                ).pack(),
-                for: formerIndexKey
+    /// Retires exactly the source physical generation selected by a framework
+    /// transition plan. The caller commits this with the schema snapshot so an
+    /// old generation cannot disappear while the old schema remains active.
+    package func retireIndexStorage(
+        _ target: DatabaseIndexTransitionPlan.Target,
+        transaction: any TransactionAccess
+    ) throws {
+        let selection = DatabaseIndexStorageRetirement.physicalGeneration(
+            definitionFingerprint: target.identity.definitionFingerprint,
+            layoutFingerprint: target.identity.layoutFingerprint
+        )
+        switch target.scope {
+        case .entity(let name, _):
+            guard let info = sourceStoreRegistry[name] else {
+                throw DatabaseRuntimeError.internalError(
+                    "Store info for entity '\(name)' not found in source registry"
+                )
+            }
+            try IndexStorageRetirer.retire(
+                indexName: target.identity.name,
+                selection: selection,
+                storeSubspace: info.subspace,
+                transaction: transaction
             )
-
-            // Disable index state
-            try await indexRegistry.lifecycleStore.disable(indexName, transaction: transaction)
-
-            // Clear index data
-            try transaction.clearRange(
-                beginKey: indexRange.begin,
-                endKey: indexRange.end
+        case .polymorphicGroup(_, let directoryPath):
+            let subspace = try container.operationDataSubspace(
+                relativePath: directoryPath
+            )
+            try IndexStorageRetirer.retire(
+                indexName: target.identity.name,
+                selection: selection,
+                storeSubspace: subspace,
+                transaction: transaction
             )
         }
+        try container.clearSchemaIndexBuildPending(
+            scope: target.scope,
+            index: target.identity.name,
+            selection: selection,
+            transaction: transaction
+        )
     }
 
     /// Rebuild an existing index
@@ -409,25 +466,28 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let indexRegistry = DatabaseIndexRegistry(
+        let lifecycleStore = IndexLifecycleStore(
             container: container,
-            subspace: info.subspace
+            subspace: info.subspace,
+            schema: schema,
+            indexPhysicalLayouts: targetIndexPhysicalLayouts
         )
 
-        // 4. Convert and register index first (needed for DatabaseIndexRegistry operations)
-        let index = try convertDescriptorToIndex(
+        // 4. Resolve the target definition for this migration generation.
+        let index = try resolveIndex(
             indexDescriptor,
             itemTypes: Set([targetEntity.name])
         )
-        try indexRegistry.register(index: index)
 
         // 5. Atomic transaction: disable + clear + enable
         // This ensures the index is in a consistent state before building
-        let indexRange = info.indexSubspace.subspace(indexName).range()
+        let indexRange = try lifecycleStore.indexSubspace(
+            for: indexName
+        ).range()
 
         try await withAuthorizedTransaction(configuration: .batch) { transaction in
             // Disable index (from any state)
-            try await indexRegistry.lifecycleStore.disable(indexName, transaction: transaction)
+            try await lifecycleStore.disable(indexName, transaction: transaction)
 
             // Clear existing data
             try transaction.clearRange(
@@ -437,16 +497,19 @@ public struct MigrationContext: Sendable {
 
             // Enable index (disabled → writeOnly)
             // Note: We just disabled it above, so this will succeed
-            try await indexRegistry.lifecycleStore.enable(indexName, transaction: transaction)
+            try await lifecycleStore.enable(indexName, transaction: transaction)
         }
 
         // 6. Build index via OnlineIndexer using EntityIndexBuilder
 
         // Get configurations for this index (HNSW params, full-text settings, etc.)
-        let configs = indexConfigurations[indexName] ?? []
+        let configs = runtimeConfiguration.indexConfigurations(
+            named: indexName
+        )
 
-        guard let entityRuntime = container.runtimeConfiguration
-            .entityRuntimes.registration(named: targetEntity.name) else {
+        guard
+            let entityRuntime = runtimeConfiguration
+                .entityRuntimes.registration(named: targetEntity.name) else {
             throw DatabaseRuntimeError.internalError(
                 "Entity '\(targetEntity.name)' has no registered runtime type"
             )
@@ -456,7 +519,7 @@ public struct MigrationContext: Sendable {
             container: container,
             storeSubspace: info.subspace,
             index: index,
-            indexLifecycleStore: indexRegistry.lifecycleStore,
+            indexLifecycleStore: lifecycleStore,
             batchSize: batchSize,
             configurations: configs
         )
@@ -468,7 +531,10 @@ public struct MigrationContext: Sendable {
         batchSize: Int
     ) async throws {
         let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let lifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
+        let lifecycleStore = IndexLifecycleStore(container: container, subspace: subspace,
+            schema: schema,
+            indexPhysicalLayouts: targetIndexPhysicalLayouts
+        )
         let currentState = try await lifecycleStore.state(of: indexName)
 
         switch currentState {
@@ -495,36 +561,57 @@ public struct MigrationContext: Sendable {
         group: PolymorphicGroup,
         addedVersion: Schema.Version
     ) async throws {
-        let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let lifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
-        let formerIndexKey = subspace
+        try await withAuthorizedTransaction(configuration: .batch) {
+            transaction in
+            try removePolymorphicIndex(
+                indexName: indexName,
+                group: group,
+                addedVersion: addedVersion,
+                transaction: transaction
+            )
+        }
+    }
+
+    private func removePolymorphicIndex(
+        indexName: String,
+        group: PolymorphicGroup,
+        addedVersion: Schema.Version,
+        transaction: any TransactionAccess
+    ) throws {
+        let subspace = try container.operationDataSubspace(
+            relativePath: group.resolvedDirectoryPath()
+        )
+        let formerIndexKey =
+            subspace
             .subspace("storeInfo")
             .subspace("formerIndexes")
             .pack(Tuple(indexName))
-        let indexRange = subspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexName)
-            .range()
-
-        try await withAuthorizedTransaction(configuration: .batch) { transaction in
-            let timestamp = container.wallClock.now
-            try transaction.setValue(
-                Tuple(
-                    Int64(addedVersion.major),
-                    Int64(addedVersion.minor),
-                    Int64(addedVersion.patch),
-                    timestamp.secondsSinceUnixEpoch,
-                    UInt64(timestamp.nanoseconds)
-                ).pack(),
-                for: formerIndexKey
-            )
-
-            try await lifecycleStore.disable(indexName, transaction: transaction)
-            try transaction.clearRange(
-                beginKey: indexRange.begin,
-                endKey: indexRange.end
-            )
-        }
+        let timestamp = container.wallClock.now
+        try transaction.setValue(
+            Tuple(
+                Int64(addedVersion.major),
+                Int64(addedVersion.minor),
+                Int64(addedVersion.patch),
+                timestamp.secondsSinceUnixEpoch,
+                UInt64(timestamp.nanoseconds)
+            ).pack(),
+            for: formerIndexKey
+        )
+        try IndexStorageRetirer.retire(
+            indexName: indexName,
+            selection: .allGenerations,
+            storeSubspace: subspace,
+            transaction: transaction
+        )
+        try container.clearSchemaIndexBuildPending(
+            scope: .polymorphicGroup(
+                identifier: group.identifier,
+                directoryPath: try group.resolvedDirectoryPath()
+            ),
+            index: indexName,
+            selection: .allGenerations,
+            transaction: transaction
+        )
     }
 
     private func rebuildPolymorphicIndex(
@@ -533,10 +620,13 @@ public struct MigrationContext: Sendable {
         batchSize: Int
     ) async throws {
         let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let lifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
-        let indexRange = subspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexName)
+        let lifecycleStore = IndexLifecycleStore(container: container, subspace: subspace,
+            schema: schema,
+            indexPhysicalLayouts: targetIndexPhysicalLayouts
+        )
+        let indexRange = try lifecycleStore.indexSubspace(
+            for: indexName
+        )
             .range()
 
         try await withAuthorizedTransaction(configuration: .batch) { transaction in
@@ -567,22 +657,23 @@ public struct MigrationContext: Sendable {
     ) async throws {
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        let configurations = indexConfigurations[indexName] ?? []
+        let configurations = runtimeConfiguration.indexConfigurations(
+            named: indexName
+        )
         let maintenanceService = IndexMaintenanceService(
             indexLifecycleStore: lifecycleStore,
             violationTracker: UniquenessViolationTracker(
                 container: container,
                 metadataSubspace: subspace.subspace(SubspaceKey.metadata)
             ),
-            indexSubspace: subspace.subspace(SubspaceKey.indexes),
             configurations: configurations
         )
         let memberTypeNames = Set(group.memberTypeNames)
-        var finalization: (runtime: EntityRuntimeRegistration, index: Index)?
+        var finalization: (runtime: EntityRuntimeRegistration, index: ResolvedIndex)?
 
         for entity in schema.entities where memberTypeNames.contains(entity.name) {
-            guard let entityRuntime = container.runtimeConfiguration
-                .entityRuntimes.registration(named: entity.name) else {
+            guard let entityRuntime = runtimeConfiguration
+                    .entityRuntimes.registration(named: entity.name) else {
                 throw DatabaseRuntimeError.internalError(
                     "Polymorphic member '\(entity.name)' has no registered runtime type"
                 )
@@ -603,16 +694,12 @@ public struct MigrationContext: Sendable {
             if finalization == nil, let descriptor = descriptors.first {
                 finalization = (
                     runtime: entityRuntime,
-                    index: Index(
-                        name: descriptor.name,
-                        kind: descriptor.kind,
+                    index: ResolvedIndex(
+                        descriptor: descriptor,
                         rootExpression: KeyExpressionFactory.from(
                             keyPaths: descriptor.fieldNames
                         ),
-                        subspaceKey: descriptor.name,
                         itemTypes: Set([group.identifier]),
-                        isUnique: descriptor.isUnique,
-                        storedFieldNames: descriptor.storedFieldNames
                     )
                 )
             }
@@ -764,7 +851,7 @@ public struct MigrationContext: Sendable {
         // `#Directory` even when V2 is also registered for the same entity name.
         let itemType = T.persistableType
         let container = self.container
-        let targetRuntime = container.runtimeConfiguration.entityRuntimes
+        let targetRuntime = runtimeConfiguration.entityRuntimes
             .registration(named: itemType)
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -772,7 +859,6 @@ public struct MigrationContext: Sendable {
                     let subspace = try await container.resolveDirectory(for: type)
                     let info = MigrationStoreInfo(
                         subspace: subspace,
-                        indexSubspace: subspace.subspace(SubspaceKey.indexes),
                         blobsSubspace: subspace.subspace(SubspaceKey.blobs)
                     )
                     let enumerator = ItemEnumerator<T>(
@@ -1077,42 +1163,26 @@ public struct MigrationContext: Sendable {
         return matchingEntities[0]
     }
 
-    /// Convert IndexDescriptor to Index with itemTypes
-    ///
-    /// This converts metadata-only IndexDescriptor to runtime Index objects.
-    ///
-    /// **Nested Field Support**:
-    /// Nested keyPaths (e.g., "address.city") are converted to `NestExpression`.
-    /// Uses `KeyExpressionFactory.from(keyPaths:)` to properly handle both
-    /// simple fields and nested paths.
-    ///
-    /// **KeyPath Optimization**:
-    /// Preserves original KeyPaths in Index for direct KeyPath-based field extraction.
-    /// IndexMaintainer can use `index.keyPaths` for efficient direct subscript access
-    /// instead of string-based `@dynamicMemberLookup` lookup.
+    /// Binds a validated schema descriptor to runtime key extraction.
     ///
     /// - Parameters:
     ///   - descriptor: IndexDescriptor from schema
     ///   - itemTypes: Set of item type names that this index applies to
-    /// - Returns: Index object
-    /// - Throws: Error if conversion fails
-    private func convertDescriptorToIndex(
+    /// - Returns: A runtime index scoped to the supplied item types.
+    private func resolveIndex(
         _ descriptor: IndexDescriptor,
         itemTypes: Set<String>
-    ) throws -> Index {
+    ) throws -> ResolvedIndex {
         // Build KeyExpression from field names using factory
         // This properly handles nested paths (e.g., "address.city" → NestExpression)
         let keyExpression = KeyExpressionFactory.from(
             keyPaths: descriptor.fieldNames
         )
 
-        return Index(
-            name: descriptor.name,
-            kind: descriptor.kind,
+        return ResolvedIndex(
+            descriptor: descriptor,
             rootExpression: keyExpression,
-            subspaceKey: descriptor.name,
             itemTypes: itemTypes,  // Scoped to specific entity
-            storedFieldNames: descriptor.storedFieldNames
         )
     }
 }

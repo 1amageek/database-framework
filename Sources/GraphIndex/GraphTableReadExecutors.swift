@@ -1,6 +1,6 @@
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
-import DatabaseEngine
 import StorageKit
 
 public enum GraphTableReadExecutors {
@@ -38,8 +38,8 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
             guard let index = try await queryContext
                 .readableIndex(
                     named: resolution.indexDescriptor.name,
-                    kindIdentifier: resolution.indexDescriptor.kindIdentifier,
-                    forEntityName: resolution.entity.name,
+                        indexType: resolution.indexDescriptor.type,
+                        forEntityName: resolution.entity.name,
                     partitions: partitions,
                     transaction: transaction
                 ) else {

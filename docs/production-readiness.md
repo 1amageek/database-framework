@@ -9,17 +9,17 @@ database-framework service.
   lifecycle. Dedicated backends use the engine root. For FoundationDB or any
   shared physical backend, record the explicitly selected Directory/root and
   keep it stable across restarts. Only a
-  `MultipleBases` deployment defines a control domain, data domains, and named
+  `MultiBase` deployment defines a control domain, data domains, and named
   Base placements.
 - Select runtime/index capabilities through consuming-package traits. A host
   package's defaults do not change the framework's explicit trait contract.
 - Confirm the backend transaction and isolation semantics.
 - Create one long-lived DBContainer per service process or Durable Object
   instance.
-- Transfer the initialized engine, or the `MultipleBases` topology, into that
+- Transfer the initialized engine, or the `MultiBase` topology, into that
   container and register `container.shutdown()` with the host lifecycle.
 - Create one authorization-bound DatabaseContext per unit of work. With
-  `MultipleBases`, create a DatabaseSession and explicitly select a Base or
+  `MultiBase`, create a DatabaseSession and explicitly select a Base or
   Composition instead.
 - Keep web host and database adapter dependencies separate.
 
@@ -27,7 +27,11 @@ database-framework service.
 
 - Version the Schema.
 - Define all required directory paths and indexes in model declarations.
-- Run migrations before accepting application traffic.
+- Run migrations before accepting application traffic. A container opened with
+  a migration plan rejects ordinary data operations until the complete plan
+  succeeds; a bounded partial run keeps admission closed. With `MultiBase`,
+  migrate every active Base; container admission remains closed until all of
+  them match the compiled schema fingerprint and physical index generation.
 - Validate dynamic-directory fields and require partition bindings.
 - Rebuild or validate indexes after storage migration.
 - Keep vector payloads in the binary storage format described in
@@ -36,9 +40,9 @@ database-framework service.
 ## Security
 
 - Establish AuthorizationContext at the request boundary.
-- With `MultipleBases`, persist Base Grants; role names are authenticated
+- With `MultiBase`, persist Base Grants; role names are authenticated
   claims, not an administrative bypass.
-- With `MultipleBases`, require explicit `.read`, `.write`, and `.administer`
+- With `MultiBase`, require explicit `.read`, `.write`, and `.administer`
   access independently and authorize every Composition member before output.
 - Register every enabled entity policy through AuthorizationPolicyHandler.
 - Keep SecurityPolicy evaluation enabled in production.
@@ -76,7 +80,7 @@ scripts/xcode-test-harness \
   --require-zero-runtime-warnings
 
 scripts/xcode-test-harness \
-  --traits SQLite,AllRuntimeFeatures,MultipleBases \
+  --traits SQLite,AllRuntimeFeatures,MultiBase \
   --only-testing SQLiteTests \
   --expected-count 114 \
   --require-zero-skips \
@@ -89,7 +93,7 @@ POSTGRES_TEST_USER=postgres \
 POSTGRES_TEST_PASSWORD=test \
 POSTGRES_TEST_DB=database_framework_test \
 scripts/xcode-test-harness \
-  --traits PostgreSQL,AllRuntimeFeatures,MultipleBases \
+  --traits PostgreSQL,AllRuntimeFeatures,MultiBase \
   --only-testing PostgreSQLTests \
   --expected-count 72 \
   --require-zero-skips \
@@ -98,10 +102,10 @@ scripts/xcode-test-harness \
 
 scripts/fdb-test-env run --clean -- \
   scripts/xcode-test-harness \
-    --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
+    --traits FoundationDB,AllRuntimeFeatures,MultiBase \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3651 \
+    --expected-count 3607 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -152,10 +156,10 @@ successfully. Do not replace these invocations with a direct package-wide
 the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
-The framework release gate resolves database-kit 26.0818.0. That published tag
+The framework release gate resolves database-kit 26.0819.0. That published tag
 contains the `CompositionSelection`, `CompositionResolution`, and DatabaseWire
-v4 contracts consumed by this source revision and resolves to database-kit main
-commit `768390a4859916a89e147f6b2e259608f81ed9f6`. The remaining release
+v5 contracts consumed by this source revision and resolves to database-kit main
+commit `775facbae56d8ccbbf7024d40a8fb36da64093c2`. The remaining release
 dependencies are storage-kit 26.0807.0 and swift-hnsw 1.1.4. Record every
 resolved version and revision, the framework commit, result bundles, backend
 service identities, and platform build logs in the release report; do not

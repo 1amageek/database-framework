@@ -35,21 +35,20 @@ struct MinMaxBatchAPITests {
         let indexSubspace = Subspace(prefix: Tuple("test", "min_batch", testId).pack())
 
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Order.self,
             name: "order_min_by_region",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .minimum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 4),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "order_min_by_region",
             itemTypes: Set(["Order"])
         )
 
@@ -64,7 +63,7 @@ struct MinMaxBatchAPITests {
             Order(id: "o2", region: "US", category: "Books", amount: 49.0),
             Order(id: "o3", region: "EU", category: "Electronics", amount: 1299.0),
             Order(id: "o4", region: "EU", category: "Books", amount: 39.0),
-            Order(id: "o5", region: "APAC", category: "Electronics", amount: 899.0)
+            Order(id: "o5", region: "APAC", category: "Electronics", amount: 899.0),
         ]
 
         try await database.withTransaction { transaction in
@@ -103,21 +102,20 @@ struct MinMaxBatchAPITests {
         let indexSubspace = Subspace(prefix: Tuple("test", "max_batch", testId).pack())
 
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Order.self,
             name: "order_max_by_region",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .maximum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 4),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "order_max_by_region",
             itemTypes: Set(["Order"])
         )
 
@@ -132,7 +130,7 @@ struct MinMaxBatchAPITests {
             Order(id: "o2", region: "US", category: "Books", amount: 49.0),
             Order(id: "o3", region: "EU", category: "Electronics", amount: 1299.0),
             Order(id: "o4", region: "EU", category: "Books", amount: 39.0),
-            Order(id: "o5", region: "APAC", category: "Electronics", amount: 899.0)
+            Order(id: "o5", region: "APAC", category: "Electronics", amount: 899.0),
         ]
 
         try await database.withTransaction { transaction in
@@ -171,21 +169,20 @@ struct MinMaxBatchAPITests {
         let indexSubspace = Subspace(prefix: Tuple("test", "min_perf", testId).pack())
 
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: Order.self,
             name: "order_min_by_region",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .minimum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 4),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "order_min_by_region",
             itemTypes: Set(["Order"])
         )
 

@@ -1,21 +1,21 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for average indexes.
 public struct AverageIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "average"
+    public let indexType: IndexType = .aggregate(.average)
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        let valueType = try validate(kind: index.kind)
+        let valueType = try index.aggregateValueType(.average)
         switch valueType {
 
         case .int8:
@@ -40,17 +40,10 @@ public struct AverageIndexMaintainerProvider: IndexMaintainerProvider {
         case .float64:
             return AverageIndexMaintainer<Item, Double>(index: index, subspace: subspace, idExpression: idExpression)
         case .string, .date, .timestamp:
-            throw IndexMaintainerProviderError.invalidMetadata(
-                kindIdentifier: kindIdentifier,
-                key: "valueType"
+            throw IndexMaintainerProviderError.invalidDefinition(
+                indexType: indexType,
+                reason: "Average requires a numeric value field"
             )
         }
-    }
-
-    private func validate(kind: IndexKindMetadata) throws -> IndexScalarType {
-        try kind.validateIdentity(identifier: kindIdentifier, subspaceStructure: .aggregation)
-        try kind.validateMetadataKeys(required: ["valueType"])
-        try kind.validateFieldCount(minimum: 1)
-        return try kind.requireScalarType("valueType")
     }
 }

@@ -5,8 +5,8 @@
 // during online index building. It is separated from the core DatabaseContext to
 // follow the extension pattern for optional features.
 
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 // MARK: - Uniqueness Violation API
@@ -401,7 +401,8 @@ extension DatabaseContext {
                 for: type,
                 transaction: transaction
             )
-            let indexSubspace = databaseStore.indexSubspace.subspace(indexName)
+            let indexSubspace = try databaseStore.indexLifecycleStore
+                .indexSubspace(for: indexName)
             return try await databaseStore.violationTracker.verifyResolution(
                 indexName: indexName,
                 valueKey: valueKey,
@@ -436,7 +437,8 @@ extension DatabaseContext {
                 path: partition,
                 transaction: transaction
             )
-            let indexSubspace = databaseStore.indexSubspace.subspace(indexName)
+            let indexSubspace = try databaseStore.indexLifecycleStore
+                .indexSubspace(for: indexName)
             return try await databaseStore.violationTracker.verifyResolution(
                 indexName: indexName,
                 valueKey: valueKey,

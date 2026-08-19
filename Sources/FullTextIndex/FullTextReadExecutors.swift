@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 enum FullTextReadParameter {
@@ -192,7 +192,7 @@ private func reserveFullTextEntities(
                         PolymorphicRowAnnotation.typeName:
                             .string(entity.typeName),
                         PolymorphicRowAnnotation.typeCode:
-                            .int64(entity.typeCode)
+                            .int64(entity.typeCode),
                     ]
                 ),
                 workMeter: workMeter
@@ -384,7 +384,7 @@ private func reserveFullTextFacetEntry(
 }
 
 private struct FullTextReadExecutor: IndexReadExecutor {
-    let kindIdentifier = "fulltext"
+    let indexType: IndexType = .text(.fullText)
 
     func executeRows(
         context: DatabaseContext,
@@ -420,8 +420,8 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             requested: options.consistency,
             default: .snapshot
         )
-        guard index.kindIdentifier == kindIdentifier,
-              index.fieldNames.contains(fieldName),
+        guard index.type == indexType,
+            index.fieldNames.contains(fieldName),
               entity.fieldMapByName[fieldName] != nil else {
             throw FullTextReadError.invalidParameter(
                 FullTextReadParameter.fieldName
@@ -431,7 +431,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             entity: entity,
             selectQuery: selectQuery
         )
-        let configuration = try FullTextIndexConfiguration(metadata: index.kind)
+        let configuration = try FullTextIndexConfiguration(definition: index.declaration.definition)
 
         if includeFacets {
             let facetFields = try requireStringArray(FullTextReadParameter.facetFields, from: indexScan.parameters)
@@ -570,7 +570,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         let search = PolymorphicFullTextReadExecutor()
         return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
-            kindIdentifier: kindIdentifier,
+            indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
             configuration: execution.transactionConfiguration
@@ -651,7 +651,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         let search = PolymorphicFullTextReadExecutor()
         return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
-            kindIdentifier: kindIdentifier,
+            indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
             configuration: execution.transactionConfiguration
@@ -748,7 +748,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         let search = PolymorphicFullTextReadExecutor()
         return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
-            kindIdentifier: kindIdentifier,
+            indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
             configuration: execution.transactionConfiguration
@@ -1023,12 +1023,12 @@ private struct FullTextReadExecutor: IndexReadExecutor {
 }
 
 private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
-    let kindIdentifier = "fulltext"
+    let indexType: IndexType = .text(.fullText)
 
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
-        index: PolymorphicIndexMetadata,
+        index: IndexDeclaration<String>,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
@@ -1073,12 +1073,12 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             orderBy: orderByFields
         )
 
-        guard index.kindIdentifier == kindIdentifier,
-              index.fieldNames.contains(fieldName) else {
+        guard index.type == indexType,
+            index.fieldNames.contains(fieldName) else {
             throw FullTextReadError.invalidParameter(index.name)
         }
         let configuration = try FullTextIndexConfiguration(
-            metadata: index
+            definition: index.definition
         )
 
         if includeFacets {
@@ -1132,7 +1132,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                                 PolymorphicRowAnnotation.typeName:
                                     .string(entity.typeName),
                                 PolymorphicRowAnnotation.typeCode:
-                                    .int64(entity.typeCode)
+                                    .int64(entity.typeCode),
                             ]
                         )
                     )
@@ -1177,7 +1177,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                                     .string(result.entity.typeName),
                                 PolymorphicRowAnnotation.typeCode:
                                     .int64(result.entity.typeCode),
-                                "score": .float64(result.score)
+                                "score": .float64(result.score),
                             ]
                         )
                     )
@@ -1213,7 +1213,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                             PolymorphicRowAnnotation.typeName:
                                 .string(entity.typeName),
                             PolymorphicRowAnnotation.typeCode:
-                                .int64(entity.typeCode)
+                                .int64(entity.typeCode),
                         ]
                     )
                 )
@@ -1257,7 +1257,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         terms: [String],
         matchMode: TextMatchMode,
         limit: Int?,
-        index: PolymorphicIndexMetadata,
+        index: IndexDeclaration<String>,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
     ) async throws -> [PolymorphicEntity] {
@@ -1345,7 +1345,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         matchMode: TextMatchMode,
         limit: Int?,
         bm25Params: BM25Parameters,
-        index: PolymorphicIndexMetadata,
+        index: IndexDeclaration<String>,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
     ) async throws -> [(entity: PolymorphicEntity, score: Double)] {
@@ -1435,7 +1435,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         limit: Int?,
         facetFields: [String],
         facetLimit: Int,
-        index: PolymorphicIndexMetadata,
+        index: IndexDeclaration<String>,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
     ) async throws -> (items: [PolymorphicEntity], facets: [String: [(value: String, count: Int64)]], totalCount: Int) {

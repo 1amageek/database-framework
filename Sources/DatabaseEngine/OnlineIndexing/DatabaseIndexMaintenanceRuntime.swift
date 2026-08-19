@@ -52,13 +52,15 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
         entity: String,
         index: String,
         partitions: FieldObject,
+        expectedIdentity: DatabaseIndexStorageIdentity? = nil,
         transaction: any TransactionAccess
     ) async throws -> DatabaseIndexMaintenanceStatus {
         let target = try await resolveTarget(
             entity: entity,
             index: index,
             partitions: partitions,
-            directoryAccess: .open(transaction)
+            directoryAccess: .open(transaction),
+            expectedIdentity: expectedIdentity
         )
         let lifecycleStore = IndexLifecycleStore(
             container: container,
@@ -114,6 +116,7 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
         generation: DatabaseTypes.UUID,
         mode: DatabaseIndexRebuildSliceMode,
         maximumWorkUnits: UInt64,
+        expectedIdentity: DatabaseIndexStorageIdentity? = nil,
         transaction: any TransactionAccess
     ) async throws -> DatabaseIndexRebuildSlice {
         guard maximumWorkUnits > 0,
@@ -127,7 +130,8 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
             partitions: partitions,
             directoryAccess: mode == .start
                 ? .create(transaction)
-                : .open(transaction)
+                : .open(transaction),
+            expectedIdentity: expectedIdentity
         )
         let lifecycleStore = IndexLifecycleStore(
             container: container,
@@ -223,7 +227,8 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
                 container: container,
                 storeSubspace: target.subspace,
                 index: index,
-                configurations: container.indexConfigurations[indexName] ?? [],
+                configurations: container.runtimeConfiguration
+                    .indexConfigurations(named: indexName),
                 transaction: transaction
             )
             if index.isUnique {
@@ -273,13 +278,15 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
         partitions: FieldObject,
         generation: DatabaseTypes.UUID,
         detail: String,
+        expectedIdentity: DatabaseIndexStorageIdentity? = nil,
         transaction: any TransactionAccess
     ) async throws {
         let target = try await resolveTarget(
             entity: entity,
             index: index,
             partitions: partitions,
-            directoryAccess: .open(transaction)
+            directoryAccess: .open(transaction),
+            expectedIdentity: expectedIdentity
         )
         let key = rebuildStateKey(target: target)
         guard let state = try await loadRebuildState(
@@ -327,17 +334,17 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
             target.descriptor.name,
             transaction: transaction
         )
-        let indexRange = target.subspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(target.descriptor.name)
-            .range()
+        let physicalIndexSubspace = try lifecycleStore.indexSubspace(
+            for: target.descriptor.name
+        )
+        let indexRange = physicalIndexSubspace.range()
         try transaction.clearRange(
             beginKey: indexRange.begin,
             endKey: indexRange.end
         )
         try transaction.clear(
-            key: target.subspace
-                .subspace(SubspaceKey.indexes)
+            key:
+                physicalIndexSubspace
                 .subspace("_progress")
                 .pack(Tuple(target.descriptor.name))
         )
@@ -400,7 +407,8 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
         entity entityName: String,
         index indexName: String,
         partitions: FieldObject,
-        directoryAccess: DirectoryAccess
+        directoryAccess: DirectoryAccess,
+        expectedIdentity: DatabaseIndexStorageIdentity? = nil
     ) async throws -> Target {
         let definition = try resolveDefinition(
             entity: entityName,
@@ -422,14 +430,27 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
                 transaction: transaction
             )
         }
-        return Target(
+        let target = Target(
             entity: entityName,
             entityRuntime: definition.entityRuntime,
             descriptor: definition.descriptor,
+            storageIdentity: try DatabaseIndexStorageIdentity.resolve(
+                named: indexName,
+                in: container.schema,
+                physicalLayout: try physicalLayout(for: indexName)
+            ),
             partitions: definition.binding?.canonicalPartitions()
                 ?? FieldObject(),
             subspace: subspace
         )
+        if let expectedIdentity,
+            target.storageIdentity != expectedIdentity
+        {
+            throw DatabaseIndexRebuildError.indexGenerationMismatch(
+                indexName
+            )
+        }
+        return target
     }
 
     private func resolveDefinition(
@@ -475,31 +496,44 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
         target.subspace
             .subspace(SubspaceKey.metadata)
             .subspace("index-rebuild")
-            .pack(Tuple(target.descriptor.name))
+            .pack(Tuple(
+                    target.storageIdentity.name,
+                    target.storageIdentity.definitionFingerprint.bytes,
+                    target.storageIdentity.layoutFingerprint
+                )
+            )
     }
 
     private func makeIndex(
         descriptor: IndexDescriptor,
         entity: String
-    ) -> Index {
+    ) -> ResolvedIndex {
         let expression = KeyExpressionFactory.from(
             keyPaths: descriptor.fieldNames
         )
-        return Index(
-            name: descriptor.name,
-            kind: descriptor.kind,
+        return ResolvedIndex(
+            descriptor: descriptor,
             rootExpression: expression,
-            subspaceKey: descriptor.name,
             itemTypes: Set([entity]),
-            isUnique: descriptor.isUnique,
-            storedFieldNames: descriptor.storedFieldNames
         )
+    }
+
+    private func physicalLayout(
+        for indexName: String
+    ) throws -> IndexPhysicalLayout {
+        guard let layout = container.indexPhysicalLayouts[indexName] else {
+            throw DatabaseIndexStorageIdentityError.physicalLayoutNotResolved(
+                indexName
+            )
+        }
+        return layout
     }
 
     private struct Target {
         let entity: String
         let entityRuntime: EntityRuntimeRegistration
         let descriptor: IndexDescriptor
+        let storageIdentity: DatabaseIndexStorageIdentity
         let partitions: FieldObject
         let subspace: Subspace
     }

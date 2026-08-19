@@ -4,8 +4,8 @@
 // Reference: Samet, H. "Foundations of Multidimensional and Metric Data Structures", 2006
 // Algorithm: Best-First Search with Cell Pruning
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -60,7 +60,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
     /// Create a KNN search instance
     ///
     /// - Parameters:
-    ///   - queryContext: Index query context
+    ///   - queryContext: ResolvedIndex query context
     ///   - indexSubspace: FDB subspace for the spatial index
     ///   - encoding: Spatial encoding type
     ///   - level: S2 cell level for the index
@@ -281,7 +281,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
             (cellSizeDegrees, cellSizeDegrees),   // NE
             (cellSizeDegrees, -cellSizeDegrees),  // NW
             (-cellSizeDegrees, cellSizeDegrees),  // SE
-            (-cellSizeDegrees, -cellSizeDegrees)  // SW
+            (-cellSizeDegrees, -cellSizeDegrees),  // SW
         ]
 
         for (latOffset, lonOffset) in offsets {

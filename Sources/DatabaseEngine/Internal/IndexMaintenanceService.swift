@@ -10,9 +10,9 @@
 // Uses the IndexMaintainerFactory contract to delegate maintenance to the
 // provider registered for each index type.
 
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
-import DatabaseKit
 
 /// Centralized service for index maintenance operations
 ///
@@ -35,7 +35,6 @@ internal final class IndexMaintenanceService: Sendable {
 
     private let indexLifecycleStore: IndexLifecycleStore
     private let violationTracker: UniquenessViolationTracker
-    private let indexSubspace: Subspace
     private let logger: DatabaseLogger
     private let configurations: [any IndexRuntimeConfiguration]
 
@@ -44,12 +43,10 @@ internal final class IndexMaintenanceService: Sendable {
     init(
         indexLifecycleStore: IndexLifecycleStore,
         violationTracker: UniquenessViolationTracker,
-        indexSubspace: Subspace,
         configurations: [any IndexRuntimeConfiguration] = []
     ) {
         self.indexLifecycleStore = indexLifecycleStore
         self.violationTracker = violationTracker
-        self.indexSubspace = indexSubspace
         self.configurations = configurations
         self.logger = indexLifecycleStore.container.configuration.logging.logger(
             label: "com.database.framework.index-maintenance"
@@ -101,7 +98,6 @@ internal final class IndexMaintenanceService: Sendable {
         try await runtime.updateIndexes(
             lifecycleStore: indexLifecycleStore,
             violationTracker: violationTracker,
-            indexSubspace: indexSubspace,
             configurations: configurations,
             wallClock: indexLifecycleStore.container.wallClock,
             oldModel: oldModel,
@@ -113,7 +109,7 @@ internal final class IndexMaintenanceService: Sendable {
         )
     }
 
-    // MARK: - Private: Index Building
+    // MARK: - Private: ResolvedIndex Building
 
     /// Build Index from IndexDescriptor
     ///
@@ -125,17 +121,13 @@ internal final class IndexMaintenanceService: Sendable {
     ///   - descriptor: The IndexDescriptor to convert
     ///   - persistableType: The type name for itemTypes
     /// - Returns: An Index object suitable for IndexMaintainer
-    private static func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> Index {
+    private static func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> ResolvedIndex {
         let rootExpression = KeyExpressionFactory.from(keyPaths: descriptor.fieldNames)
 
-        return Index(
-            name: descriptor.name,
-            kind: descriptor.kind,
+        return ResolvedIndex(
+            descriptor: descriptor,
             rootExpression: rootExpression,
-            subspaceKey: descriptor.name,
             itemTypes: Set([persistableType]),
-            isUnique: descriptor.isUnique,
-            storedFieldNames: descriptor.storedFieldNames
         )
     }
 
@@ -147,8 +139,8 @@ internal final class IndexMaintenanceService: Sendable {
     /// creates one index key per value. This enables reverse lookups for To-Many relationships.
     ///
     /// - Parameters:
-    ///   - subspace: Index subspace
-    ///   - values: Index values extracted from model
+    ///   - subspace: ResolvedIndex subspace
+    ///   - values: ResolvedIndex values extracted from model
     ///   - id: Primary key tuple
     ///   - keyPathCount: Number of keyPaths in the index (determines array handling)
     /// - Returns: Array of packed index keys

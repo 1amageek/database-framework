@@ -1,4 +1,4 @@
-#if MultipleBases
+#if MultiBase
 import DatabaseKit
 import DatabaseRuntime
 import StorageKit
@@ -76,7 +76,7 @@ struct DatabaseGrantAuthorizationTests {
         }
     }
 
-#if MultipleBases
+#if MultiBase
     @Test("Database Grants do not inherit into a Base")
     func databaseGrantDoesNotInheritIntoBase() async throws {
         let container = try await makeContainer()
@@ -227,8 +227,12 @@ struct DatabaseGrantAuthorizationTests {
             ),
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(SecuredItem.self),
+                    try DatabaseFrameworkRuntime.entity(SecuredItem.self)
                 ]
             ),
             security: .testingDisabled
@@ -239,7 +243,7 @@ struct DatabaseGrantAuthorizationTests {
         container: DBContainer,
         principal: Principal
     ) -> DatabaseContext {
-#if MultipleBases
+#if MultiBase
         do {
             return container.session(authorization: .authenticated(principal))
                 .base(try TestBaseEnvironment.id())

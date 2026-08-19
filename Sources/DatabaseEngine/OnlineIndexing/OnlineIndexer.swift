@@ -1,6 +1,6 @@
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
-import DatabaseKit
 
 /// Online index builder for batch index construction
 ///
@@ -69,7 +69,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     private let decodeItem: @Sendable (ByteString) throws -> Item
 
     /// Index definition
-    private let index: Index
+    private let index: ResolvedIndex
 
     /// IndexMaintainer for this index
     private let indexMaintainer: any IndexMaintainer<Item>
@@ -113,16 +113,16 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     ///   - container: DBContainer for transaction execution
     ///   - storeSubspace: Store root subspace (parent of items/indexes/blobs/metadata)
     ///   - itemType: Type name of items to index
-    ///   - index: Index definition
+    ///   - index: ResolvedIndex definition
     ///   - indexMaintainer: IndexMaintainer for this index
-    ///   - indexLifecycleStore: Index state manager
+    ///   - indexLifecycleStore: ResolvedIndex state manager
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - throttleDelayMs: Delay between batches in milliseconds (default: 0)
     public init(
         container: DBContainer,
         storeSubspace: Subspace,
         itemType: String,
-        index: Index,
+        index: ResolvedIndex,
         indexMaintainer: any IndexMaintainer<Item>,
         uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)? = nil,
         indexLifecycleStore: IndexLifecycleStore,
@@ -145,7 +145,21 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
         self.container = container
         self.storeSubspace = storeSubspace
         self.itemSubspace = storeSubspace.subspace(SubspaceKey.items)
-        self.indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
+        do {
+            self.indexSubspace = try indexLifecycleStore.indexSubspace(
+                for: index.name
+            )
+        } catch let error as DatabaseIndexStorageIdentityError {
+            throw .invalidIndexStorageIdentity(
+                indexName: index.name,
+                reason: error.description
+            )
+        } catch {
+            throw .invalidIndexStorageIdentity(
+                indexName: index.name,
+                reason: "Index storage identity could not be resolved"
+            )
+        }
         self.blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
         self.itemType = itemType
         self.decodeItem = decodeItem
@@ -162,7 +176,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
             .pack(Tuple(index.name))
 
         // Metadata and violation tracking for unique indexes
-        // Violations stored in [store]/M/_violations/[indexName]/
+        // Violations are scoped by logical name, definition, and provider layout.
         self.metadataSubspace = storeSubspace.subspace(SubspaceKey.metadata)
         self.violationTracker = UniquenessViolationTracker(
             container: container,
@@ -172,7 +186,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
         // Initialize metrics with index-specific dimensions
         let baseDimensions: [(String, String)] = [
             ("index", index.name),
-            ("item_type", itemType)
+            ("item_type", itemType),
         ]
 
         let metrics = container.configuration.metrics
@@ -459,7 +473,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     /// Removes all entries in the index subspace for this index.
     /// Used when `clearFirst: true` is specified.
     private func clearIndexData() async throws {
-        let indexRange = self.indexSubspace.subspace(self.index.name).range()
+        let indexRange = self.indexSubspace.range()
         try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clearRange(
                 beginKey: indexRange.begin,
@@ -687,7 +701,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     /// Process a single chunk with progress tracking
     ///
     /// - Parameters:
-    ///   - chunkIndex: Index of this chunk (for progress tracking)
+    ///   - chunkIndex: ResolvedIndex of this chunk (for progress tracking)
     ///   - begin: Begin key of chunk (may be after original begin if resuming)
     ///   - end: End key of chunk
     ///   - itemTypeSubspace: Subspace for item type
@@ -799,12 +813,12 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
 
 }
 
-package extension OnlineIndexer where Item: Persistable {
-    convenience init(
+extension OnlineIndexer where Item: Persistable {
+    package convenience init(
         container: DBContainer,
         storeSubspace: Subspace,
         itemType: String,
-        index: Index,
+        index: ResolvedIndex,
         indexMaintainer: any IndexMaintainer<Item>,
         uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)? = nil,
         indexLifecycleStore: IndexLifecycleStore,
@@ -876,7 +890,7 @@ internal final class ParallelBuildProgress: Sendable {
     /// Initialize progress tracker
     ///
     /// - Parameters:
-    ///   - indexSubspace: Index subspace (progress stored under _build/)
+    ///   - indexSubspace: ResolvedIndex subspace (progress stored under _build/)
     ///   - indexName: Name of the index being built
     ///   - container: DBContainer for transaction execution
     init(indexSubspace: Subspace, indexName: String, container: DBContainer) {
@@ -919,7 +933,7 @@ internal final class ParallelBuildProgress: Sendable {
     /// Update progress for a chunk
     ///
     /// - Parameters:
-    ///   - chunkIndex: Index of the chunk
+    ///   - chunkIndex: ResolvedIndex of the chunk
     ///   - status: New status
     ///   - lastKey: Last processed key (for in_progress status)
     func updateProgress(
@@ -938,7 +952,7 @@ internal final class ParallelBuildProgress: Sendable {
     /// Update progress atomically within an existing transaction
     ///
     /// - Parameters:
-    ///   - chunkIndex: Index of the chunk
+    ///   - chunkIndex: ResolvedIndex of the chunk
     ///   - status: New status
     ///   - lastKey: Last processed key
     ///   - transaction: Active transaction

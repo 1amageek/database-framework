@@ -17,12 +17,13 @@ private struct SQLiteSPARQLPrimaryStatement {
         "primary"
     )
     #Index(
-        .rdfDataset,
-        from: \SQLiteSPARQLPrimaryStatement.subject,
-        edge: \SQLiteSPARQLPrimaryStatement.predicate,
-        to: \SQLiteSPARQLPrimaryStatement.object,
-        graph: \SQLiteSPARQLPrimaryStatement.graph,
-        name: "rdf_primary"
+        .graph(
+            name: "rdf_primary",
+            definition: .rdf(
+                subject: \SQLiteSPARQLPrimaryStatement.subject,
+                predicate: \SQLiteSPARQLPrimaryStatement.predicate,
+                object: \SQLiteSPARQLPrimaryStatement.object,
+        graph: \SQLiteSPARQLPrimaryStatement.graph))
     )
 
     var id: String = UUID().uuidString
@@ -40,13 +41,13 @@ private struct SQLiteSPARQLSecondaryStatement {
         "secondary"
     )
     #Index(
-        .rdfDataset,
-        from: \SQLiteSPARQLSecondaryStatement.subject,
-        edge: \SQLiteSPARQLSecondaryStatement.predicate,
-        to: \SQLiteSPARQLSecondaryStatement.object,
-        graph: \SQLiteSPARQLSecondaryStatement.graph,
-        name: "rdf_secondary"
-    )
+        .graph(
+            name: "rdf_secondary",
+            definition: .rdf(
+                subject: \SQLiteSPARQLSecondaryStatement.subject,
+                predicate: \SQLiteSPARQLSecondaryStatement.predicate,
+                object: \SQLiteSPARQLSecondaryStatement.object,
+        graph: \SQLiteSPARQLSecondaryStatement.graph)))
 
     var id: String = UUID().uuidString
     var subject: RDFTerm = .iri(.xsdString)
@@ -186,10 +187,10 @@ struct SPARQLRuntimeSQLiteTests {
         let context = try await seededContext()
         let exclusions = try PropertyPathNegatedSet(
             forward: Set([
-                try RDFPredicateIRI(excludedForwardPredicate),
+                try RDFPredicateIRI(excludedForwardPredicate)
             ]),
             inverse: Set([
-                try RDFPredicateIRI(excludedInversePredicate),
+                try RDFPredicateIRI(excludedInversePredicate)
             ])
         )
         let pattern = ExecutionPattern.propertyPath(
@@ -232,7 +233,8 @@ struct SPARQLRuntimeSQLiteTests {
 
     private func federatedContext() async throws -> DatabaseContext {
         let container = try await makeContainer(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSPARQLPrimaryStatement.self), try DatabaseFrameworkRuntime.entity(SQLiteSPARQLSecondaryStatement.self)],
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSPARQLPrimaryStatement.self), try DatabaseFrameworkRuntime.entity(SQLiteSPARQLSecondaryStatement.self),
+            ],
             entities: [
                 try SQLiteSPARQLPrimaryStatement.schemaEntity,
                 try SQLiteSPARQLSecondaryStatement.schemaEntity,
@@ -270,6 +272,10 @@ struct SPARQLRuntimeSQLiteTests {
         return try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: entityRuntimes
             ),
             security: .testingDisabled
@@ -289,7 +295,7 @@ struct SPARQLRuntimeSQLiteTests {
         let selection = selections[0]
         let readableIndex = try await context.indexQueryContext.withReadableIndex(
             named: selection.indexName,
-            kindIdentifier: selection.kindIdentifier,
+            indexType: selection.indexType,
             for: type
         ) { index, _ in
             index

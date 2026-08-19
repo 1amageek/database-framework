@@ -22,11 +22,12 @@ struct SPARQLRuntimeDependencyInjectionTests {
         var object: RDFTerm = .iri(.xsdString)
 
         #Index(
-            .rdfDataset,
-            from: \Statement.subject,
-            edge: \Statement.predicate,
-            to: \Statement.object
-        )
+            .graph(
+                name: "Statement_rdf_quad_subject_predicate_object",
+                definition: .rdf(
+                    subject: \Statement.subject, predicate: \Statement.predicate,
+                    object: \Statement.object,
+                    graph: nil)))
     }
 
     private struct IdentityFunction: SPARQLFunction {
@@ -57,7 +58,11 @@ struct SPARQLRuntimeDependencyInjectionTests {
             ),
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(Statement.self)],
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(Statement.self)],
                 sparqlFunctionRegistry: functionRegistry
             ),
             security: .testingDisabled

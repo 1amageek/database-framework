@@ -15,10 +15,11 @@ import TestSupport
 @Polymorphable(identifier: "PolymorphicVectorE2EDocument")
 @PolymorphicDirectory("polymorphic_vector_e2e_shared")
 @PolymorphicIndex(
-    .vector(dimensions: 3, metric: .cosine),
-    embedding: "embedding",
-    name: "PolymorphicVectorE2EDocument_embedding"
-)
+    .vector(
+        name: "PolymorphicVectorE2EDocument_embedding",
+        embedding: "embedding",
+        dimensions: 3, metric: .cosine
+    ))
 protocol PolymorphicVectorE2EDocument:
     Polymorphable<PolymorphicVectorE2EDocumentPolymorphicGroup>
 {
@@ -70,10 +71,11 @@ struct PolymorphicVectorNoIndexArticle: PolymorphicVectorNoIndexDocument {
 @Polymorphable(identifier: "PolymorphicOptionalVectorE2EDocument")
 @PolymorphicDirectory("polymorphic_optional_vector_e2e_shared")
 @PolymorphicIndex(
-    .vector(dimensions: 3, metric: .cosine),
-    embedding: "embedding",
-    name: "PolymorphicOptionalVectorE2EDocument_embedding"
-)
+    .vector(
+        name: "PolymorphicOptionalVectorE2EDocument_embedding",
+        embedding: "embedding",
+        dimensions: 3, metric: .cosine
+    ))
 protocol PolymorphicOptionalVectorE2EDocument:
     Polymorphable<PolymorphicOptionalVectorE2EDocumentPolymorphicGroup>
 {
@@ -121,7 +123,8 @@ struct PolymorphicVectorIndexE2ETests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try vectorRuntimeConfiguration(
-                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicVectorArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicVectorReport.self)]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicVectorArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicVectorReport.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -141,7 +144,8 @@ struct PolymorphicVectorIndexE2ETests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try vectorRuntimeConfiguration(
-                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicOptionalVectorArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicOptionalVectorReport.self)]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicOptionalVectorArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicOptionalVectorReport.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -167,23 +171,63 @@ struct PolymorphicVectorIndexE2ETests {
     }
 
     private func vectorRuntimeConfiguration(
-        entityRuntimes: [EntityRuntimeRegistration]
+        entityRuntimes: [EntityRuntimeRegistration],
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) throws -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             indexMaintainerProviderDescriptors: [
                 .init(describing: VectorIndexMaintainerProvider())
             ],
             polymorphicIndexReadExecutors: [VectorReadExecutors.polymorphicIndexExecutor()],
-            entityRuntimes: entityRuntimes
+            entityRuntimes: entityRuntimes,
+            indexConfigurations: indexConfigurations
         )
+    }
+
+    @Test("Polymorphic vector runtime policy targets the declaration name")
+    func polymorphicRuntimePolicyUsesDeclarationName() throws {
+        let schema = try Schema(
+            entities: [
+                try PolymorphicVectorArticle.schemaEntity,
+                try PolymorphicVectorReport.schemaEntity,
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
+        let runtime = try vectorRuntimeConfiguration(
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    PolymorphicVectorArticle.self
+                ),
+                try DatabaseFrameworkRuntime.entity(
+                    PolymorphicVectorReport.self
+                ),
+            ],
+            indexConfigurations: [
+                VectorIndexConfiguration(
+                    indexName: indexName,
+                    algorithm: .hnsw(.default)
+                )
+            ]
+        )
+
+        let layouts = try IndexRuntimeConfigurationValidator.validate(
+            schema: schema,
+            runtimeConfiguration: runtime
+        )
+        #expect(layouts[indexName]?.name == "vector.hnsw")
     }
 
     private func countVectorIndexEntries(container: DBContainer) async throws -> Int {
         let group = try container.polymorphicGroup(identifier: PolymorphicVectorArticle.polymorphableType)
         let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
-        let indexSubspace = groupSubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexName)
+        let indexSubspace = try IndexLifecycleStore(
+            container: container,
+            subspace: groupSubspace
+        ).indexSubspace(for: indexName)
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
@@ -198,9 +242,10 @@ struct PolymorphicVectorIndexE2ETests {
     private func countOptionalVectorIndexEntries(container: DBContainer) async throws -> Int {
         let group = try container.polymorphicGroup(identifier: PolymorphicOptionalVectorArticle.polymorphableType)
         let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
-        let indexSubspace = groupSubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(optionalIndexName)
+        let indexSubspace = try IndexLifecycleStore(
+            container: container,
+            subspace: groupSubspace
+        ).indexSubspace(for: optionalIndexName)
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
@@ -256,13 +301,13 @@ struct PolymorphicVectorIndexE2ETests {
         )
 
         let articleSpecification = try VectorIndexSpecification(
-            articleDescriptor.kind
+            articleDescriptor.declaration.definition
         )
         let reportSpecification = try VectorIndexSpecification(
-            reportDescriptor.kind
+            reportDescriptor.declaration.definition
         )
-        #expect(articleSpecification.metadata.fieldNames == ["embedding"])
-        #expect(reportSpecification.metadata.fieldNames == ["embedding"])
+        #expect(articleDescriptor.fieldNames == ["embedding"])
+        #expect(reportDescriptor.fieldNames == ["embedding"])
         #expect(articleSpecification.dimensions == 3)
         #expect(reportSpecification.dimensions == 3)
     }
@@ -412,13 +457,16 @@ struct PolymorphicVectorIndexE2ETests {
 
             #expect(firstPage.results.count == 2)
             #expect(try firstPage.results.first?.decodedModel(as: PolymorphicVectorArticle.self)?.id == article.id)
-            #expect(try firstPage.results.dropFirst().first?.decodedModel(as: PolymorphicVectorReport.self)?.id == report.id)
+            #expect(try firstPage.results.dropFirst().first?.decodedModel(as: PolymorphicVectorReport.self)?
+                    .id == report.id)
 
-            let reportStartedPage = try await context.findPolymorphic(PolymorphicVectorReport.self)
-                .vector(PolymorphicVectorReport.fields.embedding, dimensions: 3)
-                .query([1.0, 0.0, 0.0], k: 2)
-                .metric(.cosine)
-                .executePage()
+            let reportStartedPage = try await context.findPolymorphic(
+                PolymorphicVectorReport.self
+            )
+            .vector(PolymorphicVectorReport.fields.embedding, dimensions: 3)
+            .query([1.0, 0.0, 0.0], k: 2)
+            .metric(.cosine)
+            .executePage()
             let reportStartedIDs = try Set(reportStartedPage.results.compactMap(resultID))
 
             #expect(reportStartedIDs == Set([article.id, report.id]))
@@ -450,7 +498,8 @@ struct PolymorphicVectorIndexE2ETests {
                 .executePage()
 
             #expect(finalPage.results.count == 1)
-            #expect(try finalPage.results.first?.decodedModel(as: PolymorphicVectorReport.self)?.id == report.id)
+            #expect(
+                try finalPage.results.first?.decodedModel(as: PolymorphicVectorReport.self)?.id == report.id)
         }
     }
 }

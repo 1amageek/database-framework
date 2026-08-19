@@ -1,4 +1,4 @@
-#if FOUNDATION_DB && !MultipleBases
+#if FOUNDATION_DB && !MultiBase
 import Database
 import FDBStorage
 import Testing

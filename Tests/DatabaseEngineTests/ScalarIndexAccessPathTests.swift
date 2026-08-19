@@ -26,15 +26,17 @@ private struct ScalarAccessPathEntity {
     var rank: Int64
 
     #Index(
-        .scalar,
-        fields: [\ScalarAccessPathEntity.group],
-        name: "scalar_access_path_group"
-    )
+        .ordered(
+            name: "scalar_access_path_group",
+            keys: [.ascending(\ScalarAccessPathEntity.group)],
+            unique: false))
     #Index(
-        .scalar,
-        fields: [\ScalarAccessPathEntity.group, \ScalarAccessPathEntity.rank],
-        name: "scalar_access_path_group_rank"
-    )
+        .ordered(
+            name: "scalar_access_path_group_rank",
+            keys: [
+                .ascending(\ScalarAccessPathEntity.group),
+                .ascending(\ScalarAccessPathEntity.rank),
+            ], unique: false))
 }
 
 @Persistable
@@ -49,10 +51,9 @@ private struct AggregationOnlyAccessPathEntity {
     var group: String
 
     #Index(
-        .count,
-        groupBy: [\AggregationOnlyAccessPathEntity.group],
-        name: "scalar_access_path_count_group"
-    )
+        .aggregate(
+            name: "scalar_access_path_count_group", function: .count,
+        groupBy: [.ascending(\AggregationOnlyAccessPathEntity.group)]))
 }
 
 @Persistable
@@ -68,10 +69,12 @@ private struct CompoundOnlyAccessPathEntity {
     var rank: Int64
 
     #Index(
-        .scalar,
-        fields: [\CompoundOnlyAccessPathEntity.group, \CompoundOnlyAccessPathEntity.rank],
-        name: "scalar_access_path_compound_only"
-    )
+        .ordered(
+            name: "scalar_access_path_compound_only",
+            keys: [
+                .ascending(\CompoundOnlyAccessPathEntity.group),
+                .ascending(\CompoundOnlyAccessPathEntity.rank),
+            ], unique: false))
 }
 
 @Suite("Scalar index access paths", .foundationDBScenario, .serialized, .heartbeat)
@@ -90,7 +93,13 @@ struct ScalarIndexAccessPathTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(ScalarAccessPathEntity.self), try DatabaseFrameworkRuntime.entity(AggregationOnlyAccessPathEntity.self), try DatabaseFrameworkRuntime.entity(CompoundOnlyAccessPathEntity.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(ScalarAccessPathEntity.self), try DatabaseFrameworkRuntime.entity(AggregationOnlyAccessPathEntity.self), try DatabaseFrameworkRuntime.entity(CompoundOnlyAccessPathEntity.self),
+                ]),
             security: .testingDisabled
         )
     }
@@ -167,16 +176,17 @@ struct ScalarIndexAccessPathTests {
             .where(ScalarAccessPathEntity.fields.rank == Int64(2))
             .executionPlan()
 
-        guard case .scalarIndex(
-            let name,
-            let kind,
-            let indexedFields
+        guard
+            case .orderedIndex(
+                let name,
+                let indexType,
+                let indexedFields
         ) = plan.accessPath else {
             Issue.record("Expected the readable compound scalar index")
             return
         }
         #expect(name == "scalar_access_path_group_rank")
-        #expect(kind == "scalar")
+        #expect(indexType == .ordered)
         #expect(indexedFields == ["group", "rank"])
         #expect(plan.indexedConditions.map { $0.fieldName } == ["group", "rank"])
         #expect(plan.residualFilterRequired == false)

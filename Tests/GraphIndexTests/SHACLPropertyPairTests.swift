@@ -1,9 +1,9 @@
 import DatabaseKit
-import TestSupport
 import DatabaseRuntime
 import DatabaseTypes
 import Foundation
 import StorageKit
+import TestSupport
 import Testing
 @testable import DatabaseEngine
 @testable import GraphIndex
@@ -20,11 +20,12 @@ struct SHACLPropertyPairTests {
         var object: RDFTerm = .iri(.xsdString)
 
         #Index(
-            .rdfDataset,
-            from: \Statement.subject,
-            edge: \Statement.predicate,
-            to: \Statement.object
-        )
+            .graph(
+                name: "Statement_rdf_quad_subject_predicate_object",
+                definition: .rdf(
+                    subject: \Statement.subject, predicate: \Statement.predicate,
+                    object: \Statement.object,
+                    graph: nil)))
     }
 
     private static let rdfType =
@@ -40,7 +41,12 @@ struct SHACLPropertyPairTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: InMemoryEngine()),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Statement.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(Statement.self)]),
             security: .testingDisabled
         )
     }
@@ -141,12 +147,12 @@ struct SHACLPropertyPairTests {
                                 .lessThan(
                                     .predicate(
                                         try RDFPredicateIRI("ex:end")
+                                        )
                                     )
-                                ),
-                            ]
-                        ),
-                    ]
-                )),
+                                ]
+                            )
+                        ]
+                    ))
             ]
         )
         try await context.shacl.loadShapes(shapesGraph)

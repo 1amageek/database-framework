@@ -32,7 +32,7 @@ extension DBContainer {
     public func persistedControlSchemaEntitiesForTesting()
         async throws -> [Schema.Entity]
     {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         let controlDomain = storageTopology.controlDomain
         let schemaEngine = controlDomain.engine
         let schemaRoot = controlDomain.root

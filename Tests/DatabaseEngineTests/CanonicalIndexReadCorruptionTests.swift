@@ -38,12 +38,12 @@ struct CanonicalIndexReadCorruptionTests {
         #expect(baseline.map(\.id) == [item.id])
 
         // Plant an index key that carries the indexed value but no primary
-        // key elements: [indexSubspace]/[value] with nothing after it.
+        // key elements: [physical index subspace]/[value] with nothing after it.
         let categoryElement = try FieldValueTupleCodec.tupleElement(
             for: .string("vv")
         )
-        let corruptKey = scenario.store.indexSubspace
-            .subspace(scenario.indexName)
+        let corruptKey = try scenario.store.indexLifecycleStore
+            .indexSubspace(for: scenario.indexName)
             .pack(Tuple(categoryElement))
         try await scenario.engine.withTransaction { transaction in
             try transaction.setValue(ByteString(), for: corruptKey)
@@ -100,9 +100,14 @@ struct CanonicalIndexReadCorruptionTests {
     private func makeScenario() async throws -> CorruptionProbeScenario {
         let indexName = "corruption_probe_by_category"
         let descriptor = try IndexDescriptor(
-            name: indexName,
-            definition: .scalar,
-            fields: [CorruptionProbeItem.fields.category.ascending]
+            entityName: CorruptionProbeItem.persistableType,
+            declaration: .ordered(
+                name: indexName,
+                keys: [
+                    .ascending(CorruptionProbeItem.fields.category.identity)
+                ]
+            ),
+            fieldSchemas: CorruptionProbeItem.fieldSchemas
         )
         let engine = InMemoryEngine()
         let schema = try Schema(
@@ -117,6 +122,10 @@ struct CanonicalIndexReadCorruptionTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         CorruptionProbeItem.self,

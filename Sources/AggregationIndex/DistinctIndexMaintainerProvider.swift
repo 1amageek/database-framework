@@ -1,33 +1,34 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for distinct-count indexes.
 public struct DistinctIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "distinct"
+    public let indexType: IndexType = .aggregate(.approximateDistinct)
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        try index.kind.validateIdentity(
-            identifier: kindIdentifier,
-            subspaceStructure: .aggregation
-        )
-        try index.kind.validateMetadataKeys(required: ["precision"])
-        try index.kind.validateFieldCount(minimum: 1)
-        let precision = try index.kind.requireInt("precision")
-        guard DistinctIndexMaintainer<Item>.supportedPersistedPrecision.contains(
+        let definition = try index.aggregateDefinition(.approximateDistinct)
+        guard case .approximateDistinct(let precision) = definition.function else {
+            throw IndexMaintainerProviderError.typeMismatch(
+                registered: indexType,
+                actual: index.type
+            )
+        }
+        guard
+            DistinctIndexMaintainer<Item>.supportedPersistedPrecision.contains(
             precision
         ) else {
-            throw IndexMaintainerProviderError.invalidMetadata(
-                kindIdentifier: kindIdentifier,
-                key: "precision"
+            throw IndexMaintainerProviderError.invalidDefinition(
+                indexType: indexType,
+                reason: "Distinct precision is unsupported"
             )
         }
         return DistinctIndexMaintainer<Item>(

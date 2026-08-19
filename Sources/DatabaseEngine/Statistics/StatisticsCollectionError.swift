@@ -3,7 +3,7 @@ import DatabaseKit
 public enum StatisticsCollectionError: Error, Sendable, Equatable {
     case unsupportedPhysicalLayout(
         indexName: String,
-        kindIdentifier: String
+        indexType: IndexType
     )
     case invalidPhysicalEntry(indexName: String, reason: String)
     case entryCountOverflow(indexName: String)

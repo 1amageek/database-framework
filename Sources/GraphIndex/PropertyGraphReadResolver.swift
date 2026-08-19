@@ -3,7 +3,7 @@ import DatabaseKit
 package struct PropertyGraphReadResolution {
     package let entity: Schema.Entity
     package let indexDescriptor: IndexDescriptor
-    package let metadata: PropertyGraphIndexMetadata
+    package let configuration: PropertyGraphIndexConfiguration
 }
 
 package enum PropertyGraphReadResolver {
@@ -54,16 +54,19 @@ package enum PropertyGraphReadResolver {
     ) throws -> [PropertyGraphReadResolution] {
         var resolutions: [PropertyGraphReadResolution] = []
         for entity in schema.entities {
-            for descriptor in entity.indexDescriptors
-            where descriptor.kindIdentifier == "graph" {
-                let metadata = try PropertyGraphIndexMetadata(
-                    canonical: descriptor.kind
-                )
+            for descriptor in entity.indexDescriptors {
+                guard
+                    let configuration = PropertyGraphIndexConfiguration(
+                        descriptor: descriptor
+                    )
+                else {
+                    continue
+                }
                 resolutions.append(PropertyGraphReadResolution(
                     entity: entity,
                     indexDescriptor: descriptor,
-                    metadata: metadata
-                ))
+                        configuration: configuration
+                    ))
             }
         }
         return resolutions

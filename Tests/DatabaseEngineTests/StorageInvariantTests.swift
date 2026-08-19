@@ -26,15 +26,46 @@ struct StorageInvariantTests {
 
             let testId = String(UUID().uuidString.prefix(8))
             let storeSubspace = Subspace(prefix: Tuple("test", "onlineindexer", "violations", testId).pack())
-            let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
             let metadataSubspace = storeSubspace.subspace(SubspaceKey.metadata)
+            let indexName = "unique_clearFirst_idx"
+            let index = try ResolvedIndex(
+                for: Player.self,
+                name: indexName,
+                definition: .ordered(
+                    keys: [.ascending(Player.fields.id.identity)],
+                    includedFields: [],
+                    unique: true
+                ),
+                rootExpression: FieldKeyExpression(fieldName: "id")
+            )
 
             // Create container for components that need it
-            let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
-            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]), security: .testingDisabled)
+            let schema = try Schema(
+                entities: [
+                    try Schema.Entity(
+                        from: Player.self,
+                        including: [index.descriptor]
+                    )
+                ],
+                version: Schema.Version(1, 0, 0)
+            )
+            let container = try await DBContainer.open(
+                for: schema, configuration: .testing(storageEngine: database),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [
+                        try DatabaseFrameworkRuntime.entity(
+                            Player.self,
+                            including: [index.descriptor]
+                        )
+                    ]),
+                security: .testingDisabled)
 
-            let tracker = UniquenessViolationTracker(container: container, metadataSubspace: metadataSubspace)
-            let indexName = "unique_clearFirst_idx"
+            let tracker = UniquenessViolationTracker(
+                container: container, metadataSubspace: metadataSubspace)
 
             // Seed a violation in the correct metadata subspace.
             try await database.withTransaction { tx in
@@ -52,25 +83,15 @@ struct StorageInvariantTests {
             #expect(try await tracker.hasViolations(indexName: indexName) == true)
 
             // Build an OnlineIndexer with clearFirst=true. For unique indexes, it must clear violations.
-            let descriptor = try IndexDescriptor(
-                name: indexName,
-                definition: .scalar,
-                fields: [Player.fields.id.ascending],
-                commonOptions: .init(unique: true)
+            let lifecycleStore = IndexLifecycleStore(
+                container: container,
+                subspace: storeSubspace
             )
-            let index = Index(
-                name: indexName,
-                kind: descriptor.kind,
-                rootExpression: FieldKeyExpression(fieldName: "id"),
-                isUnique: true
-            )
-
             let maintainer = ScalarIndexMaintainer<Player>(
                 index: index,
-                subspace: indexSubspace.subspace(index.subspaceKey),
+                subspace: try lifecycleStore.indexSubspace(for: index.name),
                 idExpression: FieldKeyExpression(fieldName: "id")
             )
-            let lifecycleStore = IndexLifecycleStore(container: container, subspace: indexSubspace.subspace("_meta"))
             try await lifecycleStore.enable(index.name)
 
             let indexer = try OnlineIndexer(
@@ -258,8 +279,8 @@ struct StorageInvariantTests {
             UInt8(truncatingIfNeeded: checksum >> 24),
             UInt8(truncatingIfNeeded: checksum >> 16),
             UInt8(truncatingIfNeeded: checksum >> 8),
-            UInt8(truncatingIfNeeded: checksum)
-        ])
+            UInt8(truncatingIfNeeded: checksum),
+            ])
     }
 }
 #endif

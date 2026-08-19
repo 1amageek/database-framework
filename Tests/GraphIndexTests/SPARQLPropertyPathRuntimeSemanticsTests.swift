@@ -25,11 +25,12 @@ struct RuntimeSemanticPathEdge {
     var to: RDFTerm = .iri(.xsdString)
 
     #Index(
-        .rdfDataset,
-        from: \RuntimeSemanticPathEdge.from,
-        edge: \RuntimeSemanticPathEdge.relationship,
-        to: \RuntimeSemanticPathEdge.to
-    )
+        .graph(
+            name: "RuntimeSemanticPathEdge_rdf_quad_from_relationship_to",
+            definition: .rdf(
+                subject: \RuntimeSemanticPathEdge.from,
+                predicate: \RuntimeSemanticPathEdge.relationship,
+                object: \RuntimeSemanticPathEdge.to, graph: nil)))
 }
 
 @Suite(
@@ -689,7 +690,12 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(RuntimeSemanticPathEdge.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(RuntimeSemanticPathEdge.self)]),
             security: .testingDisabled
         )
     }
@@ -708,7 +714,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         let selection = selections[0]
         let readableIndex = try await context.indexQueryContext.withReadableIndex(
             named: selection.indexName,
-            kindIdentifier: selection.kindIdentifier,
+            indexType: selection.indexType,
             for: RuntimeSemanticPathEdge.self
         ) { index, _ in
             index

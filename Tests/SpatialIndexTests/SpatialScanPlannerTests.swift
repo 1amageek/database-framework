@@ -1,9 +1,10 @@
-import Testing
-import Foundation
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
-import DatabaseEngine
+import Foundation
 import StorageKit
+import Testing
+
 @testable import SpatialIndex
 
 @Persistable
@@ -75,9 +76,10 @@ struct SpatialScanPlannerTests {
 
     @Test("Morton write code matches scan planner coordinate contract")
     func mortonWriteCodeMatchesPlannerCoordinateContract() async throws {
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: SpatialPlannerItem.self,
             name: "location",
-            kind: spatialIndexMetadata(
+            definition: spatialIndexDefinition(
                 fieldName: "location",
                 fieldNumber: 2,
                 encoding: .morton,

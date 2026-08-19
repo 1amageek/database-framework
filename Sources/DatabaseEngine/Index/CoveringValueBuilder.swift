@@ -24,11 +24,11 @@ public enum CoveringValueBuilder {
     /// decoding never has to infer entity values from tuple encodings.
     public static func build<Item: PersistedEntityValue>(
         for item: Item,
-        index: Index
+        index: ResolvedIndex
     ) throws -> ByteString {
         let encodedFields = try validatedFields(for: item)
         let modelFields = Set(encodedFields.map { $0.name })
-        let requestedPaths = ["id"] + index.kind.fieldNames + index.storedFieldNames
+        let requestedPaths = ["id"] + index.fieldNames + index.includedFieldNames
         let projectedNames = orderedUnique(requestedPaths.map(rootFieldName))
 
         for field in projectedNames where !modelFields.contains(field) {
@@ -40,7 +40,7 @@ public enum CoveringValueBuilder {
         }
 
         let fullyCovering = modelFields.isSubset(of: Set(projectedNames))
-        guard !index.storedFieldNames.isEmpty || fullyCovering else {
+        guard !index.includedFieldNames.isEmpty || fullyCovering else {
             return []
         }
 
@@ -71,14 +71,14 @@ public enum CoveringValueBuilder {
     /// Decodes the stored-field portion for graph and specialized index readers.
     public static func decode(
         _ bytes: ByteString,
-        storedFieldNames: [String]
+        includedFieldNames: [String]
     ) throws -> [String: FieldValue] {
-        guard !storedFieldNames.isEmpty else { return [:] }
+        guard !includedFieldNames.isEmpty else { return [:] }
         guard !bytes.isEmpty else {
             throw CanonicalIndexProjectionError.missingProjection(index: "unknown")
         }
 
-        let rootFieldNames = Set(storedFieldNames.map(rootFieldName))
+        let rootFieldNames = Set(includedFieldNames.map(rootFieldName))
         let frame = try PersistableFieldFrameCodec.decodeSelected(
             bytes,
             magic: magic,
@@ -87,8 +87,8 @@ public enum CoveringValueBuilder {
             limits: try storageLimits()
         )
         var properties: [String: FieldValue] = [:]
-        properties.reserveCapacity(storedFieldNames.count)
-        for fieldPath in storedFieldNames {
+        properties.reserveCapacity(includedFieldNames.count)
+        for fieldPath in includedFieldNames {
             guard let value = value(at: fieldPath, in: frame.fieldsByName) else {
                 throw CanonicalIndexProjectionError.projectionFieldMismatch(
                     entity: frame.entity,

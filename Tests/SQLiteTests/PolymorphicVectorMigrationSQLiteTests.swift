@@ -23,10 +23,11 @@ protocol SQLitePolymorphicVectorEntityV1:
 @Polymorphable(identifier: "Entity")
 @PolymorphicDirectory("sqlite_polymorphic_vector_migration", "entities")
 @PolymorphicIndex(
-    .vector(dimensions: 3, metric: .cosine),
-    embedding: "embedding",
-    name: "Entity_vector_embedding"
-)
+    .vector(
+        name: "Entity_vector_embedding",
+        embedding: "embedding",
+        dimensions: 3, metric: .cosine
+    ))
 protocol SQLitePolymorphicVectorEntityV2:
     Polymorphable<SQLitePolymorphicVectorEntityV2PolymorphicGroup>
 {
@@ -39,10 +40,11 @@ protocol SQLitePolymorphicVectorEntityV2:
 @Polymorphable(identifier: "Entity")
 @PolymorphicDirectory("sqlite_polymorphic_vector_migration", "entities")
 @PolymorphicIndex(
-    .vector(dimensions: 3, metric: .cosine),
-    embedding: "embedding",
-    name: "Entity_vector_embedding"
-)
+    .vector(
+        name: "Entity_vector_embedding",
+        embedding: "embedding",
+        dimensions: 3, metric: .cosine
+    ))
 protocol SQLitePolymorphicVectorEntityV3:
     Polymorphable<SQLitePolymorphicVectorEntityV3PolymorphicGroup>
 {
@@ -241,14 +243,12 @@ struct PolymorphicVectorMigrationSQLiteTests {
             ).first { $0.name == "Entity_vector_embedding" }
         )
 
-        let personDefinition = try IndexDefinition(metadata: personDescriptor.kind)
-        let organizationDefinition = try IndexDefinition(
-            metadata: organizationDescriptor.kind
-        )
+        let personDefinition = personDescriptor.declaration.definition
+        let organizationDefinition = organizationDescriptor.declaration.definition
         #expect(personDescriptor.fieldNames == ["embedding"])
         #expect(organizationDescriptor.fieldNames == ["embedding"])
-        #expect(personDefinition == .vector(dimensions: 3, metric: .cosine))
-        #expect(organizationDefinition == .vector(dimensions: 3, metric: .cosine))
+        #expect(personDefinition.type == .vector)
+        #expect(organizationDefinition.type == .vector)
     }
 
     @Test("SQLite migration backfills polymorphic entity vector index")
@@ -258,7 +258,13 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV1.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV1.self),
+                ]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -297,7 +303,8 @@ struct PolymorphicVectorMigrationSQLiteTests {
             migrationPlan: SQLitePolymorphicVectorAddMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try Self.vectorRuntimeConfiguration(
-                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self)]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -337,7 +344,13 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLitePolymorphicVectorSchemaV2.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV2.self),
+                ]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -368,7 +381,8 @@ struct PolymorphicVectorMigrationSQLiteTests {
             migrationPlan: SQLitePolymorphicVectorRebuildMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try Self.vectorRuntimeConfiguration(
-                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV3.self)]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorOrganizationV3.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -405,6 +419,10 @@ struct PolymorphicVectorMigrationSQLiteTests {
         entityRuntimes: [EntityRuntimeRegistration]
     ) throws -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             indexMaintainerProviderDescriptors: [
                 .init(describing: VectorIndexMaintainerProvider())
             ],

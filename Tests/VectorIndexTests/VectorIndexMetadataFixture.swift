@@ -1,27 +1,15 @@
 import DatabaseKit
 import DatabaseTypes
 
-func vectorIndexMetadata(
+func vectorIndexDefinition(
     fieldName: String = "embedding",
     fieldNumber: Int = 3,
     dimensions: Int,
     metric: VectorMetric
-) -> IndexKindMetadata {
-    let definition = IndexDefinition.vector(
+) -> IndexDefinition<FieldIdentity> {
+    .vector(
+        embedding: FieldIdentity(name: fieldName, number: fieldNumber),
         dimensions: dimensions,
         metric: metric
-    )
-    return IndexKindMetadata(
-        identifier: definition.identifier,
-        subspaceStructure: definition.subspaceStructure,
-        fields: [
-            IndexFieldMetadata(
-                identity: FieldIdentity(name: fieldName, number: fieldNumber)
-            )
-        ],
-        metadata: [
-            "dimensions": .int64(Int64(dimensions)),
-            "metric": .string(metric.rawValue),
-        ]
     )
 }

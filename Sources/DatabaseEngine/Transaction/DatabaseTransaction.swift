@@ -939,7 +939,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     private func makeMutationContext(
         operationID: UInt64
     ) throws -> PersistableMutationContext {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         let dataRoot = try container.requireActiveDataRoot().root
         #else
         let dataRoot = container.databaseRoot
@@ -990,7 +990,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let path = try partition ?? AnyDirectoryPath(for: entity)
         try path.validate()
         let partitionPath = path.resolve()
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         let cacheKey = DatabaseStoreCacheKey(
             basePlacementGeneration: try container.requireActiveDataRoot().generation,
             entity: entity.name,

@@ -10,12 +10,9 @@ import Testing
 @Suite("DBConfiguration ownership", .heartbeat)
 struct DBConfigurationOwnershipTests {
     private struct RuntimeIndexConfiguration: IndexRuntimeConfiguration {
-        static let kindIdentifier = IndexDefinition
-            .vector(dimensions: 1)
-            .identifier
+        static let indexType: IndexType = .vector
 
-        let fieldName = "embedding"
-        let entityName = "ConfigurationEntity"
+        let indexName = "ConfigurationEntity_embedding"
     }
 
     @Persistable
@@ -25,6 +22,71 @@ struct DBConfigurationOwnershipTests {
         var id: String = ""
     }
 
+    @Persistable
+    struct ProviderValidatedEntity {
+        #Directory<ProviderValidatedEntity>(
+            "configuration_tests",
+            "provider-validated"
+        )
+        #Index(
+            .custom(
+                name: "provider_validated_value",
+                definition: CustomIndexDefinition(
+                    identifier: "provider-validated",
+                    keys: [.ascending(\ProviderValidatedEntity.value)]
+                )
+            ))
+
+        var id: String = ""
+        var value: String = ""
+    }
+
+    private struct RejectedProviderConfiguration: IndexRuntimeConfiguration {
+        static let indexType: IndexType = .custom("provider-validated")
+
+        let indexName = "provider_validated_value"
+
+        var executionOptions: FieldObject {
+            get throws {
+                throw ProviderValidationTestError.rejected
+            }
+        }
+    }
+
+    private struct ProviderValidatedIndexMaintainerProvider:
+        IndexMaintainerProvider
+    {
+        let indexType: IndexType = .custom("provider-validated")
+
+        func physicalLayout(
+            for index: ResolvedIndex,
+            configurations: [any IndexRuntimeConfiguration]
+        ) throws -> IndexPhysicalLayout {
+            for configuration in configurations {
+                _ = try configuration.executionOptions
+            }
+            return try IndexPhysicalLayout(
+                name: "test.provider-validated",
+                revision: 1
+            )
+        }
+
+        func makeIndexMaintainer<Item: PersistedEntityValue>(
+            index: ResolvedIndex,
+            subspace: Subspace,
+            idExpression: KeyExpression,
+            configurations: [any IndexRuntimeConfiguration],
+            wallClock: any WallClock
+        ) throws -> any IndexMaintainer<Item> {
+            throw ProviderValidationTestError.maintainerMustNotBeCreated
+        }
+    }
+
+    private enum ProviderValidationTestError: Error {
+        case rejected
+        case maintainerMustNotBeCreated
+    }
+
     private final class ShutdownRecordingEngine: StorageEngine, Sendable {
         struct Configuration: Sendable {}
 
@@ -32,6 +94,7 @@ struct DBConfigurationOwnershipTests {
 
         private let base = InMemoryEngine()
         private struct ShutdownState: Sendable {
+            var transactionCount = 0
             var requestCount = 0
             var completionCount = 0
         }
@@ -50,6 +113,10 @@ struct DBConfigurationOwnershipTests {
             shutdownState.withLock { $0.requestCount }
         }
 
+        var transactionCount: Int {
+            shutdownState.withLock { $0.transactionCount }
+        }
+
         var shutdownCompletionCount: Int {
             shutdownState.withLock { $0.completionCount }
         }
@@ -63,7 +130,8 @@ struct DBConfigurationOwnershipTests {
         }
 
         func createTransaction() throws -> InMemoryTransaction {
-            try base.createTransaction()
+            shutdownState.withLock { $0.transactionCount += 1 }
+            return try base.createTransaction()
         }
 
         func requestShutdown() {
@@ -91,21 +159,25 @@ struct DBConfigurationOwnershipTests {
         }
     }
 
-    @Test("Configuration stores its runtime policies")
+    @Test("Runtime generation stores its index policies")
     func storesRuntimePolicies() throws {
-        let engine = ShutdownRecordingEngine()
-        let configuration = try DBConfiguration.testing(
-            name: "test-configuration",
-            storageEngine: engine,
+        let configuration = try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             indexConfigurations: [RuntimeIndexConfiguration()]
         )
 
-        #expect(configuration.name == "test-configuration")
         #expect(configuration.indexConfigurations.count == 1)
-        #expect(configuration.debugDescription.contains("indexConfigs: 1"))
+        #expect(
+            configuration.indexConfigurations(
+                named: "ConfigurationEntity_embedding"
+            ).count == 1
+        )
     }
 
-    #if MultipleBases
+    #if MultiBase
     @Test("Topology rejects assigning one engine to multiple domains")
     func topologyRejectsDuplicateEngineOwnership() throws {
         let engine = ShutdownRecordingEngine()
@@ -151,10 +223,14 @@ struct DBConfigurationOwnershipTests {
             entities: [try ConfigurationEntity.schemaEntity]
         )
         let runtime = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     ConfigurationEntity.self
-                ),
+                )
             ]
         )
         let container = try await DBContainer.open(
@@ -177,6 +253,10 @@ struct DBConfigurationOwnershipTests {
             entities: [try ConfigurationEntity.schemaEntity]
         )
         let runtime = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: []
         )
 
@@ -199,6 +279,59 @@ struct DBConfigurationOwnershipTests {
             Issue.record("Unexpected error: \(error)")
         }
 
+        #expect(engine.shutdownCount == 1)
+    }
+
+    @Test("Provider configuration is validated before storage preparation")
+    func providerConfigurationPrecedesStoragePreparation() async throws {
+        let engine = ShutdownRecordingEngine()
+        let schema = try Schema(
+            entities: [try ProviderValidatedEntity.schemaEntity]
+        )
+        var definition = try EntityRuntimeDefinition(
+            ProviderValidatedEntity.self
+        )
+        try definition.register(ProviderValidatedIndexMaintainerProvider())
+        let runtime = try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
+            entityRuntimes: [definition.registration()],
+            indexConfigurations: [RejectedProviderConfiguration()]
+        )
+
+        do {
+            _ = try await DBContainer.open(
+                testing: schema,
+                configuration: .testing(storageEngine: engine),
+                runtimeConfiguration: runtime,
+                security: .testingDisabled,
+                initializeIndexes: false
+            )
+            Issue.record("Expected provider configuration validation to fail")
+        } catch let error as IndexRuntimeConfigurationError {
+            guard
+                case .providerRejected(
+                    let indexName,
+                    let indexType,
+                    let reason
+                ) = error
+            else {
+                Issue.record("Expected provider rejection, received \(error)")
+                return
+            }
+            #expect(indexName == "provider_validated_value")
+            #expect(indexType == .custom("provider-validated"))
+            #expect(
+                reason
+                    == "Index maintainer provider rejected the runtime configuration"
+            )
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(engine.transactionCount == 0)
         #expect(engine.shutdownCount == 1)
     }
 
@@ -325,10 +458,14 @@ struct DBConfigurationOwnershipTests {
             entities: [try ConfigurationEntity.schemaEntity]
         )
         let runtime = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     ConfigurationEntity.self
-                ),
+                )
             ]
         )
         return try await DBContainer.open(

@@ -4,9 +4,9 @@
 // This file is part of BitmapIndex module, not DatabaseEngine.
 // DatabaseEngine remains independent of bitmap execution behavior.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Bitmap filter query for Fusion
@@ -134,17 +134,16 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Index Discovery
 
-    /// Find the index descriptor using kindIdentifier and fieldName
+    /// Finds the bitmap index descriptor for the requested field.
     private func findIndexDescriptor() throws -> IndexDescriptor? {
         guard let descriptor = queryContext.indexDescriptors(
             for: T.self
         ).first(where: {
-            $0.kindIdentifier == BitmapIndexSpecification.identifier
-                && $0.fieldNames.contains(fieldName)
+                $0.type == .bitmap
+                    && $0.fieldNames.contains(fieldName)
         }) else {
             return nil
         }
-        _ = try BitmapIndexSpecification(descriptor.kind)
         return descriptor
     }
 
@@ -153,9 +152,9 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
         guard let descriptor = try findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
-                type: T.persistableType,
+                entity: T.persistableType,
                 field: fieldName,
-                kind: "bitmap"
+                indexType: .bitmap
             )
         }
 
@@ -164,7 +163,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
         // Execute bitmap query within transaction
         let primaryKeys: [Tuple] = try await queryContext.withReadableIndex(
             named: indexName,
-            kindIdentifier: BitmapIndexSpecification.identifier,
+            indexType: .bitmap,
             for: T.self
         ) { readableIndex, transaction in
             guard let readableIndex else {

@@ -3,9 +3,9 @@
 //
 // Provides the DatabaseContext extension and entry point for SPARQL queries.
 
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
-import DatabaseEngine
 import StorageKit
 
 // MARK: - SPARQL Entry Point
@@ -227,7 +227,7 @@ extension DatabaseContext {
         } else {
             // No projection: include pattern variables + property variables (SELECT * equivalent)
             var allVariables = pattern.outputVariables
-            for fieldName in selection.storedFieldNames {
+            for fieldName in selection.includedFieldNames {
                 allVariables.insert("?\(fieldName)")
             }
             projectedVars = Array(allVariables).sorted()
@@ -241,7 +241,7 @@ extension DatabaseContext {
         var (bindings, stats) = try await indexQueryContext
             .withReadableIndex(
                 named: selection.indexName,
-                kindIdentifier: selection.kindIdentifier,
+                indexType: selection.indexType,
                 for: T.self
             ) {
                 readableIndex,
@@ -358,7 +358,7 @@ extension DatabaseContext {
         var (bindings, statistics) = try await indexQueryContext
             .withReadableIndex(
                 named: selection.indexName,
-                kindIdentifier: selection.kindIdentifier,
+                indexType: selection.indexType,
                 for: T.self
             ) {
                 readableIndex,

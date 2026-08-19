@@ -1,26 +1,21 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for count indexes.
 public struct CountIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "count"
+    public let indexType: IndexType = .aggregate(.count)
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        try index.kind.validateIdentity(
-            identifier: kindIdentifier,
-            subspaceStructure: .aggregation
-        )
-        try index.kind.validateMetadataKeys()
-        try index.kind.validateFieldNames()
+        _ = try index.aggregateDefinition(.count)
         return CountIndexMaintainer<Item>(
             index: index,
             subspace: subspace,

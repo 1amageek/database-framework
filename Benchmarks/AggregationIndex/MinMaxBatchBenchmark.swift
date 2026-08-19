@@ -20,16 +20,20 @@ struct Sale {
     var amount: Double = 0.0
 
     #Index(
-        .minimum,
-        groupBy: [\Sale.region],
-        value: \Sale.amount,
-        name: "region_min"
+        .aggregate(
+            name: "region_min",
+            function: .minimum,
+        groupBy: [.ascending(\Sale.region)],
+        value: \Sale.amount
+        )
     )
     #Index(
-        .maximum,
-        groupBy: [\Sale.region],
-        value: \Sale.amount,
-        name: "region_max"
+        .aggregate(
+            name: "region_max",
+            function: .maximum,
+        groupBy: [.ascending(\Sale.region)],
+        value: \Sale.amount
+        )
     )
 }
 
@@ -56,6 +60,10 @@ struct MinMaxBatchBenchmark {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(Sale.self)]
             ),
             security: .testingDisabled

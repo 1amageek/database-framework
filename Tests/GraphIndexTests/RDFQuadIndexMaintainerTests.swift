@@ -14,13 +14,12 @@ private struct RDFQuadIndexEntity {
     var graph: RDFTerm?
 
     #Index(
-        .rdfDataset,
-        from: \RDFQuadIndexEntity.subject,
-        edge: \RDFQuadIndexEntity.predicate,
-        to: \RDFQuadIndexEntity.object,
-        graph: \RDFQuadIndexEntity.graph,
-        name: "rdf_quad_test"
-    )
+        .graph(
+            name: "rdf_quad_test",
+            definition: .rdf(
+                subject: \RDFQuadIndexEntity.subject, predicate: \RDFQuadIndexEntity.predicate,
+                object: \RDFQuadIndexEntity.object,
+        graph: \RDFQuadIndexEntity.graph)))
 
 }
 
@@ -112,16 +111,14 @@ struct RDFQuadIndexMaintainerTests {
         else {
             throw RDFQuadIndexMaintainerTestError.missingDescriptor
         }
-        let index = Index(
-            name: "rdf_quad_test",
-            kind: descriptor.kind,
+        let index = ResolvedIndex(
+            descriptor: descriptor,
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
                 FieldKeyExpression(fieldName: "predicate"),
                 FieldKeyExpression(fieldName: "object"),
                 FieldKeyExpression(fieldName: "graph"),
             ]),
-            subspaceKey: "rdf_quad_test",
             itemTypes: Set([RDFQuadIndexEntity.persistableType])
         )
         let base = Subspace(prefix: Tuple("rdf-quad-test").pack())

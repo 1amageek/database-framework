@@ -56,10 +56,10 @@ struct SQLiteMigratedUserV1 {
 @Persistable(type: "SQLiteMigratedUser")
 struct SQLiteMigratedUserV2 {
     #Index(
-        .scalar,
-        fields: [\SQLiteMigratedUserV2.fullName],
-        name: "SQLiteMigratedUser_fullName"
-    )
+        .ordered(
+            name: "SQLiteMigratedUser_fullName",
+            keys: [.ascending(\SQLiteMigratedUserV2.fullName)],
+            unique: false))
 
     var id: String = ""
     var fullName: String
@@ -145,7 +145,12 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV1.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV1.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -161,7 +166,12 @@ struct SchemaEvolutionMigrationSQLiteTests {
             for: SQLiteSchemaEvolutionSchemaV2.self,
             migrationPlan: SQLiteAppendOnlyMigrationPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV2.self)]),
             security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
@@ -171,7 +181,12 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLiteSchemaEvolutionSchemaV2.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSchemaEvolutionUserV2.self)]),
             security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
@@ -240,7 +255,12 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV1.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -256,7 +276,12 @@ struct SchemaEvolutionMigrationSQLiteTests {
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
             security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
@@ -276,7 +301,12 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
             security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
@@ -298,7 +328,12 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV1.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -320,7 +355,12 @@ struct SchemaEvolutionMigrationSQLiteTests {
             for: SQLiteMigrationSchemaV2.self,
             migrationPlan: SQLiteCustomMigrationPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
             security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
@@ -330,7 +370,12 @@ struct SchemaEvolutionMigrationSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLiteMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteMigratedUserV2.self)]),
             security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }

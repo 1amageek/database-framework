@@ -105,21 +105,20 @@ struct MinMaxCompositePrimaryKeyTests {
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_composite_pk", testId).pack())
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: MultiTenantOrder.self,
             name: "order_min_by_region",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .minimum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 4)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 5),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "order_min_by_region",
             itemTypes: Set(["MultiTenantOrder"])
         )
 
@@ -190,21 +189,20 @@ struct MinMaxCompositePrimaryKeyTests {
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_composite_pk", testId).pack())
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: MultiTenantOrder.self,
             name: "order_max_by_region",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .maximum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 4)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 5),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "order_max_by_region",
             itemTypes: Set(["MultiTenantOrder"])
         )
 

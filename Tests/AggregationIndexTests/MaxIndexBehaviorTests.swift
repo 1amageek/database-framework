@@ -37,21 +37,20 @@ private struct MaximumIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         // Expression: subject + score (grouping + max value)
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: SubjectScore.self,
             name: indexName,
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .maximum,
                 groupingFields: [
                     FieldIdentity(name: "subject", number: 2)
                 ],
                 valueField: FieldIdentity(name: "score", number: 4),
-                valueType: .int64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
-                FieldKeyExpression(fieldName: "score")
+                FieldKeyExpression(fieldName: "score"),
             ]),
-            subspaceKey: indexName,
             itemTypes: Set(["SubjectScore"])
         )
 
@@ -127,7 +126,7 @@ struct MaxIndexBehaviorTests {
         let scores = [
             SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
             SubjectScore(id: "s2", subject: "Math", studentName: "Bob", score: 88),
-            SubjectScore(id: "s3", subject: "Math", studentName: "Charlie", score: 72)
+            SubjectScore(id: "s3", subject: "Math", studentName: "Charlie", score: 72),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -232,7 +231,7 @@ struct MaxIndexBehaviorTests {
         let scores = [
             SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
             SubjectScore(id: "s2", subject: "Math", studentName: "Bob", score: 88),
-            SubjectScore(id: "s3", subject: "Math", studentName: "Charlie", score: 72)
+            SubjectScore(id: "s3", subject: "Math", studentName: "Charlie", score: 72),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -260,7 +259,7 @@ struct MaxIndexBehaviorTests {
             SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
             SubjectScore(id: "s2", subject: "Math", studentName: "Bob", score: 88),
             SubjectScore(id: "s3", subject: "Science", studentName: "Alice", score: 92),
-            SubjectScore(id: "s4", subject: "Science", studentName: "Charlie", score: 99)
+            SubjectScore(id: "s4", subject: "Science", studentName: "Charlie", score: 99),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -303,7 +302,7 @@ struct MaxIndexBehaviorTests {
 
         let scores = [
             SubjectScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
-            SubjectScore(id: "s2", subject: "Math", studentName: "Bob", score: 88)
+            SubjectScore(id: "s2", subject: "Math", studentName: "Bob", score: 88),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -335,7 +334,7 @@ struct MaxIndexBehaviorTests {
 
         let scores = [
             SubjectScore(id: "s1", subject: "Math", studentName: "Low", score: 60),
-            SubjectScore(id: "s2", subject: "Math", studentName: "High", score: 100)
+            SubjectScore(id: "s2", subject: "Math", studentName: "High", score: 100),
         ]
 
         // Insert both

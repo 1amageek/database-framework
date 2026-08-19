@@ -1,9 +1,10 @@
-@testable import AggregationIndex
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
-import DatabaseEngine
 import StorageKit
 import Testing
+
+@testable import AggregationIndex
 
 @Suite("Delete-capable sketch indexes")
 struct DeleteCapableSketchIndexTests {
@@ -191,7 +192,7 @@ struct DeleteCapableSketchIndexTests {
     @Test("DISTINCT removes only the final value reference")
     func distinctReferenceCountsAndDeleteRebuild() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makeDistinctMaintainer(
+        let maintainer = try makeDistinctMaintainer(
             subspace: Subspace(prefix: Tuple("distinct-delete").pack())
         )
         let first = SketchIndexEntity(
@@ -258,7 +259,7 @@ struct DeleteCapableSketchIndexTests {
     @Test("DISTINCT update removes the old value and old group")
     func distinctUpdateAndGroupMove() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makeDistinctMaintainer(
+        let maintainer = try makeDistinctMaintainer(
             subspace: Subspace(prefix: Tuple("distinct-update").pack())
         )
         let old = SketchIndexEntity(
@@ -303,28 +304,21 @@ struct DeleteCapableSketchIndexTests {
         #expect(newResult.estimated == 1)
     }
 
-    @Test("DISTINCT rejects unsupported persisted precision")
+    @Test("DISTINCT rejects unsupported precision at declaration")
     func distinctRejectsOversizedPrecision() async throws {
-        let engine = InMemoryEngine()
-        let maintainer = makeDistinctMaintainer(
-            subspace: Subspace(prefix: Tuple("distinct-precision").pack()),
-            precision: 18
-        )
-        let entity = SketchIndexEntity(
-            id: "entity",
-            group: "calendar",
-            distinctValue: "value",
-            numericValue: 10
-        )
-
-        await #expect(throws: DistinctIndexError.invalidPrecision(18)) {
-            try await engine.withTransaction { transaction in
-                try await maintainer.updateIndex(
-                    oldItem: nil,
-                    newItem: entity,
-                    transaction: transaction
+        #expect(
+            throws: IndexDeclarationError(
+                indexName: "distinct",
+                validationError: .invalidConfiguration(
+                    index: "distinct",
+                    reason: "Approximate-distinct precision must be in 4...17"
                 )
-            }
+            )
+        ) {
+            _ = try makeDistinctMaintainer(
+                subspace: Subspace(prefix: Tuple("distinct-precision").pack()),
+                precision: 18
+            )
         }
     }
 
@@ -334,7 +328,7 @@ struct DeleteCapableSketchIndexTests {
         let subspace = Subspace(
             prefix: Tuple("distinct-corrupt").pack()
         )
-        let maintainer = makeDistinctMaintainer(subspace: subspace)
+        let maintainer = try makeDistinctMaintainer(subspace: subspace)
         let summaryKey = subspace
             .subspace(Int64(1))
             .pack(try canonicalGroupingTuple(["calendar"]))
@@ -369,7 +363,7 @@ struct DeleteCapableSketchIndexTests {
         let subspace = Subspace(
             prefix: Tuple("distinct-missing-summary").pack()
         )
-        let maintainer = makeDistinctMaintainer(subspace: subspace)
+        let maintainer = try makeDistinctMaintainer(subspace: subspace)
         let entity = SketchIndexEntity(
             id: "entity",
             group: "calendar",
@@ -436,7 +430,7 @@ struct DeleteCapableSketchIndexTests {
     @Test("PERCENTILE delete and update rebuild current membership")
     func percentileDeleteAndUpdateRebuild() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makePercentileMaintainer(
+        let maintainer = try makePercentileMaintainer(
             subspace: Subspace(prefix: Tuple("percentile-delete").pack())
         )
         let first = SketchIndexEntity(
@@ -540,7 +534,7 @@ struct DeleteCapableSketchIndexTests {
         let subspace = Subspace(
             prefix: Tuple("percentile-missing-summary").pack()
         )
-        let maintainer = makePercentileMaintainer(subspace: subspace)
+        let maintainer = try makePercentileMaintainer(subspace: subspace)
         let entity = SketchIndexEntity(
             id: "entity",
             group: "calendar",
@@ -611,7 +605,7 @@ struct DeleteCapableSketchIndexTests {
         let subspace = Subspace(
             prefix: Tuple("percentile-invalid").pack()
         )
-        let maintainer = makePercentileMaintainer(subspace: subspace)
+        let maintainer = try makePercentileMaintainer(subspace: subspace)
 
         await #expect(
             throws: PercentileIndexError.invalidPercentile(-0.1)
@@ -679,10 +673,11 @@ struct DeleteCapableSketchIndexTests {
 private func makeDistinctMaintainer(
     subspace: Subspace,
     precision: Int = 14
-) -> DistinctIndexMaintainer<SketchIndexEntity> {
-    let index = Index(
+) throws -> DistinctIndexMaintainer<SketchIndexEntity> {
+    let index = try ResolvedIndex(
+        for: SketchIndexEntity.self,
         name: "distinct",
-        kind: distinctIndexMetadata(
+        definition: distinctIndexDefinition(
             groupingFields: [
                 FieldIdentity(name: "group", number: 2)
             ],
@@ -693,7 +688,6 @@ private func makeDistinctMaintainer(
             FieldKeyExpression(fieldName: "group"),
             FieldKeyExpression(fieldName: "distinctValue"),
         ]),
-        subspaceKey: "distinct",
         itemTypes: [SketchIndexEntity.persistableType]
     )
     return DistinctIndexMaintainer(
@@ -706,10 +700,11 @@ private func makeDistinctMaintainer(
 
 private func makePercentileMaintainer(
     subspace: Subspace
-) -> PercentileIndexMaintainer<SketchIndexEntity> {
-    let index = Index(
+) throws -> PercentileIndexMaintainer<SketchIndexEntity> {
+    let index = try ResolvedIndex(
+        for: SketchIndexEntity.self,
         name: "percentile",
-        kind: percentileIndexMetadata(
+        definition: percentileIndexDefinition(
             groupingFields: [
                 FieldIdentity(name: "group", number: 2)
             ],
@@ -720,7 +715,6 @@ private func makePercentileMaintainer(
             FieldKeyExpression(fieldName: "group"),
             FieldKeyExpression(fieldName: "numericValue"),
         ]),
-        subspaceKey: "percentile",
         itemTypes: [SketchIndexEntity.persistableType]
     )
     return PercentileIndexMaintainer(

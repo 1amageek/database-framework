@@ -88,7 +88,12 @@ struct DirectoryMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV1.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -104,7 +109,12 @@ struct DirectoryMigrationSQLiteTests {
             for: SQLiteDirectoryMigrationSchemaV2.self,
             migrationPlan: SQLiteDirectoryMigrationCopyPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)]),
             security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
@@ -114,7 +124,12 @@ struct DirectoryMigrationSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLiteDirectoryMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteDirectoryMigrationUserV2.self)]),
             security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }

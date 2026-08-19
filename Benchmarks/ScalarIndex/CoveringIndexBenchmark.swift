@@ -21,15 +21,17 @@ struct User {
     var age: Int64 = 0
 
     #Index(
-        .scalar,
-        fields: [\User.email],
-        name: "email_standard"
+        .ordered(
+            name: "email_standard",
+            keys: [.ascending(\User.email)]
+        )
     )
     #Index(
-        .scalar,
-        fields: [\User.email],
-        storedFields: [\User.name, \User.age],
-        name: "email_covering"
+        .ordered(
+            name: "email_covering",
+            keys: [.ascending(\User.email)],
+            includedFields: [\User.name, \User.age]
+        )
     )
 }
 
@@ -56,6 +58,10 @@ struct CoveringIndexBenchmark {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(User.self)]
             ),
             security: .testingDisabled

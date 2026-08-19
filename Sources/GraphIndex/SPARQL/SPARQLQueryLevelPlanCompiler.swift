@@ -236,7 +236,7 @@ public enum SPARQLQueryLevelPlanCompiler {
         case .table, .logical, .subquery, .join, .values, .graphTable,
              .service, .union, .unionAll, .intersect, .except:
             throw SPARQLSelectPlanCompilationError.unsupportedSource
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         case .base:
             throw SPARQLSelectPlanCompilationError.unsupportedSource
         #endif

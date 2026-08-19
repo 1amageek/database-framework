@@ -22,7 +22,7 @@ public enum SPARQLFunctionError: Error, Sendable, CustomStringConvertible {
 
     /// Invalid graph index configuration
     ///
-    /// The index kind is not a GraphIndexKind.
+    /// The selected index is not a property-graph declaration.
     case invalidGraphIndex(String)
 
     /// Missing variable in SPARQL result

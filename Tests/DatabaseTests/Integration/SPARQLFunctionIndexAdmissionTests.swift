@@ -22,12 +22,12 @@ private struct SPARQLFunctionAdmissionStatement {
         "sparql_function_admission_statements"
     )
     #Index(
-        .rdfDataset,
-        from: \SPARQLFunctionAdmissionStatement.subject,
-        edge: \SPARQLFunctionAdmissionStatement.predicate,
-        to: \SPARQLFunctionAdmissionStatement.object,
-        name: "SPARQLFunctionAdmissionStatement_rdf"
-    )
+        .graph(
+            name: "SPARQLFunctionAdmissionStatement_rdf",
+            definition: .rdf(
+                subject: \SPARQLFunctionAdmissionStatement.subject,
+                predicate: \SPARQLFunctionAdmissionStatement.predicate,
+                object: \SPARQLFunctionAdmissionStatement.object, graph: nil)))
 
     var id: String = ""
     var subject: RDFTerm = .iri(.xsdString)
@@ -58,9 +58,20 @@ struct SPARQLFunctionIndexAdmissionTests {
         let directory = try await scenario.container.testBaseDirectory(
             for: SPARQLFunctionAdmissionStatement.self
         )
+        let lifecycleStore = IndexLifecycleStore(
+            container: scenario.container,
+            subspace: directory
+        )
+        let identity = try lifecycleStore.storageIdentity(for: descriptor.name)
         let stateKey = directory
             .subspace("state")
-            .pack(Tuple(descriptor.name))
+            .subspace(identity.name)
+            .pack(
+                Tuple(
+                    identity.definitionFingerprint.bytes,
+                    identity.layoutFingerprint
+                )
+            )
         try await scenario.engine.withTransaction { transaction in
             try transaction.clear(key: stateKey)
         }
@@ -102,6 +113,10 @@ struct SPARQLFunctionIndexAdmissionTests {
             ),
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SPARQLFunctionAdmissionUser.self

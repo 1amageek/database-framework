@@ -3,9 +3,9 @@
 //
 // Provides DatabaseContext extension and query builder for temporal versioning.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 // MARK: - Version Entry Point
@@ -103,7 +103,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
 
     /// Specify a custom version index name
     ///
-    /// - Parameter name: Index name
+    /// - Parameter name: ResolvedIndex name
     /// - Returns: Updated query builder
     public func index(_ name: String) -> Self {
         var copy = self
@@ -143,7 +143,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         let rawResults: [(version: Version, data: ByteString)] = try await queryContext
             .withReadableIndex(
                 named: indexName,
-                kindIdentifier: "version",
+                indexType: .history,
                 for: T.self,
                 configuration: configuration
             ) { readableIndex, transaction in
@@ -222,7 +222,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
             accessPath: .index(
                 IndexScanSource(
                     indexName: try self.indexName ?? resolveIndexName(),
-                    kindIdentifier: "version",
+                    indexType: .history,
                     parameters: parameters
                 )
             ),
@@ -236,8 +236,8 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         guard let descriptor = queryContext.indexDescriptors(
             for: T.self
         ).first(where: {
-            $0.kindIdentifier == "version"
-        }) else {
+                $0.type == .history
+            }) else {
             throw VersionQueryError.indexNotFound(
                 "No version index is declared for \(T.persistableType)"
             )
@@ -252,30 +252,13 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         guard let descriptor = queryContext.indexDescriptors(
             for: T.self
         ).first(where: {
-            $0.name == indexName && $0.kindIdentifier == "version"
-        }) else {
+            $0.name == indexName && $0.type == .history
+            }) else {
             throw VersionQueryError.indexNotFound(indexName)
         }
-        guard let strategyName = descriptor.kind.metadata["strategy"]?.stringValue else {
+        guard case .history(_, let strategy) = descriptor.declaration.definition else {
             throw VersionQueryError.invalidResponse(
-                "Version index '\(indexName)' is missing strategy metadata"
-            )
-        }
-        let strategy: VersionHistoryStrategy
-        switch strategyName {
-        case "keepAll":
-            strategy = .keepAll
-        case "keepLast":
-            let count = try descriptor.kind.requireInt("strategyCount")
-            strategy = .keepLast(count)
-        case "keepForDuration":
-            let duration = try descriptor.kind.requireTimeSpan(
-                "strategyDuration"
-            )
-            strategy = .keepForDuration(duration)
-        default:
-            throw VersionQueryError.invalidResponse(
-                "Version index '\(indexName)' has unknown strategy '\(strategyName)'"
+                "Version index '\(indexName)' has an invalid definition"
             )
         }
         let fieldNames = descriptor.fieldNames
@@ -283,9 +266,8 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         let rootFieldName = fieldNames.first ?? "id"
 
         return VersionIndexMaintainer<T>(
-            index: Index(
-                name: indexName,
-                kind: descriptor.kind,
+            index: ResolvedIndex(
+                descriptor: descriptor,
                 rootExpression: FieldKeyExpression(fieldName: rootFieldName)
             ),
             strategy: strategy,

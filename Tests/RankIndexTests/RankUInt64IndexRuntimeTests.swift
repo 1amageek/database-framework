@@ -1,6 +1,6 @@
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
-import DatabaseEngine
 import StorageKit
 import TestSupport
 import Testing
@@ -19,11 +19,11 @@ struct RankUInt64IndexRuntimeTests {
             UInt64(Int64.max) + 1,
             UInt64.max,
         ]
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: UnsignedRankEntity.self,
             name: "UnsignedRankEntity_rank_score",
-            kind: rankIndexMetadata(scoreType: .uint64),
+            definition: rankIndexDefinition(fieldNumber: 2),
             rootExpression: FieldKeyExpression(fieldName: "score"),
-            subspaceKey: "UnsignedRankEntity_rank_score",
             itemTypes: [UnsignedRankEntity.persistableType]
         )
         let indexSubspace = Subspace(
@@ -65,11 +65,11 @@ struct RankUInt64IndexRuntimeTests {
 
     @Test("Rank runtime rejects NaN before emitting an unordered key")
     func rejectsNaNScore() async throws {
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: FloatingRankEntity.self,
             name: "FloatingRankEntity_rank_score",
-            kind: rankIndexMetadata(scoreType: .float64),
+            definition: rankIndexDefinition(fieldNumber: 2),
             rootExpression: FieldKeyExpression(fieldName: "score"),
-            subspaceKey: "FloatingRankEntity_rank_score",
             itemTypes: [FloatingRankEntity.persistableType]
         )
         let maintainer: any IndexMaintainer<FloatingRankEntity> = try RankIndexMaintainerProvider()

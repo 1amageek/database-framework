@@ -41,16 +41,24 @@ independent of index selection.
 
 ## Request Context
 
-Register every policy explicitly in the container-scoped runtime. Conformance
-alone does not mutate a global registry and is not discovered through
-reflection.
+Register every policy explicitly in the runtime configuration published with
+the schema generation. Conformance alone does not mutate a global registry and
+is not discovered through reflection.
 
 ~~~swift
 let runtime = try DatabaseFrameworkRuntime.configuration(
+    executionIdentity: DatabaseExecutionRuntimeIdentity(
+        identifier: "application",
+        revision: 1
+    ),
     entityRuntimes: [try DatabaseFrameworkRuntime.entity(Post.self)],
     authorizationPolicies: [AuthorizationPolicyHandler(Post.self)]
 )
 ~~~
+
+Increase the execution identity revision whenever policy behavior changes.
+The framework then publishes a new execution generation, so results and
+continuations created under the previous policy cannot cross that boundary.
 
 Set authorization information around each request:
 
@@ -85,13 +93,13 @@ Tenant isolation has two independent parts:
 
 | Concern | Mechanism |
 |---|---|
-| Physical/logical boundary | database root, plus explicit Base roots with `MultipleBases` |
-| Resource authorization | application boundary by default; persisted direct and role Grants with `MultipleBases` |
+| Physical/logical boundary | database root, plus explicit Base roots with `MultiBase` |
+| Resource authorization | application boundary by default; persisted direct and role Grants with `MultiBase` |
 | Entity and field authorization | SecurityPolicy and `@Restricted` |
 
 The standard runtime binds data operations to its single data root and applies
 registered entity and field policy. It has no persisted Grant store. The
-`MultipleBases` trait additionally accepts one exact Base or a read-only
+`MultiBase` trait additionally accepts one exact Base or a read-only
 Composition and enables persisted Grants. `#Directory` and dynamic partitions
 are relative paths inside the selected root and are not credentials. The
 trait-specific runtime opens the selected transaction, unions matching direct
@@ -103,9 +111,9 @@ and fails as a whole when any member is unavailable or unauthorized.
 
 - Establish `AuthorizationContext` at the request boundary and bind it to the
   database root or a `DatabaseSession` selector.
-- Use `.database` by default; when `MultipleBases` is enabled, select a Base or
+- Use `.database` by default; when `MultiBase` is enabled, select a Base or
   Composition explicitly when crossing that boundary.
-- With `MultipleBases`, manage Base access through persisted Grants; role names
+- With `MultiBase`, manage Base access through persisted Grants; role names
   are claims, not bypasses.
 - Register each AuthorizationPolicyHandler in DatabaseRuntimeConfiguration.
 - Keep the security configuration enabled in production.

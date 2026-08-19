@@ -1,4 +1,4 @@
-#if !MultipleBases
+#if !MultiBase
 import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
@@ -170,10 +170,14 @@ struct StandardDatabaseRootTests {
     private static func runtimeConfiguration() throws
         -> DatabaseRuntimeConfiguration {
         try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     StandardDatabaseRootEntity.self
-                ),
+                )
             ]
         )
     }

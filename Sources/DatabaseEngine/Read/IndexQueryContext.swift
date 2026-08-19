@@ -1,9 +1,9 @@
 // IndexQueryContext.swift
 // DatabaseEngine context for index-based reads
 
-import StorageKit
 import DatabaseKit
 import DatabaseTypes
+import StorageKit
 
 /// Context for executing index-based queries
 ///
@@ -21,7 +21,7 @@ import DatabaseTypes
 /// func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
 ///     try await queryContext.withReadableIndex(
 ///         named: indexName,
-///         kindIdentifier: indexKind,
+///         indexType: indexType,
 ///         for: T.self
 ///     ) { index, transaction in
 ///         // Read index directly with the admitted subspace and transaction.
@@ -38,7 +38,7 @@ import DatabaseTypes
 /// )
 /// let rows = try await partitionedContext.withReadableIndex(
 ///     named: indexName,
-///     kindIdentifier: indexKind,
+///     indexType: indexType,
 ///     for: Order.self
 /// ) { index, transaction in
 ///     // Read the admitted index in transaction.
@@ -79,7 +79,7 @@ public struct IndexQueryContext: Sendable {
     /// )
     /// let rows = try await partitionedContext.withReadableIndex(
     ///     named: indexName,
-    ///     kindIdentifier: indexKind,
+    ///     indexType: indexType,
     ///     for: Order.self
     /// ) { index, transaction in
     ///     // Read the admitted index in transaction.
@@ -142,16 +142,16 @@ public struct IndexQueryContext: Sendable {
     /// means the logical partition has never existed and has no rows to scan.
     public func readableIndex<T: Persistable>(
         named indexName: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         for type: T.Type,
         transaction: any TransactionAccess
     ) async throws -> ReadableIndex? {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         _ = try context.requireOperationDataRoot()
         #endif
         let descriptor = try indexDescriptor(
             named: indexName,
-            kindIdentifier: kindIdentifier,
+            indexType: indexType,
             for: type
         )
         let path: AnyDirectoryPath?
@@ -179,17 +179,17 @@ public struct IndexQueryContext: Sendable {
     /// `nil`; this method never creates directory or index metadata.
     public func readableIndex(
         named indexName: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         forEntityName entityName: String,
         partitions: FieldObject,
         transaction: any TransactionAccess
     ) async throws -> ReadableIndex? {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         _ = try context.requireOperationDataRoot()
         #endif
         let descriptor = try indexDescriptor(
             named: indexName,
-            kindIdentifier: kindIdentifier,
+            indexType: indexType,
             forEntityName: entityName
         )
         guard let entity = schema.entitiesByName[entityName] else {
@@ -217,7 +217,7 @@ public struct IndexQueryContext: Sendable {
     /// operation always observe the same read version.
     public func withReadableIndex<T: Persistable, Result: Sendable>(
         named indexName: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         for type: T.Type,
         configuration: TransactionConfiguration = .default,
         _ operation: @Sendable @escaping (
@@ -228,7 +228,7 @@ public struct IndexQueryContext: Sendable {
         try await withTransaction(configuration: configuration) { transaction in
             let index = try await readableIndex(
                 named: indexName,
-                kindIdentifier: kindIdentifier,
+                indexType: indexType,
                 for: type,
                 transaction: transaction
             )
@@ -240,7 +240,7 @@ public struct IndexQueryContext: Sendable {
     /// without requiring a compiled model type.
     public func withReadableIndex<Result: Sendable>(
         named indexName: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         forEntityName entityName: String,
         partitions: FieldObject,
         configuration: TransactionConfiguration = .default,
@@ -252,7 +252,7 @@ public struct IndexQueryContext: Sendable {
         try await withTransaction(configuration: configuration) { transaction in
             let index = try await readableIndex(
                 named: indexName,
-                kindIdentifier: kindIdentifier,
+                indexType: indexType,
                 forEntityName: entityName,
                 partitions: partitions,
                 transaction: transaction
@@ -505,7 +505,7 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         transaction: any TransactionAccess
     ) async throws -> T? {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         _ = try context.requireOperationDataRoot()
         #endif
         let store: DatabaseDataStore
@@ -614,12 +614,12 @@ public struct IndexQueryContext: Sendable {
     /// Resolve an exact schema-owned index for a concrete entity type.
     public func indexDescriptor<T: Persistable>(
         named name: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         for type: T.Type
     ) throws -> IndexDescriptor {
         try indexDescriptor(
             named: name,
-            kindIdentifier: kindIdentifier,
+            indexType: indexType,
             forEntityName: T.persistableType
         )
     }
@@ -627,7 +627,7 @@ public struct IndexQueryContext: Sendable {
     /// Resolve an exact schema-owned index for a runtime entity name.
     public func indexDescriptor(
         named name: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         forEntityName entityName: String
     ) throws -> IndexDescriptor {
         guard let entity = schema.entitiesByName[entityName] else {
@@ -641,24 +641,24 @@ public struct IndexQueryContext: Sendable {
                 entityName: entityName
             )
         }
-        guard descriptor.kindIdentifier == kindIdentifier else {
-            throw IndexQueryContextError.indexKindMismatch(
+        guard descriptor.type == indexType else {
+            throw IndexQueryContextError.indexTypeMismatch(
                 indexName: name,
-                expected: descriptor.kindIdentifier,
-                actual: kindIdentifier
+                expected: descriptor.type,
+                actual: indexType
             )
         }
         return descriptor
     }
 
-    /// Find an index by kind identifier
+    /// Find indexes by semantic type.
     public func findIndexes<T: Persistable>(
         for type: T.Type,
-        kindIdentifier: String
+        indexType: IndexType
     ) -> [IndexDescriptor] {
         let descriptors = indexDescriptors(for: type)
         return descriptors.filter { descriptor in
-            descriptor.kind.identifier == kindIdentifier
+            descriptor.type == indexType
         }
     }
 
@@ -671,7 +671,7 @@ public enum IndexQueryContextError: Error, Sendable, Equatable, CustomStringConv
     case entityNotFound(String)
     case indexNotFound(indexName: String, entityName: String)
     case polymorphicIndexNotFound(indexName: String, groupIdentifier: String)
-    case indexKindMismatch(indexName: String, expected: String, actual: String)
+    case indexTypeMismatch(indexName: String, expected: IndexType, actual: IndexType)
     case missingDirectory(entityName: String)
 
     public var description: String {
@@ -682,8 +682,8 @@ public enum IndexQueryContextError: Error, Sendable, Equatable, CustomStringConv
             return "Index '\(indexName)' is not declared by entity '\(entityName)'"
         case .polymorphicIndexNotFound(let indexName, let groupIdentifier):
             return "Index '\(indexName)' is not declared by polymorphic group '\(groupIdentifier)'"
-        case .indexKindMismatch(let indexName, let expected, let actual):
-            return "Index '\(indexName)' has kind '\(expected)', not '\(actual)'"
+        case .indexTypeMismatch(let indexName, let expected, let actual):
+            return "Index '\(indexName)' has type '\(expected.diagnosticName)', not '\(actual.diagnosticName)'"
         case .missingDirectory(let entityName):
             return "Registered directory for entity '\(entityName)' is missing"
         }

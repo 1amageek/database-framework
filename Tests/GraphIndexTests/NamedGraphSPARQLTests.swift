@@ -15,13 +15,13 @@ import Testing
 private struct SPARQLQuadStatement {
     #Directory<SPARQLQuadStatement>("named_graph_sparql_tests")
     #Index(
-        .rdfDataset,
-        from: \SPARQLQuadStatement.subject,
-        edge: \SPARQLQuadStatement.predicate,
-        to: \SPARQLQuadStatement.object,
-        graph: \SPARQLQuadStatement.graph,
-        name: "rdf_quad"
-    )
+        .graph(
+            name: "rdf_quad",
+            definition: .rdf(
+                subject: \SPARQLQuadStatement.subject,
+                predicate: \SPARQLQuadStatement.predicate,
+                object: \SPARQLQuadStatement.object,
+        graph: \SPARQLQuadStatement.graph)))
 
     var id: String = UUID().uuidString
     var subject: RDFTerm = .iri(.xsdString)
@@ -233,7 +233,12 @@ struct NamedGraphSPARQLTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLQuadStatement.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLQuadStatement.self)]),
             security: .testingDisabled
         )
         try await container.resetTestBaseData()

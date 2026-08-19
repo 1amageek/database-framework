@@ -1,37 +1,32 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for count-not-null indexes.
 public struct CountNotNullIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "count_not_null"
+    public let indexType: IndexType = .aggregate(.nonNullCount)
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        try index.kind.validateIdentity(
-            identifier: kindIdentifier,
-            subspaceStructure: .aggregation
-        )
-        try index.kind.validateMetadataKeys()
-        try index.kind.validateFieldCount(minimum: 1)
-        guard let valueFieldName = index.kind.fieldNames.last else {
-            throw IndexMaintainerProviderError.invalidMetadata(
-                kindIdentifier: kindIdentifier,
-                key: "fieldNames"
+        let definition = try index.aggregateDefinition(.nonNullCount)
+        guard let valueFieldName = definition.value?.name else {
+            throw IndexMaintainerProviderError.invalidDefinition(
+                indexType: indexType,
+                reason: "Non-null count requires a value field"
             )
         }
         return CountNotNullIndexMaintainer<Item>(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            groupByFieldNames: Array(index.kind.fieldNames.dropLast()),
+            groupByFieldNames: definition.groupBy.map { $0.field.name },
             valueFieldName: valueFieldName
         )
     }

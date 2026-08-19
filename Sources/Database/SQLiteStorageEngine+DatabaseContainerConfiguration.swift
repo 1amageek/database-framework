@@ -1,5 +1,5 @@
 #if !os(WASI)
-#if SQLITE && !DATABASE_MULTIPLE_BASES
+#if SQLITE && !DATABASE_MULTI_BASE
 import DatabaseEngine
 import SQLiteStorage
 import StorageKit
@@ -7,15 +7,13 @@ import StorageKit
 extension SQLiteStorageEngine.Configuration: DatabaseContainerConfiguration {
     public func makeDBConfiguration(
         monotonicClock: any StorageMonotonicClock,
-        wallClock: any WallClock,
-        indexConfigurations: [any IndexRuntimeConfiguration]
+        wallClock: any WallClock
     ) async throws -> DBConfiguration {
         let engine = try SQLiteStorageEngine(configuration: self)
         return DBConfiguration(
             storageEngine: engine,
             monotonicClock: monotonicClock,
-            wallClock: wallClock,
-            indexConfigurations: indexConfigurations
+            wallClock: wallClock
         )
     }
 }

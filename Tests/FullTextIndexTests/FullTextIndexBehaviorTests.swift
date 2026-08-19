@@ -1,12 +1,13 @@
 // FullTextIndexBehaviorTests.swift
 // Backend-neutral tests for FullTextIndex persistence behavior
 
-import Testing
-import Foundation
-import StorageKit
 import DatabaseKit
 import DatabaseTypes
+import Foundation
+import StorageKit
 import TestSupport
+import Testing
+
 @testable import DatabaseEngine
 @testable import FullTextIndex
 
@@ -34,16 +35,16 @@ private struct FullTextIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         // Expression: content
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: SearchableArticle.self,
             name: indexName,
-            kind: fullTextIndexMetadata(
+            definition: fullTextIndexDefinition(
                 fieldName: "content",
                 fieldNumber: 3,
                 tokenizer: tokenizer,
                 storePositions: storePositions
             ),
             rootExpression: FieldKeyExpression(fieldName: "content"),
-            subspaceKey: indexName,
             itemTypes: Set(["SearchableArticle"])
         )
 
@@ -106,28 +107,22 @@ private struct FullTextIndexContext {
     }
 }
 
-func fullTextIndexMetadata(
+func fullTextIndexDefinition(
     fieldName: String,
     fieldNumber: Int,
     tokenizer: TokenizationStrategy,
     storePositions: Bool,
     ngramSize: Int = 3,
     minTermLength: Int = 2
-) -> IndexKindMetadata {
-    IndexKindMetadata(
-        identifier: "fulltext",
-        subspaceStructure: .hierarchical,
-        fields: [
-            IndexFieldMetadata(
-                identity: FieldIdentity(name: fieldName, number: fieldNumber)
-            )
-        ],
-        metadata: [
-            "tokenizer": .string(tokenizer.rawValue),
-            "storePositions": .bool(storePositions),
-            "ngramSize": .int64(Int64(ngramSize)),
-            "minTermLength": .int64(Int64(minTermLength)),
-        ]
+) -> IndexDefinition<FieldIdentity> {
+    .text(
+        fields: [FieldIdentity(name: fieldName, number: fieldNumber)],
+        mode: .fullText(
+            tokenizer: tokenizer,
+            storePositions: storePositions,
+            ngramSize: ngramSize,
+            minimumTermLength: minTermLength
+        )
     )
 }
 
@@ -195,7 +190,7 @@ struct FullTextIndexBehaviorTests {
 
         let articles = [
             SearchableArticle(id: "a1", title: "Swift", content: "Swift programming language"),
-            SearchableArticle(id: "a2", title: "Python", content: "Python programming language")
+            SearchableArticle(id: "a2", title: "Python", content: "Python programming language"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -297,7 +292,7 @@ struct FullTextIndexBehaviorTests {
         let articles = [
             SearchableArticle(id: "a1", title: "Swift", content: "Swift is a modern programming language"),
             SearchableArticle(id: "a2", title: "Python", content: "Python is also a programming language"),
-            SearchableArticle(id: "a3", title: "Rust", content: "Rust is a systems language")
+            SearchableArticle(id: "a3", title: "Rust", content: "Rust is a systems language"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -332,7 +327,7 @@ struct FullTextIndexBehaviorTests {
         let articles = [
             SearchableArticle(id: "a1", title: "Swift", content: "Swift is modern and fast"),
             SearchableArticle(id: "a2", title: "Python", content: "Python is modern but slow"),
-            SearchableArticle(id: "a3", title: "Rust", content: "Rust is fast and safe")
+            SearchableArticle(id: "a3", title: "Rust", content: "Rust is fast and safe"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -359,7 +354,7 @@ struct FullTextIndexBehaviorTests {
         let articles = [
             SearchableArticle(id: "a1", title: "Swift", content: "Swift is fast"),
             SearchableArticle(id: "a2", title: "Python", content: "Python is slow"),
-            SearchableArticle(id: "a3", title: "Rust", content: "Rust is safe")
+            SearchableArticle(id: "a3", title: "Rust", content: "Rust is safe"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -410,7 +405,7 @@ struct FullTextIndexBehaviorTests {
 
         let articles = [
             SearchableArticle(id: "a1", title: "First", content: "First article content"),
-            SearchableArticle(id: "a2", title: "Second", content: "Second article content")
+            SearchableArticle(id: "a2", title: "Second", content: "Second article content"),
         ]
 
         try await ctx.database.withTransaction { transaction in

@@ -3,9 +3,9 @@
 //
 // Maintains standard B-tree-like indexes for ordering and range queries.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for scalar (VALUE) indexes
@@ -47,7 +47,7 @@ public struct ScalarIndexMaintainer<Item: PersistedEntityValue>: IndexUniqueness
     // MARK: - Properties
 
     /// Index definition
-    public let index: Index
+    public let index: ResolvedIndex
 
     /// Subspace for index storage
     public let subspace: Subspace
@@ -60,11 +60,11 @@ public struct ScalarIndexMaintainer<Item: PersistedEntityValue>: IndexUniqueness
     /// Initialize scalar index maintainer
     ///
     /// - Parameters:
-    ///   - index: Index definition
+    ///   - index: ResolvedIndex definition
     ///   - subspace: FDB subspace for this index
     ///   - idExpression: Expression for extracting item's unique identifier
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
@@ -86,7 +86,7 @@ public struct ScalarIndexMaintainer<Item: PersistedEntityValue>: IndexUniqueness
     /// creates one index entry per array element instead of a single entry.
     ///
     /// **Covering Index**:
-    /// When the index has `storedFieldNames`, the value contains a Tuple of those
+    /// When the index has `includedFieldNames`, the value contains a Tuple of those
     /// field values. This enables index-only scans without primary key lookup.
     ///
     /// **Uniqueness check**: Performed by IndexMaintenanceService before index update
@@ -168,7 +168,7 @@ public struct ScalarIndexMaintainer<Item: PersistedEntityValue>: IndexUniqueness
         }
 
         var conflicts: [IndexUniquenessConflict] = []
-        if index.kind.fieldNames.count == 1, fieldValues.count > 1 {
+        if index.fieldNames.count == 1, fieldValues.count > 1 {
             conflicts.reserveCapacity(fieldValues.count)
         } else {
             conflicts.reserveCapacity(1)
@@ -214,7 +214,7 @@ public struct ScalarIndexMaintainer<Item: PersistedEntityValue>: IndexUniqueness
             return nil
         }
 
-        if index.kind.fieldNames.count == 1, fieldValues.count > 1 {
+        if index.fieldNames.count == 1, fieldValues.count > 1 {
             for value in fieldValues {
                 if let conflict = try await findConflict(for: [value]) {
                     conflicts.append(conflict)
@@ -293,7 +293,7 @@ public struct ScalarIndexMaintainer<Item: PersistedEntityValue>: IndexUniqueness
         // otherwise use the expression's columnCount to determine field count.
         // Using columnCount ensures composite indexes (e.g., [city, age]) are
         // correctly identified even when keyPaths is nil.
-        let indexFieldCount = index.kind.fieldNames.count
+        let indexFieldCount = index.fieldNames.count
         let isSingleFieldArrayIndex = indexFieldCount == 1 && fieldValues.count > 1
 
         if isSingleFieldArrayIndex {

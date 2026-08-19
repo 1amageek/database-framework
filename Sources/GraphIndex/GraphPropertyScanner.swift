@@ -1,5 +1,5 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -132,17 +132,17 @@ public struct PropertyFilter: Sendable {
 public struct GraphPropertyScanner: Sendable {
     private let indexSubspace: Subspace
     private let strategy: GraphIndexStrategy
-    private let storedFieldNames: [String]
+    private let includedFieldNames: [String]
     private let snapshot: GraphReadSnapshot?
 
     public init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        storedFieldNames: [String]
+        includedFieldNames: [String]
     ) {
         self.indexSubspace = indexSubspace
         self.strategy = strategy
-        self.storedFieldNames = storedFieldNames
+        self.includedFieldNames = includedFieldNames
         self.snapshot = nil
     }
 
@@ -150,12 +150,12 @@ public struct GraphPropertyScanner: Sendable {
     public init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        storedFieldNames: [String],
+        includedFieldNames: [String],
         snapshot: GraphReadSnapshot
     ) {
         self.indexSubspace = indexSubspace
         self.strategy = strategy
-        self.storedFieldNames = storedFieldNames
+        self.includedFieldNames = includedFieldNames
         self.snapshot = snapshot
     }
 
@@ -198,10 +198,10 @@ public struct GraphPropertyScanner: Sendable {
     package func decodeProperties(
         _ value: ByteString
     ) throws -> [String: FieldValue] {
-        guard !storedFieldNames.isEmpty else { return [:] }
+        guard !includedFieldNames.isEmpty else { return [:] }
         return try CoveringValueBuilder.decode(
             value,
-            storedFieldNames: storedFieldNames
+            includedFieldNames: includedFieldNames
         )
     }
 

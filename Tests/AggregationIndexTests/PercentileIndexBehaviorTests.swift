@@ -38,9 +38,10 @@ private struct PercentileIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         // Expression: endpoint + latencyMs (grouping + percentile value)
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: EndpointRequest.self,
             name: indexName,
-            kind: percentileIndexMetadata(
+            definition: percentileIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "endpoint", number: 2)
                 ],
@@ -49,9 +50,8 @@ private struct PercentileIndexContext {
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "endpoint"),
-                FieldKeyExpression(fieldName: "latencyMs")
+                FieldKeyExpression(fieldName: "latencyMs"),
             ]),
-            subspaceKey: indexName,
             itemTypes: Set(["EndpointRequest"])
         )
 
@@ -381,7 +381,7 @@ struct PercentileIndexBehaviorTests {
         let requests = [
             EndpointRequest(endpoint: "/api/users", latencyMs: 100.0),
             EndpointRequest(endpoint: "/api/users", latencyMs: 200.0),
-            EndpointRequest(endpoint: "/api/users", latencyMs: 300.0)
+            EndpointRequest(endpoint: "/api/users", latencyMs: 300.0),
         ]
 
         try await ctx.database.withTransaction { transaction in

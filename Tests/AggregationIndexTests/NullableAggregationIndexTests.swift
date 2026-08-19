@@ -1,12 +1,13 @@
-@testable import AggregationIndex
-import DatabaseKit
-import TestSupport
-import DatabaseTypes
 import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
+import DatabaseTypes
 import Foundation
 import StorageKit
+import TestSupport
 import Testing
+
+@testable import AggregationIndex
 
 @Suite("Nullable aggregation grouping")
 struct NullableAggregationIndexTests {
@@ -19,7 +20,12 @@ struct NullableAggregationIndexTests {
                 ]
             ),
             configuration: .testing(storageEngine: InMemoryEngine()),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(NullableUnsignedAggregationEntity.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(NullableUnsignedAggregationEntity.self)]),
             security: .testingDisabled
         )
         let context = container.testBaseContext()
@@ -72,9 +78,10 @@ struct NullableAggregationIndexTests {
     @Test("COUNT_NOT_NULL evaluates null value before null grouping")
     func countNotNullOrdersNullExtractionCorrectly() async throws {
         let engine = InMemoryEngine()
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: NullableUnsignedAggregationEntity.self,
             name: "nullable-count-not-null",
-            kind: countNotNullIndexMetadata(
+            definition: countNotNullIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "group", number: 2)
                 ],
@@ -84,7 +91,6 @@ struct NullableAggregationIndexTests {
                 FieldKeyExpression(fieldName: "group"),
                 FieldKeyExpression(fieldName: "optionalValue"),
             ]),
-            subspaceKey: "nullable-count-not-null",
             itemTypes: [NullableUnsignedAggregationEntity.persistableType]
         )
         let maintainer = CountNotNullIndexMaintainer<
@@ -148,12 +154,12 @@ private struct NullableUnsignedAggregationEntity {
     var optionalValue: String?
 
     #Index(
-        .count,
-        groupBy: [\NullableUnsignedAggregationEntity.group]
-    )
+        .aggregate(
+            name: "NullableUnsignedAggregationEntity_count_group", function: .count,
+        groupBy: [.ascending(\NullableUnsignedAggregationEntity.group)]))
     #Index(
-        .sum,
-        groupBy: [\NullableUnsignedAggregationEntity.group],
-        value: \NullableUnsignedAggregationEntity.value
-    )
+        .aggregate(
+            name: "NullableUnsignedAggregationEntity_sum_group_value", function: .sum,
+        groupBy: [.ascending(\NullableUnsignedAggregationEntity.group)],
+        value: \NullableUnsignedAggregationEntity.value))
 }

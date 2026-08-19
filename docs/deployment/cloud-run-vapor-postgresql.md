@@ -62,6 +62,10 @@ func makeDatabaseContainer(
 ) async throws -> DBContainer {
     let postgresConfiguration = try PostgreSQLConfiguration.cloudRunProduction()
     let runtime = try DatabaseFrameworkRuntime.configuration(
+        executionIdentity: DatabaseExecutionRuntimeIdentity(
+            identifier: "application",
+            revision: 1
+        ),
         entityRuntimes: entityRuntimes
     )
 

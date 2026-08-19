@@ -1,5 +1,5 @@
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 enum DatabaseEntityIndexSliceExecutor {
@@ -7,7 +7,7 @@ enum DatabaseEntityIndexSliceExecutor {
         for runtime: EntityRuntimeRegistration,
         container: DBContainer,
         storeSubspace: Subspace,
-        index: Index,
+        index: ResolvedIndex,
         lastProcessedKey: ByteString?,
         maximumWorkUnits: Int,
         transaction: any TransactionAccess

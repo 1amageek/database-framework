@@ -43,22 +43,22 @@ private struct GraphIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.strategy = strategy
 
-        let kind = propertyGraphIndexMetadata(
-            sourceFieldName: "source",
-            labelFieldName: "label",
-            targetFieldName: "target",
+        let definition = propertyGraphIndexDefinition(
+            source: GraphIndexEdge.fields.source.identity,
+            label: GraphIndexEdge.fields.label.identity,
+            target: GraphIndexEdge.fields.target.identity,
             strategy: strategy
         )
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: GraphIndexEdge.self,
             name: indexName,
-            kind: kind,
+            definition: .graph(definition, includedFields: []),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "source"),
                 FieldKeyExpression(fieldName: "target"),
-                FieldKeyExpression(fieldName: "label")
+                FieldKeyExpression(fieldName: "label"),
             ]),
-            subspaceKey: indexName,
             itemTypes: Set(["GraphIndexEdge"])
         )
 
@@ -66,7 +66,7 @@ private struct GraphIndexContext {
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            metadata: try PropertyGraphIndexMetadata(canonical: index.kind)
+            definition: definition
         )
     }
 
@@ -190,7 +190,7 @@ struct GraphIndexAdjacencyTests {
         let edges = [
             GraphIndexEdge(source: "alice", target: "bob", label: "follows"),
             GraphIndexEdge(source: "alice", target: "charlie", label: "follows"),
-            GraphIndexEdge(source: "alice", target: "dave", label: "follows")
+            GraphIndexEdge(source: "alice", target: "dave", label: "follows"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -220,7 +220,7 @@ struct GraphIndexAdjacencyTests {
         let edges = [
             GraphIndexEdge(source: "alice", target: "dave", label: "follows"),
             GraphIndexEdge(source: "bob", target: "dave", label: "follows"),
-            GraphIndexEdge(source: "charlie", target: "dave", label: "follows")
+            GraphIndexEdge(source: "charlie", target: "dave", label: "follows"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -286,7 +286,7 @@ struct GraphIndexAdjacencyTests {
         let edges = [
             GraphIndexEdge(id: "e1", source: "alice", target: "bob", label: "follows"),
             GraphIndexEdge(id: "e2", source: "alice", target: "bob", label: "blocks"),
-            GraphIndexEdge(id: "e3", source: "alice", target: "bob", label: "likes")
+            GraphIndexEdge(id: "e3", source: "alice", target: "bob", label: "likes"),
         ]
 
         try await ctx.database.withTransaction { transaction in

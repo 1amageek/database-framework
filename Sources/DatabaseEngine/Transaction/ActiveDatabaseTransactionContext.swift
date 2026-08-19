@@ -3,7 +3,7 @@ import StorageKit
 
 package struct DatabaseTransactionExecutionBinding: Sendable {
     package let transaction: any TransactionAccess
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     package let resource: Security.Resource
     package let authorization: AuthorizationContext
     package let grantedAccess: Security.Access

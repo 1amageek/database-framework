@@ -35,16 +35,16 @@ private struct BenchmarkContext {
         self.subspace = Subspace(prefix: Tuple("benchmark", "fulltext", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: BenchmarkArticle.self,
             name: indexName,
-            kind: fullTextIndexMetadata(
+            definition: fullTextIndexDefinition(
                 fieldName: "content",
                 fieldNumber: 3,
                 tokenizer: tokenizer,
                 storePositions: storePositions
             ),
             rootExpression: FieldKeyExpression(fieldName: "content"),
-            subspaceKey: indexName,
             itemTypes: Set(["BenchmarkArticle"])
         )
 
@@ -93,7 +93,7 @@ private let sampleWords = [
     "data", "structure", "memory", "cache", "network",
     "server", "client", "api", "request", "response",
     "machine", "learning", "neural", "network", "training",
-    "model", "inference", "tensor", "gradient", "loss"
+    "model", "inference", "tensor", "gradient", "loss",
 ]
 
 /// Generate random content with specified word count
@@ -292,7 +292,7 @@ struct FullTextIndexPerformanceTests {
             ["swift", "programming"],
             ["database", "performance"],
             ["machine", "learning", "model"],
-            ["cache", "memory", "optimize"]
+            ["cache", "memory", "optimize"],
         ]
 
         let searchCount = queries.count * 5
@@ -350,7 +350,7 @@ struct FullTextIndexPerformanceTests {
         let queries = [
             ["swift", "python"],
             ["database", "cache", "memory"],
-            ["machine", "neural", "tensor"]
+            ["machine", "neural", "tensor"],
         ]
 
         let searchCount = queries.count * 5

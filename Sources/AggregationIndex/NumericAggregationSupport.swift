@@ -6,9 +6,9 @@
 //
 // Reference: Consolidates duplicate code from SumIndexMaintainer, AverageIndexMaintainer
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 public enum AggregationStorageError: Error, Sendable, Equatable {
@@ -577,7 +577,7 @@ extension NumericAggregationMutationSupport {
 /// Protocol for aggregation maintainers that use grouping keys
 public protocol GroupingKeySupport: SubspaceIndexMaintainer {
     /// The index definition
-    var index: Index { get }
+    var index: ResolvedIndex { get }
 }
 
 extension GroupingKeySupport {
@@ -752,7 +752,7 @@ public protocol NumericAggregationMaintainer:
 ///
 /// Provides common functionality for maintainers that track counts.
 public protocol CountAggregationMaintainer: SubspaceIndexMaintainer, GroupingKeySupport {
-    var index: Index { get }
+    var index: ResolvedIndex { get }
     var groupingFieldCount: Int { get }
 }
 

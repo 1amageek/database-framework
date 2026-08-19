@@ -4,5 +4,5 @@ public enum DatabaseStorageLayoutKind: UInt8, Sendable, Hashable {
     case singleDatabase = 1
 
     /// One control root coordinates explicit Base storage topology.
-    case multipleBases = 2
+    case multiBase = 2
 }

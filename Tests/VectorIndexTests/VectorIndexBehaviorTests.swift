@@ -1,12 +1,13 @@
 // VectorIndexBehaviorTests.swift
 // Integration tests for VectorIndex (Flat) behavior
 
-import Testing
-import TestHeartbeat
-import Foundation
-import StorageKit
 import DatabaseKit
 import DatabaseTypes
+import Foundation
+import StorageKit
+import TestHeartbeat
+import Testing
+
 @testable import DatabaseEngine
 @testable import VectorIndex
 
@@ -42,16 +43,16 @@ private struct VectorIndexContext {
         self.subspace = Subspace(prefix: Tuple("test", "vector", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let metadata = vectorIndexMetadata(
+        let definition = vectorIndexDefinition(
             dimensions: dimensions,
             metric: metric
         )
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: VectorDocument.self,
             name: indexName,
-            kind: metadata,
+            definition: definition,
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: indexName,
             itemTypes: Set(["VectorDocument"])
         )
 
@@ -123,7 +124,7 @@ struct VectorIndexBehaviorTests {
         let docs = [
             try VectorDocument(id: "doc1", title: "First", embedding: [1.0, 0.0, 0.0, 0.0]),
             try VectorDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0]),
-            try VectorDocument(id: "doc3", title: "Third", embedding: [0.0, 0.0, 1.0, 0.0])
+            try VectorDocument(id: "doc3", title: "Third", embedding: [0.0, 0.0, 1.0, 0.0]),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -226,7 +227,7 @@ struct VectorIndexBehaviorTests {
             try VectorDocument(id: "exact", title: "Exact", embedding: [1.0, 0.0, 0.0, 0.0]),
             try VectorDocument(id: "similar", title: "Similar", embedding: [0.9, 0.1, 0.0, 0.0]),
             try VectorDocument(id: "different", title: "Different", embedding: [0.0, 1.0, 0.0, 0.0]),
-            try VectorDocument(id: "opposite", title: "Opposite", embedding: [-1.0, 0.0, 0.0, 0.0])
+            try VectorDocument(id: "opposite", title: "Opposite", embedding: [-1.0, 0.0, 0.0, 0.0]),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -270,7 +271,7 @@ struct VectorIndexBehaviorTests {
         let docs = [
             try VectorDocument(id: "close", title: "Close", embedding: [1.0, 0.0, 0.0]),
             try VectorDocument(id: "medium", title: "Medium", embedding: [2.0, 0.0, 0.0]),
-            try VectorDocument(id: "far", title: "Far", embedding: [5.0, 0.0, 0.0])
+            try VectorDocument(id: "far", title: "Far", embedding: [5.0, 0.0, 0.0]),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -384,7 +385,7 @@ struct VectorIndexBehaviorTests {
 
         let docs = [
             try VectorDocument(id: "doc1", title: "First", embedding: [1.0, 0.0, 0.0, 0.0]),
-            try VectorDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0])
+            try VectorDocument(id: "doc2", title: "Second", embedding: [0.0, 1.0, 0.0, 0.0]),
         ]
 
         try await ctx.database.withTransaction { transaction in

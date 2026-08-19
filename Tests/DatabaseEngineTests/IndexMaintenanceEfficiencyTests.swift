@@ -26,8 +26,16 @@ struct IndexMaintenanceProduct {
     var name: String = ""
     var price: Int64 = 0
 
-    #Index(.scalar, fields: [\IndexMaintenanceProduct.sku])
-    #Index(.scalar, fields: [\IndexMaintenanceProduct.price])
+    #Index(
+        .ordered(
+            name: "IndexMaintenanceProduct_sku",
+            keys: [.ascending(\IndexMaintenanceProduct.sku)],
+            unique: false))
+    #Index(
+        .ordered(
+            name: "IndexMaintenanceProduct_price",
+            keys: [.ascending(\IndexMaintenanceProduct.price)],
+            unique: false))
 }
 
 // MARK: - Tests
@@ -39,7 +47,12 @@ struct IndexMaintenanceEfficiencyTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let schema = try Schema(entities: [try IndexMaintenanceProduct.schemaEntity])
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexMaintenanceProduct.self)]), security: .testingDisabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(IndexMaintenanceProduct.self)]), security: .testingDisabled)
     }
 
     private func cleanup(container: DBContainer) async throws {

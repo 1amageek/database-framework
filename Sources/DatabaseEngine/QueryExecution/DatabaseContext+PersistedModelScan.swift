@@ -18,7 +18,7 @@ extension DatabaseContext {
             partitions: partitions
         )
         if let transaction {
-            #if DATABASE_MULTIPLE_BASES
+            #if DATABASE_MULTI_BASE
             _ = try requireOperationDataRoot()
             #endif
             let databaseTransaction = DatabaseTransaction(
@@ -60,7 +60,7 @@ extension DatabaseContext {
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [PersistedModel?] {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
         let partition = try CanonicalPartitionBinding.makeAnyBinding(

@@ -1,4 +1,4 @@
-#if SQLITE && MultipleBases
+#if SQLITE && MultiBase
 import Database
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseRuntime
@@ -42,7 +42,7 @@ private enum BaseIsolationMigrationPlan: SchemaMigrationPlan {
             .lightweight(
                 fromVersion: BaseIsolationSchemaV1.self,
                 toVersion: BaseIsolationSchemaV2.self
-            ),
+            )
         ]
     }
 }
@@ -98,10 +98,14 @@ struct BaseIsolationSQLiteTests {
                 wallClock: FixedTestWallClock()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         BaseIsolationDocument.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -121,7 +125,7 @@ struct BaseIsolationSQLiteTests {
                         subject: .principal("test-runner"),
                         resource: .base(baseID),
                         access: .all
-                    ),
+                    )
                 ],
                 expectedRevision: 0
             )
@@ -172,7 +176,7 @@ struct BaseIsolationSQLiteTests {
                     subject: .principal("test-runner"),
                     resource: .base(otherBaseID),
                     access: .all
-                ),
+                )
             ],
             in: container
         )
@@ -264,7 +268,7 @@ struct BaseIsolationSQLiteTests {
                     subject: .principal("test-runner"),
                     resource: .base(otherBaseID),
                     access: .all
-                ),
+                )
             ],
             in: container
         )
@@ -274,6 +278,10 @@ struct BaseIsolationSQLiteTests {
 
         try await container.installTestBaseSchemaSnapshot(
             for: BaseIsolationSchemaV1.versionIdentifier
+        )
+        try await container.installTestBaseSchemaSnapshot(
+            for: BaseIsolationSchemaV2.versionIdentifier,
+            baseID: otherBaseID
         )
 
         #expect(
@@ -285,7 +293,25 @@ struct BaseIsolationSQLiteTests {
                 == BaseIsolationSchemaV2.versionIdentifier
         )
 
+        try await container.overwriteTestBaseSchemaFingerprint(
+            ByteString(repeating: 0, count: 32),
+            baseID: otherBaseID
+        )
         try await container.testBaseAdmin().migrateIfNeeded()
+
+        await #expect(
+            throws: DatabaseMigrationAdmissionError.migrationRequired
+        ) {
+            _ = try await container.testBaseContext()
+                .fetch(BaseIsolationDocument.self)
+                .execute()
+        }
+
+        try await container.installTestBaseSchemaSnapshot(
+            for: BaseIsolationSchemaV2.versionIdentifier,
+            baseID: otherBaseID
+        )
+        try await otherAdmin.migrateIfNeeded()
 
         #expect(
             try await container.testBaseAdmin().migrationStatus()
@@ -295,6 +321,9 @@ struct BaseIsolationSQLiteTests {
             try await otherAdmin.migrationStatus().currentVersion
                 == BaseIsolationSchemaV2.versionIdentifier
         )
+        _ = try await container.testBaseContext()
+            .fetch(BaseIsolationDocument.self)
+            .execute()
     }
 
     private func makeContainer() async throws -> DBContainer {
@@ -306,10 +335,14 @@ struct BaseIsolationSQLiteTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         BaseIsolationDocument.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -323,10 +356,14 @@ struct BaseIsolationSQLiteTests {
             migrationPlan: BaseIsolationMigrationPlan.self,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         BaseIsolationDocument.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled

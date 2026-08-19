@@ -1,4 +1,5 @@
 import DatabaseKit
+import DatabaseTypes
 
 /// One immutable database execution generation.
 ///
@@ -8,7 +9,10 @@ import DatabaseKit
 struct DatabaseSchemaGeneration: Sendable {
     let identifier: UInt64
     let fingerprint: SchemaFingerprint
+    let indexPhysicalFingerprint: ByteString
+    let executionRuntimeFingerprint: ByteString
     let schema: Schema
     let runtimeConfiguration: DatabaseRuntimeConfiguration
+    let indexPhysicalLayouts: [String: IndexPhysicalLayout]
     let securityDelegate: (any DataStoreSecurityDelegate)?
 }

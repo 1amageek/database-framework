@@ -30,17 +30,16 @@ struct GraphQueryPropertyFilterTests {
         var score: Double = 0.0
 
         #Index(
-            .propertyGraph(strategy: .tripleStore),
-            from: \SocialEdge.from,
-            edge: \SocialEdge.label,
-            to: \SocialEdge.target,
-            storedFields: [
+            .graph(
+                name: "social_graph_query_index",
+                definition: .property(
+                    source: \SocialEdge.from, label: .field(\SocialEdge.label),
+                    target: \SocialEdge.target,
+                    graph: nil, strategy: .tripleStore),
+                includedFields: [
                 \SocialEdge.since,
                 \SocialEdge.status,
-                \SocialEdge.score,
-            ],
-            name: "social_graph_query_index"
-        )
+                \SocialEdge.score]))
     }
 
     // MARK: - Setup
@@ -65,7 +64,12 @@ struct GraphQueryPropertyFilterTests {
             ],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self)]), security: .testingDisabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialEdge.self)]), security: .testingDisabled)
 
         try await container.resetTestBaseData()
 

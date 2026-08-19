@@ -14,7 +14,10 @@ struct SQLiteStoredItem {
     var name: String = ""
     var age: Int64 = 0
 
-    #Index(.scalar, fields: [\SQLiteStoredItem.age])
+    #Index(
+        .ordered(
+            name: "SQLiteStoredItem_age", keys: [.ascending(\SQLiteStoredItem.age)],
+            unique: false))
 }
 
 @Persistable
@@ -34,7 +37,11 @@ struct SQLiteStorageTests {
         return try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )
@@ -48,7 +55,11 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )
@@ -67,7 +78,11 @@ struct SQLiteStorageTests {
             for: schema,
             path: dbPath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )
@@ -109,7 +124,12 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self), try DatabaseFrameworkRuntime.entity(SQLiteStoredNote.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self), try DatabaseFrameworkRuntime.entity(SQLiteStoredNote.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -147,7 +167,11 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )
@@ -178,7 +202,11 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )
@@ -215,7 +243,11 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )
@@ -241,7 +273,11 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )
@@ -406,7 +442,8 @@ struct SQLiteStorageTests {
 
         let verificationContext = container.testBaseContext()
         #expect(
-            try await verificationContext.model(for: storedItem.id, as: SQLiteStoredItem.self)?.name
+            try await verificationContext.model(for: storedItem.id, as: SQLiteStoredItem.self)?
+                .name
                 == "Stored"
         )
         #expect(try await verificationContext.model(for: newItem.id, as: SQLiteStoredItem.self) == nil)
@@ -420,7 +457,11 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )
@@ -453,7 +494,11 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )
@@ -484,7 +529,11 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )
@@ -514,7 +563,11 @@ struct SQLiteStorageTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredItem.self)]
             ),
             security: .testingDisabled
         )

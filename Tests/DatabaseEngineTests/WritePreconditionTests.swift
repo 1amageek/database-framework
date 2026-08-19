@@ -36,7 +36,7 @@ struct WPUser {
     var id: String = UUID().uuidString
     var email: String = ""
 
-    #Index(.scalar, fields: [\WPUser.email])
+    #Index(.ordered(name: "WPUser_email", keys: [.ascending(\WPUser.email)], unique: false))
 }
 
 // MARK: - Test Suite
@@ -54,7 +54,12 @@ struct WritePreconditionTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(WPUser.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(WPUser.self)]),
             security: .testingDisabled,
         )
     }

@@ -31,20 +31,38 @@ struct OnlineIndexerLargeDataTests {
         let container: DBContainer
         let testSubspace: Subspace
         let itemSubspace: Subspace
-        let indexSubspace: Subspace
         let blobsSubspace: Subspace
 
-        init() async throws {
+        init(index: ResolvedIndex) async throws {
             self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
             let testId = UUID().uuidString.prefix(8)
             self.testSubspace = Subspace(prefix: Tuple("test", "largedata", String(testId)).pack())
-            self.itemSubspace = testSubspace.subspace("R")
-            self.indexSubspace = testSubspace.subspace("I")
-            self.blobsSubspace = testSubspace.subspace("B")
+            self.itemSubspace = testSubspace.subspace(SubspaceKey.items)
+            self.blobsSubspace = testSubspace.subspace(SubspaceKey.blobs)
 
             // Create container with Player schema
-            let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
-            self.container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]), security: .testingDisabled)
+            let schema = try Schema(
+                entities: [
+                    try Schema.Entity(
+                        from: Player.self,
+                        including: [index.descriptor]
+                    )
+                ],
+                version: Schema.Version(1, 0, 0)
+            )
+            self.container = try await DBContainer.open(
+                for: schema, configuration: .testing(storageEngine: database),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [
+                        try DatabaseFrameworkRuntime.entity(
+                            Player.self,
+                            including: [index.descriptor]
+                        )
+                    ]), security: .testingDisabled)
         }
 
         func cleanup() async throws {
@@ -71,16 +89,6 @@ struct OnlineIndexerLargeDataTests {
             }
         }
 
-        func countIndexEntries(indexName: String) async throws -> Int {
-            try await database.withTransaction { tx in
-                let range = indexSubspace.subspace(indexName).range()
-                return try await tx.collectRange(
-                    begin: range.begin,
-                    end: range.end,
-                    snapshot: true
-                ).count
-            }
-        }
     }
 
     // MARK: - Basic Large Data Tests
@@ -88,22 +96,21 @@ struct OnlineIndexerLargeDataTests {
     @Test("Build index with large dataset - batch processing works")
     func testBuildIndexWithLargeDataset() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let ctx = try await LargeDatasetIndexingContext()
+            let index = try PlayerIdentifierIndexDefinition.make(
+                name: "large_score_idx"
+            )
+            let ctx = try await LargeDatasetIndexingContext(index: index)
 
             // Generate dataset with 200 items (enough to require multiple batches)
             let players = PlayerDatasetGenerator.generatePlayers(count: 200, nameLength: 100)
             try await ctx.insertPlayers(players)
 
-            // Create index
-            let index = PlayerIdentifierIndexDefinition.make(name: "large_score_idx")
-            let maintainer = CountingIndexMaintainer<Player>(
-                indexSubspace: ctx.indexSubspace,
-                indexName: index.name
-            )
-
             let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
-                subspace: ctx.indexSubspace.subspace("_meta")
+                subspace: ctx.testSubspace
+            )
+            let maintainer = CountingIndexMaintainer<Player>(
+                indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
             )
 
             try await lifecycleStore.enable(index.name)
@@ -132,7 +139,10 @@ struct OnlineIndexerLargeDataTests {
     @Test("Build index respects batch boundaries")
     func testBatchBoundaryProcessing() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let ctx = try await LargeDatasetIndexingContext()
+            let index = try PlayerIdentifierIndexDefinition.make(
+                name: "batch_test_idx"
+            )
+            let ctx = try await LargeDatasetIndexingContext(index: index)
 
             let batchSize = 25
             // Generate exactly 3 batches + 7 remainder = 82 items
@@ -143,15 +153,12 @@ struct OnlineIndexerLargeDataTests {
             )
             try await ctx.insertPlayers(players)
 
-            let index = PlayerIdentifierIndexDefinition.make(name: "batch_test_idx")
-            let maintainer = CountingIndexMaintainer<Player>(
-                indexSubspace: ctx.indexSubspace,
-                indexName: index.name
-            )
-
             let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
-                subspace: ctx.indexSubspace.subspace("_meta")
+                subspace: ctx.testSubspace
+            )
+            let maintainer = CountingIndexMaintainer<Player>(
+                indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
             )
 
             try await lifecycleStore.enable(index.name)
@@ -182,17 +189,17 @@ struct OnlineIndexerLargeDataTests {
     @Test("Build index with empty dataset")
     func testBuildIndexWithEmptyDataset() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let ctx = try await LargeDatasetIndexingContext()
-
-            let index = PlayerIdentifierIndexDefinition.make(name: "empty_idx")
-            let maintainer = CountingIndexMaintainer<Player>(
-                indexSubspace: ctx.indexSubspace,
-                indexName: index.name
+            let index = try PlayerIdentifierIndexDefinition.make(
+                name: "empty_idx"
             )
+            let ctx = try await LargeDatasetIndexingContext(index: index)
 
             let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
-                subspace: ctx.indexSubspace.subspace("_meta")
+                subspace: ctx.testSubspace
+            )
+            let maintainer = CountingIndexMaintainer<Player>(
+                indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
             )
 
             try await lifecycleStore.enable(index.name)
@@ -218,21 +225,19 @@ struct OnlineIndexerLargeDataTests {
 
     @Test("Build index with single item")
     func testBuildIndexWithSingleItem() async throws {
-        let ctx = try await LargeDatasetIndexingContext()
+        let index = try PlayerIdentifierIndexDefinition.make(name: "single_idx")
+        let ctx = try await LargeDatasetIndexingContext(index: index)
 
         var player = Player(name: "Only One", score: 100, level: 1)
         player.id = "single"
         try await ctx.insertPlayers([player])
 
-        let index = PlayerIdentifierIndexDefinition.make(name: "single_idx")
-        let maintainer = CountingIndexMaintainer<Player>(
-            indexSubspace: ctx.indexSubspace,
-            indexName: index.name
-        )
-
         let lifecycleStore = IndexLifecycleStore(
             container: ctx.container,
-            subspace: ctx.indexSubspace.subspace("_meta")
+            subspace: ctx.testSubspace
+        )
+        let maintainer = CountingIndexMaintainer<Player>(
+            indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
         )
 
         try await lifecycleStore.enable(index.name)

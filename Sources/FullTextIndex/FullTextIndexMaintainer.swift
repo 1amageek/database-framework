@@ -3,9 +3,9 @@
 //
 // Maintains full-text indexes using inverted index structure.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 private struct FullTextPositionResult: Sendable {
@@ -63,13 +63,16 @@ public let fullTextMaxTermBytes: Int = 8000
 /// ```swift
 /// let maintainer = FullTextIndexMaintainer<Article>(
 ///     index: titleIndex,
-///     kind: FullTextIndexKind(tokenizer: .simple, storePositions: true),
+///     definition: .text(
+///         fields: [content],
+///         mode: .fullText(tokenizer: .simple, storePositions: true)
+///     ),
 ///     subspace: fullTextSubspace,
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
 public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -97,7 +100,7 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     }
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         tokenizer: TokenizationStrategy,
         storePositions: Bool,
         ngramSize: Int,

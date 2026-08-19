@@ -4,10 +4,10 @@
 // Time-windowed ranking with automatic window rotation.
 // Reference: FDB Record Layer TIME_WINDOW_LEADERBOARD index type
 
-import DatabaseTypes
+import DatabaseEngine
 import DatabaseKit
 import DatabaseMath
-import DatabaseEngine
+import DatabaseTypes
 import StorageKit
 
 public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConvertible {
@@ -84,7 +84,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     // MARK: - Properties
 
     /// Index definition
-    public let index: Index
+    public let index: ResolvedIndex
 
     /// Subspace for index storage
     public let subspace: Subspace
@@ -109,7 +109,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     // MARK: - Initialization
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         window: LeaderboardWindowType,
@@ -311,7 +311,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
 
     /// Extract score from item (type-safe)
     private func extractScore(from item: Item) throws -> Int64 {
-        guard let scoreField = index.kind.fieldNames.last else {
+        guard let scoreField = index.fieldNames.last else {
             throw TimeWindowLeaderboardIndexError.missingScoreField(
                 indexName: index.name
             )
@@ -334,7 +334,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
 
     /// Extract grouping fields from item (all fields except the last which is score)
     private func extractGrouping(from item: Item) throws -> [any TupleElement] {
-        let groupingFields = index.kind.fieldNames.dropLast()
+        let groupingFields = index.fieldNames.dropLast()
         if groupingFields.isEmpty {
             return []
         }

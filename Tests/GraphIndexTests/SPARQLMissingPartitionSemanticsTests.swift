@@ -15,12 +15,12 @@ private struct PartitionedRDFStatement {
         \PartitionedRDFStatement.tenantID
     )
     #Index(
-        .rdfDataset,
-        from: \PartitionedRDFStatement.subject,
-        edge: \PartitionedRDFStatement.predicate,
-        to: \PartitionedRDFStatement.object,
-        name: "partitioned_rdf"
-    )
+        .graph(
+            name: "partitioned_rdf",
+            definition: .rdf(
+                subject: \PartitionedRDFStatement.subject,
+                predicate: \PartitionedRDFStatement.predicate,
+                object: \PartitionedRDFStatement.object, graph: nil)))
 
     var id: String = ""
     var tenantID: String = ""
@@ -41,6 +41,10 @@ struct SPARQLMissingPartitionSemanticsTests {
                 storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         PartitionedRDFStatement.self

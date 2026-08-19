@@ -1,11 +1,12 @@
-import Testing
-import Foundation
-import StorageKit
 import DatabaseKit
-import TestSupport
-@testable import DatabaseEngine
 import DatabaseRuntime
+import Foundation
 import ScalarIndex
+import StorageKit
+import TestSupport
+import Testing
+
+@testable import DatabaseEngine
 
 @Suite("OnlineIndexer Batch Dispatch Tests", .heartbeat)
 struct OnlineIndexerBatchDispatchTests {
@@ -16,39 +17,51 @@ struct OnlineIndexerBatchDispatchTests {
             prefix: Tuple("test", "onlineindexer", "unique", UUID().uuidString).pack()
         )
         let itemSubspace = storeSubspace.subspace(SubspaceKey.items)
-        let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
         let blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
+        let index = try ResolvedIndex(
+            for: Player.self,
+            name: "unique_player_name_idx",
+            definition: .ordered(
+                keys: [.ascending(Player.fields.name.identity)],
+                includedFields: [],
+                unique: true
+            ),
+            rootExpression: FieldKeyExpression(fieldName: "name")
+        )
         let schema = try Schema(
-            entities: [try Player.schemaEntity],
+            entities: [
+                try Schema.Entity(
+                    from: Player.self,
+                    including: [index.descriptor]
+                )
+            ],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        Player.self,
+                        including: [index.descriptor]
+                    )
+                ]
             ),
             security: .testingDisabled
         )
-        let index = Index(
-            name: "unique_player_name_idx",
-            kind: IndexKindMetadata(
-                identifier: IndexDefinition.scalar.identifier,
-                subspaceStructure: .flat,
-                fields: [Player.fields.name.ascending.metadata],
-                metadata: [:]
-            ),
-            rootExpression: FieldKeyExpression(fieldName: "name"),
-            isUnique: true
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: storeSubspace
         )
         let maintainer = ScalarIndexMaintainer<Player>(
             index: index,
-            subspace: indexSubspace.subspace(index.subspaceKey),
+            subspace: try lifecycleStore.indexSubspace(for: index.name),
             idExpression: FieldKeyExpression(fieldName: "id")
-        )
-        let lifecycleStore = IndexLifecycleStore(
-            container: container,
-            subspace: indexSubspace.subspace("_meta")
         )
         try await lifecycleStore.enable(index.name)
 
@@ -110,29 +123,41 @@ struct OnlineIndexerBatchDispatchTests {
         let storeSubspace = Subspace(
             prefix: Tuple("test", "onlineindexer", "configuration", testId).pack()
         )
-        let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
+        let index = try PlayerIdentifierIndexDefinition.make(
+            name: "invalid_configuration_idx"
+        )
         let schema = try Schema(
-            entities: [try Player.schemaEntity],
+            entities: [
+                try Schema.Entity(
+                    from: Player.self,
+                    including: [index.descriptor]
+                )
+            ],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        Player.self,
+                        including: [index.descriptor]
+                    )
+                ]
             ),
             security: .testingDisabled
         )
-        let index = PlayerIdentifierIndexDefinition.make(
-            name: "invalid_configuration_idx"
-        )
-        let maintainer = BatchTrackingIndexMaintainer<Player>(
-            indexSubspace: indexSubspace,
-            indexName: index.name
-        )
         let lifecycleStore = IndexLifecycleStore(
             container: container,
-            subspace: indexSubspace.subspace("_meta")
+            subspace: storeSubspace
+        )
+        let maintainer = BatchTrackingIndexMaintainer<Player>(
+            indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
         )
 
         #expect(throws: OnlineIndexBuildError.invalidBatchSize(0)) {
@@ -159,11 +184,16 @@ struct OnlineIndexerBatchDispatchTests {
                 throttleDelayMs: -1
             )
         }
-        let unsupportedUniqueIndex = Index(
+        let unsupportedUniqueIndex = try ResolvedIndex(
+            for: Player.self,
             name: "unsupported_unique_idx",
-            kind: index.kind,
+            definition: .ordered(
+                keys: [.ascending(Player.fields.id.identity)],
+                includedFields: [],
+                unique: true
+            ),
             rootExpression: index.rootExpression,
-            isUnique: true
+            itemTypes: index.itemTypes
         )
         #expect(
             throws: OnlineIndexBuildError.unsupportedUniquenessConstraint(
@@ -208,14 +238,32 @@ struct OnlineIndexerBatchDispatchTests {
         let testId = String(UUID().uuidString.prefix(8))
         let storeSubspace = Subspace(prefix: Tuple("test", "onlineindexer", "batch", testId).pack())
         let itemSubspace = storeSubspace.subspace(SubspaceKey.items)
-        let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
         let blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
+        let index = try PlayerIdentifierIndexDefinition.make(
+            name: "batch_hook_idx"
+        )
 
-        let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
+        let schema = try Schema(entities: [
+                try Schema.Entity(
+                    from: Player.self,
+                    including: [index.descriptor]
+                )
+            ],
+            version: Schema.Version(1, 0, 0))
         let container = try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        Player.self,
+                        including: [index.descriptor]
+                    )
+                ]),
             security: .testingDisabled
         )
 
@@ -235,15 +283,12 @@ struct OnlineIndexerBatchDispatchTests {
             }
         }
 
-        let index = PlayerIdentifierIndexDefinition.make(name: "batch_hook_idx")
-        let maintainer = BatchTrackingIndexMaintainer<Player>(
-            indexSubspace: indexSubspace,
-            indexName: index.name
-        )
-
         let lifecycleStore = IndexLifecycleStore(
             container: container,
-            subspace: indexSubspace.subspace("_meta")
+            subspace: storeSubspace
+        )
+        let maintainer = BatchTrackingIndexMaintainer<Player>(
+            indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
         )
 
         try await lifecycleStore.enable(index.name)

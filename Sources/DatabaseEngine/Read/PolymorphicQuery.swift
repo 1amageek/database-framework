@@ -291,12 +291,12 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     /// Resolve a shared index name from polymorphic group metadata.
     @_spi(PolymorphicRuntime)
     public func resolveIndexName(
-        kindIdentifier: String,
+        indexType: IndexType,
         fieldName: String
     ) throws -> String? {
         let group = try context.container.polymorphicGroup(identifier: groupIdentifier)
         return group.indexes.first { descriptor in
-            descriptor.kindIdentifier == kindIdentifier
+            descriptor.type == indexType
                 && descriptorFields(descriptor.fieldNames, contain: fieldName)
         }?.name
     }

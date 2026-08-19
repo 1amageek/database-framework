@@ -2,12 +2,12 @@
 // FullTextIndex - FullText search query for Fusion
 //
 // This file is part of FullTextIndex module, not DatabaseEngine.
-// DatabaseEngine does not know about FullTextIndexKind.
+// DatabaseEngine dispatches text semantics without depending on this module.
 
-import DatabaseTypes
+import DatabaseEngine
 import DatabaseKit
 import DatabaseMath
-import DatabaseEngine
+import DatabaseTypes
 import StorageKit
 
 /// FullText search query for Fusion
@@ -141,20 +141,18 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Index Discovery
 
-    /// Find the index descriptor using kindIdentifier and fieldName
+    /// Finds the text index descriptor for the requested fields.
     private func resolveIndexDescriptor() throws -> IndexDescriptor {
         let matches = queryContext.indexDescriptors(for: T.self).filter {
             descriptor in
-            descriptor.kindIdentifier == "fulltext"
-                && descriptor.kind.fields.contains(where: {
-                    $0.identity == field
-                })
+            descriptor.type == .text(.fullText)
+                && descriptor.fieldIdentities.contains(field)
         }
         guard let descriptor = matches.first else {
             throw FusionQueryError.indexNotFound(
-                type: T.persistableType,
+                entity: T.persistableType,
                 field: field.name,
-                kind: "fulltext"
+                indexType: .text(.fullText)
             )
         }
         guard matches.count == 1 else {
@@ -174,7 +172,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         // Find index descriptor
         let descriptor = try resolveIndexDescriptor()
         let configuration = try FullTextIndexConfiguration(
-            metadata: descriptor.kind
+            definition: descriptor.declaration.definition
         )
 
         let indexName = descriptor.name
@@ -183,7 +181,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         let scoredIds: [(id: Tuple, score: Double)] = try await queryContext
             .withReadableIndex(
                 named: indexName,
-                kindIdentifier: "fulltext",
+                indexType: .text(.fullText),
                 for: T.self
             ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -469,15 +467,12 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     ) async throws -> [[any TupleElement]] {
         let descriptor = try resolveIndexDescriptor()
         let configuration = try FullTextIndexConfiguration(
-            metadata: descriptor.kind
+            definition: descriptor.declaration.definition
         )
 
-        let index = Index(
-            name: descriptor.name,
-            kind: descriptor.kind,
+        let index = ResolvedIndex(
+            descriptor: descriptor,
             rootExpression: KeyExpressionFactory.from(keyPaths: descriptor.fieldNames),
-            isUnique: descriptor.isUnique,
-            storedFieldNames: descriptor.storedFieldNames
         )
 
         let maintainer = FullTextIndexMaintainer<T>(

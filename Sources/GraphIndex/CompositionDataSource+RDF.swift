@@ -1,4 +1,4 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes

@@ -17,10 +17,9 @@ private struct SchemaDrivenRuntimeAccount {
         "accounts"
     )
     #Index(
-        .scalar,
-        fields: [\SchemaDrivenRuntimeAccount.email],
-        name: "schema_driven_runtime_account_email"
-    )
+        .ordered(
+            name: "schema_driven_runtime_account_email",
+            keys: [.ascending(\SchemaDrivenRuntimeAccount.email)], unique: false))
 
     var id: String = ""
     var email: String = ""
@@ -55,75 +54,74 @@ private struct SchemaDrivenIndexParityEntity {
     var note: String?
 
     #Index(
-        .scalar,
-        fields: [\SchemaDrivenIndexParityEntity.email],
-        name: "parity_scalar"
-    )
+        .ordered(
+            name: "parity_scalar", keys: [.ascending(\SchemaDrivenIndexParityEntity.email)],
+            unique: false))
     #Index(
-        .vector(dimensions: 3),
-        embedding: \SchemaDrivenIndexParityEntity.embedding,
-        name: "parity_vector"
-    )
+        .vector(
+            name: "parity_vector",
+            embedding: \SchemaDrivenIndexParityEntity.embedding,
+            dimensions: 3
+        ))
     #Index(
-        .fullText(tokenizer: .simple),
-        fields: [\SchemaDrivenIndexParityEntity.body],
-        name: "parity_fulltext"
-    )
+        .text(
+            name: "parity_fulltext", fields: [\SchemaDrivenIndexParityEntity.body],
+            mode: .fullText(
+                tokenizer: .simple, storePositions: true, ngramSize: 3, minimumTermLength: 2)))
     #Index(
-        .spatial(),
-        location: \SchemaDrivenIndexParityEntity.location,
-        name: "parity_spatial"
-    )
+        .spatial(
+            name: "parity_spatial",
+            location: \SchemaDrivenIndexParityEntity.location
+        ))
     #Index(
-        .rank,
-        field: \SchemaDrivenIndexParityEntity.score,
-        name: "parity_rank"
-    )
+        .rank(
+            name: "parity_rank",
+            score: \SchemaDrivenIndexParityEntity.score
+        ))
     #Index(
-        .sum,
-        groupBy: [\SchemaDrivenIndexParityEntity.region],
-        value: \SchemaDrivenIndexParityEntity.amount,
-        name: "parity_sum"
-    )
+        .aggregate(
+            name: "parity_sum", function: .sum,
+        groupBy: [.ascending(\SchemaDrivenIndexParityEntity.region)],
+        value: \SchemaDrivenIndexParityEntity.amount))
     #Index(
-        .distinct(),
-        groupBy: [\SchemaDrivenIndexParityEntity.region],
-        value: \SchemaDrivenIndexParityEntity.customerID,
-        name: "parity_distinct"
-    )
+        .aggregate(
+            name: "parity_distinct", function: .approximateDistinct(precision: 14),
+        groupBy: [.ascending(\SchemaDrivenIndexParityEntity.region)],
+        value: \SchemaDrivenIndexParityEntity.customerID))
     #Index(
-        .percentile(),
-        groupBy: [\SchemaDrivenIndexParityEntity.region],
-        value: \SchemaDrivenIndexParityEntity.latency,
-        name: "parity_percentile"
-    )
+        .aggregate(
+            name: "parity_percentile", function: .percentile(compression: 100),
+        groupBy: [.ascending(\SchemaDrivenIndexParityEntity.region)],
+        value: \SchemaDrivenIndexParityEntity.latency))
     #Index(
-        .bitmap,
-        field: \SchemaDrivenIndexParityEntity.status,
-        name: "parity_bitmap"
-    )
+        .bitmap(
+            name: "parity_bitmap",
+            field: \SchemaDrivenIndexParityEntity.status
+        ))
     #Index(
-        .timeWindowLeaderboard(window: .daily, windowCount: 2),
-        groupBy: [\SchemaDrivenIndexParityEntity.region],
-        field: \SchemaDrivenIndexParityEntity.score,
-        name: "parity_leaderboard"
-    )
+        .leaderboard(
+            name: "parity_leaderboard",
+            groupBy: [.ascending(\SchemaDrivenIndexParityEntity.region)],
+            score: \SchemaDrivenIndexParityEntity.score,
+            window: .daily,
+            windowCount: 2
+        ))
     #Index(
-        .permuted(.swapping(0, 1, size: 3)),
-        fields: [
-            \SchemaDrivenIndexParityEntity.country,
-            \SchemaDrivenIndexParityEntity.city,
-            \SchemaDrivenIndexParityEntity.name,
-        ],
-        name: "parity_permuted"
-    )
+        .ordered(
+            name: "parity_ordered_compound",
+            keys: [
+                .ascending(\SchemaDrivenIndexParityEntity.city),
+                .ascending(\SchemaDrivenIndexParityEntity.country),
+                .ascending(\SchemaDrivenIndexParityEntity.name),
+            ]))
     #Index(
-        .propertyGraph(strategy: .adjacency),
-        from: \SchemaDrivenIndexParityEntity.source,
-        edge: \SchemaDrivenIndexParityEntity.relation,
-        to: \SchemaDrivenIndexParityEntity.target,
-        name: "parity_graph"
-    )
+        .graph(
+            name: "parity_graph",
+            definition: .property(
+                source: \SchemaDrivenIndexParityEntity.source,
+                label: .field(\SchemaDrivenIndexParityEntity.relation),
+                target: \SchemaDrivenIndexParityEntity.target, graph: nil, strategy: .adjacency)
+        ))
 }
 
 @Persistable
@@ -133,10 +131,9 @@ private struct SchemaDrivenVersionCapabilityEntity {
         "version-capability"
     )
     #Index(
-        .version(strategy: .keepAll),
-        field: \SchemaDrivenVersionCapabilityEntity.id,
-        name: "version_capability"
-    )
+        .history(
+            name: "version_capability", version: \SchemaDrivenVersionCapabilityEntity.id,
+            retention: .keepAll))
 
     var id: String
 }
@@ -154,16 +151,24 @@ struct SchemaDrivenRuntimeSQLiteTests {
         let compiled = try await makeContainer(
             schema: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SchemaDrivenRuntimeAccount.self
-                    ),
+                    )
                 ]
             )
         )
         let schemaDriven = try await makeContainer(
             schema: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 schema: schema
             )
         )
@@ -199,7 +204,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
                 SortKey(
                     .column(ColumnRef(column: "email")),
                     direction: .ascending
-                ),
+                )
             ]
         )
         let compiledAdults = try await compiled.testBaseContext().query(adults)
@@ -246,7 +251,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
                 SortKey(
                     .column(ColumnRef(column: "id")),
                     direction: .ascending
-                ),
+                )
             ]
         )
         let compiledRows = try await compiled.testBaseContext().query(allRows)
@@ -337,7 +342,12 @@ struct SchemaDrivenRuntimeSQLiteTests {
             ),
             security: .testingDisabled
         ) { schema in
-            try DatabaseFrameworkRuntime.configuration(schema: schema)
+            try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                schema: schema)
         }
 
         let publication: DatabaseSchemaPublicationResult
@@ -351,7 +361,13 @@ struct SchemaDrivenRuntimeSQLiteTests {
                 idempotencyKey: "sqlite-schema-restore",
                 authorization: TestBaseEnvironment.authorization,
                 runtimeConfiguration: try DatabaseFrameworkRuntime
-                    .configuration(schema: targetSchema)
+                    .configuration(
+                        executionIdentity: DatabaseExecutionRuntimeIdentity(
+                            identifier: "database-tests",
+                            revision: 1
+                        ),
+                        schema: targetSchema
+                    )
             )
             try await save(
                 [
@@ -360,7 +376,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
                         email: "restart@example.com",
                         age: 44,
                         nickname: .null
-                    ),
+                    )
                 ],
                 in: first
             )
@@ -378,7 +394,12 @@ struct SchemaDrivenRuntimeSQLiteTests {
             ),
             security: .testingDisabled
         ) { schema in
-            try DatabaseFrameworkRuntime.configuration(schema: schema)
+            try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                schema: schema)
         }
         defer { await reopened.shutdown() }
 
@@ -413,16 +434,24 @@ struct SchemaDrivenRuntimeSQLiteTests {
         let compiled = try await makeContainer(
             schema: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SchemaDrivenIndexParityEntity.self
-                    ),
+                    )
                 ]
             )
         )
         let schemaDriven = try await makeContainer(
             schema: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 schema: schema
             )
         )
@@ -478,13 +507,22 @@ struct SchemaDrivenRuntimeSQLiteTests {
         )
         let configurations = [
             try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SchemaDrivenVersionCapabilityEntity.self
-                    ),
+                    )
                 ]
             ),
-            try DatabaseFrameworkRuntime.configuration(schema: schema),
+            try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                schema: schema),
         ]
 
         for runtimeConfiguration in configurations {
@@ -498,7 +536,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
                 .unsupportedStorageCapability(
                     let source,
                     let indexName,
-                    let kindIdentifier,
+                    let indexType,
                     let capability
                 ) {
                 #expect(
@@ -507,7 +545,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
                     )
                 )
                 #expect(indexName == "version_capability")
-                #expect(kindIdentifier == "version")
+                #expect(indexType == .history)
                 #expect(capability == .versionstampedMutations)
             }
         }
@@ -582,9 +620,10 @@ struct SchemaDrivenRuntimeSQLiteTests {
         let entitySubspace = try await container.resolveDirectory(
             for: SchemaDrivenIndexParityEntity.self
         )
-        let indexSubspace = entitySubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexName)
+        let indexSubspace = try IndexLifecycleStore(
+                container: container,
+                subspace: entitySubspace
+            ).indexSubspace(for: indexName)
         let range = indexSubspace.range()
         return try await container.engine.withTransaction { transaction in
             try await transaction.collectRange(

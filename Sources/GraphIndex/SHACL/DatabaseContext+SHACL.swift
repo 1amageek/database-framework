@@ -6,12 +6,12 @@
 //
 // Reference: W3C SHACL https://www.w3.org/TR/shacl/
 
-import DatabaseTypes
-import StorageKit
-import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseEngine
-
+import DatabaseKit
+import DatabaseTypes
 import OntologyIndex
+import StorageKit
+
 // MARK: - DatabaseContext Extension
 
 extension DatabaseContext {
@@ -363,7 +363,7 @@ public struct SHACLContextAPI: Sendable {
         let selection = candidates[0]
         let readableIndex = try await context.indexQueryContext.readableIndex(
             named: selection.indexName,
-            kindIdentifier: selection.kindIdentifier,
+            indexType: selection.indexType,
             for: T.self,
             transaction: transaction
         )

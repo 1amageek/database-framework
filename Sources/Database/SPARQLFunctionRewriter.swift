@@ -389,7 +389,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             entityName: entity.name,
             indexDescriptor: graphIndex,
             metadata: dataset.metadata,
-            storedFieldNames: graphIndex.storedFieldNames
+            includedFieldNames: graphIndex.includedFieldNames
         )
 
         // 5. Extract single-variable values
@@ -474,7 +474,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
     ///   - sparqlQuery: SPARQL query string
     ///   - indexSubspace: Resolved index subspace
     ///   - metadata: RDF dataset index metadata
-    ///   - storedFieldNames: Stored field names for the index
+    ///   - includedFieldNames: Stored field names for the index
     /// - Returns: SPARQL result
     /// - Throws: SPARQL execution errors
     private func executeSPARQL(
@@ -482,12 +482,12 @@ internal struct SPARQLFunctionRewriter: Sendable {
         entityName: String,
         indexDescriptor: IndexDescriptor,
         metadata: RDFDatasetIndexMetadata,
-        storedFieldNames: [String]
+        includedFieldNames: [String]
     ) async throws -> SPARQLResult {
         let readableIndex = try await context.indexQueryContext
             .readableIndex(
                 named: indexDescriptor.name,
-                kindIdentifier: indexDescriptor.kindIdentifier,
+                indexType: indexDescriptor.type,
                 forEntityName: entityName,
                 partitions: FieldObject(),
                 transaction: transaction
@@ -500,7 +500,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                     indexName: indexDescriptor.name,
                     indexSubspace: readableIndex.subspace,
                     coverage: try metadata.graphMapping.sourceCoverage,
-                    storedFieldNames: storedFieldNames
+                    includedFieldNames: includedFieldNames
                 )
             ]
         } else {

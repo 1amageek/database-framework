@@ -33,11 +33,12 @@ struct OntologyStorePhase2Tests {
         var object: String = ""
 
         #Index(
-            .propertyGraph(strategy: .tripleStore),
-            from: \OntologyPhase2Dummy.subject,
-            edge: \OntologyPhase2Dummy.predicate,
-            to: \OntologyPhase2Dummy.object
-        )
+            .graph(
+                name: "OntologyPhase2Dummy_graph_subject_predicate_object",
+                definition: .property(
+                    source: \OntologyPhase2Dummy.subject,
+                    label: .field(\OntologyPhase2Dummy.predicate),
+                    target: \OntologyPhase2Dummy.object, graph: nil, strategy: .tripleStore)))
     }
 
     private static let testOntologyIRI = "http://test.org/ontology-phase2-fixes"
@@ -54,7 +55,12 @@ struct OntologyStorePhase2Tests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntologyPhase2Dummy.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntologyPhase2Dummy.self)]),
             security: .testingDisabled,
         )
         return container.testBaseContext()
@@ -91,7 +97,7 @@ struct OntologyStorePhase2Tests {
         var ontology2 = OWLOntology(iri: Self.testOntologyIRI)
         ontology2.classes = [OWLClass(iri: "ex:X"), OWLClass(iri: "ex:Y")]
         ontology2.axioms = [
-            .subClassOf(sub: .named("ex:X"), sup: .named("ex:Y")),
+            .subClassOf(sub: .named("ex:X"), sup: .named("ex:Y"))
         ]
         try await context.ontology.load(
             ontology2,
@@ -140,7 +146,7 @@ struct OntologyStorePhase2Tests {
         var ontology2 = OWLOntology(iri: Self.testOntologyIRI)
         ontology2.classes = [OWLClass(iri: "ex:X"), OWLClass(iri: "ex:Y")]
         ontology2.axioms = [
-            .subClassOf(sub: .named("ex:X"), sup: .named("ex:Y")),
+            .subClassOf(sub: .named("ex:X"), sup: .named("ex:Y"))
         ]
         try await context.ontology.load(
             ontology2,
@@ -181,7 +187,7 @@ struct OntologyStorePhase2Tests {
         // Second load: no property chains
         var ontology2 = OWLOntology(iri: Self.testOntologyIRI)
         ontology2.objectProperties = [
-            OWLObjectProperty(iri: "ex:simpleRel"),
+            OWLObjectProperty(iri: "ex:simpleRel")
         ]
         try await context.ontology.load(
             ontology2,
@@ -206,7 +212,7 @@ struct OntologyStorePhase2Tests {
         var ontology = OWLOntology(iri: Self.testOntologyIRI)
         ontology.classes = [OWLClass(iri: "ex:A"), OWLClass(iri: "ex:B")]
         ontology.axioms = [
-            .equivalentClasses([.named("ex:A"), .named("ex:B")]),
+            .equivalentClasses([.named("ex:A"), .named("ex:B")])
         ]
         try await context.ontology.load(
             ontology,
@@ -234,7 +240,7 @@ struct OntologyStorePhase2Tests {
             OWLClass(iri: "ex:A"), OWLClass(iri: "ex:B"), OWLClass(iri: "ex:C"),
         ]
         ontology.axioms = [
-            .equivalentClasses([.named("ex:A"), .named("ex:B"), .named("ex:C")]),
+            .equivalentClasses([.named("ex:A"), .named("ex:B"), .named("ex:C")])
         ]
         try await context.ontology.load(
             ontology,
@@ -327,7 +333,7 @@ struct OntologyStorePhase2Tests {
             OWLObjectProperty(iri: "ex:hasAncestor"),
         ]
         ontology.axioms = [
-            .subObjectPropertyOf(sub: "ex:hasParent", sup: "ex:hasAncestor"),
+            .subObjectPropertyOf(sub: "ex:hasParent", sup: "ex:hasAncestor")
         ]
         try await context.ontology.load(
             ontology,
@@ -356,7 +362,7 @@ struct OntologyStorePhase2Tests {
             OWLDataProperty(iri: "ex:name"),
         ]
         ontology.axioms = [
-            .subDataPropertyOf(sub: "ex:firstName", sup: "ex:name"),
+            .subDataPropertyOf(sub: "ex:firstName", sup: "ex:name")
         ]
         try await context.ontology.load(
             ontology,
@@ -381,7 +387,7 @@ struct OntologyStorePhase2Tests {
             OWLDataProperty(iri: "ex:lastName"),
         ]
         ontology.axioms = [
-            .equivalentDataProperties(["ex:familyName", "ex:lastName"]),
+            .equivalentDataProperties(["ex:familyName", "ex:lastName"])
         ]
         try await context.ontology.load(
             ontology,

@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 enum BitmapReadParameter {
@@ -34,7 +34,7 @@ private enum BitmapReadError: Error, Sendable {
 }
 
 private struct BitmapReadExecutor: IndexReadExecutor {
-    let kindIdentifier = "bitmap"
+    let indexType: IndexType = .bitmap
 
     func executeRows(
         context: DatabaseContext,
@@ -46,8 +46,8 @@ private struct BitmapReadExecutor: IndexReadExecutor {
         partitions: FieldObject
     ) async throws -> IndexReadResult {
         let fieldName = try requireString(BitmapReadParameter.fieldName, from: indexScan.parameters)
-        guard index.kindIdentifier == BitmapIndexSpecification.identifier,
-              index.fieldNames == [fieldName] else {
+        guard index.type == .bitmap,
+            index.fieldNames == [fieldName] else {
             throw BitmapReadError.invalidParameter(
                 BitmapReadParameter.fieldName
             )
@@ -73,7 +73,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
         let resultLimit = min(requestedLimit ?? budgetLimit, budgetLimit)
         return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
-            kindIdentifier: kindIdentifier,
+            indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
             configuration: execution.transactionConfiguration
@@ -198,22 +198,21 @@ private struct BitmapReadExecutor: IndexReadExecutor {
 }
 
 private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
-    let kindIdentifier = "bitmap"
+    let indexType: IndexType = .bitmap
 
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
-        index: PolymorphicIndexMetadata,
+        index: IndexDeclaration<String>,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
         let fieldName = try requireString(BitmapReadParameter.fieldName, from: indexScan.parameters)
-        guard index.kindIdentifier == BitmapIndexSpecification.identifier,
-              index.subspaceStructure == .hierarchical,
-              index.fieldNames == [fieldName],
-              index.metadata.isEmpty else {
+        guard index.type == .bitmap,
+            index.fieldNames == [fieldName]
+        else {
             throw BitmapReadError.invalidParameter(
                 BitmapReadParameter.fieldName
             )
@@ -340,7 +339,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
                                 PolymorphicRowAnnotation.typeName:
                                     .string(entity.typeName),
                                 PolymorphicRowAnnotation.typeCode:
-                                    .int64(entity.typeCode)
+                                    .int64(entity.typeCode),
                             ]
                         )
                     )

@@ -26,11 +26,10 @@ struct SchemaEntityEntryCodecRankTests {
                 directoryComponents: [.staticPath("rankable")],
                 directoryLayer: .default,
                 indexes: [
-                    PolymorphicIndexDefinition(
+                    .rank(
                         name: "rankable_score",
-                        definition: .rank,
-                        fields: [PolymorphicIndexField(name: "score")]
-                    ),
+                        score: "score"
+                    )
                 ]
             )
         )
@@ -40,7 +39,7 @@ struct SchemaEntityEntryCodecRankTests {
 
         #expect(decoded == entity)
         #expect(
-            decoded.polymorphicMembership?.indexes.first?.definition == .rank
+            decoded.polymorphicMembership?.indexes.first?.definition == .rank(score: "score")
         )
     }
 }

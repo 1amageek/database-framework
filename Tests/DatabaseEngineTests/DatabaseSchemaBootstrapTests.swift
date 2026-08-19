@@ -1,8 +1,8 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Database Schema Bootstrap Tests", .serialized)
@@ -38,13 +38,17 @@ struct DatabaseSchemaBootstrapTests {
         let unversioned = try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try BootstrapIndexedEntity.schemaEntity,
+                    try BootstrapIndexedEntity.schemaEntity
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -83,14 +87,18 @@ struct DatabaseSchemaBootstrapTests {
         let divergent = try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try DivergentBootstrapEntity.schemaEntity,
+                    try DivergentBootstrapEntity.schemaEntity
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
             migrationPlan: BootstrapMigrationPlan.self,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self),
                 try DatabaseFrameworkRuntime.entity(DivergentBootstrapEntity.self),
             ]
@@ -114,7 +122,11 @@ struct DatabaseSchemaBootstrapTests {
             migrationPlan: BootstrapMigrationPlan.self,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(BootstrapIndexedEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -131,7 +143,7 @@ struct DatabaseSchemaBootstrapTests {
 
     private enum BootstrapMigrationPlan: SchemaMigrationPlan {
         static let schemas: [any VersionedSchema.Type] = [
-            BootstrapSchema.self,
+            BootstrapSchema.self
         ]
         static let stages: [MigrationStage] = []
     }

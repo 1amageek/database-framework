@@ -1,4 +1,4 @@
-#if POSTGRESQL && MultipleBases
+#if POSTGRESQL && MultiBase
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
@@ -69,10 +69,14 @@ struct PostgreSQLCompositionTests {
                     wallClock: FixedTestWallClock()
                 ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
                     entityRuntimes: [
                         try DatabaseFrameworkRuntime.entity(
                             PostgreSQLCompositionItem.self
-                        ),
+                        )
                     ]
                 ),
                 security: .testingDisabled
@@ -94,7 +98,7 @@ struct PostgreSQLCompositionTests {
                             subject: .principal(principal.identifier),
                             resource: .base(baseID),
                             access: .all
-                        ),
+                        )
                     ],
                     expectedRevision: 0
                 )

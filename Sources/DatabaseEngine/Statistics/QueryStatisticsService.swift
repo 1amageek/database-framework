@@ -1,9 +1,9 @@
 // QueryStatisticsService.swift
 // Unified database statistics management
 
-import StorageKit
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
+import StorageKit
 import Synchronization
 
 /// Collects, stores, and serves database statistics.
@@ -529,7 +529,7 @@ package final class QueryStatisticsService: StatisticsProvider, Sendable {
     /// Collect index statistics by scanning index entries
     ///
     /// - Parameters:
-    ///   - index: Index descriptor
+    ///   - index: ResolvedIndex descriptor
     ///   - indexSubspace: Subspace containing index entries
     public func collectIndexStatistics(
         index: IndexDescriptor,
@@ -537,21 +537,18 @@ package final class QueryStatisticsService: StatisticsProvider, Sendable {
     ) async throws {
         guard let capabilities = container.runtimeConfiguration
             .indexMaintainerProviders
-            .physicalEntryCapabilities(for: index.kindIdentifier) else {
+            .physicalEntryCapabilities(for: index.type)
+        else {
             throw StatisticsCollectionError.unsupportedPhysicalLayout(
                 indexName: index.name,
-                kindIdentifier: index.kindIdentifier
+                indexType: index.type
             )
         }
-        let runtimeIndex = Index(
-            name: index.name,
-            kind: index.kind,
+        let runtimeIndex = ResolvedIndex(
+            descriptor: index,
             rootExpression: KeyExpressionFactory.from(
                 keyPaths: index.fieldNames
-            ),
-            subspaceKey: index.name,
-            isUnique: index.isUnique,
-            storedFieldNames: index.storedFieldNames
+            )
         )
 
         let cardinality = try await container.transactionExecutor.withTransaction(

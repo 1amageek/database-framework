@@ -1,6 +1,6 @@
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
-import DatabaseEngine
 import StorageKit
 import Testing
 @testable import ScalarIndex
@@ -14,13 +14,13 @@ struct ScalarUInt64IndexRuntimeTests {
             UInt64(Int64.max) + 1,
             UInt64.max,
         ]
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: UnsignedScalarEntity.self,
             name: "UnsignedScalarEntity_value",
-            kind: scalarIndexMetadata(
+            definition: scalarIndexDefinition(
                 fields: [FieldIdentity(name: "value", number: 2)]
             ),
             rootExpression: FieldKeyExpression(fieldName: "value"),
-            subspaceKey: "UnsignedScalarEntity_value",
             itemTypes: [UnsignedScalarEntity.persistableType]
         )
         let indexSubspace = Subspace(
@@ -69,15 +69,15 @@ struct ScalarUInt64IndexRuntimeTests {
 
     @Test("Provider exposes uniqueness without runtime capability casts")
     func providerBuildsUniquenessMaintainer() async throws {
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: UnsignedScalarEntity.self,
             name: "UnsignedScalarEntity_value",
-            kind: scalarIndexMetadata(
-                fields: [FieldIdentity(name: "value", number: 2)]
+            definition: scalarIndexDefinition(
+                fields: [FieldIdentity(name: "value", number: 2)],
+                unique: true
             ),
             rootExpression: FieldKeyExpression(fieldName: "value"),
-            subspaceKey: "UnsignedScalarEntity_value",
-            itemTypes: [UnsignedScalarEntity.persistableType],
-            isUnique: true
+            itemTypes: [UnsignedScalarEntity.persistableType]
         )
         let provider = ScalarIndexMaintainerProvider()
 

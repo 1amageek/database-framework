@@ -103,7 +103,12 @@ struct DirectoryMigrationPostgreSQLTests {
                 for: PGDirectoryMigrationSchemaV2.self,
                 migrationPlan: PGDirectoryMigrationCopyPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV2.self)])
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV2.self)])
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -143,7 +148,12 @@ struct DirectoryMigrationPostgreSQLTests {
                 for: PGDirectoryMigrationSchemaV2.self,
                 migrationPlan: PGDirectoryMigrationCopyPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV2.self)])
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGDirectoryMigrationUserV2.self)])
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()

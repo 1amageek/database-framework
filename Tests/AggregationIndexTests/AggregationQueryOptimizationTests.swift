@@ -60,15 +60,15 @@ private struct AggregationQueryContext {
         self.indexSubspace = subspace.subspace("I")
 
         // COUNT index: group by region
-        let countIndex = Index(
+        let countIndex = try ResolvedIndex(
+            for: AggregationOrder.self,
             name: "AggregationOrder_count_region",
-            kind: countIndexMetadata(
+            definition: countIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ]
             ),
             rootExpression: FieldKeyExpression(fieldName: "region"),
-            subspaceKey: "AggregationOrder_count_region",
             itemTypes: Set(["AggregationOrder"])
         )
         self.countMaintainer = CountIndexMaintainer<AggregationOrder>(
@@ -78,21 +78,20 @@ private struct AggregationQueryContext {
         )
 
         // SUM index: group by region, sum amount
-        let sumIndex = Index(
+        let sumIndex = try ResolvedIndex(
+            for: AggregationOrder.self,
             name: "AggregationOrder_sum_region_amount",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .sum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 3),
-                valueType: .int64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "AggregationOrder_sum_region_amount",
             itemTypes: Set(["AggregationOrder"])
         )
         self.sumMaintainer = SumIndexMaintainer<AggregationOrder, Int64>(
@@ -102,21 +101,20 @@ private struct AggregationQueryContext {
         )
 
         // AVG index: group by region, avg amount
-        let avgIndex = Index(
+        let avgIndex = try ResolvedIndex(
+            for: AggregationOrder.self,
             name: "AggregationOrder_avg_region_amount",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .average,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 3),
-                valueType: .int64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "AggregationOrder_avg_region_amount",
             itemTypes: Set(["AggregationOrder"])
         )
         self.avgMaintainer = AverageIndexMaintainer<AggregationOrder, Int64>(
@@ -183,7 +181,7 @@ struct AggregationQueryOptimizationTests {
             AggregationOrder(region: "Tokyo", amount: 100),
             AggregationOrder(region: "Tokyo", amount: 200),
             AggregationOrder(region: "Osaka", amount: 150),
-            AggregationOrder(region: "Kyoto", amount: 300)
+            AggregationOrder(region: "Kyoto", amount: 300),
         ]
 
         try await ctx.insertOrders(orders)
@@ -209,7 +207,7 @@ struct AggregationQueryOptimizationTests {
         let orders = [
             AggregationOrder(region: "Tokyo", amount: 100),
             AggregationOrder(region: "Tokyo", amount: 200),
-            AggregationOrder(region: "Osaka", amount: 150)
+            AggregationOrder(region: "Osaka", amount: 150),
         ]
 
         try await ctx.insertOrders(orders)
@@ -234,7 +232,7 @@ struct AggregationQueryOptimizationTests {
         let orders = [
             AggregationOrder(region: "Tokyo", amount: 100),
             AggregationOrder(region: "Tokyo", amount: 200),
-            AggregationOrder(region: "Osaka", amount: 150)
+            AggregationOrder(region: "Osaka", amount: 150),
         ]
 
         try await ctx.insertOrders(orders)
@@ -259,14 +257,18 @@ struct AggregationQueryOptimizationTests {
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "min", testId).pack())
 
-        // Create schema with MinIndexKind
+        // Create schema with a minimum aggregate index.
         let minIndexDescriptor = try IndexDescriptor(
-            name: "AggregationOrder_min_region_amount",
-            definition: .minimum,
-            fields: [
-                AggregationOrder.fields.region.ascending,
-                AggregationOrder.fields.amount.ascending,
-            ]
+            entityName: AggregationOrder.persistableType,
+            declaration: .aggregate(
+                name: "AggregationOrder_min_region_amount",
+                function: .minimum,
+                groupBy: [
+                    .ascending(AggregationOrder.fields.region.identity)
+                ],
+                value: AggregationOrder.fields.amount.identity
+            ),
+            fieldSchemas: AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -279,7 +281,12 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [minIndexDescriptor])]), security: .testingDisabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [minIndexDescriptor])]), security: .testingDisabled)
         let context = container.testBaseContext()
 
         // Build query with MIN aggregation
@@ -315,14 +322,18 @@ struct AggregationQueryOptimizationTests {
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "max", testId).pack())
 
-        // Create schema with MaxIndexKind
+        // Create schema with a maximum aggregate index.
         let maxIndexDescriptor = try IndexDescriptor(
-            name: "AggregationOrder_max_region_amount",
-            definition: .maximum,
-            fields: [
-                AggregationOrder.fields.region.ascending,
-                AggregationOrder.fields.amount.ascending,
-            ]
+            entityName: AggregationOrder.persistableType,
+            declaration: .aggregate(
+                name: "AggregationOrder_max_region_amount",
+                function: .maximum,
+                groupBy: [
+                    .ascending(AggregationOrder.fields.region.identity)
+                ],
+                value: AggregationOrder.fields.amount.identity
+            ),
+            fieldSchemas: AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -335,7 +346,12 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [maxIndexDescriptor])]), security: .testingDisabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [maxIndexDescriptor])]), security: .testingDisabled)
         let context = container.testBaseContext()
 
         // Build query with MAX aggregation
@@ -365,19 +381,23 @@ struct AggregationQueryOptimizationTests {
         }
     }
 
-    @Test("COUNT aggregation matches CountIndexKind")
+    @Test("COUNT aggregation matches the count index definition")
     func testCountAggregationMatchesIndex() async throws {
         let database = InMemoryEngine()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "count_match", testId).pack())
 
-        // Create schema with CountIndexKind
+        // Create a schema with a count aggregate declaration.
         let countIndexDescriptor = try IndexDescriptor(
-            name: "AggregationOrder_count_region",
-            definition: .count,
-            fields: [
-                AggregationOrder.fields.region.ascending
-            ]
+            entityName: AggregationOrder.persistableType,
+            declaration: .aggregate(
+                name: "AggregationOrder_count_region",
+                function: .count,
+                groupBy: [
+                    .ascending(AggregationOrder.fields.region.identity)
+                ]
+            ),
+            fieldSchemas: AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -390,7 +410,12 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor])]), security: .testingDisabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor])]), security: .testingDisabled)
         let context = container.testBaseContext()
 
         // Build query with COUNT aggregation matching the index
@@ -419,20 +444,24 @@ struct AggregationQueryOptimizationTests {
         }
     }
 
-    @Test("SUM aggregation matches SumIndexKind")
+    @Test("SUM aggregation matches the sum index definition")
     func testSumAggregationMatchesIndex() async throws {
         let database = InMemoryEngine()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "sum_match", testId).pack())
 
-        // Create schema with SumIndexKind
+        // Create a schema with a sum aggregate declaration.
         let sumIndexDescriptor = try IndexDescriptor(
-            name: "AggregationOrder_sum_region_amount",
-            definition: .sum,
-            fields: [
-                AggregationOrder.fields.region.ascending,
-                AggregationOrder.fields.amount.ascending,
-            ]
+            entityName: AggregationOrder.persistableType,
+            declaration: .aggregate(
+                name: "AggregationOrder_sum_region_amount",
+                function: .sum,
+                groupBy: [
+                    .ascending(AggregationOrder.fields.region.identity)
+                ],
+                value: AggregationOrder.fields.amount.identity
+            ),
+            fieldSchemas: AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -445,7 +474,12 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [sumIndexDescriptor])]), security: .testingDisabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [sumIndexDescriptor])]), security: .testingDisabled)
         let context = container.testBaseContext()
 
         // Build query with SUM aggregation matching the index
@@ -484,19 +518,27 @@ struct AggregationQueryOptimizationTests {
 
         // Create schema with COUNT and MIN indexes
         let countIndexDescriptor = try IndexDescriptor(
-            name: "AggregationOrder_count_region",
-            definition: .count,
-            fields: [
-                AggregationOrder.fields.region.ascending
-            ]
+            entityName: AggregationOrder.persistableType,
+            declaration: .aggregate(
+                name: "AggregationOrder_count_region",
+                function: .count,
+                groupBy: [
+                    .ascending(AggregationOrder.fields.region.identity)
+                ]
+            ),
+            fieldSchemas: AggregationOrder.fieldSchemas
         )
         let minIndexDescriptor = try IndexDescriptor(
-            name: "AggregationOrder_min_region_amount",
-            definition: .minimum,
-            fields: [
-                AggregationOrder.fields.region.ascending,
-                AggregationOrder.fields.amount.ascending,
-            ]
+            entityName: AggregationOrder.persistableType,
+            declaration: .aggregate(
+                name: "AggregationOrder_min_region_amount",
+                function: .minimum,
+                groupBy: [
+                    .ascending(AggregationOrder.fields.region.identity)
+                ],
+                value: AggregationOrder.fields.amount.identity
+            ),
+            fieldSchemas: AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -509,7 +551,13 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor, minIndexDescriptor])]), security: .testingDisabled)
+        let container = try await DBContainer.open(
+            for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor, minIndexDescriptor])]), security: .testingDisabled)
         let context = container.testBaseContext()
 
         // Build query with both COUNT and MIN (both have indexes)
@@ -552,11 +600,15 @@ struct AggregationQueryOptimizationTests {
 
         // Create schema with COUNT index grouped by 'region'
         let countIndexDescriptor = try IndexDescriptor(
-            name: "AggregationOrder_count_region",
-            definition: .count,
-            fields: [
-                AggregationOrder.fields.region.ascending
-            ]
+            entityName: AggregationOrder.persistableType,
+            declaration: .aggregate(
+                name: "AggregationOrder_count_region",
+                function: .count,
+                groupBy: [
+                    .ascending(AggregationOrder.fields.region.identity)
+                ]
+            ),
+            fieldSchemas: AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -569,7 +621,12 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor])]), security: .testingDisabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationOrder.self, including: [countIndexDescriptor])]), security: .testingDisabled)
         let context = container.testBaseContext()
 
         // Build query grouping by DIFFERENT field (amount instead of region)

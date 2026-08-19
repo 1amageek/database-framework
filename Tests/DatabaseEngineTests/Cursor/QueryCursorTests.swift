@@ -44,7 +44,11 @@ struct QueryCursorTests {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(PaginatedUser.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PaginatedUser.self)]
             ),
             security: .testingDisabled
         )
@@ -373,11 +377,11 @@ struct QueryCursorTests {
             let secondPage = try await resumedCursor.next()
 
             #expect(firstPage.items.map(\.name) == [
-                "User 000", "User 001", "User 002", "User 003", "User 004"
-            ])
+                "User 000", "User 001", "User 002", "User 003", "User 004",
+                ])
             #expect(secondPage.items.map(\.name) == [
-                "User 005", "User 006", "User 007", "User 008", "User 009"
-            ])
+                "User 005", "User 006", "User 007", "User 008", "User 009",
+                ])
         }
     }
 

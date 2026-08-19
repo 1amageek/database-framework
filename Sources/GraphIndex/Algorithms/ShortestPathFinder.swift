@@ -3,8 +3,8 @@
 //
 // Provides BFS-based shortest path finding with bidirectional optimization.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 // MARK: - ShortestPathFinder
@@ -76,7 +76,7 @@ public final class ShortestPathFinder: Sendable {
     ///
     /// - Parameters:
     ///   - snapshot: Stable storage snapshot for the complete algorithm
-    ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
+    ///   - subspace: ResolvedIndex subspace (same as used by GraphIndexMaintainer)
     ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
     @_spi(DatabaseExecution)

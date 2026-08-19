@@ -51,7 +51,11 @@ enum DirectoryMigrationSchemaV2: VersionedSchema {
 @Persistable(type: "DirectoryIndexedUser")
 struct DirectoryIndexedUserV1 {
     #Directory<DirectoryIndexedUserV1>("directory_indexed_migration_test_legacy")
-    #Index(.scalar, fields: [\DirectoryIndexedUserV1.email], name: "DirectoryIndexedUser_email")
+    #Index(
+        .ordered(
+            name: "DirectoryIndexedUser_email",
+            keys: [.ascending(\DirectoryIndexedUserV1.email)],
+            unique: false))
 
     var id: String = ""
     var name: String
@@ -61,7 +65,11 @@ struct DirectoryIndexedUserV1 {
 @Persistable(type: "DirectoryIndexedUser")
 struct DirectoryIndexedUserV2 {
     #Directory<DirectoryIndexedUserV2>("directory_indexed_migration_test_current")
-    #Index(.scalar, fields: [\DirectoryIndexedUserV2.email], name: "DirectoryIndexedUser_email")
+    #Index(
+        .ordered(
+            name: "DirectoryIndexedUser_email",
+            keys: [.ascending(\DirectoryIndexedUserV2.email)],
+            unique: false))
 
     var id: String = ""
     var name: String
@@ -129,7 +137,11 @@ struct DirectoryAddIdxUserV1 {
 @Persistable(type: "DirectoryAddIdxUser")
 struct DirectoryAddIdxUserV2 {
     #Directory<DirectoryAddIdxUserV2>("directory_add_idx_test_current")
-    #Index(.scalar, fields: [\DirectoryAddIdxUserV2.score], name: "DirectoryAddIdxUser_score")
+    #Index(
+        .ordered(
+            name: "DirectoryAddIdxUser_score",
+            keys: [.ascending(\DirectoryAddIdxUserV2.score)],
+            unique: false))
 
     var id: String = ""
     var name: String
@@ -187,7 +199,10 @@ enum DirectoryAddIdxPlan: SchemaMigrationPlan {
 @Persistable(type: "DirectoryRemIdxUser")
 struct DirectoryRemIdxUserV1 {
     #Directory<DirectoryRemIdxUserV1>("directory_rem_idx_test_legacy")
-    #Index(.scalar, fields: [\DirectoryRemIdxUserV1.tag], name: "DirectoryRemIdxUser_tag")
+    #Index(
+        .ordered(
+            name: "DirectoryRemIdxUser_tag", keys: [.ascending(\DirectoryRemIdxUserV1.tag)],
+            unique: false))
 
     var id: String = ""
     var name: String
@@ -342,7 +357,8 @@ struct DirectoryMigrationTests {
     }
 
     private func cleanDirectories(engine: any StorageEngine) async throws {
-        for path in [["directory_migration_test_legacy"], ["directory_migration_test_current"]] {
+        for path in [["directory_migration_test_legacy"], ["directory_migration_test_current"],
+        ] {
             if try await engine.namespaceExists(path: path) {
                 try await engine.removeNamespace(path: path)
             }
@@ -362,7 +378,12 @@ struct DirectoryMigrationTests {
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV1.self)]),
                 security: .testingDisabled,
             )
             let initialContext = initialContainer.testBaseContext()
@@ -393,7 +414,12 @@ struct DirectoryMigrationTests {
                 for: DirectoryMigrationSchemaV2.self,
                 migrationPlan: DirectoryMigrationCopyPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -401,7 +427,12 @@ struct DirectoryMigrationTests {
             let verificationContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
                 security: .testingDisabled,
             )
             let verificationContext = verificationContainer.testBaseContext()
@@ -459,7 +490,12 @@ struct DirectoryMigrationTests {
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV1.self)]),
                 security: .testingDisabled,
             )
             let initialContext = initialContainer.testBaseContext()
@@ -474,7 +510,12 @@ struct DirectoryMigrationTests {
                 for: DirectoryMigrationSchemaV2.self,
                 migrationPlan: DirectoryMigrationCopyPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -484,7 +525,12 @@ struct DirectoryMigrationTests {
             let verificationContainer = try await DBContainer.open(
                 testing: DirectoryMigrationSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryMigrationUserV2.self)]),
                 security: .testingDisabled,
             )
             let rows = try await verificationContainer.testBaseContext()
@@ -504,7 +550,8 @@ struct DirectoryMigrationTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
-            for path in [["directory_indexed_migration_test_legacy"], ["directory_indexed_migration_test_current"]] {
+            for path in [["directory_indexed_migration_test_legacy"], ["directory_indexed_migration_test_current"],
+            ] {
                 if try await engine.namespaceExists(path: path) {
                     try await engine.removeNamespace(path: path)
                 }
@@ -515,7 +562,12 @@ struct DirectoryMigrationTests {
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryIndexedSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryIndexedUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryIndexedUserV1.self)]),
                 security: .testingDisabled,
             )
             let initialContext = initialContainer.testBaseContext()
@@ -545,7 +597,12 @@ struct DirectoryMigrationTests {
                 for: DirectoryIndexedSchemaV2.self,
                 migrationPlan: DirectoryIndexedCopyPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryIndexedUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryIndexedUserV2.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -578,7 +635,8 @@ struct DirectoryMigrationTests {
             }
             #expect(targetIndexCount == 1)
 
-            for path in [["directory_indexed_migration_test_legacy"], ["directory_indexed_migration_test_current"]] {
+            for path in [["directory_indexed_migration_test_legacy"], ["directory_indexed_migration_test_current"],
+            ] {
                 if try await engine.namespaceExists(path: path) {
                     try await engine.removeNamespace(path: path)
                 }
@@ -591,7 +649,8 @@ struct DirectoryMigrationTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
-            for path in [["directory_add_idx_test_legacy"], ["directory_add_idx_test_current"]] {
+            for path in [["directory_add_idx_test_legacy"], ["directory_add_idx_test_current"],
+            ] {
                 if try await engine.namespaceExists(path: path) {
                     try await engine.removeNamespace(path: path)
                 }
@@ -602,7 +661,12 @@ struct DirectoryMigrationTests {
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryAddIdxSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryAddIdxUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryAddIdxUserV1.self)]),
                 security: .testingDisabled,
             )
             let initialContext = initialContainer.testBaseContext()
@@ -616,7 +680,12 @@ struct DirectoryMigrationTests {
                 for: DirectoryAddIdxSchemaV2.self,
                 migrationPlan: DirectoryAddIdxPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryAddIdxUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryAddIdxUserV2.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -638,7 +707,8 @@ struct DirectoryMigrationTests {
             }
             #expect(targetIndexCount == 1)
 
-            for path in [["directory_add_idx_test_legacy"], ["directory_add_idx_test_current"]] {
+            for path in [["directory_add_idx_test_legacy"], ["directory_add_idx_test_current"],
+            ] {
                 if try await engine.namespaceExists(path: path) {
                     try await engine.removeNamespace(path: path)
                 }
@@ -651,7 +721,8 @@ struct DirectoryMigrationTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
-            for path in [["directory_rem_idx_test_legacy"], ["directory_rem_idx_test_current"]] {
+            for path in [["directory_rem_idx_test_legacy"], ["directory_rem_idx_test_current"],
+            ] {
                 if try await engine.namespaceExists(path: path) {
                     try await engine.removeNamespace(path: path)
                 }
@@ -662,7 +733,12 @@ struct DirectoryMigrationTests {
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryRemIdxSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV1.self)]),
                 security: .testingDisabled,
             )
             let initialContext = initialContainer.testBaseContext()
@@ -692,7 +768,12 @@ struct DirectoryMigrationTests {
                 for: DirectoryRemIdxSchemaV2.self,
                 migrationPlan: DirectoryRemIdxPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV2.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -715,7 +796,12 @@ struct DirectoryMigrationTests {
             let verificationContainer = try await DBContainer.open(
                 testing: DirectoryRemIdxSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryRemIdxUserV2.self)]),
                 security: .testingDisabled,
             )
             let rows = try await verificationContainer.testBaseContext()
@@ -723,7 +809,8 @@ struct DirectoryMigrationTests {
                 .execute()
             #expect(rows.count == 1)
 
-            for path in [["directory_rem_idx_test_legacy"], ["directory_rem_idx_test_current"]] {
+            for path in [["directory_rem_idx_test_legacy"], ["directory_rem_idx_test_current"],
+            ] {
                 if try await engine.namespaceExists(path: path) {
                     try await engine.removeNamespace(path: path)
                 }
@@ -736,7 +823,8 @@ struct DirectoryMigrationTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
-            for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"]] {
+            for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"],
+            ] {
                 if try await engine.namespaceExists(path: path) {
                     try await engine.removeNamespace(path: path)
                 }
@@ -745,7 +833,12 @@ struct DirectoryMigrationTests {
             let initialContainer = try await DBContainer.open(
                 testing: DirectoryLightweightSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryLightweightUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryLightweightUserV1.self)]),
                 security: .testingDisabled,
             )
             try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
@@ -754,14 +847,20 @@ struct DirectoryMigrationTests {
                 for: DirectoryLightweightSchemaV2.self,
                 migrationPlan: DirectoryLightweightPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryLightweightUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryLightweightUserV2.self)]),
             )
 
             await #expect(throws: MigrationPlanError.self) {
                 try await migratedContainer.testBaseAdmin().migrateIfNeeded()
             }
 
-            for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"]] {
+            for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"],
+            ] {
                 if try await engine.namespaceExists(path: path) {
                     try await engine.removeNamespace(path: path)
                 }

@@ -4,9 +4,9 @@
 // This file is part of GraphIndex module, not DatabaseEngine.
 // Provides graph-based filtering and scoring for Fusion queries.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import ScalarIndex
 import StorageKit
 
@@ -167,7 +167,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
     /// Find the graph index descriptor
     private func findIndexDescriptor() throws -> IndexDescriptor? {
         queryContext.indexDescriptors(for: T.self).first { descriptor in
-            guard descriptor.kindIdentifier == "graph" else {
+            guard descriptor.type == .graph(.property) else {
                 return false
             }
             // Match by source field
@@ -227,15 +227,23 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
     private func findConnectedNodes() async throws -> [ConnectedNode] {
         guard let descriptor = try findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
-                type: T.persistableType,
+                entity: T.persistableType,
                 field: field.name,
-                kind: "graph"
+                indexType: .graph(.property)
             )
         }
 
-        let strategy = try PropertyGraphIndexMetadata(
-            canonical: descriptor.kind
-        ).strategy
+        guard
+            let configuration = PropertyGraphIndexConfiguration(
+                descriptor: descriptor
+            )
+        else {
+            throw FusionQueryError.invalidConfiguration(
+                "Index '\(descriptor.name)' is not a property-graph index"
+            )
+        }
+
+        let strategy = configuration.strategy
 
         // BFS traversal
         var visited: Set<String> = []
@@ -269,7 +277,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             // Find neighbors within transaction
             let neighbors = try await queryContext.withReadableIndex(
                 named: descriptor.name,
-                kindIdentifier: descriptor.kindIdentifier,
+                indexType: descriptor.type,
                 for: T.self
             ) { readableIndex, transaction -> [String] in
                 guard let readableIndex else {
@@ -430,7 +438,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
     private func findScalarIndexForField() throws -> IndexDescriptor? {
         queryContext.indexDescriptors(for: T.self).first { descriptor in
             // Check if it's a ScalarIndex
-            guard descriptor.kindIdentifier == "scalar" else { return false }
+            guard descriptor.type == .ordered else { return false }
 
             // The first indexed field defines the scalar lookup prefix. Read the
             // canonical descriptor metadata instead of parsing its display name.
@@ -467,7 +475,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         let searcher = ScalarIndexSearcher(keyFieldCount: 1)
         let allIds: [Tuple] = try await queryContext.withReadableIndex(
             named: indexDescriptor.name,
-            kindIdentifier: indexDescriptor.kindIdentifier,
+            indexType: indexDescriptor.type,
             for: T.self
         ) { readableIndex, transaction in
             guard let readableIndex else {

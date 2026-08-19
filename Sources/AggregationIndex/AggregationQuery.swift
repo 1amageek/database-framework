@@ -2,8 +2,8 @@
 // AggregationIndex - Query extension for aggregation operations
 
 import DatabaseEngine
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 // MARK: - Aggregation Query Builder
@@ -209,7 +209,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     /// Add a DISTINCT aggregation (approximate cardinality)
     ///
     /// Uses Set-based counting for in-memory computation.
-    /// When a matching DistinctIndexKind exists, uses HyperLogLog++ for O(1) lookup.
+    /// A matching approximate-distinct definition uses HyperLogLog++ for O(1) lookup.
     ///
     /// - Parameters:
     ///   - keyPath: KeyPath to the field to count distinct values
@@ -234,7 +234,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     /// Add a PERCENTILE aggregation
     ///
     /// Uses sorted array interpolation for in-memory computation.
-    /// When a matching PercentileIndexKind exists, uses t-digest for O(1) lookup.
+    /// A matching percentile definition uses t-digest for O(1) lookup.
     ///
     /// - Parameters:
     ///   - keyPath: KeyPath to the numeric field
@@ -409,14 +409,13 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
     /// Find a matching index for an aggregation
     ///
-    /// Searches canonical index descriptor metadata for an index that matches
+    /// Searches canonical index declarations for an index that matches
     /// the aggregation operation, group fields, and value field.
     ///
     /// **Matching Criteria**:
-    /// 1. Descriptor kind identifier matches the requested operation
-    /// 2. Canonical metadata operation matches the descriptor identifier
-    /// 3. `groupByFieldNames` match exactly (same fields in same order)
-    /// 4. `aggregationValueField` matches (for non-COUNT aggregations)
+    /// 1. The aggregate function matches the requested operation
+    /// 2. Grouping fields match exactly (same fields in the same order)
+    /// 3. The value field matches for non-COUNT aggregations
     ///
     /// **Supported Aggregation Types**:
     /// - All types (COUNT, SUM, AVG, DISTINCT, PERCENTILE, MIN, MAX) support batch queries
@@ -428,20 +427,25 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         for aggregation: AggregationSpec
     ) throws -> IndexDescriptor? {
         let descriptors = queryContext.indexDescriptors(for: T.self)
-        let expectedIdentifier = aggregationTypeIdentifier(for: aggregation.type)
+        let expectedType = aggregateFunctionType(for: aggregation.type)
 
-        for descriptor in descriptors where descriptor.kindIdentifier == expectedIdentifier {
-            let metadata = try AggregationIndexMetadata(canonical: descriptor.kind)
-            guard metadata.operation.rawValue == expectedIdentifier else {
+        for descriptor in descriptors where descriptor.type == .aggregate(expectedType) {
+            guard
+                case .aggregate(let function, let groupBy, let value) =
+                    descriptor.declaration.definition,
+                function.type == expectedType
+            else {
                 continue
             }
-            guard metadata.groupByFieldNames == groupByFieldNames else {
+            guard groupBy.map({ $0.field }) == groupByFields else {
                 continue
             }
             if let valueField = aggregationValueField(for: aggregation.type) {
-                guard metadata.valueFieldName == valueField else {
+                guard value?.name == valueField else {
                     continue
                 }
+            } else if value != nil {
+                continue
             }
             return descriptor
         }
@@ -449,23 +453,25 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         return nil
     }
 
-    /// Get the aggregation type identifier for matching with index kinds
-    private func aggregationTypeIdentifier(for type: AggregationType) -> String {
+    /// Get the semantic aggregate function type used by index declarations.
+    private func aggregateFunctionType(
+        for type: AggregationType
+    ) -> AggregateFunctionType {
         switch type {
         case .count:
-            return "count"
+            return .count
         case .sum:
-            return "sum"
+            return .sum
         case .avg:
-            return "average"
+            return .average
         case .min:
-            return "min"
+            return .minimum
         case .max:
-            return "max"
+            return .maximum
         case .distinct:
-            return "distinct"
+            return .approximateDistinct
         case .percentile:
-            return "percentile"
+            return .percentile
         }
     }
 
@@ -515,11 +521,13 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
                 ).first(where: { $0.name == forcedName }) else {
                     throw AggregationQueryError.indexNotFound(forcedName)
                 }
-                let metadata = try AggregationIndexMetadata(canonical: descriptor.kind)
-                let expectedIdentifier = aggregationTypeIdentifier(for: aggregation.type)
-                guard metadata.operation.rawValue == expectedIdentifier,
-                      metadata.groupByFieldNames == groupByFieldNames,
-                      metadata.valueFieldName == aggregationValueField(for: aggregation.type) else {
+                let expectedType = aggregateFunctionType(for: aggregation.type)
+                guard descriptor.type == .aggregate(expectedType),
+                    case .aggregate(let function, let groupBy, let value) =
+                        descriptor.declaration.definition,
+                    function.type == expectedType,
+                    groupBy.map({ $0.field }) == groupByFields,
+                    value?.name == aggregationValueField(for: aggregation.type) else {
                     throw AggregationQueryError.indexDoesNotMatchQuery(forcedName)
                 }
                 strategies[aggregation.name] = .useIndex(descriptor)
@@ -572,8 +580,8 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
                 guard let readableIndex = try await self.queryContext
                     .readableIndex(
                         named: descriptor.name,
-                        kindIdentifier: descriptor.kindIdentifier,
-                        for: T.self,
+                            indexType: descriptor.type,
+                            for: T.self,
                         transaction: transaction
                     ) else {
                     continue
@@ -640,7 +648,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             var aggregates = storedAggregates
             for aggregation in aggregations where !aggregates.keys.contains(aggregation.name) {
                 if case .count = aggregation.type, !synthesizedEmptyGlobal {
-                    throw AggregationQueryError.invalidIndexMetadata(
+                    throw AggregationQueryError.invalidIndexDefinition(
                         "Count index is missing a group produced by another aggregate index"
                     )
                 }
@@ -665,13 +673,12 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
     /// Query all grouped results from a canonical aggregation index.
     private func queryFromIndex(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         aggregation: AggregationSpec,
         transaction: any TransactionAccess
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
-        let metadata = try AggregationIndexMetadata(canonical: index.kind)
         switch aggregation.type {
         case .count:
             let maintainer = CountIndexMaintainer<T>(
@@ -684,7 +691,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
         case .sum:
             return try await querySums(
-                valueType: try requireValueType(metadata),
+                valueType: try index.aggregateValueType(.sum),
                 index: index,
                 subspace: subspace,
                 idExpression: idExpression,
@@ -693,7 +700,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
         case .avg:
             return try await queryAverages(
-                valueType: try requireValueType(metadata),
+                valueType: try index.aggregateValueType(.average),
                 index: index,
                 subspace: subspace,
                 idExpression: idExpression,
@@ -701,8 +708,14 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             )
 
         case .distinct:
-            guard let precision = metadata.precision else {
-                throw AggregationQueryError.invalidIndexMetadata(index.name)
+            guard
+                case .aggregate(
+                    .approximateDistinct(let precision),
+                    _,
+                    _
+                ) = index.definition
+            else {
+                throw AggregationQueryError.invalidIndexDefinition(index.name)
             }
             let maintainer = DistinctIndexMaintainer<T>(
                 index: index,
@@ -713,14 +726,20 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             let distincts = try await maintainer.getAllDistinctCounts(transaction: transaction)
             return try distincts.map { result in
                 guard result.estimated >= 0 else {
-                    throw AggregationQueryError.invalidIndexMetadata(index.name)
+                    throw AggregationQueryError.invalidIndexDefinition(index.name)
                 }
                 return (result.grouping, FieldValue.int64(result.estimated))
             }
 
         case .percentile(_, let p):
-            guard let compression = metadata.compression else {
-                throw AggregationQueryError.invalidIndexMetadata(index.name)
+            guard
+                case .aggregate(
+                    .percentile(let compression),
+                    _,
+                    _
+                ) = index.definition
+            else {
+                throw AggregationQueryError.invalidIndexDefinition(index.name)
             }
             let maintainer = PercentileIndexMaintainer<T>(
                 index: index,
@@ -745,7 +764,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
         case .min:
             return try await queryMinimums(
-                valueType: try requireValueType(metadata),
+                valueType: try index.aggregateValueType(.minimum),
                 index: index,
                 subspace: subspace,
                 idExpression: idExpression,
@@ -754,7 +773,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
         case .max:
             return try await queryMaximums(
-                valueType: try requireValueType(metadata),
+                valueType: try index.aggregateValueType(.maximum),
                 index: index,
                 subspace: subspace,
                 idExpression: idExpression,
@@ -763,20 +782,9 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
-    private func requireValueType(
-        _ metadata: AggregationIndexMetadata
-    ) throws -> IndexScalarType {
-        guard let valueType = metadata.valueType else {
-            throw AggregationQueryError.invalidIndexMetadata(
-                metadata.operation.rawValue
-            )
-        }
-        return valueType
-    }
-
     private func querySums(
         valueType: IndexScalarType,
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
@@ -805,13 +813,13 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         case .float64:
             return try await querySums(Double.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .string, .date, .timestamp:
-            throw AggregationQueryError.invalidIndexMetadata(index.name)
+            throw AggregationQueryError.invalidIndexDefinition(index.name)
         }
     }
 
     private func querySums<Value: IndexNumericValue>(
         _ valueType: Value.Type,
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
@@ -833,7 +841,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
     private func queryAverages(
         valueType: IndexScalarType,
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
@@ -862,13 +870,13 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         case .float64:
             return try await queryAverages(Double.self, index: index, subspace: subspace, idExpression: idExpression, transaction: transaction)
         case .string, .date, .timestamp:
-            throw AggregationQueryError.invalidIndexMetadata(index.name)
+            throw AggregationQueryError.invalidIndexDefinition(index.name)
         }
     }
 
     private func queryAverages<Value: IndexNumericValue>(
         _ valueType: Value.Type,
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
@@ -892,7 +900,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
     private func queryMinimums(
         valueType: IndexScalarType,
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
@@ -931,7 +939,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
     private func queryMinimums<Value: IndexComparableValue>(
         _ valueType: Value.Type,
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
@@ -953,7 +961,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
     private func queryMaximums(
         valueType: IndexScalarType,
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
@@ -992,7 +1000,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
     private func queryMaximums<Value: IndexComparableValue>(
         _ valueType: Value.Type,
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         transaction: any TransactionAccess
@@ -1017,7 +1025,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         _ values: [FieldValue]
     ) throws -> ([FieldValue], [String: FieldValue]) {
         guard values.count == groupByFieldNames.count else {
-            throw AggregationQueryError.invalidIndexMetadata(
+            throw AggregationQueryError.invalidIndexDefinition(
                 "Index grouping arity does not match the query"
             )
         }
@@ -1050,18 +1058,15 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     /// Build Index from IndexDescriptor
     ///
     /// Creates an Index runtime object from the IndexDescriptor metadata.
-    private static func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> Index {
+    private static func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> ResolvedIndex {
         let rootExpression = KeyExpressionFactory.from(
             keyPaths: descriptor.fieldNames
         )
 
-        return Index(
-            name: descriptor.name,
-            kind: descriptor.kind,
+        return ResolvedIndex(
+            descriptor: descriptor,
             rootExpression: rootExpression,
-            subspaceKey: descriptor.name,
-            itemTypes: Set([persistableType]),
-            isUnique: descriptor.isUnique
+            itemTypes: Set([persistableType])
         )
     }
 
@@ -1086,8 +1091,8 @@ public enum AggregationQueryError: Error, Sendable, Equatable, CustomStringConve
     /// Forced index does not implement the requested aggregate layout.
     case indexDoesNotMatchQuery(String)
 
-    /// Canonical index metadata is incomplete or inconsistent.
-    case invalidIndexMetadata(String)
+    /// The resolved index definition is incomplete or inconsistent.
+    case invalidIndexDefinition(String)
 
     /// A persisted field cannot be represented by the canonical aggregation value model.
     case invalidFieldValue(field: String, reason: TypeConversionError)
@@ -1131,8 +1136,8 @@ public enum AggregationQueryError: Error, Sendable, Equatable, CustomStringConve
             return "Aggregation index not found: \(name)"
         case .indexDoesNotMatchQuery(let name):
             return "Aggregation index does not match query: \(name)"
-        case .invalidIndexMetadata(let name):
-            return "Aggregation index metadata is invalid: \(name)"
+        case .invalidIndexDefinition(let name):
+            return "Aggregation index definition is invalid: \(name)"
         case .invalidFieldValue(let field, let reason):
             return "Field '\(field)' cannot be converted for aggregation: \(reason)"
         case .persistedFieldEncodingFailed(let field, let reason):

@@ -1,5 +1,5 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import RelationshipIndex
 import ScalarIndex
@@ -10,6 +10,55 @@ import VectorIndex
 
 @Suite("Database Runtime Configuration Validation")
 struct DatabaseRuntimeConfigurationValidationTests {
+    @Test("Runtime configuration rejects an empty execution identity")
+    func emptyExecutionIdentityFailsInitialization() {
+        #expect(
+            throws: DatabaseRuntimeConfigurationError
+                .invalidExecutionIdentityIdentifier
+        ) {
+            _ = try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "",
+                    revision: 1
+                )
+            )
+        }
+    }
+
+    @Test("Runtime configuration rejects a zero execution revision")
+    func zeroExecutionRevisionFailsInitialization() {
+        #expect(
+            throws: DatabaseRuntimeConfigurationError
+                .invalidExecutionIdentityRevision
+        ) {
+            _ = try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "application",
+                    revision: 0
+                )
+            )
+        }
+    }
+
+    @Test("Runtime configuration rejects an oversized execution identity")
+    func oversizedExecutionIdentityFailsInitialization() {
+        #expect(
+            throws: DatabaseRuntimeConfigurationError
+                .invalidExecutionIdentityIdentifier
+        ) {
+            _ = try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: String(
+                        repeating: "a",
+                        count: DatabaseExecutionRuntimeIdentity
+                            .maximumIdentifierUTF8ByteCount + 1
+                    ),
+                    revision: 1
+                )
+            )
+        }
+    }
+
     @Test("Schema validation rejects an unregistered compiled entity type")
     func missingCompiledEntityTypeFailsValidation() throws {
         let schema = try Schema(
@@ -18,6 +67,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             indexMaintainerProviderDescriptors: [
                 .init(describing: ScalarIndexMaintainerProvider())
             ]
@@ -40,6 +93,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
             )
         ) {
             try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try EntityRuntimeDefinition(
                         RuntimeConfigurationScalarEntity.self
@@ -55,11 +112,16 @@ struct DatabaseRuntimeConfigurationValidationTests {
     @Test("Schema validation rejects a compiled entity with different schema")
     func mismatchedCompiledEntitySchemaFailsValidation() throws {
         let additionalIndex = try IndexDescriptor(
-            name: "RuntimeConfigurationScalarEntity_schema_only",
-            definition: .scalar,
-            fields: [
-                RuntimeConfigurationScalarEntity.fields.name.ascending
-            ]
+            entityName: RuntimeConfigurationScalarEntity.persistableType,
+            declaration: .ordered(
+                name: "RuntimeConfigurationScalarEntity_schema_only",
+                keys: [
+                    .ascending(
+                        RuntimeConfigurationScalarEntity.fields.name.identity
+                    )
+                ]
+            ),
+            fieldSchemas: RuntimeConfigurationScalarEntity.fieldSchemas
         )
         let schemaEntity = try Schema.Entity(
             from: RuntimeConfigurationScalarEntity.self,
@@ -70,6 +132,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
         )
         let schema = try Schema(entities: [schemaEntity])
         let configuration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     RuntimeConfigurationScalarEntity.self
@@ -91,11 +157,16 @@ struct DatabaseRuntimeConfigurationValidationTests {
     @Test("Runtime accepts additional indexes compiled with the schema")
     func matchingAdditionalIndexesPassValidation() throws {
         let additionalIndex = try IndexDescriptor(
-            name: "RuntimeConfigurationScalarEntity_additional",
-            definition: .scalar,
-            fields: [
-                RuntimeConfigurationScalarEntity.fields.name.ascending
-            ]
+            entityName: RuntimeConfigurationScalarEntity.persistableType,
+            declaration: .ordered(
+                name: "RuntimeConfigurationScalarEntity_additional",
+                keys: [
+                    .ascending(
+                        RuntimeConfigurationScalarEntity.fields.name.identity
+                    )
+                ]
+            ),
+            fieldSchemas: RuntimeConfigurationScalarEntity.fieldSchemas
         )
         let schema = try Schema(
             entities: [
@@ -106,6 +177,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     RuntimeConfigurationScalarEntity.self,
@@ -120,11 +195,16 @@ struct DatabaseRuntimeConfigurationValidationTests {
     @Test("OWL runtime retains its provider with additional indexes")
     func owlRuntimeSupportsAdditionalIndexes() throws {
         let additionalIndex = try IndexDescriptor(
-            name: "RuntimeConfigurationOWLEntity_additional",
-            definition: .scalar,
-            fields: [
-                RuntimeConfigurationOWLEntity.fields.name.ascending
-            ]
+            entityName: RuntimeConfigurationOWLEntity.persistableType,
+            declaration: .ordered(
+                name: "RuntimeConfigurationOWLEntity_additional",
+                keys: [
+                    .ascending(
+                        RuntimeConfigurationOWLEntity.fields.name.identity
+                    )
+                ]
+            ),
+            fieldSchemas: RuntimeConfigurationOWLEntity.fieldSchemas
         )
         let schema = try Schema(
             entities: [
@@ -135,6 +215,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     RuntimeConfigurationOWLEntity.self,
@@ -149,11 +233,16 @@ struct DatabaseRuntimeConfigurationValidationTests {
     @Test("Container open rejects a mismatched entity before initialization")
     func containerOpenRejectsMismatchedEntitySchema() async throws {
         let additionalIndex = try IndexDescriptor(
-            name: "RuntimeConfigurationScalarEntity_schema_only",
-            definition: .scalar,
-            fields: [
-                RuntimeConfigurationScalarEntity.fields.name.ascending
-            ]
+            entityName: RuntimeConfigurationScalarEntity.persistableType,
+            declaration: .ordered(
+                name: "RuntimeConfigurationScalarEntity_schema_only",
+                keys: [
+                    .ascending(
+                        RuntimeConfigurationScalarEntity.fields.name.identity
+                    )
+                ]
+            ),
+            fieldSchemas: RuntimeConfigurationScalarEntity.fieldSchemas
         )
         let schemaEntity = try Schema.Entity(
             from: RuntimeConfigurationScalarEntity.self,
@@ -164,6 +253,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
         )
         let schema = try Schema(entities: [schemaEntity])
         let configuration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     RuntimeConfigurationScalarEntity.self
@@ -197,6 +290,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try EntityRuntimeDefinition(
                     RuntimeConfigurationScalarEntity.self
@@ -210,7 +307,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
             throws: DatabaseRuntimeConfigurationError.missingIndexMaintainerProvider(
                 source: .entity(RuntimeConfigurationScalarEntity.persistableType),
                 indexName: indexName,
-                kindIdentifier: "scalar"
+                indexType: .ordered
             )
         ) {
             try configuration.validate(schema: schema)
@@ -225,6 +322,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     RuntimeConfigurationScalarEntity.self
@@ -243,6 +344,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     RuntimeConfigurationPolymorphicVectorEntity.self
@@ -265,6 +370,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
         )
         try entityRuntime.register(VectorIndexMaintainerProvider())
         let configuration = try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             indexMaintainerProviderDescriptors: [
                 .init(describing: VectorIndexMaintainerProvider())
             ],
@@ -277,41 +386,8 @@ struct DatabaseRuntimeConfigurationValidationTests {
             throws: DatabaseRuntimeConfigurationError.missingIndexReadExecutor(
                 source: .entity(RuntimeConfigurationVectorEntity.persistableType),
                 indexName: indexName,
-                kindIdentifier: "vector"
+                indexType: .vector
             )
-        ) {
-            try configuration.validate(schema: schema)
-        }
-    }
-
-    @Test("Schema validation rejects uniqueness without maintainer support")
-    func missingUniquenessSupportFailsValidation() throws {
-        let schema = try Schema(
-            entities: [
-                try Schema.Entity(
-                    from: RuntimeConfigurationUniqueVectorEntity.self
-                )
-            ]
-        )
-        let configuration = try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [
-                try DatabaseFrameworkRuntime.entity(
-                    RuntimeConfigurationUniqueVectorEntity.self
-                )
-            ]
-        )
-        let descriptor = try RuntimeConfigurationUniqueVectorEntity
-            .indexDescriptors[0]
-
-        #expect(
-            throws: DatabaseRuntimeConfigurationError
-                .missingIndexUniquenessSupport(
-                    source: .entity(
-                        RuntimeConfigurationUniqueVectorEntity.persistableType
-                    ),
-                    indexName: descriptor.name,
-                    kindIdentifier: descriptor.kindIdentifier
-                )
         ) {
             try configuration.validate(schema: schema)
         }
@@ -331,6 +407,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             indexMaintainerProviderDescriptors: [
                 .init(describing: ScalarIndexMaintainerProvider())
             ],
@@ -365,6 +445,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
             )
         ) {
             try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 persistableMutationMaintainers: [maintainer, maintainer]
             )
         }
@@ -383,6 +467,10 @@ struct DatabaseRuntimeConfigurationValidationTests {
             ]
         )
         let configuration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     RuntimeConfigurationRelationshipTarget.self

@@ -5,20 +5,25 @@ import ScalarIndex
 import StorageKit
 import TestSupport
 import Testing
-@testable import DatabaseEngine
+
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Persistable
 private struct CatalogEntry {
+    #Index(.ordered(name: "test_index", keys: [.ascending(\CatalogEntry.id)]))
+    #Index(.ordered(name: "valid", keys: [.ascending(\CatalogEntry.id)]))
+    #Index(.ordered(name: "missing", keys: [.ascending(\CatalogEntry.id)]))
+    #Index(.ordered(name: "corrupt", keys: [.ascending(\CatalogEntry.id)]))
+
     var id: String
 }
 
 @Persistable
 private struct IndexedCatalogEntry {
     #Index(
-        .scalar,
-        fields: [\IndexedCatalogEntry.value],
-        name: "IndexedCatalogEntry_value"
-    )
+        .ordered(
+            name: "IndexedCatalogEntry_value", keys: [.ascending(\IndexedCatalogEntry.value)],
+            unique: false))
 
     var id: String
     var value: String
@@ -26,6 +31,196 @@ private struct IndexedCatalogEntry {
 
 @Suite("Index Lifecycle Store Corruption")
 struct IndexLifecycleStoreCorruptionTests {
+    @Test("Layout-only transition replaces exactly one physical generation")
+    func layoutOnlyTransitionUsesExactPhysicalIdentities() throws {
+        let schema = try Schema(entities: [try CatalogEntry.schemaEntity])
+        let firstLayout = try IndexPhysicalLayout(
+            name: "test.ordered",
+            revision: 1
+        )
+        let secondLayout = try IndexPhysicalLayout(
+            name: "test.ordered",
+            revision: 2
+        )
+        var currentLayouts = Dictionary(
+            uniqueKeysWithValues: schema.indexDescriptors.map {
+                ($0.name, firstLayout.fingerprint)
+            }
+        )
+        var targetLayouts = Dictionary(
+            uniqueKeysWithValues: schema.indexDescriptors.map {
+                ($0.name, firstLayout)
+            }
+        )
+        currentLayouts["test_index"] = firstLayout.fingerprint
+        targetLayouts["test_index"] = secondLayout
+
+        let plan = try DatabaseIndexTransitionPlan(
+            currentSchema: schema,
+            currentLayoutFingerprints: currentLayouts,
+            targetSchema: schema,
+            targetPhysicalLayouts: targetLayouts
+        )
+
+        #expect(plan.builds.count == 1)
+        #expect(plan.retirements.count == 1)
+        let build = try #require(plan.builds.first)
+        let retirement = try #require(plan.retirements.first)
+        #expect(build.identity.name == "test_index")
+        #expect(build.identity.layoutFingerprint == secondLayout.fingerprint)
+        #expect(retirement.identity.name == "test_index")
+        #expect(
+            retirement.identity.layoutFingerprint == firstLayout.fingerprint
+        )
+    }
+
+    @Test("Directory transition rebuilds and retires the scoped generation")
+    func directoryTransitionRetainsSourceAndTargetScopes() throws {
+        let compiled = try CatalogEntry.schemaEntity
+        let descriptor = try #require(
+            compiled.indexDescriptors.first { $0.name == "test_index" }
+        )
+        let sourceEntity = try Schema.Entity(
+            name: compiled.name,
+            identifierType: compiled.identifierType,
+            fields: compiled.fields,
+            directoryComponents: [.staticPath("source")],
+            indexes: [descriptor]
+        )
+        let targetEntity = try Schema.Entity(
+            name: compiled.name,
+            identifierType: compiled.identifierType,
+            fields: compiled.fields,
+            directoryComponents: [.staticPath("target")],
+            indexes: [descriptor]
+        )
+        let sourceSchema = try Schema(entities: [sourceEntity])
+        let targetSchema = try Schema(entities: [targetEntity])
+        let layout = try IndexPhysicalLayout(
+            name: "test.ordered",
+            revision: 1
+        )
+
+        let plan = try DatabaseIndexTransitionPlan(
+            currentSchema: sourceSchema,
+            currentLayoutFingerprints: [
+                descriptor.name: layout.fingerprint
+            ],
+            targetSchema: targetSchema,
+            targetPhysicalLayouts: [descriptor.name: layout]
+        )
+
+        let build = try #require(plan.builds.first)
+        let retirement = try #require(plan.retirements.first)
+        #expect(plan.builds.count == 1)
+        #expect(plan.retirements.count == 1)
+        #expect(build.identity == retirement.identity)
+        #expect(
+            build.scope
+                == .entity(
+                    name: compiled.name,
+                    directoryComponents: [.staticPath("target")]
+                )
+        )
+        #expect(
+            retirement.scope
+                == .entity(
+                    name: compiled.name,
+                    directoryComponents: [.staticPath("source")]
+                )
+        )
+    }
+
+    @Test("Physical scope admits only its own partition contract")
+    func physicalScopeFiltersPartitionCatalogEntries() throws {
+        let scope = DatabaseIndexStorageScope.entity(
+            name: "PartitionedEntry",
+            directoryComponents: [
+                .staticPath("accounts"),
+                .dynamicField(fieldName: "tenant"),
+                .dynamicField(fieldName: "region"),
+            ]
+        )
+        #expect(
+            scope.accepts(
+                partitions: try FieldObject([
+                    ("region", .string("east")),
+                    ("tenant", .string("one")),
+                ])))
+        #expect(
+            !scope.accepts(
+                partitions: try FieldObject([
+                    ("tenant", .string("one"))
+                ])))
+        #expect(
+            !scope.accepts(
+                partitions: try FieldObject([
+                    ("region", .string("east")),
+                    ("tenant", .string("one")),
+                    ("workspace", .string("primary")),
+                ])))
+        #expect(
+            DatabaseIndexStorageScope.polymorphicGroup(
+                identifier: "Document",
+                directoryPath: ["documents"]
+            ).accepts(partitions: FieldObject())
+        )
+    }
+
+    @Test("Build completion rejects a different physical generation")
+    func buildCompletionRequiresExactPhysicalIdentity() async throws {
+        let engine = InMemoryEngine()
+        let entity = try CatalogEntry.schemaEntity
+        let schema = try Schema(entities: [entity])
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: engine),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(CatalogEntry.self)
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let descriptor = try #require(
+            entity.indexDescriptors.first { $0.name == "test_index" }
+        )
+        let mismatchedLayout = try IndexPhysicalLayout(
+            name: "test.ordered",
+            revision: 99
+        )
+        let mismatchedTarget = try DatabaseIndexTransitionPlan.Target(
+            scope: .entity(
+                name: entity.name,
+                directoryComponents: entity.directoryComponents
+            ),
+            identity: try DatabaseIndexStorageIdentity(
+                name: descriptor.name,
+                definitionFingerprint:
+                    try DatabaseIndexStorageIdentity
+                    .definitionFingerprint(
+                        named: descriptor.name,
+                        in: schema
+                    ),
+                layoutFingerprint: mismatchedLayout.fingerprint
+            )
+        )
+
+        try await engine.withTransaction { transaction in
+            #expect(throws: DatabaseSchemaPublicationError.self) {
+                try container.completeSchemaIndexBuild(
+                    mismatchedTarget,
+                    transaction: transaction
+                )
+            }
+        }
+    }
+
     @Test("State decoding distinguishes missing, valid, and corrupt values")
     func stateDecodingIsStrict() async throws {
         let context = try await makeContext()
@@ -122,7 +317,7 @@ struct IndexLifecycleStoreCorruptionTests {
                     }
                 }
                 let persistedBytes = try await transaction.getValue(
-                    for: context.stateKey,
+                    for: try context.stateKey,
                     snapshot: false
                 )
                 #expect(persistedBytes == corruptBytes)
@@ -189,7 +384,7 @@ struct IndexLifecycleStoreCorruptionTests {
                 )
             }
             let persistedBytes = try await transaction.getValue(
-                for: context.stateKey,
+                for: try context.stateKey,
                 snapshot: false
             )
             #expect(persistedBytes == corruptBytes)
@@ -212,6 +407,73 @@ struct IndexLifecycleStoreCorruptionTests {
         }
     }
 
+    @Test("Provider layout changes use independent lifecycle state")
+    func providerLayoutsHaveIndependentState() async throws {
+        let engine = InMemoryEngine()
+        let schema = try Schema(
+            entities: [try Schema.Entity(from: CatalogEntry.self)]
+        )
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: engine),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(CatalogEntry.self)
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+
+        let root = Subspace(
+            prefix: Tuple("index-layout-generation-isolation").pack()
+        )
+        let firstLayout = try IndexPhysicalLayout(
+            name: "test.layout",
+            revision: 1
+        )
+        let secondLayout = try IndexPhysicalLayout(
+            name: "test.layout",
+            revision: 2
+        )
+        let first = IndexLifecycleStore(
+            container: container,
+            subspace: root,
+            schema: schema,
+            indexPhysicalLayouts: ["test_index": firstLayout]
+        )
+        let second = IndexLifecycleStore(
+            container: container,
+            subspace: root,
+            schema: schema,
+            indexPhysicalLayouts: ["test_index": secondLayout]
+        )
+
+        try await engine.withTransaction { transaction in
+            try await first.enable("test_index", transaction: transaction)
+            #expect(
+                try await first.state(
+                    of: "test_index",
+                    transaction: transaction
+                ) == .writeOnly
+            )
+            #expect(
+                try await second.state(
+                    of: "test_index",
+                    transaction: transaction
+                ) == .disabled
+            )
+        }
+        #expect(
+            try first.indexSubspace(for: "test_index")
+                != second.indexSubspace(for: "test_index")
+        )
+    }
+
     @Test("Container reads fail when an existing index loses its state")
     func containerReadRejectsMissingState() async throws {
         let engine = InMemoryEngine()
@@ -224,6 +486,10 @@ struct IndexLifecycleStoreCorruptionTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         IndexedCatalogEntry.self
@@ -236,9 +502,19 @@ struct IndexLifecycleStoreCorruptionTests {
             for: IndexedCatalogEntry.self
         )
         let indexName = "IndexedCatalogEntry_value"
+        let identity = try IndexLifecycleStore(
+            container: container,
+            subspace: dataStore.subspace
+        ).storageIdentity(for: indexName)
         let stateKey = dataStore.subspace
             .subspace("state")
-            .pack(Tuple(indexName))
+            .subspace(identity.name)
+            .pack(
+                Tuple(
+                    identity.definitionFingerprint.bytes,
+                    identity.layoutFingerprint
+                )
+            )
         try await engine.withTransaction { transaction in
             try transaction.clear(key: stateKey)
         }
@@ -249,7 +525,7 @@ struct IndexLifecycleStoreCorruptionTests {
             _ = try await container.testBaseContext()
                 .indexQueryContext.withReadableIndex(
                     named: indexName,
-                    kindIdentifier: IndexDefinition.scalar.identifier,
+                    indexType: .ordered,
                     for: IndexedCatalogEntry.self
                 ) { _, _ in
                     ()
@@ -271,6 +547,10 @@ struct IndexLifecycleStoreCorruptionTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         IndexedCatalogEntry.self
@@ -283,9 +563,19 @@ struct IndexLifecycleStoreCorruptionTests {
             for: IndexedCatalogEntry.self
         )
         let indexName = "IndexedCatalogEntry_value"
+        let identity = try IndexLifecycleStore(
+            container: container,
+            subspace: dataStore.subspace
+        ).storageIdentity(for: indexName)
         let stateKey = dataStore.subspace
             .subspace("state")
-            .pack(Tuple(indexName))
+            .subspace(identity.name)
+            .pack(
+                Tuple(
+                    identity.definitionFingerprint.bytes,
+                    identity.layoutFingerprint
+                )
+            )
         let corruptBytes = ByteString([0xFF])
         try await engine.withTransaction { transaction in
             try transaction.setValue(corruptBytes, for: stateKey)
@@ -310,7 +600,9 @@ struct IndexLifecycleStoreCorruptionTests {
                 .range()
             let indexRange = dataStore.subspace
                 .subspace(SubspaceKey.indexes)
-                .subspace(indexName)
+                .subspace(identity.name)
+                .subspace(identity.definitionFingerprint.bytes)
+                .subspace(identity.layoutFingerprint)
                 .range()
             let itemRows = try await transaction.collectRange(
                 begin: itemRange.begin,
@@ -343,6 +635,10 @@ struct IndexLifecycleStoreCorruptionTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         CatalogEntry.self
@@ -393,7 +689,9 @@ private struct IndexStateScenario: Sendable {
     let indexName: String
 
     var stateKey: ByteString {
-        stateKey(for: indexName)
+        get throws {
+            try stateKey(for: indexName)
+        }
     }
 
     var entityRange: (begin: ByteString, end: ByteString) {
@@ -404,13 +702,23 @@ private struct IndexStateScenario: Sendable {
         _ bytes: ByteString,
         indexName: String? = nil
     ) async throws {
-        let key = stateKey(for: indexName ?? self.indexName)
+        let key = try stateKey(for: indexName ?? self.indexName)
         try await engine.withTransaction { transaction in
             try transaction.setValue(bytes, for: key)
         }
     }
 
-    private func stateKey(for indexName: String) -> ByteString {
-        root.subspace("state").pack(Tuple(indexName))
+    private func stateKey(for indexName: String) throws -> ByteString {
+        let identity = try lifecycleStore.storageIdentity(for: indexName)
+        return
+            root
+            .subspace("state")
+            .subspace(identity.name)
+            .pack(
+                Tuple(
+                    identity.definitionFingerprint.bytes,
+                    identity.layoutFingerprint
+                )
+            )
     }
 }

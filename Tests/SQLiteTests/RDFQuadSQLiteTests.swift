@@ -11,13 +11,13 @@ import Testing
 private struct SQLiteRDFQuadStatement {
     #Directory<SQLiteRDFQuadStatement>("test", "rdf_quad", "statements")
     #Index(
-        .rdfDataset,
-        from: \SQLiteRDFQuadStatement.subject,
-        edge: \SQLiteRDFQuadStatement.predicate,
-        to: \SQLiteRDFQuadStatement.object,
-        graph: \SQLiteRDFQuadStatement.graph,
-        name: "rdf_quad"
-    )
+        .graph(
+            name: "rdf_quad",
+            definition: .rdf(
+                subject: \SQLiteRDFQuadStatement.subject,
+                predicate: \SQLiteRDFQuadStatement.predicate,
+                object: \SQLiteRDFQuadStatement.object,
+        graph: \SQLiteRDFQuadStatement.graph)))
 
     var id: String = UUID().uuidString
     var subject: RDFTerm = .iri(.xsdString)
@@ -130,7 +130,11 @@ struct RDFQuadSQLiteTests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteRDFQuadStatement.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteRDFQuadStatement.self)]
             ),
             security: .testingDisabled
         )

@@ -4,9 +4,9 @@
 // Reference: FDB Record Layer IndexingMerger.java (violation tracking during merge)
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/IndexingMerger.java
 
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
-import DatabaseKit
 
 // MARK: - UniquenessViolationTracker
 
@@ -18,7 +18,9 @@ import DatabaseKit
 ///
 /// **Storage Format**:
 /// ```
-/// [metadataSubspace]/_violations/[indexName]/[valueKey] → ViolationEntry (binary)
+/// [metadataSubspace]/_violations/[indexName]/[definitionFingerprint]
+///     /[layoutFingerprint]/[valueKey]
+/// → ViolationEntry (binary)
 /// ```
 ///
 /// **Lifecycle**:
@@ -60,6 +62,12 @@ package final class UniquenessViolationTracker: Sendable {
     /// Metadata subspace containing violation entries
     private let metadataSubspace: Subspace
 
+    /// Immutable schema generation that owns the tracked physical indexes.
+    private let schema: Schema
+
+    /// Provider-resolved persisted layouts paired with `schema`.
+    private let indexPhysicalLayouts: [String: IndexPhysicalLayout]
+
     /// Database event logger selected by the container configuration.
     private var logger: DatabaseLogger {
         container.configuration.logging.logger(
@@ -78,8 +86,25 @@ package final class UniquenessViolationTracker: Sendable {
         container: DBContainer,
         metadataSubspace: Subspace
     ) {
+        let lease = container.acquireActiveSchemaLease()
         self.container = container
         self.metadataSubspace = metadataSubspace
+        self.schema = lease.schema
+        self.indexPhysicalLayouts = lease.indexPhysicalLayouts
+    }
+
+    /// Initializes a tracker for an explicitly validated schema generation.
+    /// Both values are required so uniqueness state cannot cross generations.
+    package init(
+        container: DBContainer,
+        metadataSubspace: Subspace,
+        schema: Schema,
+        indexPhysicalLayouts: [String: IndexPhysicalLayout]
+    ) {
+        self.container = container
+        self.metadataSubspace = metadataSubspace
+        self.schema = schema
+        self.indexPhysicalLayouts = indexPhysicalLayouts
     }
 
     // MARK: - Violation Subspace
@@ -90,8 +115,23 @@ package final class UniquenessViolationTracker: Sendable {
     }
 
     /// Get subspace for a specific index's violations
-    private func indexViolationsSubspace(indexName: String) -> Subspace {
-        violationsSubspace.subspace(indexName)
+    private func indexViolationsSubspace(indexName: String
+    ) throws -> Subspace {
+        guard let physicalLayout = indexPhysicalLayouts[indexName] else {
+            throw DatabaseIndexStorageIdentityError.physicalLayoutNotResolved(
+                indexName
+            )
+        }
+        let identity = try DatabaseIndexStorageIdentity.resolve(
+            named: indexName,
+            in: schema,
+            physicalLayout: physicalLayout
+        )
+        return
+            violationsSubspace
+            .subspace(identity.name)
+            .subspace(identity.definitionFingerprint.bytes)
+            .subspace(identity.layoutFingerprint)
     }
 
     // MARK: - Record Violations
@@ -117,7 +157,7 @@ package final class UniquenessViolationTracker: Sendable {
         primaryKey: Tuple,
         transaction: any TransactionAccess
     ) async throws {
-        let subspace = indexViolationsSubspace(indexName: indexName)
+        let subspace = try indexViolationsSubspace(indexName: indexName)
         let key = subspace.pack(Tuple(valueKey))
         let pkBytes = primaryKey.pack()
 
@@ -147,7 +187,7 @@ package final class UniquenessViolationTracker: Sendable {
                     "Added primary key to existing violation",
                     metadata: [
                         "indexName": "\(indexName)",
-                        "totalConflicts": "\(updatedViolation.primaryKeys.count)"
+                        "totalConflicts": "\(updatedViolation.primaryKeys.count)",
                     ]
                 )
             }
@@ -174,7 +214,7 @@ package final class UniquenessViolationTracker: Sendable {
                 "Recorded new uniqueness violation",
                 metadata: [
                     "indexName": "\(indexName)",
-                    "type": "\(persistableType)"
+                    "type": "\(persistableType)",
                 ]
             )
         }
@@ -199,7 +239,7 @@ package final class UniquenessViolationTracker: Sendable {
         newPrimaryKey: Tuple,
         transaction: any TransactionAccess
     ) async throws {
-        let subspace = indexViolationsSubspace(indexName: indexName)
+        let subspace = try indexViolationsSubspace(indexName: indexName)
         let key = subspace.pack(Tuple(valueKey))
 
         let existingBytes = existingPrimaryKey.pack()
@@ -252,7 +292,7 @@ package final class UniquenessViolationTracker: Sendable {
                 metadata: [
                     "indexName": "\(indexName)",
                     "type": "\(persistableType)",
-                    "conflictCount": "2"
+                    "conflictCount": "2",
                 ]
             )
         }
@@ -291,7 +331,7 @@ package final class UniquenessViolationTracker: Sendable {
         limit: Int? = nil,
         transaction: any TransactionAccess
     ) async throws -> [UniquenessViolation] {
-        let subspace = indexViolationsSubspace(indexName: indexName)
+        let subspace = try indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
 
         var violations: [UniquenessViolation] = []
@@ -329,23 +369,17 @@ package final class UniquenessViolationTracker: Sendable {
         limit: Int? = nil,
         transaction: any TransactionAccess
     ) async throws -> [String: [UniquenessViolation]] {
-        let (begin, end) = violationsSubspace.range()
-
         var result: [String: [UniquenessViolation]] = [:]
 
-        let sequence = try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
-
-        for (_, value) in sequence {
-            let violation = try UniquenessViolationCodec.decode(value)
-
-            if let maxLimit = limit {
-                let currentCount = result[violation.indexName]?.count ?? 0
-                if currentCount >= maxLimit {
-                    continue
-                }
+        for indexName in schema.allIndexNames.sorted() {
+            let violations = try await scanViolations(
+                indexName: indexName,
+                limit: limit,
+                transaction: transaction
+            )
+            if !violations.isEmpty {
+                result[indexName] = violations
             }
-
-            result[violation.indexName, default: []].append(violation)
         }
 
         return result
@@ -366,7 +400,7 @@ package final class UniquenessViolationTracker: Sendable {
         indexName: String,
         transaction: any TransactionAccess
     ) async throws -> Bool {
-        let subspace = indexViolationsSubspace(indexName: indexName)
+        let subspace = try indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
 
         let sequence = try await TransactionRangeCollection.collect(using: transaction, from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), limit: 0, reverse: false, snapshot: true, streamingMode: .wantAll)
@@ -393,7 +427,7 @@ package final class UniquenessViolationTracker: Sendable {
         indexName: String,
         transaction: any TransactionAccess
     ) async throws -> Int {
-        let subspace = indexViolationsSubspace(indexName: indexName)
+        let subspace = try indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
 
         var count = 0
@@ -440,7 +474,7 @@ package final class UniquenessViolationTracker: Sendable {
         transaction: any TransactionAccess
     ) async throws -> ViolationResolution {
         // Check violation entry
-        let violationSubspace = indexViolationsSubspace(indexName: indexName)
+        let violationSubspace = try indexViolationsSubspace(indexName: indexName)
         let violationKey = violationSubspace.pack(Tuple(valueKey))
 
         guard let violationData = try await transaction.getValue(for: violationKey, snapshot: false) else {
@@ -510,7 +544,7 @@ package final class UniquenessViolationTracker: Sendable {
         valueKey: ByteString,
         transaction: any TransactionAccess
     ) async throws {
-        let subspace = indexViolationsSubspace(indexName: indexName)
+        let subspace = try indexViolationsSubspace(indexName: indexName)
         let key = subspace.pack(Tuple(valueKey))
         try transaction.clear(key: key)
 
@@ -536,7 +570,7 @@ package final class UniquenessViolationTracker: Sendable {
         indexName: String,
         transaction: any TransactionAccess
     ) async throws {
-        let subspace = indexViolationsSubspace(indexName: indexName)
+        let subspace = try indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
         try transaction.clearRange(beginKey: begin, endKey: end)
 

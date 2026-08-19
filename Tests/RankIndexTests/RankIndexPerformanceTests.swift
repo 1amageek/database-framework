@@ -26,11 +26,11 @@ private struct BenchmarkContext {
         self.subspace = Subspace(prefix: Tuple("bench", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace("score_rank")
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: BenchmarkPlayer.self,
             name: "score_rank",
-            kind: rankIndexMetadata(scoreType: .int64),
+            definition: rankIndexDefinition(fieldNumber: 3),
             rootExpression: FieldKeyExpression(fieldName: "score"),
-            subspaceKey: "score_rank",
             itemTypes: Set(["BenchmarkPlayer"])
         )
 
@@ -276,7 +276,7 @@ struct RankIndexPerformanceTests {
         let testScores: [(score: Int64, expectedRank: Int64)] = [
             (5000, 0),    // Highest score
             (2500, 250),  // Middle score
-            (10, 499)     // Lowest score
+            (10, 499),  // Lowest score
         ]
 
         for (score, expectedRank) in testScores {

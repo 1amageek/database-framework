@@ -5,8 +5,9 @@ metadata. It is an optional index module built on the same StorageKit
 execution layer.
 
 The consuming package selects the `GraphIndexes` trait. This adds ScalarIndex,
-GraphIndex, and OntologyIndex to the `Database` umbrella; FoundationDB and
-`Relationships` are not implied.
+GraphIndex, and OntologyIndex to both the lightweight `DatabaseRuntime` import
+and the broader `Database` umbrella; FoundationDB and `Relationships` are not
+implied.
 
 ## Responsibility Split
 
@@ -43,9 +44,9 @@ struct Employee {
 }
 ~~~
 
-Use OWLObjectProperty for a persisted edge type and GraphIndexKind for explicit
-RDF triple layouts. The Graph module keeps these declarations separate from
-the core persistence macro.
+Use `@OWLObjectProperty` for a persisted edge type and
+`IndexDefinition.graph(.rdf(...))` for explicit RDF dataset layouts. The Graph
+module keeps execution separate from the core persistence macro.
 
 ## Persistence
 
@@ -63,6 +64,10 @@ let schema = try Schema(
     version: .init(1, 0, 0)
 )
 let runtime = try DatabaseFrameworkRuntime.configuration(
+    executionIdentity: DatabaseExecutionRuntimeIdentity(
+        identifier: "application",
+        revision: 1
+    ),
     entityRuntimes: [
         try DatabaseFrameworkRuntime.entity(Employee.self),
         try DatabaseFrameworkRuntime.entity(Department.self),

@@ -73,11 +73,11 @@ private struct VersionIndexBenchmarkContext {
         let indexName = "VersionedBenchmarkDocument_version"
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: VersionedBenchmarkDocument.self,
             name: indexName,
-            kind: versionIndexMetadata(strategy: strategy),
+            definition: versionIndexDefinition(strategy: strategy),
             rootExpression: FieldKeyExpression(fieldName: "id"),
-            subspaceKey: indexName,
             itemTypes: Set(["VersionedBenchmarkDocument"])
         )
 

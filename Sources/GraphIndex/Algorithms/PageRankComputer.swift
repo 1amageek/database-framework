@@ -3,8 +3,8 @@
 //
 // Provides PageRank computation using power iteration.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 // MARK: - PageRankComputer
@@ -66,7 +66,7 @@ public final class PageRankComputer: Sendable {
     ///
     /// - Parameters:
     ///   - snapshot: Stable storage snapshot for the complete computation
-    ///   - subspace: Index subspace
+    ///   - subspace: ResolvedIndex subspace
     ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
     @_spi(DatabaseExecution)

@@ -1,4 +1,4 @@
-#if DATABASE_MULTIPLE_BASES
+#if DATABASE_MULTI_BASE
 import StorageKit
 
 /// Immutable Base placement retained by every admitted operation.

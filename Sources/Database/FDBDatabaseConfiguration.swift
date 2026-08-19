@@ -1,5 +1,5 @@
 #if !os(WASI)
-#if FOUNDATION_DB && !DATABASE_MULTIPLE_BASES
+#if FOUNDATION_DB && !DATABASE_MULTI_BASE
 import DatabaseEngine
 import FDBStorage
 import StorageKit
@@ -26,8 +26,7 @@ public struct FDBDatabaseConfiguration: DatabaseContainerConfiguration {
 
     public func makeDBConfiguration(
         monotonicClock: any StorageMonotonicClock,
-        wallClock: any WallClock,
-        indexConfigurations: [any IndexRuntimeConfiguration]
+        wallClock: any WallClock
     ) async throws -> DBConfiguration {
         let engine = try await FDBStorageEngine(configuration: storage)
         do {
@@ -38,8 +37,7 @@ public struct FDBDatabaseConfiguration: DatabaseContainerConfiguration {
                 storageEngine: engine,
                 databaseRoot: root,
                 monotonicClock: monotonicClock,
-                wallClock: wallClock,
-                indexConfigurations: indexConfigurations
+                wallClock: wallClock
             )
         } catch {
             engine.requestShutdown()

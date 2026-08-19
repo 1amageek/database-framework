@@ -4,9 +4,9 @@
 // Reference: FDB Record Layer StandardIndexMaintainer.java
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/StandardIndexMaintainer.java
 
-import StorageKit
 import DatabaseKit
 import DatabaseTypes
+import StorageKit
 import Synchronization
 
 // MARK: - UniquenessViolation
@@ -98,15 +98,15 @@ extension UniquenessViolation: CustomStringConvertible {
             pkDescriptions = ["<invalid tuple>"]
         }
         return """
-        UniquenessViolation(
-            index: \(indexName),
-            type: \(persistableType),
-            value: [\(valueDescription)],
-            conflictingEntities: \(pkDescriptions.count),
-            primaryKeys: [\(pkDescriptions.joined(separator: ", "))],
-            detectedAt: \(detectedAt)
-        )
-        """
+            UniquenessViolation(
+                index: \(indexName),
+                type: \(persistableType),
+                value: [\(valueDescription)],
+                conflictingEntities: \(pkDescriptions.count),
+                primaryKeys: [\(pkDescriptions.joined(separator: ", "))],
+                detectedAt: \(detectedAt)
+            )
+            """
     }
 }
 
@@ -186,7 +186,7 @@ public enum UniquenessCheckMode: Sendable, Hashable {
 
     /// Track violations for later resolution (for write-only indexes during online indexing)
     ///
-    /// Violations are stored in `[index_subspace]/_violations/` and can be
+    /// Violations are stored by logical name and definition fingerprint and can be
     /// scanned using `UniquenessViolationTracker.scanViolations()`.
     case track
 

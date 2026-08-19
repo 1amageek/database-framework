@@ -18,7 +18,7 @@ struct CanonicalCoveringValueBuilderTests {
         )
         let properties = try CoveringValueBuilder.decode(
             bytes,
-            storedFieldNames: descriptor.storedFieldNames
+            includedFieldNames: descriptor.includedFieldNames
         )
 
         #expect(Array(bytes.prefix(4)) == [0x44, 0x42, 0x49, 0x58])
@@ -53,9 +53,16 @@ struct CanonicalCoveringValueBuilderTests {
         var entity = IndexProjectionKeyOnlyEntity(email: "key@example.com")
         entity.id = "key-1"
         let descriptor = try IndexDescriptor(
-            name: "IndexProjectionKeyOnlyEntity_email",
-            definition: .scalar,
-            fields: [IndexProjectionKeyOnlyEntity.fields.email.ascending]
+            entityName: IndexProjectionKeyOnlyEntity.persistableType,
+            declaration: .ordered(
+                name: "IndexProjectionKeyOnlyEntity_email",
+                keys: [
+                    .ascending(
+                        IndexProjectionKeyOnlyEntity.fields.email.identity
+                    )
+                ]
+            ),
+            fieldSchemas: IndexProjectionKeyOnlyEntity.fieldSchemas
         )
         let bytes = try CoveringValueBuilder.build(
             for: entity,
@@ -68,16 +75,19 @@ struct CanonicalCoveringValueBuilderTests {
 
     @Test("Unknown stored fields fail before an index write")
     func unknownFieldFails() throws {
-        let descriptor = try IndexProjectionEntityFactory.descriptor(
-            includesStoredFields: false
-        )
-        #expect(throws: CanonicalIndexProjectionError.self) {
-            _ = try CoveringValueBuilder.build(
-                for: IndexProjectionEntityFactory.entity(),
-                index: IndexProjectionEntityFactory.runtimeIndex(
-                    from: descriptor,
-                    storedFieldNames: ["unknown"]
-                )
+        #expect(throws: IndexDeclarationError.self) {
+            _ = try IndexDescriptor(
+                entityName: IndexProjectionEntity.persistableType,
+                declaration: .ordered(
+                    name: "invalid_projection",
+                    keys: [
+                        .ascending(IndexProjectionEntity.fields.email.identity)
+                    ],
+                    includedFields: [
+                        FieldIdentity(name: "unknown", number: 999)
+                    ]
+                ),
+                fieldSchemas: IndexProjectionEntity.fieldSchemas
             )
         }
     }
@@ -93,7 +103,7 @@ struct CanonicalCoveringValueBuilderTests {
         #expect(throws: StorageFrameError.self) {
             _ = try CoveringValueBuilder.decode(
                 bytes.dropLast(),
-                storedFieldNames: descriptor.storedFieldNames
+                includedFieldNames: descriptor.includedFieldNames
             )
         }
     }
@@ -113,7 +123,7 @@ struct CanonicalCoveringValueBuilderTests {
                     number: 1,
                     name: "selected",
                     value: .bytes(payload)
-                ),
+                )
             ],
             limits: limits
         )
@@ -192,7 +202,7 @@ struct CanonicalCoveringValueBuilderTests {
             limits: limits
         )
         let expectedFields: [String: FieldValue] = [
-            "selected": .string("calendar"),
+            "selected": .string("calendar")
         ]
         #expect(selected.fieldsByName == expectedFields)
         #expect(throws: StorageFrameError.self) {

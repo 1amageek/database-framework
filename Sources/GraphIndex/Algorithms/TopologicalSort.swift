@@ -3,8 +3,8 @@
 //
 // Provides topological ordering for directed acyclic graphs (DAGs).
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 // MARK: - TopologicalSortConfiguration
@@ -164,7 +164,7 @@ public final class TopologicalSorter: Sendable {
     ///
     /// - Parameters:
     ///   - snapshot: Stable storage snapshot for the complete computation
-    ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
+    ///   - subspace: ResolvedIndex subspace (same as used by GraphIndexMaintainer)
     ///   - configuration: Algorithm configuration
     @_spi(DatabaseExecution)
     public init(

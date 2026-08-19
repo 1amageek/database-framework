@@ -3,8 +3,8 @@
 //
 // Provides default implementations for IndexMaintainers that store data in FDB subspaces.
 
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Protocol for IndexMaintainers that store index data in an FDB subspace
@@ -30,7 +30,7 @@ import StorageKit
 /// **Usage**:
 /// ```swift
 /// struct MyIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
-///     public let index: Index
+///     public let index: ResolvedIndex
 ///     public let subspace: Subspace
 ///     public let idExpression: KeyExpression
 ///
@@ -43,7 +43,7 @@ import StorageKit
 /// ```
 public protocol SubspaceIndexMaintainer: IndexMaintainer {
     /// The index definition
-    var index: Index { get }
+    var index: ResolvedIndex { get }
 
     /// The FDB subspace for this index
     var subspace: Subspace { get }

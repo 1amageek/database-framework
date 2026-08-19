@@ -130,7 +130,7 @@ extension DatabaseContext {
         try await withDataOperation { [self] in
             try await withFieldReadAuthorization(for: selectQuery) {
                 if let binding = ActiveDatabaseTransactionContext.binding {
-                    #if DATABASE_MULTIPLE_BASES
+                    #if DATABASE_MULTI_BASE
                     guard binding.resource == self.resource,
                           binding.authorization == self.authorization,
                           binding.grantedAccess.contains(.read) else {
@@ -182,7 +182,7 @@ extension DatabaseContext {
     ) async throws -> QueryResponse {
         try await withDataOperation { [self] in
             try await withFieldReadAuthorization(for: selectQuery) {
-                #if DATABASE_MULTIPLE_BASES
+                #if DATABASE_MULTI_BASE
                 _ = try requireOperationDataRoot()
                 let executionBinding = DatabaseTransactionExecutionBinding(
                     transaction: transaction,
@@ -341,7 +341,7 @@ extension DatabaseContext {
         )
     }
 
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     /// Applies the canonical relational pipeline to two already-authorized
     /// Base-local table inputs. Only the Composition planner may call this
     /// boundary; ordinary Base execution rejects Base-qualified sources.
@@ -416,7 +416,7 @@ extension DatabaseContext {
         let left = leftBuilder.finish().moveRetainingReservation()
         let right = rightBuilder.finish().moveRetainingReservation()
         // Transfer accounting to the canonical join's existing input
-        // reservation without adding a MultipleBases branch to that hot path.
+        // reservation without adding a MultiBase branch to that hot path.
         left.reservation.release()
         right.reservation.release()
         let joined = try performJoin(
@@ -686,7 +686,8 @@ extension DatabaseContext {
             // Only scalar index access is routed through SelectQueryPlanner, because
             // it maps cleanly onto Query<T>.forcedIndex + typed fetch.
             if case .index(let indexScan) = accessPath,
-               indexScan.kindIdentifier != "scalar" {
+                indexScan.indexType != .ordered
+            {
                 let rowSet = try await dispatchTableIndexExecutor(
                     tableRef: tableRef,
                     selectQuery: selectQuery,
@@ -725,17 +726,18 @@ extension DatabaseContext {
                     "Index '\(indexScan.indexName)' is not declared by polymorphic group '\(group.identifier)'"
                 )
             }
-            guard index.kindIdentifier == indexScan.kindIdentifier else {
+            guard index.type == indexScan.indexType else {
                 throw CanonicalReadError.unsupportedAccessPath(
-                    "Index '\(index.name)' has kind '\(index.kindIdentifier)', not '\(indexScan.kindIdentifier)'"
+                    "Index '\(index.name)' has type '\(index.type.diagnosticName)', not '\(indexScan.indexType.diagnosticName)'"
                 )
             }
             guard let executor = container.runtimeConfiguration.readExecutors
                 .polymorphicIndexExecutor(
-                    for: index.kindIdentifier
-                ) else {
+                    for: index.type
+                    )
+            else {
                 throw CanonicalReadError.executorNotRegistered(
-                    index.kindIdentifier
+                    index.type
                 )
             }
             let rowSet = try await executor.executeRows(
@@ -940,9 +942,9 @@ extension DatabaseContext {
                 "Index '\(indexScan.indexName)' is not declared by entity '\(entity.name)'"
             )
         }
-        guard index.kindIdentifier == indexScan.kindIdentifier else {
+        guard index.type == indexScan.indexType else {
             throw CanonicalReadError.unsupportedAccessPath(
-                "Index '\(index.name)' has kind '\(index.kindIdentifier)', not '\(indexScan.kindIdentifier)'"
+                "Index '\(index.name)' has type '\(index.type.diagnosticName)', not '\(indexScan.indexType.diagnosticName)'"
             )
         }
         guard let runtime = container.runtimeConfiguration
@@ -960,7 +962,7 @@ extension DatabaseContext {
             partitions: tableRef.partitions
         ) else {
             throw CanonicalReadError.unsupportedSelectQuery(
-                "Entity '\(entity.name)' has no registered '\(indexScan.kindIdentifier)' index reader"
+                "Entity '\(entity.name)' has no registered '\(indexScan.indexType.diagnosticName)' index reader"
             )
         }
         return result
@@ -1085,7 +1087,7 @@ extension DatabaseContext {
                 entity.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(entity.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
+                    PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode),
                 ]
             )
             let sourceRow = CanonicalSourceRow.fromBaseFields(
@@ -1206,7 +1208,7 @@ extension DatabaseContext {
                     entity.item,
                     annotations: [
                         PolymorphicRowAnnotation.typeName: .string(entity.typeName),
-                        PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode)
+                        PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode),
                     ]
                 )
                 let sourceRow = CanonicalSourceRow.fromBaseFields(
@@ -1389,7 +1391,7 @@ extension DatabaseContext {
             throw CanonicalReadError.unsupportedSource(
                 "SERVICE source '\(endpoint)' is not supported on the canonical RPC"
             )
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         case .base:
             throw CanonicalReadError.unsupportedSource(
                 "Base-qualified sources require a Composition planner"

@@ -24,11 +24,12 @@ struct EdgeForSCC {
     var to: String = ""
 
     #Index(
-        .propertyGraph(strategy: .tripleStore),
-        from: \EdgeForSCC.from,
-        edge: \EdgeForSCC.relationship,
-        to: \EdgeForSCC.to
-    )
+        .graph(
+            name: "EdgeForSCC_graph_from_relationship_to",
+            definition: .property(
+                source: \EdgeForSCC.from, label: .field(\EdgeForSCC.relationship),
+                target: \EdgeForSCC.to,
+                graph: nil, strategy: .tripleStore)))
 }
 
 // MARK: - Test Suite
@@ -56,7 +57,11 @@ struct SCCFinderTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForSCC.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForSCC.self)]
             ),
             security: .testingDisabled
         )
@@ -241,7 +246,7 @@ struct SCCFinderTests {
 
         // A -> B (one-way only = not strongly connected)
         let edges = [
-            makeEdge(from: a, relationship: predicate, to: b),
+            makeEdge(from: a, relationship: predicate, to: b)
         ]
 
         try await insertEdges(edges, context: context)
@@ -307,7 +312,7 @@ struct SCCFinderTests {
 
         // Self-loop
         let edges = [
-            makeEdge(from: a, relationship: predicate, to: a),
+            makeEdge(from: a, relationship: predicate, to: a)
         ]
 
         try await insertEdges(edges, context: context)
@@ -418,7 +423,11 @@ struct GraphEdgeScannerBatchTests {
             testing: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForSCC.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForSCC.self)]
             ),
             security: .testingDisabled
         )
@@ -443,15 +452,20 @@ struct GraphEdgeScannerBatchTests {
         context: DatabaseContext
     ) async throws -> GraphEdgeScanner {
         guard let descriptor = try EdgeForSCC.indexDescriptors.first(where: {
-            $0.kindIdentifier
-                == IndexDefinition.propertyGraph().identifier
-        }) else {
+                $0.type == .graph(.property)
+            }) else {
             throw SCCError.graphIndexNotFound
         }
-        let metadata = try PropertyGraphIndexMetadata(canonical: descriptor.kind)
+        guard
+            case .graph(
+                .property(_, _, _, _, let declaredStrategy), _
+            ) = descriptor.declaration.definition
+        else {
+            throw SCCError.graphIndexNotFound
+        }
         let readableIndex = try await context.indexQueryContext.withReadableIndex(
             named: descriptor.name,
-            kindIdentifier: descriptor.kind.identifier,
+            indexType: descriptor.type,
             for: EdgeForSCC.self
         ) { index, _ in
             index
@@ -461,7 +475,7 @@ struct GraphEdgeScannerBatchTests {
         }
         return GraphEdgeScanner(
             indexSubspace: readableIndex.subspace,
-            strategy: metadata.strategy
+            strategy: declaredStrategy.storageStrategy
         )
     }
 
@@ -614,7 +628,7 @@ struct GraphEdgeScannerBatchTests {
 
         // Insert some edges
         let edges = [
-            makeEdge(from: "X", relationship: predicate, to: "Y"),
+            makeEdge(from: "X", relationship: predicate, to: "Y")
         ]
         try await insertEdges(edges, context: context)
 
@@ -645,7 +659,7 @@ struct GraphEdgeScannerBatchTests {
 
         // Insert some edges
         let edges = [
-            makeEdge(from: "X", relationship: predicate, to: "Y"),
+            makeEdge(from: "X", relationship: predicate, to: "Y")
         ]
         try await insertEdges(edges, context: context)
 
@@ -754,7 +768,7 @@ struct GraphEdgeScannerBatchTests {
 
         // Only A -> B, no edges from C
         let edges = [
-            makeEdge(from: a, relationship: predicate, to: b),
+            makeEdge(from: a, relationship: predicate, to: b)
         ]
         try await insertEdges(edges, context: context)
 

@@ -1,9 +1,9 @@
+import DatabaseEngine
+import DatabaseKit
 // Filter.swift
 // ScalarIndex - Scalar filter query for Fusion
 //
 import DatabaseTypes
-import DatabaseKit
-import DatabaseEngine
 import StorageKit
 
 // MARK: - FilterError
@@ -399,8 +399,8 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
     /// **Reference**: "Database System Concepts" (Silberschatz) - Chapter 14.3
     private func findIndexDescriptor() throws -> IndexDescriptor? {
         queryContext.indexDescriptors(for: T.self).first { descriptor in
-            // 1. Filter by kindIdentifier
-            guard descriptor.kind.identifier == "scalar" else {
+            // 1. Filter by semantic index type.
+            guard descriptor.type == .ordered else {
                 return false
             }
             // 2. Match by fieldName - MUST be the FIRST (leftmost) field
@@ -491,7 +491,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         // Execute search within transaction
         let primaryKeys: [Tuple] = try await queryContext.withReadableIndex(
             named: indexName,
-            kindIdentifier: "scalar",
+            indexType: .ordered,
             for: T.self
         ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -542,7 +542,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         // Execute search within transaction
         let primaryKeys: [Tuple] = try await queryContext.withReadableIndex(
             named: indexName,
-            kindIdentifier: "scalar",
+            indexType: .ordered,
             for: T.self
         ) { readableIndex, transaction in
             guard let readableIndex else {

@@ -27,11 +27,11 @@ struct AggregationEdge {
     var metadata: String = ""
 
     #Index(
-        .rdfDataset,
-        from: \AggregationEdge.from,
-        edge: \AggregationEdge.relationship,
-        to: \AggregationEdge.to
-    )
+        .graph(
+            name: "AggregationEdge_rdf_quad_from_relationship_to",
+            definition: .rdf(
+                subject: \AggregationEdge.from, predicate: \AggregationEdge.relationship,
+                object: \AggregationEdge.to, graph: nil)))
 }
 
 // MARK: - Test Suite
@@ -58,7 +58,12 @@ struct SPARQLAdvancedAggregationTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationEdge.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(AggregationEdge.self)]),
             security: .testingDisabled,
         )
     }
@@ -809,7 +814,7 @@ struct SPARQLAdvancedAggregationTests {
         let pred = uniqueID("hasScore")
 
         let edges = [
-            try makeEdge(from: "Student", relationship: pred, to: 85),
+            try makeEdge(from: "Student", relationship: pred, to: 85)
         ]
 
         try await insertEdges(edges, context: context)

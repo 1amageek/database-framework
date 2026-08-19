@@ -17,13 +17,9 @@ import TestSupport
 @Persistable
 struct PGUser: Equatable {
     #Directory<PGUser>("test", "pg", "users")
-    #Index(
-        .scalar,
-        fields: [\PGUser.email],
-        unique: true,
-        name: "PGUser_email"
-    )
-    #Index(.scalar, fields: [\PGUser.age], name: "PGUser_age")
+    #Index(.ordered(name: "PGUser_email", keys: [.ascending(\PGUser.email)],
+        unique: true))
+    #Index(.ordered(name: "PGUser_age", keys: [.ascending(\PGUser.age)], unique: false))
 
     var id: String = UUID().uuidString
     var email: String = ""
@@ -35,10 +31,9 @@ struct PGUser: Equatable {
 struct PGProduct: Equatable {
     #Directory<PGProduct>("test", "pg", "products")
     #Index(
-        .scalar,
-        fields: [\PGProduct.category, \PGProduct.price],
-        name: "PGProduct_category_price"
-    )
+        .ordered(
+            name: "PGProduct_category_price", keys: [.ascending(\PGProduct.category), .ascending(\PGProduct.price)],
+            unique: false))
 
     var id: String = UUID().uuidString
     var category: String = ""
@@ -237,9 +232,18 @@ struct PostgreSQLScalarIndexTests {
 
             let category = "electronics-\(UUID().uuidString.prefix(6))"
 
-            var p1 = PGProduct(); p1.category = category; p1.price = 99.99; p1.name = "Widget"
-            var p2 = PGProduct(); p2.category = category; p2.price = 199.99; p2.name = "Gadget"
-            var p3 = PGProduct(); p3.category = "books"; p3.price = 29.99; p3.name = "Novel"
+            var p1 = PGProduct()
+            p1.category = category
+            p1.price = 99.99
+            p1.name = "Widget"
+            var p2 = PGProduct()
+            p2.category = category
+            p2.price = 199.99
+            p2.name = "Gadget"
+            var p3 = PGProduct()
+            p3.category = "books"
+            p3.price = 29.99
+            p3.name = "Novel"
 
             try context.insert(p1)
             try context.insert(p2)

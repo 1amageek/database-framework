@@ -1,48 +1,64 @@
 import DatabaseKit
 import StorageKit
 
-/// Immutable, container-scoped index maintenance provider registry.
+/// Immutable index maintenance provider registry for one runtime generation.
 public struct IndexMaintainerProviderRegistry: Sendable {
-    private let descriptors: [String: IndexMaintainerProviderDescriptor]
+    private let descriptors: [IndexType: IndexMaintainerProviderDescriptor]
 
     public init(
         descriptors: [IndexMaintainerProviderDescriptor]
     ) throws(DatabaseRuntimeConfigurationError) {
-        var mapped: [String: IndexMaintainerProviderDescriptor] = [:]
+        var mapped: [IndexType: IndexMaintainerProviderDescriptor] = [:]
         mapped.reserveCapacity(descriptors.count)
         for descriptor in descriptors {
             guard mapped.updateValue(
                 descriptor,
-                forKey: descriptor.kindIdentifier
-            ) == nil else {
+                forKey: descriptor.indexType
+                ) == nil else {
                 throw .duplicateIndexMaintainerProvider(
-                    descriptor.kindIdentifier
+                    descriptor.indexType
                 )
             }
         }
         self.descriptors = mapped
     }
 
-    public func contains(kindIdentifier: String) -> Bool {
-        descriptors[kindIdentifier] != nil
+    public func contains(indexType: IndexType) -> Bool {
+        descriptors[indexType] != nil
     }
 
     public func runtimeRequirements(
-        for kindIdentifier: String
+        for indexType: IndexType
     ) -> IndexRuntimeRequirements? {
-        descriptors[kindIdentifier]?.runtimeRequirements
+        descriptors[indexType]?.runtimeRequirements
     }
 
     public func physicalEntryCapabilities(
-        for kindIdentifier: String
+        for indexType: IndexType
     ) -> IndexPhysicalEntryCapabilities? {
-        descriptors[kindIdentifier]?.physicalEntryCapabilities
+        descriptors[indexType]?.physicalEntryCapabilities
     }
 
     public func supportsUniquenessConstraints(
-        for kindIdentifier: String
+        for indexType: IndexType
     ) -> Bool? {
-        descriptors[kindIdentifier]?.supportsUniquenessConstraints
+        descriptors[indexType]?.supportsUniquenessConstraints
+    }
+
+    package func physicalLayout(
+        for index: ResolvedIndex,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> IndexPhysicalLayout {
+        guard let descriptor = descriptors[index.type] else {
+            throw IndexMaintainerProviderRegistryError.providerNotRegistered(
+                indexType: index.type,
+                indexName: index.name
+            )
+        }
+        return try descriptor.physicalLayout(
+            for: index,
+            configurations: configurations
+        )
     }
 
 }

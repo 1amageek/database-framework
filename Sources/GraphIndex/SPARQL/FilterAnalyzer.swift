@@ -4,9 +4,9 @@
 // Analyzes FilterExpression to separate pushable filters (early evaluation)
 // from complex filters (post-scan evaluation).
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 
 /// Analyzes SPARQL FilterExpression to determine filter pushdown strategy
 ///
@@ -31,7 +31,7 @@ struct FilterAnalyzer: Sendable {
     /// Graph structure variable names (?subject, ?predicate, ?object, ?graph)
     private let structureVariables: Set<String>
 
-    /// Property fields available in CoveringValue (from storedFieldNames)
+    /// Property fields available in CoveringValue (from includedFieldNames)
     private let availablePropertyFields: Set<String>
 
     // MARK: - Initialization

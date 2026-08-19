@@ -20,9 +20,10 @@ private struct RankBenchmarkPlayer {
     var score: Int64 = 0
 
     #Index(
-        .rank,
-        field: \RankBenchmarkPlayer.score,
-        name: "score_rank"
+        .rank(
+            name: "score_rank",
+            score: \RankBenchmarkPlayer.score
+        )
     )
 }
 
@@ -47,6 +48,10 @@ struct OrderedRankReadBenchmark {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(RankBenchmarkPlayer.self)]
             ),
             security: .testingDisabled

@@ -2,16 +2,20 @@ import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
-/// Immutable, container-scoped composition of runtime extension points.
+/// Immutable composition of runtime extension points for one schema generation.
 public struct DatabaseRuntimeConfiguration: Sendable {
+    public let executionIdentity: DatabaseExecutionRuntimeIdentity
     public let indexMaintainerProviders: IndexMaintainerProviderRegistry
     public let readExecutors: ReadExecutorRegistry
     public let logicalSourceExecutors: LogicalSourceExecutorRegistry
     public let persistableMutationMaintainers: [any PersistableMutationMaintainer]
     public let authorizationPolicies: AuthorizationPolicyRegistry
     public let entityRuntimes: EntityRuntimeRegistry
+    public let indexConfigurations: [any IndexRuntimeConfiguration]
+    private let indexConfigurationsByName: [String: [any IndexRuntimeConfiguration]]
 
     public init(
+        executionIdentity: DatabaseExecutionRuntimeIdentity,
         indexMaintainerProviderDescriptors: [
             IndexMaintainerProviderDescriptor
         ] = [],
@@ -20,8 +24,20 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         sparqlSourceExecutor: (any SPARQLSourceExecutor)? = nil,
         persistableMutationMaintainers: [any PersistableMutationMaintainer] = [],
         entityRuntimes: [EntityRuntimeRegistration] = [],
-        authorizationPolicies: [AuthorizationPolicyHandler] = []
+        authorizationPolicies: [AuthorizationPolicyHandler] = [],
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) throws(DatabaseRuntimeConfigurationError) {
+        guard !executionIdentity.identifier.isEmpty,
+            executionIdentity.identifier.utf8.count
+                <= DatabaseExecutionRuntimeIdentity
+                .maximumIdentifierUTF8ByteCount
+        else {
+            throw .invalidExecutionIdentityIdentifier
+        }
+        guard executionIdentity.revision > 0 else {
+            throw .invalidExecutionIdentityRevision
+        }
+        self.executionIdentity = executionIdentity
         self.indexMaintainerProviders = try IndexMaintainerProviderRegistry(
             descriptors: indexMaintainerProviderDescriptors
         )
@@ -38,6 +54,14 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         self.entityRuntimes = try EntityRuntimeRegistry(
             registrations: entityRuntimes
         )
+        self.indexConfigurations = indexConfigurations
+        var configurationsByName: [String: [any IndexRuntimeConfiguration]] = [:]
+        configurationsByName.reserveCapacity(indexConfigurations.count)
+        for configuration in indexConfigurations {
+            configurationsByName[configuration.indexName, default: []]
+                .append(configuration)
+        }
+        self.indexConfigurationsByName = configurationsByName
         var maintainerIdentifiers = Set<String>()
         for maintainer in persistableMutationMaintainers {
             guard maintainerIdentifiers.insert(maintainer.identifier).inserted else {
@@ -47,6 +71,14 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             }
         }
         self.persistableMutationMaintainers = persistableMutationMaintainers
+    }
+
+    /// Returns the deployment policy paired with one declared index in this
+    /// immutable runtime generation.
+    public func indexConfigurations(
+        named indexName: String
+    ) -> [any IndexRuntimeConfiguration] {
+        indexConfigurationsByName[indexName] ?? []
     }
 
     public func validate(
@@ -130,18 +162,19 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             }
             for descriptor in entity.indexDescriptors {
                 guard let requirements = entityRuntime.runtimeRequirements(
-                    for: descriptor.kindIdentifier
-                ) else {
+                    for: descriptor.type
+                    )
+                else {
                     throw .missingIndexMaintainerProvider(
                         source: .entity(entity.name),
                         indexName: descriptor.name,
-                        kindIdentifier: descriptor.kindIdentifier
+                        indexType: descriptor.type
                     )
                 }
                 try validateStorageRequirements(
                     source: .entity(entity.name),
                     indexName: descriptor.name,
-                    kindIdentifier: descriptor.kindIdentifier,
+                    indexType: descriptor.type,
                     requirements: requirements,
                     transactionCapabilities: transactionCapabilities
                 )
@@ -150,17 +183,18 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         for group in schema.polymorphicGroups {
             for descriptor in group.indexes {
                 guard let requirements = indexMaintainerProviders
-                    .runtimeRequirements(for: descriptor.kindIdentifier) else {
+                    .runtimeRequirements(for: descriptor.definition.type)
+                else {
                     throw .missingIndexMaintainerProvider(
                         source: .polymorphicGroup(group.identifier),
                         indexName: descriptor.name,
-                        kindIdentifier: descriptor.kindIdentifier
+                        indexType: descriptor.definition.type
                     )
                 }
                 try validateStorageRequirements(
                     source: .polymorphicGroup(group.identifier),
                     indexName: descriptor.name,
-                    kindIdentifier: descriptor.kindIdentifier,
+                    indexType: descriptor.definition.type,
                     requirements: requirements,
                     transactionCapabilities: transactionCapabilities
                 )
@@ -171,7 +205,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
     private func validateStorageRequirements(
         source: DatabaseRuntimeIndexRequirementSource,
         indexName: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         requirements: IndexRuntimeRequirements,
         transactionCapabilities: TransactionCapabilities
     ) throws(DatabaseRuntimeConfigurationError) {
@@ -180,7 +214,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             throw .unsupportedStorageCapability(
                 source: source,
                 indexName: indexName,
-                kindIdentifier: kindIdentifier,
+                indexType: indexType,
                 capability: .versionstampedMutations
             )
         }
@@ -193,18 +227,19 @@ public struct DatabaseRuntimeConfiguration: Sendable {
     ) throws(DatabaseRuntimeConfigurationError) {
         for descriptor in descriptors {
             guard let requirements = entityRuntime?.runtimeRequirements(
-                for: descriptor.kindIdentifier
-            ) else {
+                for: descriptor.type
+                )
+            else {
                 throw .missingIndexMaintainerProvider(
                     source: source,
                     indexName: descriptor.name,
-                    kindIdentifier: descriptor.kindIdentifier
+                    indexType: descriptor.type
                 )
             }
             try validateProvider(
                 source: source,
                 indexName: descriptor.name,
-                kindIdentifier: descriptor.kindIdentifier,
+                indexType: descriptor.type,
                 requiresUniqueness: descriptor.isUnique,
                 requirements: requirements,
                 entityRuntime: entityRuntime
@@ -214,47 +249,24 @@ public struct DatabaseRuntimeConfiguration: Sendable {
 
     private func validateMaintainerProviders(
         source: DatabaseRuntimeIndexRequirementSource,
-        descriptors: [IndexDescriptorMetadata]
+        descriptors: [IndexDeclaration<String>]
     ) throws(DatabaseRuntimeConfigurationError) {
         for descriptor in descriptors {
             guard let requirements = indexMaintainerProviders.runtimeRequirements(
-                for: descriptor.kindIdentifier
-            ) else {
+                for: descriptor.definition.type
+                )
+            else {
                 throw .missingIndexMaintainerProvider(
                     source: source,
                     indexName: descriptor.name,
-                    kindIdentifier: descriptor.kindIdentifier
+                    indexType: descriptor.definition.type
                 )
             }
             try validateProvider(
                 source: source,
                 indexName: descriptor.name,
-                kindIdentifier: descriptor.kindIdentifier,
-                requiresUniqueness: descriptor.unique,
-                requirements: requirements
-            )
-        }
-    }
-
-    private func validateMaintainerProviders(
-        source: DatabaseRuntimeIndexRequirementSource,
-        descriptors: [PolymorphicIndexMetadata]
-    ) throws(DatabaseRuntimeConfigurationError) {
-        for descriptor in descriptors {
-            guard let requirements = indexMaintainerProviders.runtimeRequirements(
-                for: descriptor.kindIdentifier
-            ) else {
-                throw .missingIndexMaintainerProvider(
-                    source: source,
-                    indexName: descriptor.name,
-                    kindIdentifier: descriptor.kindIdentifier
-                )
-            }
-            try validateProvider(
-                source: source,
-                indexName: descriptor.name,
-                kindIdentifier: descriptor.kindIdentifier,
-                requiresUniqueness: descriptor.commonOptions.unique,
+                indexType: descriptor.definition.type,
+                requiresUniqueness: descriptor.definition.isUnique,
                 requirements: requirements
             )
         }
@@ -263,59 +275,61 @@ public struct DatabaseRuntimeConfiguration: Sendable {
     private func validateProvider(
         source: DatabaseRuntimeIndexRequirementSource,
         indexName: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         requiresUniqueness: Bool,
         requirements: IndexRuntimeRequirements,
         entityRuntime: EntityRuntimeRegistration? = nil
     ) throws(DatabaseRuntimeConfigurationError) {
         guard entityRuntime != nil || indexMaintainerProviders.contains(
-            kindIdentifier: kindIdentifier
-        ) else {
+                    indexType: indexType
+                )
+        else {
             throw .missingIndexMaintainerProvider(
                 source: source,
                 indexName: indexName,
-                kindIdentifier: kindIdentifier
+                indexType: indexType
             )
         }
         if let entityRuntime,
-           !entityRuntime.hasIndexProvider(for: kindIdentifier) {
+           !entityRuntime.hasIndexProvider(for: indexType)
+        {
             throw .missingIndexMaintainerProvider(
                 source: source,
                 indexName: indexName,
-                kindIdentifier: kindIdentifier
+                indexType: indexType
             )
         }
         let supportsUniqueness = entityRuntime?
-            .supportsUniquenessConstraints(for: kindIdentifier)
+            .supportsUniquenessConstraints(for: indexType)
             ?? indexMaintainerProviders.supportsUniquenessConstraints(
-                for: kindIdentifier
+                for: indexType
             )
         if requiresUniqueness, supportsUniqueness != true {
             throw .missingIndexUniquenessSupport(
                 source: source,
                 indexName: indexName,
-                kindIdentifier: kindIdentifier
+                indexType: indexType
             )
         }
         switch source {
         case .entity:
             if requirements.requiresEntityReadExecutor,
-               entityRuntime?.hasIndexReader(for: kindIdentifier) != true {
+               entityRuntime?.hasIndexReader(for: indexType) != true {
                 throw .missingIndexReadExecutor(
                     source: source,
                     indexName: indexName,
-                    kindIdentifier: kindIdentifier
+                    indexType: indexType
                 )
             }
         case .polymorphicGroup:
             if requirements.requiresPolymorphicReadExecutor,
                readExecutors.polymorphicIndexExecutor(
-                for: kindIdentifier
-               ) == nil {
+                    for: indexType
+                ) == nil {
                 throw .missingPolymorphicIndexReadExecutor(
                     source: source,
                     indexName: indexName,
-                    kindIdentifier: kindIdentifier
+                    indexType: indexType
                 )
             }
         }

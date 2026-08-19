@@ -14,7 +14,7 @@ import TestSupport
 @testable import GraphIndex
 
 @Persistable
-fileprivate struct SocialConnection {
+private struct SocialConnection {
     #Directory<SocialConnection>("test", "sparql_property")
 
     var id: String = UUID().uuidString
@@ -26,22 +26,21 @@ fileprivate struct SocialConnection {
     var status: String = "active"
 
     #Index(
-        .rdfDataset,
-        from: \SocialConnection.from,
-        edge: \SocialConnection.relation,
-        to: \SocialConnection.target,
-        storedFields: [
+        .graph(
+            name: "social_graph",
+            definition: .rdf(
+                subject: \SocialConnection.from, predicate: \SocialConnection.relation,
+                object: \SocialConnection.target, graph: nil),
+            includedFields: [
             \SocialConnection.since,
             \SocialConnection.strength,
             \SocialConnection.status,
-        ],
-        name: "social_graph"
-    )
+            ]))
 }
 
 // RDF dataset model without stored fields.
 @Persistable
-fileprivate struct BasicEdge {
+private struct BasicEdge {
     #Directory<BasicEdge>("test", "basic_edge")
     var id: String = UUID().uuidString
     var from: RDFTerm = .iri(.xsdString)
@@ -49,12 +48,12 @@ fileprivate struct BasicEdge {
     var label: RDFTerm = .iri(.xsdString)
 
     #Index(
-        .rdfDataset,
-        from: \BasicEdge.from,
-        edge: \BasicEdge.label,
-        to: \BasicEdge.target,
-        name: "basic_graph"
-    )
+        .graph(
+            name: "basic_graph",
+            definition: .rdf(
+                subject: \BasicEdge.from, predicate: \BasicEdge.label,
+                object: \BasicEdge.target,
+                graph: nil)))
 }
 
 @Suite("SPARQL Property Filter Integration Tests", .serialized, .foundationDBScenario, .heartbeat)
@@ -118,7 +117,13 @@ struct SPARQLPropertyFilterIntegrationTests {
             entities: [try SocialConnection.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self)]), security: .testingDisabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self),
+                ]), security: .testingDisabled)
 
         try await container.resetTestBaseData()
 
@@ -336,7 +341,13 @@ struct SPARQLPropertyFilterIntegrationTests {
             entities: [try BasicEdge.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self)]), security: .testingDisabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SocialConnection.self), try DatabaseFrameworkRuntime.entity(BasicEdge.self),
+                ]), security: .testingDisabled)
 
 
         try await container.resetTestBaseData()

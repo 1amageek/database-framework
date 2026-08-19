@@ -27,11 +27,11 @@ struct GraphQueryEdge: Equatable {
     var target: String = ""
 
     #Index(
-        .propertyGraph(strategy: .adjacency),
-        from: \GraphQueryEdge.source,
-        edge: \GraphQueryEdge.predicate,
-        to: \GraphQueryEdge.target
-    )
+        .graph(
+            name: "GraphQueryEdge_graph_source_predicate_target",
+            definition: .property(
+                source: \GraphQueryEdge.source, label: .field(\GraphQueryEdge.predicate),
+                target: \GraphQueryEdge.target, graph: nil, strategy: .adjacency)))
 }
 
 // MARK: - Test Suite
@@ -55,7 +55,12 @@ struct GraphQueryBuilderTests {
             ],
             version: Schema.Version(1, 0, 0)
         )
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(GraphQueryEdge.self)]), security: .testingDisabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(GraphQueryEdge.self)]), security: .testingDisabled)
     }
 
     private func cleanup(container: DBContainer) async throws {

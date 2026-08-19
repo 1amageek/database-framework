@@ -3,10 +3,11 @@ import DatabaseKit
 @Polymorphable(identifier: "RuntimeConfigurationPolymorphicVectorDocument")
 @PolymorphicDirectory("runtime_configuration_polymorphic_vectors")
 @PolymorphicIndex(
-    .vector(dimensions: 3, metric: .cosine),
-    embedding: "embedding",
-    name: "RuntimeConfigurationPolymorphicVectorDocument_embedding"
-)
+    .vector(
+        name: "RuntimeConfigurationPolymorphicVectorDocument_embedding",
+        embedding: "embedding",
+        dimensions: 3, metric: .cosine
+    ))
 protocol RuntimeConfigurationPolymorphicVectorDocument:
     Polymorphable<RuntimeConfigurationPolymorphicVectorDocumentPolymorphicGroup>
 {

@@ -174,38 +174,17 @@ extension MigrationStage {
         }
     }
 
-    /// Get index changes for this migration stage
-    ///
-    /// Returns the indexes that need to be added and removed.
-    ///
-    /// - Returns: Tuple of (added indexes, removed indexes)
-    public var indexChanges: (added: Set<String>, removed: Set<String>) {
+    /// Complete concrete-index transitions for this migration stage.
+    public var indexChanges: [IndexChange] {
         get throws {
             try toVersion.indexChanges(from: fromVersion)
         }
     }
 
-    /// Get added concrete index descriptors for this migration stage.
-    ///
-    /// Polymorphic logical indexes are represented by `indexChanges.added` and
-    /// resolved through `Schema.polymorphicGroup(containingIndexNamed:)`.
-    ///
-    /// - Returns: Array of concrete IndexDescriptor objects to add
-    public var addedIndexDescriptors: [IndexDescriptor] {
+    /// Complete polymorphic-index transitions for this migration stage.
+    public var polymorphicIndexChanges: [PolymorphicIndexChange] {
         get throws {
-            let addedNames = try indexChanges.added
-            return try toVersion.allIndexDescriptors.filter {
-                addedNames.contains($0.name)
-            }
-        }
-    }
-
-    /// Get removed index names for this migration stage
-    ///
-    /// - Returns: Set of index names to remove
-    public var removedIndexNames: Set<String> {
-        get throws {
-            try indexChanges.removed
+            try toVersion.polymorphicIndexChanges(from: fromVersion)
         }
     }
 

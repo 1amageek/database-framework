@@ -3,9 +3,9 @@
 //
 // 2-layer architecture for efficient batch queries while maintaining deletion accuracy.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 // MARK: - Subspace Layers
@@ -54,7 +54,7 @@ private struct MinMaxSubspaces: Sendable {
 public struct MinIndexMaintainer<Item: PersistedEntityValue, Value: IndexComparableValue>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -65,7 +65,7 @@ public struct MinIndexMaintainer<Item: PersistedEntityValue, Value: IndexCompara
     // MARK: - Initialization
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
@@ -423,7 +423,7 @@ public struct MinIndexMaintainer<Item: PersistedEntityValue, Value: IndexCompara
 public struct MaxIndexMaintainer<Item: PersistedEntityValue, Value: IndexComparableValue>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -434,7 +434,7 @@ public struct MaxIndexMaintainer<Item: PersistedEntityValue, Value: IndexCompara
     // MARK: - Initialization
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
@@ -766,9 +766,9 @@ public struct MaxIndexMaintainer<Item: PersistedEntityValue, Value: IndexCompara
 private func decodeStoredAggregationValue<Value: IndexComparableValue>(
     _ element: any TupleElement,
     as type: Value.Type,
-    index: Index
+    index: ResolvedIndex
 ) throws -> Value {
-    guard let fieldName = index.kind.fieldNames.last else {
+    guard let fieldName = index.fieldNames.last else {
         throw AggregationIndexError.invalidStructure(
             "Aggregation index '\(index.name)' has no value field"
         )

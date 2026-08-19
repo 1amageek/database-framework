@@ -1,9 +1,11 @@
+import DatabaseKit
+
 /// The physical storage path selected for a typed model query.
 public enum QueryAccessPath: Sendable, Equatable, Hashable {
     case fullScan
-    case scalarIndex(
+    case orderedIndex(
         name: String,
-        kind: String,
+        indexType: IndexType,
         indexedFields: [String]
     )
 }

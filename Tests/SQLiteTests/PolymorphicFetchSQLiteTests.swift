@@ -13,20 +13,21 @@ import DatabaseRuntime
 @Polymorphable(identifier: "SQLitePolymorphicDocument")
 @PolymorphicDirectory("sqlite_polymorphic_fetch_shared")
 @PolymorphicIndex(
-    .scalar,
-    fields: ["title"],
-    name: "SQLitePolymorphicDocument_title"
-)
+    .ordered(
+        name: "SQLitePolymorphicDocument_title",
+        keys: [.ascending("title")]
+    ))
 @PolymorphicIndex(
-    .scalar,
-    fields: ["id"],
-    name: "SQLitePolymorphicDocument_id"
-)
+    .ordered(
+        name: "SQLitePolymorphicDocument_id",
+        keys: [.ascending("id")]
+    ))
 @PolymorphicIndex(
-    .fullText(tokenizer: .simple),
-    fields: ["title"],
-    name: "SQLitePolymorphicDocument_title_fulltext"
-)
+    .text(
+        name: "SQLitePolymorphicDocument_title_fulltext",
+        fields: ["title"],
+        mode: .fullText(tokenizer: .simple)
+    ))
 protocol SQLitePolymorphicDocument:
     Polymorphable<SQLitePolymorphicDocumentPolymorphicGroup>
 {
@@ -55,10 +56,10 @@ struct SQLitePolymorphicReport: SQLitePolymorphicDocument {
 @Polymorphable(identifier: "SQLiteSecurePolymorphicDocument")
 @PolymorphicDirectory("sqlite_secure_polymorphic_shared")
 @PolymorphicIndex(
-    .scalar,
-    fields: ["title"],
-    name: "SQLiteSecurePolymorphicDocument_title"
-)
+    .ordered(
+        name: "SQLiteSecurePolymorphicDocument_title",
+        keys: [.ascending("title")]
+    ))
 protocol SQLiteSecurePolymorphicDocument:
     Polymorphable<SQLiteSecurePolymorphicDocumentPolymorphicGroup>
 {
@@ -116,10 +117,11 @@ struct SQLiteSecurePolymorphicArticle: SQLiteSecurePolymorphicDocument, Security
 @Polymorphable(identifier: "SQLitePolymorphicVectorDocument")
 @PolymorphicDirectory("sqlite_polymorphic_vector_shared")
 @PolymorphicIndex(
-    .vector(dimensions: 3, metric: .cosine),
-    embedding: "embedding",
-    name: "SQLitePolymorphicVectorDocument_embedding"
-)
+    .vector(
+        name: "SQLitePolymorphicVectorDocument_embedding",
+        embedding: "embedding",
+        dimensions: 3, metric: .cosine
+    ))
 protocol SQLitePolymorphicVectorDocument:
     Polymorphable<SQLitePolymorphicVectorDocumentPolymorphicGroup>
 {
@@ -171,10 +173,11 @@ struct SQLitePolymorphicVectorNoIndexArticle: SQLitePolymorphicVectorNoIndexDocu
 @Polymorphable(identifier: "SQLitePolymorphicOptionalVectorDocument")
 @PolymorphicDirectory("sqlite_polymorphic_optional_vector_shared")
 @PolymorphicIndex(
-    .vector(dimensions: 3, metric: .cosine),
-    embedding: "embedding",
-    name: "SQLitePolymorphicOptionalVectorDocument_embedding"
-)
+    .vector(
+        name: "SQLitePolymorphicOptionalVectorDocument_embedding",
+        embedding: "embedding",
+        dimensions: 3, metric: .cosine
+    ))
 protocol SQLitePolymorphicOptionalVectorDocument:
     Polymorphable<SQLitePolymorphicOptionalVectorDocumentPolymorphicGroup>
 {
@@ -218,7 +221,12 @@ struct PolymorphicFetchSQLiteTests {
         return try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -238,7 +246,8 @@ struct PolymorphicFetchSQLiteTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try vectorRuntimeConfiguration(
-                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorReport.self)]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorReport.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -258,7 +267,8 @@ struct PolymorphicFetchSQLiteTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try vectorRuntimeConfiguration(
-                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicOptionalVectorArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicOptionalVectorReport.self)]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicOptionalVectorArticle.self), try DatabaseFrameworkRuntime.entity(SQLitePolymorphicOptionalVectorReport.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -268,6 +278,10 @@ struct PolymorphicFetchSQLiteTests {
         entityRuntimes: [EntityRuntimeRegistration]
     ) throws -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             indexMaintainerProviderDescriptors: [
                 .init(describing: VectorIndexMaintainerProvider())
             ],
@@ -285,7 +299,11 @@ struct PolymorphicFetchSQLiteTests {
         return try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorNoIndexArticle.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLitePolymorphicVectorNoIndexArticle.self)]
             ),
             security: .testingDisabled
         )
@@ -299,9 +317,10 @@ struct PolymorphicFetchSQLiteTests {
         try await container.withTestBaseOperation {
         let group = try container.polymorphicGroup(identifier: SQLitePolymorphicArticle.polymorphableType)
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let baseIndexSubspace = groupSubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexName)
+        let baseIndexSubspace = try IndexLifecycleStore(
+                container: container,
+                subspace: groupSubspace
+            ).indexSubspace(for: indexName)
         let indexSubspace: Subspace
         if let valuePrefix {
             indexSubspace = Subspace(
@@ -328,9 +347,10 @@ struct PolymorphicFetchSQLiteTests {
         try await container.withTestBaseOperation {
         let group = try container.polymorphicGroup(identifier: SQLitePolymorphicVectorArticle.polymorphableType)
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let indexSubspace = groupSubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace("SQLitePolymorphicVectorDocument_embedding")
+        let indexSubspace = try IndexLifecycleStore(
+                container: container,
+                subspace: groupSubspace
+            ).indexSubspace(for: "SQLitePolymorphicVectorDocument_embedding")
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
@@ -352,9 +372,10 @@ struct PolymorphicFetchSQLiteTests {
             identifier: SQLiteSecurePolymorphicArticle.polymorphableType
         )
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let baseIndexSubspace = groupSubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace("SQLiteSecurePolymorphicDocument_title")
+        let baseIndexSubspace = try IndexLifecycleStore(
+                container: container,
+                subspace: groupSubspace
+            ).indexSubspace(for: "SQLiteSecurePolymorphicDocument_title")
         let indexSubspace: Subspace
         if let valuePrefix {
             indexSubspace = Subspace(
@@ -383,9 +404,12 @@ struct PolymorphicFetchSQLiteTests {
             identifier: SQLitePolymorphicOptionalVectorArticle.polymorphableType
         )
         let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let indexSubspace = groupSubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace("SQLitePolymorphicOptionalVectorDocument_embedding")
+        let indexSubspace = try IndexLifecycleStore(
+                container: container,
+                subspace: groupSubspace
+            ).indexSubspace(
+                for: "SQLitePolymorphicOptionalVectorDocument_embedding"
+            )
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
@@ -442,6 +466,10 @@ struct PolymorphicFetchSQLiteTests {
             version: Schema.Version(1, 0, 0)
         )
         let runtimeConfiguration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(SQLitePolymorphicArticle.self),
                 try DatabaseFrameworkRuntime.entity(SQLitePolymorphicReport.self),
@@ -778,7 +806,11 @@ struct PolymorphicFetchSQLiteTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSecurePolymorphicArticle.self)],
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteSecurePolymorphicArticle.self)],
                 authorizationPolicies: [
                     AuthorizationPolicyHandler(
                         SQLiteSecurePolymorphicArticle.self
@@ -788,7 +820,7 @@ struct PolymorphicFetchSQLiteTests {
             security: .enabled()
         )
         defer { await container.shutdown() }
-        #if MultipleBases
+        #if MultiBase
         try await container.grantTestBaseAccess(
             to: .principal("alice"),
             access: [.read, .write]
@@ -1116,7 +1148,9 @@ struct PolymorphicFetchSQLiteTests {
             .executePage()
 
         #expect(firstPage.results.count == 2)
-        #expect(try firstPage.results.first?.decodedModel(as: SQLitePolymorphicVectorArticle.self)?.id == article.id)
+        #expect(try firstPage.results.first?.decodedModel(as: SQLitePolymorphicVectorArticle.self)?
+                .id
+                == article.id)
         #expect(try firstPage.results.dropFirst().first?.decodedModel(as: SQLitePolymorphicVectorReport.self)?.id == report.id)
 
         let reportStartedPage = try await context.findPolymorphic(SQLitePolymorphicVectorReport.self)
@@ -1155,7 +1189,9 @@ struct PolymorphicFetchSQLiteTests {
             .executePage()
 
         #expect(finalPage.results.count == 1)
-        #expect(try finalPage.results.first?.decodedModel(as: SQLitePolymorphicVectorReport.self)?.id == report.id)
+        #expect(try finalPage.results.first?.decodedModel(as: SQLitePolymorphicVectorReport.self)?
+                .id
+                == report.id)
     }
 }
 #endif

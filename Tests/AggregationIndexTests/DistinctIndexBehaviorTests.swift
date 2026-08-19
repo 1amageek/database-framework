@@ -38,9 +38,10 @@ private struct DistinctIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         // Expression: pageId + userId (grouping + distinct value)
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: DistinctIndexedPageView.self,
             name: indexName,
-            kind: distinctIndexMetadata(
+            definition: distinctIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "pageId", number: 2)
                 ],
@@ -49,9 +50,8 @@ private struct DistinctIndexContext {
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "pageId"),
-                FieldKeyExpression(fieldName: "userId")
+                FieldKeyExpression(fieldName: "userId"),
             ]),
-            subspaceKey: indexName,
             itemTypes: Set(["DistinctIndexedPageView"])
         )
 
@@ -177,7 +177,7 @@ struct DistinctIndexBehaviorTests {
             DistinctIndexedPageView(pageId: "page1", userId: "user2"),
             DistinctIndexedPageView(pageId: "page1", userId: "user3"),
             DistinctIndexedPageView(pageId: "page2", userId: "user1"),
-            DistinctIndexedPageView(pageId: "page2", userId: "user4")
+            DistinctIndexedPageView(pageId: "page2", userId: "user4"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -280,7 +280,7 @@ struct DistinctIndexBehaviorTests {
             DistinctIndexedPageView(pageId: "page2", userId: "user3"),
             DistinctIndexedPageView(pageId: "page3", userId: "user4"),
             DistinctIndexedPageView(pageId: "page3", userId: "user5"),
-            DistinctIndexedPageView(pageId: "page3", userId: "user6")
+            DistinctIndexedPageView(pageId: "page3", userId: "user6"),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -320,7 +320,7 @@ struct DistinctIndexBehaviorTests {
         let pageViews = [
             DistinctIndexedPageView(pageId: "page1", userId: "user1"),
             DistinctIndexedPageView(pageId: "page1", userId: "user2"),
-            DistinctIndexedPageView(pageId: "page1", userId: "user3")
+            DistinctIndexedPageView(pageId: "page1", userId: "user3"),
         ]
 
         try await ctx.database.withTransaction { transaction in

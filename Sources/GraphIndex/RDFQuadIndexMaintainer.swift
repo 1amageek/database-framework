@@ -1,11 +1,11 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
 /// Maintains the canonical RDF dataset projections for a Persistable entity.
 public struct RDFQuadIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -16,7 +16,7 @@ public struct RDFQuadIndexMaintainer<Item: PersistedEntityValue>: IndexMaintaine
     private let physicalCodec: RDFQuadIndexPhysicalCodec
 
     package init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         subjectField: String,

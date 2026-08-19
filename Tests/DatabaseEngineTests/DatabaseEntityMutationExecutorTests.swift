@@ -30,7 +30,7 @@ struct DatabaseEntityMutationExecutorTests {
                         kind: .insert,
                         identity: identity,
                         fields: fields
-                    ),
+                    )
                 ],
                 preconditions: [.mustNotExist(identity)],
                 workMeter: DatabaseWorkMeter(
@@ -103,10 +103,14 @@ struct DatabaseEntityMutationExecutorTests {
             ),
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         EntityMutationFixture.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled

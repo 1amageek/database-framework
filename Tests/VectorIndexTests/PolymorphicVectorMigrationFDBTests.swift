@@ -26,10 +26,11 @@ protocol FDBPolymorphicVectorEntityV1:
 @Polymorphable(identifier: "Entity")
 @PolymorphicDirectory("fdb_polymorphic_vector_migration", "entities")
 @PolymorphicIndex(
-    .vector(dimensions: 3, metric: .cosine),
-    embedding: "embedding",
-    name: "Entity_vector_embedding"
-)
+    .vector(
+        name: "Entity_vector_embedding",
+        embedding: "embedding",
+        dimensions: 3, metric: .cosine
+    ))
 protocol FDBPolymorphicVectorEntityV2:
     Polymorphable<FDBPolymorphicVectorEntityV2PolymorphicGroup>
 {
@@ -42,10 +43,11 @@ protocol FDBPolymorphicVectorEntityV2:
 @Polymorphable(identifier: "Entity")
 @PolymorphicDirectory("fdb_polymorphic_vector_migration", "entities")
 @PolymorphicIndex(
-    .vector(dimensions: 3, metric: .cosine),
-    embedding: "embedding",
-    name: "Entity_vector_embedding"
-)
+    .vector(
+        name: "Entity_vector_embedding",
+        embedding: "embedding",
+        dimensions: 3, metric: .cosine
+    ))
 protocol FDBPolymorphicVectorEntityV3:
     Polymorphable<FDBPolymorphicVectorEntityV3PolymorphicGroup>
 {
@@ -245,13 +247,13 @@ struct PolymorphicVectorMigrationFDBTests {
         )
 
         let personSpecification = try VectorIndexSpecification(
-            personDescriptor.kind
+            personDescriptor.declaration.definition
         )
         let organizationSpecification = try VectorIndexSpecification(
-            organizationDescriptor.kind
+            organizationDescriptor.declaration.definition
         )
-        #expect(personSpecification.metadata.fieldNames == ["embedding"])
-        #expect(organizationSpecification.metadata.fieldNames == ["embedding"])
+        #expect(personDescriptor.fieldNames == ["embedding"])
+        #expect(organizationDescriptor.fieldNames == ["embedding"])
         #expect(personSpecification.dimensions == 3)
         #expect(organizationSpecification.dimensions == 3)
     }
@@ -265,7 +267,13 @@ struct PolymorphicVectorMigrationFDBTests {
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV1.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV1.self),
+                    ]),
                 security: .testingDisabled
             )
             let initialContext = initialContainer.testBaseContext()
@@ -302,7 +310,8 @@ struct PolymorphicVectorMigrationFDBTests {
                 migrationPlan: FDBPolymorphicVectorAddMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try Self.vectorRuntimeConfiguration(
-                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV2.self)]
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV2.self),
+                    ]
                 ),
                 security: .testingDisabled
             )
@@ -344,7 +353,13 @@ struct PolymorphicVectorMigrationFDBTests {
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicVectorSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV2.self),
+                    ]),
                 security: .testingDisabled
             )
             let context = initialContainer.testBaseContext()
@@ -373,7 +388,8 @@ struct PolymorphicVectorMigrationFDBTests {
                 migrationPlan: FDBPolymorphicVectorRebuildMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
                 runtimeConfiguration: try Self.vectorRuntimeConfiguration(
-                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV3.self)]
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorPersonV3.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicVectorOrganizationV3.self),
+                    ]
                 ),
                 security: .testingDisabled
             )
@@ -410,6 +426,10 @@ struct PolymorphicVectorMigrationFDBTests {
         entityRuntimes: [EntityRuntimeRegistration]
     ) throws -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             indexMaintainerProviderDescriptors: [
                 .init(describing: VectorIndexMaintainerProvider())
             ],

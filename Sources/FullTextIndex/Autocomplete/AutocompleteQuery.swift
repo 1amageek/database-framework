@@ -47,7 +47,7 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
         }
         return try await queryContext.withReadableIndex(
             named: resolved.descriptor.name,
-            kindIdentifier: resolved.descriptor.kindIdentifier,
+            indexType: resolved.descriptor.type,
             for: Item.self
         ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -73,7 +73,7 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
         }
         return try await queryContext.withReadableIndex(
             named: resolved.descriptor.name,
-            kindIdentifier: resolved.descriptor.kindIdentifier,
+            indexType: resolved.descriptor.type,
             for: Item.self
         ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -106,8 +106,8 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
             throw AutocompleteError.noFieldSpecified
         }
         let matches = queryContext.indexDescriptors(for: Item.self).filter {
-            $0.kindIdentifier == "autocomplete"
-                && $0.kind.fields.contains(where: { $0.identity == field })
+            $0.type == .text(.autocomplete)
+                && $0.fieldIdentities.contains(field)
         }
         guard let descriptor = matches.first else {
             throw AutocompleteError.indexNotFound(
@@ -123,7 +123,7 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
         }
         return (
             descriptor,
-            try AutocompleteIndexConfiguration(metadata: descriptor.kind),
+            try AutocompleteIndexConfiguration(definition: descriptor.declaration.definition),
             field
         )
     }

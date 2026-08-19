@@ -3,8 +3,8 @@
 //
 // Fluent builder for constructing SPARQL-like graph queries.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Builder for SPARQL-like graph queries
@@ -436,7 +436,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         // Step 1: Pattern evaluation (WHERE)
         var (bindings, stats) = try await queryContext.withReadableIndex(
             named: selection.indexName,
-            kindIdentifier: selection.kindIdentifier,
+            indexType: selection.indexType,
             for: T.self
         ) {
             readableIndex,

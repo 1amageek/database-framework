@@ -1,6 +1,6 @@
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 struct AggregationContributionFields {
@@ -38,9 +38,9 @@ enum AggregationFieldExtractor {
     /// contributes nothing, even when a grouping path is also null.
     static func contribution<Item: PersistedEntityValue>(
         from item: Item,
-        index: Index
+        index: ResolvedIndex
     ) throws -> AggregationContributionFields? {
-        let fieldNames = index.kind.fieldNames
+        let fieldNames = index.fieldNames
         guard !fieldNames.isEmpty,
               fieldNames.count == index.rootExpression.columnCount,
               let valueFieldName = fieldNames.last else {

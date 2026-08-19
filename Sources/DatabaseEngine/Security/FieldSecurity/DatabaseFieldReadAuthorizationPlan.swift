@@ -31,8 +31,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         descriptor: IndexDescriptor
     ) -> DatabaseFieldReadAuthorizationPlan {
         var fields = Set(descriptor.fieldNames)
-        fields.formUnion(descriptor.storedFieldNames)
-        if descriptor.kindIdentifier == "owl_class_rdf" {
+        fields.formUnion(descriptor.includedFieldNames)
+        if descriptor.type == .graph(.ontologyProjection) {
             fields.formUnion(entity.allFields)
         }
         return DatabaseFieldReadAuthorizationPlan(
@@ -154,7 +154,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     commonTableNames: commonTableNames,
                     into: &bindings
                 )
-            #if DATABASE_MULTIPLE_BASES
+            #if DATABASE_MULTI_BASE
             case .base(_, let source):
                 collectBindings(
                     source,
@@ -229,7 +229,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     descriptor.fieldNames
                 )
                 fieldsByEntity[binding.entity.name, default: []].formUnion(
-                    descriptor.storedFieldNames
+                    descriptor.includedFieldNames
                 )
             }
         }
@@ -237,8 +237,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         mutating func collectRDFDatasetFields() {
             for entity in schema.entities {
                 let descriptors = entity.indexDescriptors.filter {
-                    $0.kindIdentifier == "rdf_quad"
-                        || $0.kindIdentifier == "owl_class_rdf"
+                    $0.type == .graph(.rdf)
+                        || $0.type == .graph(.ontologyProjection)
                 }
                 guard !descriptors.isEmpty else { continue }
                 for descriptor in descriptors {
@@ -246,11 +246,11 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                         descriptor.fieldNames
                     )
                     fieldsByEntity[entity.name, default: []].formUnion(
-                        descriptor.storedFieldNames
+                        descriptor.includedFieldNames
                     )
                 }
                 if descriptors.contains(where: {
-                    $0.kindIdentifier == "owl_class_rdf"
+                    $0.type == .graph(.ontologyProjection)
                 }) {
                     includeAll(entity)
                 }

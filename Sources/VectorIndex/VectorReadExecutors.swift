@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 enum VectorReadParameter {
@@ -45,7 +45,7 @@ private enum VectorReadError: Error, Sendable {
 }
 
 private struct VectorReadExecutor: IndexReadExecutor {
-    let kindIdentifier = "vector"
+    let indexType: IndexType = .vector
     private let graphCache: HNSWGraphCache
     private let graphResourceLimits: HNSWGraphResourceLimits
 
@@ -75,9 +75,11 @@ private struct VectorReadExecutor: IndexReadExecutor {
         let k = try requireInt(VectorReadParameter.k, from: indexScan.parameters)
         let metricRawValue = try requireString(VectorReadParameter.metric, from: indexScan.parameters)
 
-        let specification = try VectorIndexSpecification(index.kind)
-        guard index.kindIdentifier == kindIdentifier,
-              index.fieldNames == [fieldName],
+        let specification = try VectorIndexSpecification(
+            index.declaration.definition
+        )
+        guard index.type == indexType,
+            index.fieldNames == [fieldName],
               specification.dimensions == dimensions,
               specification.metric.rawValue == metricRawValue,
               queryVector.count == dimensions,
@@ -105,22 +107,17 @@ private struct VectorReadExecutor: IndexReadExecutor {
         )
         return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
-            kindIdentifier: kindIdentifier,
+            indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
             configuration: execution.transactionConfiguration
         ) { readableIndex, transaction -> IndexReadResult in
             guard let readableIndex else { return .empty }
-            let indexSubspace = try search.resolvedIndexSubspace(
-                baseIndexSubspace: readableIndex.subspace,
-                context: context,
-                indexName: index.name
-            )
             let matches = try await search.executeSearch(
                 specification: specification,
                 indexName: index.name,
                 fieldName: fieldName,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 queryVector: queryVector,
                 k: boundedK,
                 context: context,
@@ -219,7 +216,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
 }
 
 private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
-    let kindIdentifier = "vector"
+    let indexType: IndexType = .vector
     private let graphCache: HNSWGraphCache
     private let graphResourceLimits: HNSWGraphResourceLimits
 
@@ -242,7 +239,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
-        index: PolymorphicIndexMetadata,
+        index: IndexDeclaration<String>,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
@@ -308,16 +305,11 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                 ) else {
                 return .empty
             }
-            let indexSubspace = try resolvedIndexSubspace(
-                baseIndexSubspace: readableIndex.subspace,
-                context: context,
-                indexName: index.name
-            )
             let primaryKeysWithDistances = try await executeSearch(
                 specification: specification,
                 indexName: index.name,
                 fieldName: fieldName,
-                indexSubspace: indexSubspace,
+                indexSubspace: readableIndex.subspace,
                 queryVector: queryVector,
                 k: boundedK,
                 context: context,
@@ -371,7 +363,8 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
-        let configs = context.container.indexConfigurations[indexName] ?? []
+        let configs = context.container.runtimeConfiguration
+            .indexConfigurations(named: indexName)
         let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs)
         let algorithm = runtimePolicy?.algorithm ?? .flat
 
@@ -480,7 +473,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                                 .string(entity.typeName),
                             PolymorphicRowAnnotation.typeCode:
                                 .int64(entity.typeCode),
-                            "distance": .float64(result.distance)
+                            "distance": .float64(result.distance),
                         ]
                     )
                 )
@@ -492,26 +485,27 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         fieldName: String,
         dimensions: Int,
         metricRawValue: String,
-        groupDescriptor: PolymorphicIndexMetadata,
+        groupDescriptor: IndexDeclaration<String>,
         concreteDescriptor: IndexDescriptor
     ) throws -> VectorIndexSpecification {
-        guard groupDescriptor.kindIdentifier
-                == VectorIndexSpecification.identifier,
-              groupDescriptor.subspaceStructure == .hierarchical,
-              groupDescriptor.fieldNames == [fieldName] else {
+        guard
+            case .vector(
+                let groupField,
+                let groupDimensions,
+                let groupMetric
+            ) = groupDescriptor.definition,
+            groupField == fieldName
+        else {
             throw VectorReadError.invalidParameter(
                 VectorReadParameter.fieldName
             )
         }
         let specification = try VectorIndexSpecification(
-            concreteDescriptor.kind
+            concreteDescriptor.declaration.definition
         )
-        guard specification.metadata.metadata == groupDescriptor.metadata else {
-            throw VectorReadError.invalidParameter(
-                VectorReadParameter.fieldName
-            )
-        }
-        guard specification.dimensions == dimensions else {
+        guard specification.dimensions == groupDimensions,
+            specification.metric == groupMetric,
+            specification.dimensions == dimensions else {
             throw VectorReadError.invalidParameter(
                 VectorReadParameter.dimensions
             )
@@ -538,19 +532,6 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             }
         }
         throw VectorReadError.indexNotFound(indexName)
-    }
-
-    fileprivate func resolvedIndexSubspace(
-        baseIndexSubspace: Subspace,
-        context: DatabaseContext,
-        indexName: String
-    ) throws -> Subspace {
-        let configs = context.container.indexConfigurations[indexName] ?? []
-        guard let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs),
-              let subspaceKey = runtimePolicy.subspaceKey else {
-            return baseIndexSubspace
-        }
-        return baseIndexSubspace.subspace(subspaceKey)
     }
 
     private func requireString(

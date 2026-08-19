@@ -219,8 +219,8 @@ struct RelationshipReferenceE2ETests {
             )
             #expect(loadedOptional?.target == nil)
             #expect(loadedArray?.targets.map(\.identity) == [
-                try context.reference(to: retained).identity,
-            ])
+                try context.reference(to: retained).identity
+                ])
         }
     }
 
@@ -386,7 +386,13 @@ struct RelationshipReferenceE2ETests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(RelationshipTarget.self), try DatabaseFrameworkRuntime.entity(RelationshipOptionalOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipArrayOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipDenyOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipCascadeOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipCycleNode.self), try DatabaseFrameworkRuntime.entity(RelationshipPartitionedTarget.self), try DatabaseFrameworkRuntime.entity(RelationshipPartitionedOwner.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(RelationshipTarget.self), try DatabaseFrameworkRuntime.entity(RelationshipOptionalOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipArrayOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipDenyOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipCascadeOwner.self), try DatabaseFrameworkRuntime.entity(RelationshipCycleNode.self), try DatabaseFrameworkRuntime.entity(RelationshipPartitionedTarget.self), try DatabaseFrameworkRuntime.entity(RelationshipPartitionedOwner.self),
+                ]),
             security: .testingDisabled
         )
     }

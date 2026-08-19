@@ -3,12 +3,17 @@ import DatabaseTypes
 import StorageKit
 
 private protocol EntityIndexProvider: Sendable {
-    var kindIdentifier: String { get }
+    var indexType: IndexType { get }
     var runtimeRequirements: IndexRuntimeRequirements { get }
     var supportsUniquenessConstraints: Bool { get }
 
+    func physicalLayout(
+        for index: ResolvedIndex,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> IndexPhysicalLayout
+
     func makeMaintainer(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
@@ -16,7 +21,7 @@ private protocol EntityIndexProvider: Sendable {
     ) throws -> any IndexMaintainer<PersistedModel>
 
     func makeUniquenessMaintainer(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration]
@@ -28,7 +33,7 @@ private struct ModelIndependentEntityIndexProvider<
 >: EntityIndexProvider {
     let provider: Provider
 
-    var kindIdentifier: String { provider.kindIdentifier }
+    var indexType: IndexType { provider.indexType }
     var runtimeRequirements: IndexRuntimeRequirements {
         provider.runtimeRequirements
     }
@@ -36,8 +41,18 @@ private struct ModelIndependentEntityIndexProvider<
         provider.supportsUniquenessConstraints
     }
 
+    func physicalLayout(
+        for index: ResolvedIndex,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> IndexPhysicalLayout {
+        try provider.physicalLayout(
+            for: index,
+            configurations: configurations
+        )
+    }
+
     func makeMaintainer(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
@@ -53,7 +68,7 @@ private struct ModelIndependentEntityIndexProvider<
     }
 
     func makeUniquenessMaintainer(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration]
@@ -72,7 +87,7 @@ private struct CanonicalEntityIndexProvider<
 >: EntityIndexProvider {
     let provider: Provider
 
-    var kindIdentifier: String { provider.kindIdentifier }
+    var indexType: IndexType { provider.indexType }
     var runtimeRequirements: IndexRuntimeRequirements {
         provider.runtimeRequirements
     }
@@ -80,8 +95,18 @@ private struct CanonicalEntityIndexProvider<
         provider.supportsUniquenessConstraints
     }
 
+    func physicalLayout(
+        for index: ResolvedIndex,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> IndexPhysicalLayout {
+        try provider.physicalLayout(
+            for: index,
+            configurations: configurations
+        )
+    }
+
     func makeMaintainer(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
@@ -97,7 +122,7 @@ private struct CanonicalEntityIndexProvider<
     }
 
     func makeUniquenessMaintainer(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: any KeyExpression,
         configurations: [any IndexRuntimeConfiguration]
@@ -114,10 +139,21 @@ private struct CanonicalEntityIndexProvider<
 private struct EntityIndexProviderDescriptor: Sendable {
     let runtimeRequirements: IndexRuntimeRequirements
     let supportsUniquenessConstraints: Bool
+    let resolvePhysicalLayout:
+        @Sendable (
+            ResolvedIndex,
+            [any IndexRuntimeConfiguration]
+        ) throws -> IndexPhysicalLayout
 
     init(_ provider: any EntityIndexProvider) {
         self.runtimeRequirements = provider.runtimeRequirements
         self.supportsUniquenessConstraints = provider.supportsUniquenessConstraints
+        self.resolvePhysicalLayout = { index, configurations in
+            try provider.physicalLayout(
+                for: index,
+                configurations: configurations
+            )
+        }
     }
 }
 
@@ -141,8 +177,8 @@ struct EntityTableRows: Sendable {
 public struct EntityRuntimeDefinition: Sendable {
     public let entity: Schema.Entity
 
-    private var indexReaders: [String: IndexReader]
-    private var indexProviders: [String: any EntityIndexProvider]
+    private var indexReaders: [IndexType: IndexReader]
+    private var indexProviders: [IndexType: any EntityIndexProvider]
     private let canonicalizeModel: EntityRuntimeRegistration.CanonicalizeModel
     private let makePersistedModel: EntityRuntimeRegistration.MakePersistedModel
     private let resolveIdentity: EntityRuntimeRegistration.ResolveIdentity
@@ -289,11 +325,11 @@ public struct EntityRuntimeDefinition: Sendable {
     public mutating func register<Executor: IndexReadExecutor>(
         _ executor: Executor
     ) throws(DatabaseRuntimeConfigurationError) {
-        guard indexReaders[executor.kindIdentifier] == nil else {
-            throw .duplicateIndexReadExecutor(executor.kindIdentifier)
+        guard indexReaders[executor.indexType] == nil else {
+            throw .duplicateIndexReadExecutor(executor.indexType)
         }
         let registeredEntity = entity
-        indexReaders[executor.kindIdentifier] = {
+        indexReaders[executor.indexType] = {
             context,
             selectQuery,
             index,
@@ -315,10 +351,10 @@ public struct EntityRuntimeDefinition: Sendable {
     public mutating func register<Provider: IndexMaintainerProvider>(
         _ provider: Provider
     ) throws(DatabaseRuntimeConfigurationError) {
-        guard indexProviders[provider.kindIdentifier] == nil else {
-            throw .duplicateIndexMaintainerProvider(provider.kindIdentifier)
+        guard indexProviders[provider.indexType] == nil else {
+            throw .duplicateIndexMaintainerProvider(provider.indexType)
         }
-        indexProviders[provider.kindIdentifier] =
+        indexProviders[provider.indexType] =
             ModelIndependentEntityIndexProvider<Provider>(
                 provider: provider
             )
@@ -327,10 +363,10 @@ public struct EntityRuntimeDefinition: Sendable {
     public mutating func register<Provider: CanonicalEntityIndexMaintainerProvider>(
         _ provider: Provider
     ) throws(DatabaseRuntimeConfigurationError) {
-        guard indexProviders[provider.kindIdentifier] == nil else {
-            throw .duplicateIndexMaintainerProvider(provider.kindIdentifier)
+        guard indexProviders[provider.indexType] == nil else {
+            throw .duplicateIndexMaintainerProvider(provider.indexType)
         }
-        indexProviders[provider.kindIdentifier] =
+        indexProviders[provider.indexType] =
             CanonicalEntityIndexProvider(provider: provider)
     }
 
@@ -762,17 +798,16 @@ private protocol EntityRuntimeIndexOperationBuilding {}
 
 extension EntityRuntimeDefinition: EntityRuntimeIndexOperationBuilding {}
 
-private extension EntityRuntimeIndexOperationBuilding {
+extension EntityRuntimeIndexOperationBuilding {
 
-    static func makeUpdateIndexesOperation(
+    fileprivate static func makeUpdateIndexesOperation(
         entity: Schema.Entity,
         indexDescriptors: [IndexDescriptor],
-        providers: [String: any EntityIndexProvider]
+        providers: [IndexType: any EntityIndexProvider]
     ) -> EntityRuntimeRegistration.UpdateIndexes {
         {
             lifecycleStore,
             violationTracker,
-            indexSubspace,
             configurations,
             wallClock,
             oldModel,
@@ -795,9 +830,9 @@ private extension EntityRuntimeIndexOperationBuilding {
                     )
                 }
                 guard state.shouldMaintain else { continue }
-                guard let provider = providers[descriptor.kindIdentifier] else {
+                guard let provider = providers[descriptor.type] else {
                     throw IndexMaintainerProviderRegistryError.providerNotRegistered(
-                        kindIdentifier: descriptor.kindIdentifier,
+                        indexType: descriptor.type,
                         indexName: descriptor.name
                     )
                 }
@@ -805,7 +840,8 @@ private extension EntityRuntimeIndexOperationBuilding {
                     descriptor,
                     entity: logicalTypeName ?? entity.name
                 )
-                let subspace = indexSubspace.subspace(descriptor.name)
+                let subspace = try lifecycleStore.indexSubspace(
+                    for: descriptor.name)
                 let idExpression = TupleKeyExpression(value: id)
                 let maintainer = try provider.makeMaintainer(
                     index: index,
@@ -840,9 +876,9 @@ private extension EntityRuntimeIndexOperationBuilding {
         }
     }
 
-    static func makeBuildIndexOperation(
+    fileprivate static func makeBuildIndexOperation(
         entity: Schema.Entity,
-        providers: [String: any EntityIndexProvider],
+        providers: [IndexType: any EntityIndexProvider],
         canonicalizeModel: @escaping EntityRuntimeRegistration.CanonicalizeModel
     ) -> EntityRuntimeRegistration.BuildIndex {
         {
@@ -852,15 +888,15 @@ private extension EntityRuntimeIndexOperationBuilding {
             lifecycleStore,
             batchSize,
             configurations in
-            guard let provider = providers[index.kind.identifier] else {
+            guard let provider = providers[index.type] else {
                 throw IndexMaintainerProviderRegistryError.providerNotRegistered(
-                    kindIdentifier: index.kind.identifier,
+                    indexType: index.type,
                     indexName: index.name
                 )
             }
-            let subspace = storeSubspace
-                .subspace(SubspaceKey.indexes)
-                .subspace(index.subspaceKey)
+            let subspace = try lifecycleStore.indexSubspace(
+                for: index.name
+            )
             let idExpression = FieldKeyExpression(fieldName: "id")
             let maintainer = try provider.makeMaintainer(
                 index: index,
@@ -902,9 +938,9 @@ private extension EntityRuntimeIndexOperationBuilding {
         }
     }
 
-    static func makeIndexSliceOperation(
+    fileprivate static func makeIndexSliceOperation(
         entity: Schema.Entity,
-        providers: [String: any EntityIndexProvider],
+        providers: [IndexType: any EntityIndexProvider],
         canonicalizeModel: @escaping EntityRuntimeRegistration.CanonicalizeModel
     ) -> EntityRuntimeRegistration.RunIndexSlice {
         {
@@ -914,17 +950,19 @@ private extension EntityRuntimeIndexOperationBuilding {
             lastProcessedKey,
             maximumWorkUnits,
             transaction in
-            guard let provider = providers[index.kind.identifier] else {
+            guard let provider = providers[index.type] else {
                 throw IndexMaintainerProviderRegistryError.providerNotRegistered(
-                    kindIdentifier: index.kind.identifier,
+                    indexType: index.type,
                     indexName: index.name
                 )
             }
-            let subspace = storeSubspace
-                .subspace(SubspaceKey.indexes)
-                .subspace(index.subspaceKey)
+            let subspace = try IndexLifecycleStore(
+                container: container,
+                subspace: storeSubspace
+            ).indexSubspace(for: index.name)
             let idExpression = FieldKeyExpression(fieldName: "id")
-            let configurations = container.indexConfigurations[index.name] ?? []
+            let configurations = container.runtimeConfiguration
+                .indexConfigurations(named: index.name)
             let maintainer = try provider.makeMaintainer(
                 index: index,
                 subspace: subspace,
@@ -1016,21 +1054,22 @@ private extension EntityRuntimeIndexOperationBuilding {
         }
     }
 
-    static func makeIndexFinalizationOperation(
-        providers: [String: any EntityIndexProvider]
+    fileprivate static func makeIndexFinalizationOperation(
+        providers: [IndexType: any EntityIndexProvider]
     ) -> EntityRuntimeRegistration.FinalizeIndex {
         { container, storeSubspace, index, configurations, transaction in
-            guard let provider = providers[index.kind.identifier] else {
+            guard let provider = providers[index.type] else {
                 throw IndexMaintainerProviderRegistryError.providerNotRegistered(
-                    kindIdentifier: index.kind.identifier,
+                    indexType: index.type,
                     indexName: index.name
                 )
             }
             let maintainer = try provider.makeMaintainer(
                 index: index,
-                subspace: storeSubspace
-                    .subspace(SubspaceKey.indexes)
-                    .subspace(index.subspaceKey),
+                subspace: try IndexLifecycleStore(
+                    container: container,
+                    subspace: storeSubspace
+                ).indexSubspace(for: index.name),
                 idExpression: FieldKeyExpression(fieldName: "id"),
                 configurations: configurations,
                 wallClock: container.wallClock
@@ -1043,25 +1082,21 @@ private extension EntityRuntimeIndexOperationBuilding {
 private func makeCanonicalEntityIndex(
     _ descriptor: IndexDescriptor,
     entity: String
-) -> Index {
-    Index(
-        name: descriptor.name,
-        kind: descriptor.kind,
+) -> ResolvedIndex {
+    ResolvedIndex(
+        descriptor: descriptor,
         rootExpression: KeyExpressionFactory.from(
             keyPaths: descriptor.fieldNames
         ),
-        subspaceKey: descriptor.name,
         itemTypes: Set([entity]),
-        isUnique: descriptor.isUnique,
-        storedFieldNames: descriptor.storedFieldNames
     )
 }
 
 public struct EntityRuntimeRegistration: Sendable {
     public let entity: Schema.Entity
-    private let indexProviders: [String: EntityIndexProviderDescriptor]
+    private let indexProviders: [IndexType: EntityIndexProviderDescriptor]
 
-    private let indexReaders: [String: IndexReader]
+    private let indexReaders: [IndexType: IndexReader]
     private let fetchTableRowsOperation: FetchTableRows
     private let canonicalizeModelOperation: CanonicalizeModel
     private let makePersistedModelOperation: MakePersistedModel
@@ -1102,9 +1137,8 @@ public struct EntityRuntimeRegistration: Sendable {
 
     fileprivate typealias UpdateIndexes = @Sendable (
         IndexLifecycleStore,
-        UniquenessViolationTracker,
-        Subspace,
-        [any IndexRuntimeConfiguration],
+            UniquenessViolationTracker,
+            [any IndexRuntimeConfiguration],
         any WallClock,
         PersistedModel?,
         PersistedModel?,
@@ -1116,34 +1150,34 @@ public struct EntityRuntimeRegistration: Sendable {
 
     fileprivate typealias BuildIndex = @Sendable (
         DBContainer,
-        Subspace,
-        Index,
-        IndexLifecycleStore,
+            Subspace,
+            ResolvedIndex,
+            IndexLifecycleStore,
         Int,
         [any IndexRuntimeConfiguration]
     ) async throws -> Void
 
     fileprivate typealias RunIndexSlice = @Sendable (
         DBContainer,
-        Subspace,
-        Index,
-        ByteString?,
+            Subspace,
+            ResolvedIndex,
+            ByteString?,
         Int,
         any TransactionAccess
     ) async throws -> EntityIndexSliceResult
 
     fileprivate typealias FinalizeIndex = @Sendable (
         DBContainer,
-        Subspace,
-        Index,
-        [any IndexRuntimeConfiguration],
+            Subspace,
+            ResolvedIndex,
+            [any IndexRuntimeConfiguration],
         any TransactionAccess
     ) async throws -> Void
 
     fileprivate init(
         entity: Schema.Entity,
-        indexReaders: [String: IndexReader],
-        indexProviders: [String: any EntityIndexProvider],
+        indexReaders: [IndexType: IndexReader],
+        indexProviders: [IndexType: any EntityIndexProvider],
         canonicalizeModel: @escaping CanonicalizeModel,
         makePersistedModel: @escaping MakePersistedModel,
         resolveIdentity: @escaping ResolveIdentity,
@@ -1182,12 +1216,13 @@ public struct EntityRuntimeRegistration: Sendable {
             )
         }
         guard index.name == indexScan.indexName,
-              index.kindIdentifier == indexScan.kindIdentifier else {
+            index.type == indexScan.indexType
+        else {
             throw CanonicalReadError.unsupportedAccessPath(
                 "Index access path does not match the validated schema descriptor"
             )
         }
-        guard let read = indexReaders[index.kindIdentifier] else {
+        guard let read = indexReaders[index.type] else {
             return nil
         }
         return try await read(
@@ -1200,24 +1235,40 @@ public struct EntityRuntimeRegistration: Sendable {
         )
     }
 
-    func hasIndexReader(for kindIdentifier: String) -> Bool {
-        indexReaders[kindIdentifier] != nil
+    func hasIndexReader(for indexType: IndexType) -> Bool {
+        indexReaders[indexType] != nil
     }
 
-    func hasIndexProvider(for kindIdentifier: String) -> Bool {
-        indexProviders[kindIdentifier] != nil
+    func hasIndexProvider(for indexType: IndexType) -> Bool {
+        indexProviders[indexType] != nil
     }
 
     func runtimeRequirements(
-        for kindIdentifier: String
+        for indexType: IndexType
     ) -> IndexRuntimeRequirements? {
-        indexProviders[kindIdentifier]?.runtimeRequirements
+        indexProviders[indexType]?.runtimeRequirements
     }
 
     func supportsUniquenessConstraints(
-        for kindIdentifier: String
+        for indexType: IndexType
     ) -> Bool? {
-        indexProviders[kindIdentifier]?.supportsUniquenessConstraints
+        indexProviders[indexType]?.supportsUniquenessConstraints
+    }
+
+    package func physicalLayout(
+        for index: ResolvedIndex,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> IndexPhysicalLayout {
+        guard let provider = indexProviders[index.type] else {
+            throw IndexMaintainerProviderRegistryError.providerNotRegistered(
+                indexType: index.type,
+                indexName: index.name
+            )
+        }
+        return try provider.resolvePhysicalLayout(
+            index,
+            configurations
+        )
     }
 
     package func canonicalized(
@@ -1260,7 +1311,6 @@ public struct EntityRuntimeRegistration: Sendable {
     func updateIndexes(
         lifecycleStore: IndexLifecycleStore,
         violationTracker: UniquenessViolationTracker,
-        indexSubspace: Subspace,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock,
         oldModel: PersistedModel?,
@@ -1273,7 +1323,6 @@ public struct EntityRuntimeRegistration: Sendable {
         try await updateIndexesOperation(
             lifecycleStore,
             violationTracker,
-            indexSubspace,
             configurations,
             wallClock,
             oldModel,
@@ -1288,7 +1337,7 @@ public struct EntityRuntimeRegistration: Sendable {
     func buildIndex(
         container: DBContainer,
         storeSubspace: Subspace,
-        index: Index,
+        index: ResolvedIndex,
         lifecycleStore: IndexLifecycleStore,
         batchSize: Int,
         configurations: [any IndexRuntimeConfiguration]
@@ -1306,7 +1355,7 @@ public struct EntityRuntimeRegistration: Sendable {
     func runIndexSlice(
         container: DBContainer,
         storeSubspace: Subspace,
-        index: Index,
+        index: ResolvedIndex,
         lastProcessedKey: ByteString?,
         maximumWorkUnits: Int,
         transaction: any TransactionAccess
@@ -1324,7 +1373,7 @@ public struct EntityRuntimeRegistration: Sendable {
     func finalizeIndex(
         container: DBContainer,
         storeSubspace: Subspace,
-        index: Index,
+        index: ResolvedIndex,
         configurations: [any IndexRuntimeConfiguration],
         transaction: any TransactionAccess
     ) async throws {

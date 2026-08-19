@@ -29,11 +29,12 @@ struct SPARQLQueryStatement {
     var object: RDFTerm = .iri(.xsdString)
 
     #Index(
-        .rdfDataset,
-        from: \SPARQLQueryStatement.subject,
-        edge: \SPARQLQueryStatement.predicate,
-        to: \SPARQLQueryStatement.object
-    )
+        .graph(
+            name: "SPARQLQueryStatement_rdf_quad_subject_predicate_object",
+            definition: .rdf(
+                subject: \SPARQLQueryStatement.subject,
+                predicate: \SPARQLQueryStatement.predicate,
+                object: \SPARQLQueryStatement.object, graph: nil)))
 }
 
 // MARK: - Test Suite
@@ -51,7 +52,12 @@ struct SPARQLIntegrationTests {
             entities: [try SPARQLQueryStatement.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLQueryStatement.self)]), security: .testingDisabled)
+        return try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLQueryStatement.self)]), security: .testingDisabled)
     }
 
     private func cleanup(container: DBContainer) async throws {
@@ -146,8 +152,8 @@ struct SPARQLIntegrationTests {
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Carol"),
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Dave"),
-                try makeStatement(subject: "Bob", predicate: "knows", object: "Alice")
-            ], context: context)
+                try makeStatement(subject: "Bob", predicate: "knows", object: "Alice"),
+                ], context: context)
 
             // Query: SELECT ?friend WHERE { "Alice" "knows" ?friend }
             let results = try await context.sparql(SPARQLQueryStatement.self)
@@ -179,8 +185,8 @@ struct SPARQLIntegrationTests {
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
                 try makeStatement(subject: "Carol", predicate: "knows", object: "Bob"),
-                try makeStatement(subject: "Dave", predicate: "follows", object: "Bob")
-            ], context: context)
+                try makeStatement(subject: "Dave", predicate: "follows", object: "Bob"),
+                ], context: context)
 
             // Query: SELECT ?person WHERE { ?person "knows" "Bob" }
             let results = try await context.sparql(SPARQLQueryStatement.self)
@@ -289,9 +295,9 @@ struct SPARQLIntegrationTests {
                 try makeLiteralStatement(subject: "Alice", predicate: "lives", object: "Tokyo"),
                 try makeStatement(subject: "Bob", predicate: "knows", object: "Carol"),
                 try makeLiteralStatement(subject: "Bob", predicate: "lives", object: "NYC"),
-                try makeStatement(subject: "Carol", predicate: "knows", object: "Dave")
-                // Carol has no "lives" triple
-            ], context: context)
+                try makeStatement(subject: "Carol", predicate: "knows", object: "Dave"),
+                    // Carol has no "lives" triple
+                ], context: context)
 
             // Query: SELECT ?person ?city WHERE { ?person "knows" "Bob" . ?person "lives" ?city }
             let results = try await context.sparql(SPARQLQueryStatement.self)
@@ -326,8 +332,8 @@ struct SPARQLIntegrationTests {
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
                 try makeStatement(subject: "Bob", predicate: "knows", object: "Carol"),
                 try makeStatement(subject: "Bob", predicate: "knows", object: "Eve"),
-                try makeStatement(subject: "Carol", predicate: "knows", object: "Dave")
-            ], context: context)
+                try makeStatement(subject: "Carol", predicate: "knows", object: "Dave"),
+                ], context: context)
 
             // Query: SELECT ?fof WHERE { "Alice" "knows" ?friend . ?friend "knows" ?fof }
             let results = try await context.sparql(SPARQLQueryStatement.self)
@@ -429,8 +435,8 @@ struct SPARQLIntegrationTests {
                 try makeStatement(subject: "Bob", predicate: "type", object: "User"),
                 // Bob has no email
                 try makeStatement(subject: "Carol", predicate: "type", object: "User"),
-                try makeLiteralStatement(subject: "Carol", predicate: "email", object: "carol@example.com")
-            ], context: context)
+                try makeLiteralStatement(subject: "Carol", predicate: "email", object: "carol@example.com"),
+                ], context: context)
 
             // Query: SELECT ?person ?email WHERE { ?person "type" "User" } OPTIONAL { ?person "email" ?email }
             let results = try await context.sparql(SPARQLQueryStatement.self)
@@ -523,8 +529,8 @@ struct SPARQLIntegrationTests {
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
                 try makeStatement(subject: "Carol", predicate: "follows", object: "Bob"),
-                try makeStatement(subject: "Dave", predicate: "likes", object: "Bob")
-            ], context: context)
+                try makeStatement(subject: "Dave", predicate: "likes", object: "Bob"),
+                ], context: context)
 
             // Query: SELECT ?person WHERE { { ?person "knows" "Bob" } UNION { ?person "follows" "Bob" } }
             let results = try await context.sparql(SPARQLQueryStatement.self)
@@ -560,8 +566,8 @@ struct SPARQLIntegrationTests {
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
                 try makeStatement(subject: "Bob", predicate: "knows", object: "Alice"),
-                try makeStatement(subject: "Bob", predicate: "knows", object: "Carol")
-            ], context: context)
+                try makeStatement(subject: "Bob", predicate: "knows", object: "Carol"),
+                ], context: context)
 
             // Query: SELECT ?fof WHERE { "Alice" "knows" ?friend . ?friend "knows" ?fof . FILTER(?fof != "Alice") }
             let results = try await context.sparql(SPARQLQueryStatement.self)
@@ -597,8 +603,8 @@ struct SPARQLIntegrationTests {
             try await insertStatements([
                 try makeLiteralStatement(subject: "Alice", predicate: "name", object: "Alice Smith"),
                 try makeLiteralStatement(subject: "Bob", predicate: "name", object: "Bob Jones"),
-                try makeLiteralStatement(subject: "Anna", predicate: "name", object: "Anna Lee")
-            ], context: context)
+                try makeLiteralStatement(subject: "Anna", predicate: "name", object: "Anna Lee"),
+                ], context: context)
 
             // Query: SELECT ?person ?name WHERE { ?person "name" ?name . FILTER(REGEX(?name, "^A")) }
             let results = try await context.sparql(SPARQLQueryStatement.self)
@@ -629,9 +635,9 @@ struct SPARQLIntegrationTests {
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "type", object: "User"),
                 try makeLiteralStatement(subject: "Alice", predicate: "email", object: "alice@example.com"),
-                try makeStatement(subject: "Bob", predicate: "type", object: "User")
-                // Bob has no email
-            ], context: context)
+                try makeStatement(subject: "Bob", predicate: "type", object: "User"),
+                    // Bob has no email
+                ], context: context)
 
             // Query: SELECT ?person WHERE { ?person "type" "User" } OPTIONAL { ?person "email" ?email } FILTER(BOUND(?email))
             let results = try await context.sparql(SPARQLQueryStatement.self)
@@ -666,8 +672,8 @@ struct SPARQLIntegrationTests {
             try await insertStatements([
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Bob"),
                 try makeStatement(subject: "Alice", predicate: "knows", object: "Carol"),
-                try makeStatement(subject: "Bob", predicate: "knows", object: "Carol")
-            ], context: context)
+                try makeStatement(subject: "Bob", predicate: "knows", object: "Carol"),
+                ], context: context)
 
             // Query: SELECT DISTINCT ?pred WHERE { ?s ?pred ?o }
             let results = try await context.sparql(SPARQLQueryStatement.self)
@@ -834,8 +840,8 @@ struct SPARQLIntegrationTests {
             try await insertStatements([
                 try makeStatement(subject: "A", predicate: "knows", object: "B"),
                 try makeStatement(subject: "B", predicate: "knows", object: "C"),
-                try makeStatement(subject: "C", predicate: "knows", object: "A")
-            ], context: context)
+                try makeStatement(subject: "C", predicate: "knows", object: "A"),
+                ], context: context)
 
             // 2-hop query from A
             let results = try await context.sparql(SPARQLQueryStatement.self)

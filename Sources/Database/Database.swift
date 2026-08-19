@@ -4,9 +4,12 @@
 // SwiftPM package traits. Only selected implementations enter this target's
 // dependency graph and re-exported API.
 
+// database-framework (execution layer)
+@_exported import DatabaseEngine
 // database-kit (client-safe model definitions)
 @_exported import DatabaseKit
-
+@_exported import DatabaseRuntime
+@_exported import QueryAST
 // storage-kit (storage engine abstraction)
 @_exported import StorageKit
 #if FOUNDATION_DB
@@ -19,9 +22,6 @@
 @_exported import PostgreSQLStorage
 #endif
 
-// database-framework (execution layer)
-@_exported import DatabaseEngine
-@_exported import DatabaseRuntime
 #if DATABASE_SCALAR_INDEXES
 @_exported import ScalarIndex
 #endif
@@ -36,9 +36,6 @@
 #endif
 #if DATABASE_RANK_INDEXES
 @_exported import RankIndex
-#endif
-#if DATABASE_PERMUTED_INDEXES
-@_exported import PermutedIndex
 #endif
 #if DATABASE_GRAPH_INDEXES
 @_exported import GraphIndex
@@ -59,4 +56,3 @@
 #if DATABASE_RELATIONSHIPS
 @_exported import RelationshipIndex
 #endif
-@_exported import QueryAST

@@ -1,10 +1,10 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 extension VectorIndexSpecification {
     func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
@@ -13,19 +13,12 @@ extension VectorIndexSpecification {
         trainingResourceLimits: VectorTrainingResourceLimits
     ) throws -> any IndexMaintainer<Item> {
         let matchingConfigurations = configurations.filter { configuration in
-            configuration.kindIdentifier == Self.identifier
+            configuration.indexType == .vector
                 && configuration.indexName == index.name
         }
         let runtimePolicy = try VectorRuntimePolicy.resolve(
             in: matchingConfigurations
         )
-
-        let indexSubspace: Subspace
-        if let subspaceKey = runtimePolicy?.subspaceKey {
-            indexSubspace = subspace.subspace(subspaceKey)
-        } else {
-            indexSubspace = subspace
-        }
 
         if let runtimePolicy {
             switch runtimePolicy.algorithm {
@@ -36,7 +29,7 @@ extension VectorIndexSpecification {
                     index: index,
                     dimensions: dimensions,
                     metric: metric,
-                    subspace: indexSubspace,
+                    subspace: subspace,
                     idExpression: idExpression,
                     parameters: HNSWParameters(
                         m: parameters.m,
@@ -51,7 +44,7 @@ extension VectorIndexSpecification {
                     index: index,
                     dimensions: dimensions,
                     metric: metric,
-                    subspace: indexSubspace,
+                    subspace: subspace,
                     idExpression: idExpression,
                     parameters: IVFParameters(
                         nlist: parameters.nlist,
@@ -65,7 +58,7 @@ extension VectorIndexSpecification {
                     index: index,
                     dimensions: dimensions,
                     metric: metric,
-                    subspace: indexSubspace,
+                    subspace: subspace,
                     idExpression: idExpression,
                     parameters: PQParameters(
                         m: parameters.m,
@@ -81,7 +74,7 @@ extension VectorIndexSpecification {
             index: index,
             dimensions: dimensions,
             metric: metric,
-            subspace: indexSubspace,
+            subspace: subspace,
             idExpression: idExpression
         )
     }

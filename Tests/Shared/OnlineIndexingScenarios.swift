@@ -6,12 +6,12 @@
 // - PlayerDatasetGenerator: Generates player datasets for transaction limit testing
 // - RecordingIndexLifecycleStore: Entities index lifecycle transitions
 
-import Foundation
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import Foundation
+import ScalarIndex
 import StorageKit
 import Synchronization
-import ScalarIndex
 
 // MARK: - CountingIndexMaintainer
 
@@ -31,14 +31,10 @@ public final class CountingIndexMaintainer<Item: Persistable>: IndexMaintainer, 
     /// Index subspace for writing entries
     private let indexSubspace: Subspace
 
-    /// Index name
-    private let indexName: String
-
-    public init(indexSubspace: Subspace, indexName: String) {
+    public init(indexSubspace: Subspace) {
         self.processCount = Mutex([:])
         self.processedIds = Mutex(Set())
         self.indexSubspace = indexSubspace
-        self.indexName = indexName
     }
 
     public func updateIndex(
@@ -66,7 +62,7 @@ public final class CountingIndexMaintainer<Item: Persistable>: IndexMaintainer, 
         }
 
         // Write to index to simulate actual work
-        let indexKey = indexSubspace.subspace(indexName).pack(id)
+        let indexKey = indexSubspace.pack(id)
         try transaction.setValue([0x01], for: indexKey)
     }
 
@@ -118,12 +114,9 @@ public final class BatchTrackingIndexMaintainer<Item: Persistable>: IndexMaintai
 
     private let state: Mutex<State>
     private let indexSubspace: Subspace
-    private let indexName: String
-
-    public init(indexSubspace: Subspace, indexName: String) {
+    public init(indexSubspace: Subspace) {
         self.state = Mutex(State())
         self.indexSubspace = indexSubspace
-        self.indexName = indexName
     }
 
     public func updateIndex(
@@ -179,7 +172,7 @@ public final class BatchTrackingIndexMaintainer<Item: Persistable>: IndexMaintai
             _ = state.processedIds.insert(idString)
         }
 
-        let indexKey = indexSubspace.subspace(indexName).pack(id)
+        let indexKey = indexSubspace.pack(id)
         try transaction.setValue([0x01], for: indexKey)
     }
 }
@@ -313,18 +306,14 @@ public final class FailingIndexMaintainer<Item: Persistable>: IndexMaintainer, S
     private let failAfterCount: Int
     private let processedCount: Mutex<Int>
     private let indexSubspace: Subspace
-    private let indexName: String
-
     /// Create a maintainer that fails after processing `failAfterCount` items
     public init(
         failAfterCount: Int,
-        indexSubspace: Subspace,
-        indexName: String
+        indexSubspace: Subspace
     ) {
         self.failAfterCount = failAfterCount
         self.processedCount = Mutex(0)
         self.indexSubspace = indexSubspace
-        self.indexName = indexName
     }
 
     public func updateIndex(
@@ -350,7 +339,7 @@ public final class FailingIndexMaintainer<Item: Persistable>: IndexMaintainer, S
         }
 
         // Write to index
-        let indexKey = indexSubspace.subspace(indexName).pack(id)
+        let indexKey = indexSubspace.pack(id)
         try transaction.setValue([0x01], for: indexKey)
     }
 
@@ -369,15 +358,17 @@ public final class FailingIndexMaintainer<Item: Persistable>: IndexMaintainer, S
 
 /// Builds the identifier index used by player indexing scenarios.
 public struct PlayerIdentifierIndexDefinition {
-    public static func make(name: String) -> Index {
-        Index(
-            name: name,
-            kind: IndexKindMetadata(
-                identifier: IndexDefinition.scalar.identifier,
-                subspaceStructure: .flat,
-                fields: [Player.fields.id.ascending.metadata],
-                metadata: [:]
+    public static func make(name: String) throws -> ResolvedIndex {
+        let descriptor = try IndexDescriptor(
+            entityName: Player.persistableType,
+            declaration: .ordered(
+                name: name,
+                keys: [.ascending(Player.fields.id.identity)]
             ),
+            fieldSchemas: Player.fieldSchemas
+        )
+        return ResolvedIndex(
+            descriptor: descriptor,
             rootExpression: FieldKeyExpression(fieldName: "id")
         )
     }

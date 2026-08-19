@@ -3,8 +3,8 @@
 //
 // Provides DatabaseContext extension for PageRank and Community Detection.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 // MARK: - GraphAlgorithmEntryPoint
@@ -73,7 +73,7 @@ public struct GraphAlgorithmEntryPoint<T: Persistable>: Sendable {
         )
     }
 
-    /// Use the default graph index (first GraphIndexKind found)
+    /// Use the first declared property-graph index.
     ///
     /// - Returns: Graph algorithm builder configured with the default index
     public func defaultIndex() throws -> GraphAlgorithmBuilder<T> {
@@ -230,7 +230,7 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,
-                strategy: resolvedIndex.metadata.strategy,
+                strategy: resolvedIndex.configuration.strategy,
                 configuration: configuration
             )
             return try await computer.compute(
@@ -265,7 +265,7 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,
-                strategy: resolvedIndex.metadata.strategy,
+                strategy: resolvedIndex.configuration.strategy,
                 configuration: configuration
             )
             return try await computer.computePersonalized(
@@ -386,7 +386,7 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,
-                strategy: resolvedIndex.metadata.strategy,
+                strategy: resolvedIndex.configuration.strategy,
                 configuration: configuration
             )
             return try await detector.detect(
@@ -418,7 +418,7 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,
-                strategy: resolvedIndex.metadata.strategy,
+                strategy: resolvedIndex.configuration.strategy,
                 configuration: configuration
             )
             return try await detector.detectLocalCommunity(

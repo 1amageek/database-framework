@@ -5,7 +5,7 @@ import StorageKit
 enum OnlineIndexBatchWriter {
     static func write<Item: PersistedEntityValue>(
         _ entries: [(item: Item, id: Tuple)],
-        index: Index,
+        index: ResolvedIndex,
         maintainer: any IndexMaintainer<Item>,
         uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)?,
         violationTracker: UniquenessViolationTracker,

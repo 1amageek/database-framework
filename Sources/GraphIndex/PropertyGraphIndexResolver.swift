@@ -1,5 +1,5 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Declarative property-graph index selected from one entity's schema.
@@ -9,8 +9,8 @@ import StorageKit
 package struct DeclaredPropertyGraphIndex: Sendable {
     package let entityName: String
     package let indexName: String
-    package let metadata: PropertyGraphIndexMetadata
-    package let storedFieldNames: [String]
+    package let configuration: PropertyGraphIndexConfiguration
+    package let includedFieldNames: [String]
 }
 
 /// A declared property-graph index bound to its physical index subspace.
@@ -19,8 +19,10 @@ package struct ResolvedPropertyGraphIndex: Sendable {
     package let indexSubspace: Subspace
 
     package var indexName: String { declaration.indexName }
-    package var metadata: PropertyGraphIndexMetadata { declaration.metadata }
-    package var storedFieldNames: [String] { declaration.storedFieldNames }
+    package var configuration: PropertyGraphIndexConfiguration {
+        declaration.configuration
+    }
+    package var includedFieldNames: [String] { declaration.includedFieldNames }
 
     package func scanner(
         snapshot: GraphReadSnapshot,
@@ -28,7 +30,7 @@ package struct ResolvedPropertyGraphIndex: Sendable {
     ) -> GraphEdgeScanner {
         GraphEdgeScanner(
             indexSubspace: indexSubspace,
-            strategy: metadata.strategy,
+            strategy: configuration.strategy,
             graphTarget: graphTarget,
             snapshot: snapshot
         )
@@ -87,11 +89,12 @@ package enum PropertyGraphIndexResolver {
         in context: IndexQueryContext
     ) throws -> DeclaredPropertyGraphIndex {
         let candidates = try declarations(for: type, in: context).filter { candidate in
-            let metadata = candidate.metadata
-            return metadata.sourceFieldName == signature.sourceFieldName
-                && metadata.labelFieldName == signature.labelFieldName
-                && metadata.targetFieldName == signature.targetFieldName
-                && metadata.namespaceFieldName == signature.namespaceFieldName
+            let configuration = candidate.configuration
+            return configuration.sourceFieldName == signature.sourceFieldName
+                && configuration.labelFieldName
+                    == Optional(signature.labelFieldName)
+                && configuration.targetFieldName == signature.targetFieldName
+                && configuration.namespaceFieldName == signature.namespaceFieldName
         }
         return try requireUnique(
             candidates,
@@ -115,8 +118,8 @@ package enum PropertyGraphIndexResolver {
         }
         guard let readableIndex = try await context.readableIndex(
             named: declaration.indexName,
-            kindIdentifier: "graph",
-            for: type,
+                indexType: .graph(.property),
+                for: type,
             transaction: transaction
         ) else {
             return nil
@@ -131,15 +134,22 @@ package enum PropertyGraphIndexResolver {
         for type: T.Type,
         in context: IndexQueryContext
     ) throws -> [DeclaredPropertyGraphIndex] {
-        try context.findIndexes(
+        context.findIndexes(
             for: type,
-            kindIdentifier: "graph"
-        ).map { descriptor in
-            DeclaredPropertyGraphIndex(
+            indexType: .graph(.property)
+        ).compactMap { descriptor in
+            guard
+                let configuration = PropertyGraphIndexConfiguration(
+                    descriptor: descriptor
+                )
+            else {
+                return nil
+            }
+            return DeclaredPropertyGraphIndex(
                 entityName: T.persistableType,
                 indexName: descriptor.name,
-                metadata: try PropertyGraphIndexMetadata(canonical: descriptor.kind),
-                storedFieldNames: descriptor.storedFieldNames
+                configuration: configuration,
+                includedFieldNames: descriptor.includedFieldNames
             )
         }
     }

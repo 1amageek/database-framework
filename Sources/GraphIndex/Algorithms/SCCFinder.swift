@@ -5,9 +5,9 @@
 // Reference: Tarjan, R. E. (1972). "Depth-first search and linear graph algorithms"
 // SIAM Journal on Computing, 1(2), 146-160.
 
-import StorageKit
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import StorageKit
 import Synchronization
 
 /// Configuration for SCC algorithm
@@ -705,7 +705,7 @@ public enum SCCError: Error, CustomStringConvertible, Sendable {
     public var description: String {
         switch self {
         case .graphIndexNotFound:
-            return "No graph index found on the type. Add a GraphIndexKind to the type."
+            return "No property-graph index is declared on the type."
         case .incomplete(let reason):
             return "SCC computation is incomplete: \(reason)"
         case .inconsistentState(let message):

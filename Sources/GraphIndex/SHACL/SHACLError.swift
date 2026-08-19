@@ -30,7 +30,7 @@ public enum SHACLError: Error, Sendable, Equatable, CustomStringConvertible {
         case .ontologyNotFound(let iri):
             return "Ontology not found (required for OWL entailment): \(iri)"
         case .graphIndexNotFound(let typeName):
-            return "GraphIndexKind not configured on type \(typeName)"
+            return "No property-graph index is declared on type \(typeName)"
         case .invalidPattern(let regex, let reason):
             return "Invalid SHACL pattern '\(regex)': \(reason)"
         case .invalidConstraint(let reason):

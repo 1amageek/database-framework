@@ -1,6 +1,6 @@
-import StorageKit
 import DatabaseKit
 import DatabaseTypes
+import StorageKit
 
 /// Canonical model persistence service over a `StorageEngine`.
 ///
@@ -32,9 +32,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     /// Items subspace: [subspace]/items/
     let itemSubspace: Subspace
-
-    /// Indexes subspace: [subspace]/indexes/
-    let indexSubspace: Subspace
 
     /// Blobs subspace: [subspace]/blobs/ - for large value chunks
     let blobsSubspace: Subspace
@@ -81,7 +78,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
         self.metricsDelegate = metricsDelegate ?? container.dataStoreDelegate
         self.securityDelegate = securityDelegate
         self.itemSubspace = subspace.subspace(SubspaceKey.items)
-        self.indexSubspace = subspace.subspace(SubspaceKey.indexes)
         self.blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         self.metadataSubspace = subspace.subspace(SubspaceKey.metadata)
         let encodedType = Tuple([entity.name]).pack()
@@ -99,7 +95,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
         self.indexMaintenanceService = IndexMaintenanceService(
             indexLifecycleStore: indexLifecycleStore,
             violationTracker: violationTracker,
-            indexSubspace: indexSubspace,
             configurations: indexConfigurations
         )
     }
@@ -302,9 +297,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
 
         return QueryAccessPlan(
-            accessPath: .scalarIndex(
+            accessPath: .orderedIndex(
                 name: selection.descriptor.name,
-                kind: selection.descriptor.kindIdentifier,
+                indexType: selection.descriptor.type,
                 indexedFields: selection.descriptor.fieldNames
             ),
             indexedConditions: selection.clauses.map { clause in
@@ -361,7 +356,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
 
         // Build index scan range based on condition OUTSIDE transaction
-        let indexSubspaceForIndex = indexSubspace.subspace(matchingIndex.name)
+        let indexSubspaceForIndex = try indexLifecycleStore.indexSubspace(
+            for: matchingIndex.name)
         let valueTuple = condition.valueTuple
         let indexedFieldCount = matchingIndex.fieldNames.count
 
@@ -1104,7 +1100,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
 
         // Build index scan range based on condition
-        let indexSubspaceForIndex = indexSubspace.subspace(matchingIndex.name)
+        let indexSubspaceForIndex = try indexLifecycleStore.indexSubspace(
+            for: matchingIndex.name)
         let valueTuple = condition.valueTuple
         let indexedFieldCount = matchingIndex.fieldNames.count
 
@@ -1510,7 +1507,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
     ) async throws -> Int {
         let condition = accessPath.condition
         let index = accessPath.descriptor
-        let indexSubspaceForIndex = indexSubspace.subspace(index.name)
+        let indexSubspaceForIndex = try indexLifecycleStore.indexSubspace(
+            for: index.name)
         let valueTuple = condition.valueTuple
 
         // Build value subspace using flat encoding (see fetchUsingIndexWithTransaction comment)
@@ -1570,7 +1568,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
     ) async throws -> Int {
         let condition = accessPath.condition
         let index = accessPath.descriptor
-        let indexSubspaceForIndex = indexSubspace.subspace(index.name)
+        let indexSubspaceForIndex = try indexLifecycleStore.indexSubspace(
+            for: index.name)
         let valueTuple = condition.valueTuple
 
         // Compute key range outside transaction to avoid capturing non-Sendable condition
@@ -1699,7 +1698,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         index: IndexDescriptor,
         avgEntrySizeBytes: Int = 50
     ) async throws -> Int {
-        let indexSubspaceForIndex = indexSubspace.subspace(index.name)
+        let indexSubspaceForIndex = try indexLifecycleStore.indexSubspace(
+            for: index.name)
         let (begin, end) = indexSubspaceForIndex.range()
 
         let sizeBytes = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
@@ -1843,8 +1843,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
             logger.trace("Executed batch", metadata: [
                 "inserts": "\(inserts.count)",
-                "deletes": "\(deletes.count)"
-            ])
+                "deletes": "\(deletes.count)",
+                ])
         } catch {
             let duration = DatabaseMonotonicMeasurement.nanoseconds(
                 from: startTime,
@@ -2151,17 +2151,12 @@ public enum DatabaseIndexError: Error, CustomStringConvertible {
     /// Index not found in schema
     case indexNotFound(indexName: String)
 
-    /// Unsupported index kind for operation
-    case unsupportedIndexKind(indexName: String, kindIdentifier: String)
-
     public var description: String {
         switch self {
         case .uniqueConstraintViolation(let indexName, let values):
             return "Unique constraint violation on index '\(indexName)': values [\(values.joined(separator: ", "))] already exist for another entity"
         case .indexNotFound(let indexName):
             return "Index '\(indexName)' not found in schema"
-        case .unsupportedIndexKind(let indexName, let kindIdentifier):
-            return "Unsupported index kind '\(kindIdentifier)' for index '\(indexName)'"
         }
     }
 }

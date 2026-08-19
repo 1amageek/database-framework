@@ -1,20 +1,21 @@
-import Testing
 import DatabaseKit
-import DatabaseTypes
-@testable import DatabaseEngine
 import DatabaseRuntime
+import DatabaseTypes
 import RelationshipIndex
 import ScalarIndex
+import Testing
+
+@testable import DatabaseEngine
 
 @Suite("Canonical Read Registry")
 struct CanonicalReadRegistryTests {
     private struct EmptyPolymorphicReadExecutor: PolymorphicIndexReadExecutor {
-        let kindIdentifier = "test.polymorphic.runtime"
+        let indexType: IndexType = .custom("test.polymorphic.runtime")
 
         func executeRows(
             context: DatabaseContext,
             selectQuery: SelectQuery,
-            index: PolymorphicIndexMetadata,
+            index: IndexDeclaration<String>,
             indexScan: IndexScanSource,
             group: PolymorphicGroup,
             options: DatabaseEngine.ReadExecutionContext,
@@ -26,10 +27,15 @@ struct CanonicalReadRegistryTests {
 
     @Test("Unknown polymorphic kind identifier is not resolved")
     func unknownKindIdentifierReturnsNil() throws {
-        let configuration = try DatabaseRuntimeConfiguration()
+        let configuration = try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
+        )
         #expect(
             configuration.readExecutors.polymorphicIndexExecutor(
-                for: "com.example.unknown"
+                for: .custom("com.example.unknown")
             ) == nil
         )
     }
@@ -38,12 +44,16 @@ struct CanonicalReadRegistryTests {
     func polymorphicExecutorsRegisterSeparately() throws {
         let executor = EmptyPolymorphicReadExecutor()
         let configuration = try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             polymorphicIndexReadExecutors: [executor]
         )
 
         #expect(
             configuration.readExecutors.polymorphicIndexExecutor(
-                for: executor.kindIdentifier
+                for: executor.indexType
             ) != nil
         )
     }
@@ -54,31 +64,33 @@ struct CanonicalReadRegistryTests {
             RuntimeConfigurationScalarEntity.self
         )
         let configuration = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [entityRuntime]
         )
         let registry = configuration.readExecutors
         let maintainers = configuration.indexMaintainerProviders
 
-        #expect(maintainers.contains(kindIdentifier: "scalar"))
-        #expect(maintainers.contains(kindIdentifier: "vector"))
-        #expect(maintainers.contains(kindIdentifier: "graph"))
-        #expect(maintainers.contains(kindIdentifier: "rdf_quad"))
+        #expect(maintainers.contains(indexType: .ordered))
+        #expect(maintainers.contains(indexType: .vector))
+        #expect(maintainers.contains(indexType: .graph(.property)))
+        #expect(maintainers.contains(indexType: .graph(.rdf)))
         #expect(configuration.persistableMutationMaintainers.contains(where: {
             $0.identifier == RelationshipReferenceMaintainer().identifier
         }))
 
-        #expect(entityRuntime.hasIndexReader(for: "vector"))
-        #expect(entityRuntime.hasIndexReader(for: "fulltext"))
-        #expect(entityRuntime.hasIndexReader(for: "rank"))
-        #expect(entityRuntime.hasIndexReader(for: "bitmap"))
-        #expect(entityRuntime.hasIndexReader(for: "version"))
-        #expect(entityRuntime.hasIndexReader(for: "permuted"))
-        #expect(registry.polymorphicIndexExecutor(for: "vector") != nil)
-        #expect(registry.polymorphicIndexExecutor(for: "fulltext") != nil)
-        #expect(registry.polymorphicIndexExecutor(for: "rank") != nil)
-        #expect(registry.polymorphicIndexExecutor(for: "bitmap") != nil)
-        #expect(registry.polymorphicIndexExecutor(for: "permuted") != nil)
-        #expect(registry.polymorphicIndexExecutor(for: "version") != nil)
+        #expect(entityRuntime.hasIndexReader(for: .vector))
+        #expect(entityRuntime.hasIndexReader(for: .text(.fullText)))
+        #expect(entityRuntime.hasIndexReader(for: .rank))
+        #expect(entityRuntime.hasIndexReader(for: .bitmap))
+        #expect(entityRuntime.hasIndexReader(for: .history))
+        #expect(registry.polymorphicIndexExecutor(for: .vector) != nil)
+        #expect(registry.polymorphicIndexExecutor(for: .text(.fullText)) != nil)
+        #expect(registry.polymorphicIndexExecutor(for: .rank) != nil)
+        #expect(registry.polymorphicIndexExecutor(for: .bitmap) != nil)
+        #expect(registry.polymorphicIndexExecutor(for: .history) != nil)
         #expect(configuration.logicalSourceExecutors.graphTableExecutor != nil)
         #expect(configuration.logicalSourceExecutors.sparqlExecutor != nil)
     }
@@ -87,6 +99,10 @@ struct CanonicalReadRegistryTests {
     func duplicateMaintainerProvidersFailConfiguration() {
         #expect(throws: DatabaseRuntimeConfigurationError.self) {
             try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 indexMaintainerProviderDescriptors: [
                     .init(describing: ScalarIndexMaintainerProvider()),
                     .init(describing: ScalarIndexMaintainerProvider()),

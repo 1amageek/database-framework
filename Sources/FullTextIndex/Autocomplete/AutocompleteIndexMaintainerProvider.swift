@@ -3,27 +3,25 @@ import DatabaseKit
 import StorageKit
 
 public struct AutocompleteIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "autocomplete"
+    public let indexType: IndexType = .text(.autocomplete)
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
         let configuration = try AutocompleteIndexConfiguration(
-            metadata: index.kind
+            definition: index.definition
         )
         return AutocompleteMaintainer<Item>(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
-            fields: index.kind.fields.map {
-                FieldIdentity(name: $0.name, number: $0.number)
-            },
+            fields: index.descriptor.fieldIdentities,
             minPrefixLength: configuration.minPrefixLength,
             maxPrefixLength: configuration.maxPrefixLength
         )

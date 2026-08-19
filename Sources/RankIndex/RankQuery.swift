@@ -162,7 +162,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         // Execute query using index
         return try await queryContext.withReadableIndex(
             named: indexName,
-            kindIdentifier: "rank",
+            indexType: .rank,
             for: T.self,
             configuration: configuration
         ) { readableIndex, transaction in
@@ -368,7 +368,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             accessPath: .index(
                 IndexScanSource(
                     indexName: try resolvedIndexName(),
-                    kindIdentifier: "rank",
+                    indexType: .rank,
                     parameters: parameters
                 )
             ),
@@ -389,8 +389,8 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
                 named: selectedIndexName
             ),
             descriptor.entityName == T.persistableType,
-            descriptor.kind.identifier == "rank",
-            descriptor.fieldNames == [fieldName] else {
+                descriptor.type == .rank,
+                descriptor.fieldNames == [fieldName] else {
                 throw RankQueryError.indexNotFound(selectedIndexName)
             }
             return selectedIndexName
@@ -398,7 +398,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
 
         let matches = queryContext.schema.indexDescriptors.filter {
             $0.entityName == T.persistableType
-                && $0.kind.identifier == "rank"
+                && $0.type == .rank
                 && $0.fieldNames == [fieldName]
         }
         guard let match = matches.first else {

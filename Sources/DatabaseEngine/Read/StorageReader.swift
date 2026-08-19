@@ -1,9 +1,9 @@
 // StorageReader.swift
 // Low-level storage access abstraction for index reads
 
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
-import DatabaseKit
 
 /// Protocol for low-level storage access during query execution
 ///
@@ -16,7 +16,7 @@ import DatabaseKit
 /// - Feature modules receive pre-resolved subspaces and interpret their own
 ///   physical layouts
 ///
-/// **Note**: Index subspaces are admitted by `IndexQueryContext.readableIndex`
+/// **Note**: ResolvedIndex subspaces are admitted by `IndexQueryContext.readableIndex`
 /// before a transaction-bound reader is created.
 public protocol StorageReader: Sendable {
     // MARK: - Raw Key-Value Access

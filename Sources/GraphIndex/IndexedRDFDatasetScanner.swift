@@ -1,6 +1,6 @@
-import DatabaseTypes
 import DatabaseEngine
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Scans one logical RDF dataset assembled from canonical six-way quad indexes.
@@ -174,13 +174,13 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                             let row = RDFDatasetScanStorageRow(
                                 quad: triple.quad,
                                 coveringValue: value,
-                                storedFieldNames: source.storedFieldNames
+                                includedFieldNames: source.includedFieldNames
                             )
                             let metrics = try RDFDatasetScanRetainedMetrics.measure(
                                 row.quad,
                                 mergesNamedGraphs: true,
                                 coveringValueByteCount: value.count,
-                                storedFieldNames: source.storedFieldNames
+                                includedFieldNames: source.includedFieldNames
                             )
                             try reserveIntermediate(
                                 metrics,
@@ -192,7 +192,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                             let row = RDFDatasetScanStorageRow(
                                 quad: quad,
                                 coveringValue: value,
-                                storedFieldNames: source.storedFieldNames
+                                includedFieldNames: source.includedFieldNames
                             )
                             guard !seenRows.contains(row) else {
                                 continue
@@ -201,7 +201,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                                 quad,
                                 mergesNamedGraphs: false,
                                 coveringValueByteCount: value.count,
-                                storedFieldNames: source.storedFieldNames
+                                includedFieldNames: source.includedFieldNames
                             )
                             try reserveIntermediate(
                                 metrics,

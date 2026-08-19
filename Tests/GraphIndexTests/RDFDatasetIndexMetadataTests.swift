@@ -4,19 +4,29 @@ import DatabaseTypes
 import Testing
 @_spi(DatabaseExecution) @testable import GraphIndex
 
-@Suite("RDF dataset index metadata")
+@Suite("RDF dataset index selection")
 struct RDFDatasetIndexMetadataTests {
-    @Test("RDF quad metadata preserves an entity graph field")
-    func rdfQuadEntityGraphField() throws {
-        let descriptor = makeDescriptor(
-            identifier: "rdf_quad",
-            fieldNames: ["subject", "predicate", "object", "graph"],
-            metadata: [:]
-        )
+    private let fields = [
+        FieldSchema(name: "subject", fieldNumber: 1, type: .rdfTerm),
+        FieldSchema(name: "predicate", fieldNumber: 2, type: .rdfTerm),
+        FieldSchema(name: "object", fieldNumber: 3, type: .rdfTerm),
+        FieldSchema(
+            name: "graph",
+            fieldNumber: 4,
+            type: .rdfTerm,
+            isOptional: true
+        ),
+        FieldSchema(name: "timestamp", fieldNumber: 5, type: .timestamp),
+    ]
 
+    @Test("RDF declaration preserves an entity graph field")
+    func rdfEntityGraphField() throws {
+        let descriptor = try rdfDescriptor(graph: graphField)
         let selection = try #require(
             try RDFDatasetIndexSelection(descriptor: descriptor)
         )
+
+        #expect(selection.indexType == .graph(.rdf))
 
         #expect(selection.metadata.subjectFieldName == "subject")
         #expect(selection.metadata.predicateFieldName == "predicate")
@@ -25,99 +35,97 @@ struct RDFDatasetIndexMetadataTests {
         #expect(try selection.metadata.graphMapping.sourceCoverage == .dataset)
     }
 
-    @Test("RDF quad metadata without a graph field selects the default graph")
-    func rdfQuadDefaultGraph() throws {
-        let descriptor = makeDescriptor(
-            identifier: "rdf_quad",
-            fieldNames: ["subject", "predicate", "object"],
-            metadata: [:]
-        )
-
+    @Test("RDF declaration without a graph field selects the default graph")
+    func rdfDefaultGraph() throws {
         let selection = try #require(
-            try RDFDatasetIndexSelection(descriptor: descriptor)
+            try RDFDatasetIndexSelection(
+                descriptor: rdfDescriptor(graph: nil)
+            )
         )
 
         #expect(selection.metadata.graphMapping == .defaultGraph)
         #expect(try selection.metadata.graphMapping.sourceCoverage == .defaultGraph)
     }
 
-    @Test("OWL metadata preserves a fixed named graph")
-    func owlFixedNamedGraph() throws {
-        let graph = try RDFTerm.iri(
-            validating:
-                "https://example.invalid/graph/calendar"
+    @Test("Ontology projection preserves a fixed named graph")
+    func ontologyFixedNamedGraph() throws {
+        let graph = try RDFGraphName(
+            iri: "https://example.invalid/graph/calendar"
         )
-        let descriptor = makeDescriptor(
-            identifier: "owl_class_rdf",
-            fieldNames: [],
-            metadata: [
-                "individualIRIBase": .string("https://example.invalid/entity/"),
-                "graph": .rdfTerm(graph),
-            ]
+        let descriptor = try IndexDescriptor(
+            entityName: "CalendarEntry",
+            declaration: IndexDeclaration(
+                name: "calendar_ontology",
+                definition: .graph(
+                    .ontologyProjection(
+                        individualIRIBase: "https://example.invalid/entity/",
+                        graph: graph
+                    ),
+                    includedFields: []
+                )
+            ),
+            fieldSchemas: fields
         )
-
         let selection = try #require(
             try RDFDatasetIndexSelection(descriptor: descriptor)
         )
 
-        #expect(selection.metadata.graphMapping == .fixed(graph))
+        #expect(selection.metadata.graphMapping == .fixed(graph.term))
         #expect(
             try selection.metadata.graphMapping.sourceCoverage
-                == .namedGraph(RDFGraphName(graph))
+                == .namedGraph(graph)
         )
-    }
-
-    @Test("Malformed canonical metadata fails instead of dropping the source")
-    func malformedCanonicalMetadataFails() {
-        let descriptor = makeDescriptor(
-            identifier: "rdf_quad",
-            fieldNames: ["subject", "predicate"],
-            metadata: [:]
-        )
-
-        #expect(
-            throws: IndexKindMetadataError.invalidFieldCount(
-                identifier: "rdf_quad",
-                expected: "3...4",
-                actual: 2
-            )
-        ) {
-            _ = try RDFDatasetIndexSelection(descriptor: descriptor)
-        }
     }
 
     @Test("Non-RDF indexes do not participate in the logical dataset")
     func unrelatedIndexIsIgnored() throws {
-        let descriptor = makeDescriptor(
-            identifier: "scalar",
-            fieldNames: ["timestamp"],
-            metadata: [:]
+        let descriptor = try IndexDescriptor(
+            entityName: "CalendarEntry",
+            declaration: .ordered(
+                name: "calendar_timestamp",
+                keys: [.ascending(timestampField)]
+            ),
+            fieldSchemas: fields
         )
 
         #expect(try RDFDatasetIndexSelection(descriptor: descriptor) == nil)
     }
 
-    private func makeDescriptor(
-        identifier: String,
-        fieldNames: [String],
-        metadata: [String: FieldValue]
-    ) -> IndexDescriptorMetadata {
-        IndexDescriptorMetadata(
+    private var subjectField: FieldIdentity {
+        FieldIdentity(name: "subject", number: 1)
+    }
+
+    private var predicateField: FieldIdentity {
+        FieldIdentity(name: "predicate", number: 2)
+    }
+
+    private var objectField: FieldIdentity {
+        FieldIdentity(name: "object", number: 3)
+    }
+
+    private var graphField: FieldIdentity {
+        FieldIdentity(name: "graph", number: 4)
+    }
+
+    private var timestampField: FieldIdentity {
+        FieldIdentity(name: "timestamp", number: 5)
+    }
+
+    private func rdfDescriptor(
+        graph: FieldIdentity?
+    ) throws -> IndexDescriptor {
+        try IndexDescriptor(
             entityName: "CalendarEntry",
-            name: "Calendar_\(identifier)",
-            kind: IndexKindMetadata(
-                identifier: identifier,
-                subspaceStructure: .hierarchical,
-                fields: fieldNames.enumerated().map { offset, name in
-                    IndexFieldMetadata(
-                        identity: FieldIdentity(
-                            name: name,
-                            number: offset
-                        )
-                    )
-                },
-                metadata: metadata
-            )
+            declaration: .graph(
+                name: "calendar_rdf",
+                definition: .rdf(
+                    subject: subjectField,
+                    predicate: predicateField,
+                    object: objectField,
+                    graph: graph
+                )
+            ),
+            fieldSchemas: fields
         )
     }
 }

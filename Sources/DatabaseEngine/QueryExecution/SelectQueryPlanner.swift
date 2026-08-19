@@ -257,9 +257,9 @@ enum SelectQueryPlanner {
     ) throws {
         switch accessPath {
         case .index(let indexScan):
-            guard indexScan.kindIdentifier == "scalar" else {
+            guard indexScan.indexType == .ordered else {
                 throw CanonicalReadError.unsupportedAccessPath(
-                    "accessPath with kind '\(indexScan.kindIdentifier)' is not supported for single-table queries"
+                    "accessPath with index type '\(indexScan.indexType.diagnosticName)' is not supported for single-table queries"
                 )
             }
             guard indexDescriptors.contains(

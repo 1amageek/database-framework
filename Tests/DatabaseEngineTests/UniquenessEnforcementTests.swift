@@ -27,7 +27,10 @@ struct UniquenessEnforcementTests {
     @Persistable
     struct UniquenessConstrainedUser {
         #Directory<UniquenessConstrainedUser>("test", "uniqueness", "users")
-        #Index(.scalar, fields: [\UniquenessConstrainedUser.email], unique: true, name: "UniqueTestUser_email")
+        #Index(
+            .ordered(
+                name: "UniqueTestUser_email",
+                keys: [.ascending(\UniquenessConstrainedUser.email)], unique: true))
 
         var id: String = UUID().uuidString
         var email: String
@@ -38,7 +41,10 @@ struct UniquenessEnforcementTests {
     @Persistable
     struct UnconstrainedProduct {
         #Directory<UnconstrainedProduct>("test", "uniqueness", "products")
-        #Index(.scalar, fields: [\UnconstrainedProduct.category], name: "NonUniqueTestProduct_category")
+        #Index(
+            .ordered(
+                name: "NonUniqueTestProduct_category",
+                keys: [.ascending(\UnconstrainedProduct.category)], unique: false))
 
         var id: String = UUID().uuidString
         var category: String
@@ -62,7 +68,13 @@ struct UniquenessEnforcementTests {
         return try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(UniquenessConstrainedUser.self), try DatabaseFrameworkRuntime.entity(UnconstrainedProduct.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(UniquenessConstrainedUser.self), try DatabaseFrameworkRuntime.entity(UnconstrainedProduct.self),
+                ]),
             security: .testingDisabled
             )
     }
@@ -299,7 +311,8 @@ struct UniquenessEnforcementTests {
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
-            let indexName = "test_violation_idx"
+            let indexName = "UniqueTestUser_email"
+            try await tracker.clearAllViolations(indexName: indexName)
 
             // Entity a violation
             try await container.engine.withTransaction { transaction in
@@ -333,7 +346,8 @@ struct UniquenessEnforcementTests {
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
-            let indexName = "test_has_violations_idx"
+            let indexName = "UniqueTestUser_email"
+            try await tracker.clearAllViolations(indexName: indexName)
 
             // Initially no violations
             let hasBefore = try await tracker.hasViolations(indexName: indexName)
@@ -370,7 +384,8 @@ struct UniquenessEnforcementTests {
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
-            let indexName = "test_count_idx"
+            let indexName = "UniqueTestUser_email"
+            try await tracker.clearAllViolations(indexName: indexName)
 
             // Add multiple violations
             try await container.engine.withTransaction { transaction in
@@ -404,7 +419,8 @@ struct UniquenessEnforcementTests {
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
-            let indexName = "test_clear_idx"
+            let indexName = "UniqueTestUser_email"
+            try await tracker.clearAllViolations(indexName: indexName)
             let valueKey = Tuple("clearme").pack()
 
             // Add violation
@@ -443,7 +459,8 @@ struct UniquenessEnforcementTests {
                 for: UniquenessConstrainedUser.self
             )
             let tracker = databaseStore.violationTracker
-            let indexName = "test_resolution_\(UUID().uuidString)"
+            let indexName = "UniqueTestUser_email"
+            try await tracker.clearAllViolations(indexName: indexName)
             let duplicateValue = "duplicate@example.com"
             let valueKey = Tuple(duplicateValue).pack()
             let indexSubspace = Subspace(
@@ -515,7 +532,8 @@ struct UniquenessEnforcementTests {
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
             let tracker = databaseStore.violationTracker
-            let indexName = "test_summary_idx"
+            let indexName = "UniqueTestUser_email"
+            try await tracker.clearAllViolations(indexName: indexName)
 
             // Add violations with different conflict counts
             try await container.engine.withTransaction { transaction in
@@ -562,10 +580,13 @@ struct UniquenessEnforcementTests {
             try await cleanup(container: container)
 
             let context = container.testBaseContext()
-            let indexName = "test_context_scan_idx"
+            let indexName = "UniqueTestUser_email"
 
             // Add a violation directly to tracker
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
+            try await databaseStore.violationTracker.clearAllViolations(
+                indexName: indexName
+            )
 
             try await container.engine.withTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
@@ -601,7 +622,14 @@ struct UniquenessEnforcementTests {
             try await cleanup(container: container)
 
             let context = container.testBaseContext()
-            let indexName = "test_context_has_idx"
+            let indexName = "UniqueTestUser_email"
+
+            let databaseStore = try await container.testBaseStore(
+                for: UniquenessConstrainedUser.self
+            )
+            try await databaseStore.violationTracker.clearAllViolations(
+                indexName: indexName
+            )
 
             // Check no violations initially
             let hasBefore = try await context.hasUniquenessViolations(
@@ -611,8 +639,6 @@ struct UniquenessEnforcementTests {
             #expect(hasBefore == false)
 
             // Add a violation
-            let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
-
             try await container.engine.withTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
                     indexName: indexName,
@@ -647,10 +673,13 @@ struct UniquenessEnforcementTests {
             try await cleanup(container: container)
 
             let context = container.testBaseContext()
-            let indexName = "test_context_summary_idx"
+            let indexName = "UniqueTestUser_email"
 
             // Add violations
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
+            try await databaseStore.violationTracker.clearAllViolations(
+                indexName: indexName
+            )
 
             try await container.engine.withTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
@@ -680,7 +709,7 @@ struct UniquenessEnforcementTests {
         }
     }
 
-    #if MultipleBases
+    #if MultiBase
     @Test("Uniqueness violation inspection requires Base administration")
     func contextViolationInspectionRequiresAdministration() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
@@ -738,10 +767,12 @@ struct UniquenessEnforcementTests {
 
     @Test("Index isUnique defaults to false")
     func indexIsUniqueDefault() throws {
-        let index = Index(
-            name: "test_idx",
-            kind: try UniquenessConstrainedUser.indexDescriptors[0].kind,
-            rootExpression: FieldKeyExpression(fieldName: "email")
+        let descriptor = try #require(
+            UnconstrainedProduct.indexDescriptors.first
+        )
+        let index = ResolvedIndex(
+            descriptor: descriptor,
+            rootExpression: FieldKeyExpression(fieldName: "category")
         )
 
         #expect(index.isUnique == false)
@@ -749,11 +780,12 @@ struct UniquenessEnforcementTests {
 
     @Test("Index isUnique can be set to true")
     func indexIsUniqueTrue() throws {
-        let index = Index(
-            name: "unique_idx",
-            kind: try UniquenessConstrainedUser.indexDescriptors[0].kind,
-            rootExpression: FieldKeyExpression(fieldName: "email"),
-            isUnique: true
+        let descriptor = try #require(
+            UniquenessConstrainedUser.indexDescriptors.first
+        )
+        let index = ResolvedIndex(
+            descriptor: descriptor,
+            rootExpression: FieldKeyExpression(fieldName: "email")
         )
 
         #expect(index.isUnique == true)

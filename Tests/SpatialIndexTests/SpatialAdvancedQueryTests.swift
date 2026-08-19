@@ -35,10 +35,12 @@ struct NearbyStore {
     }
 
     #Index(
-        .spatial(encoding: .s2, level: 10),
-        location: \NearbyStore.geoPoint,
-        name: "NearbyStore_spatial_geoPoint"
-    )
+        .spatial(
+            name: "NearbyStore_spatial_geoPoint",
+            location: \NearbyStore.geoPoint,
+            encoding: .s2,
+            level: 10
+        ))
 }
 
 // MARK: - Spatial Query Context
@@ -57,16 +59,16 @@ private struct SpatialQueryContext {
         let indexName = "NearbyStore_spatial_geoPoint"
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: NearbyStore.self,
             name: indexName,
-            kind: spatialIndexMetadata(
+            definition: spatialIndexDefinition(
                 fieldName: "geoPoint",
                 fieldNumber: 3,
                 encoding: .s2,
                 level: 10
             ),
             rootExpression: FieldKeyExpression(fieldName: "geoPoint"),
-            subspaceKey: indexName,
             itemTypes: Set(["NearbyStore"])
         )
 
@@ -160,7 +162,7 @@ struct PolygonValidationTests {
     func testPolygonValidationRejectsLessThan3Points() async throws {
         let twoPoints = [
             try GeographicPoint(latitude: 35.0, longitude: 139.0),
-            try GeographicPoint(latitude: 36.0, longitude: 140.0)
+            try GeographicPoint(latitude: 36.0, longitude: 140.0),
         ]
 
         // Verify that 2 points is less than the required minimum of 3
@@ -181,7 +183,7 @@ struct PolygonValidationTests {
         let triangle = [
             try GeographicPoint(latitude: 35.0, longitude: 139.0),
             try GeographicPoint(latitude: 36.0, longitude: 139.0),
-            try GeographicPoint(latitude: 35.5, longitude: 140.0)
+            try GeographicPoint(latitude: 35.5, longitude: 140.0),
         ]
 
         let options = PolygonQueryOptions(type: .simple, validateInput: true)
@@ -215,7 +217,7 @@ struct KNNResultTests {
         let items: [(item: NearbyStore, distance: Double)] = [
             (try NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
             (try NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), 200.0),
-            (try NearbyStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0)
+            (try NearbyStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0),
         ]
 
         let result = SpatialKNNResult(
@@ -237,7 +239,7 @@ struct KNNResultTests {
         let items: [(item: NearbyStore, distance: Double)] = [
             (try NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
             (try NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), 200.0),
-            (try NearbyStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0)
+            (try NearbyStore(name: "Store C", latitude: 35.2, longitude: 139.2), 300.0),
         ]
 
         let result = SpatialKNNResult(
@@ -281,7 +283,7 @@ struct PointInPolygonAlgorithmTests {
             (latitude: 34.9, longitude: 138.9),
             (latitude: 34.9, longitude: 139.1),
             (latitude: 35.1, longitude: 139.1),
-            (latitude: 35.1, longitude: 138.9)
+            (latitude: 35.1, longitude: 138.9),
         ]
 
         let center = try GeographicPoint(latitude: 35.0, longitude: 139.0)
@@ -297,7 +299,7 @@ struct PointInPolygonAlgorithmTests {
             (latitude: 34.9, longitude: 138.9),
             (latitude: 34.9, longitude: 139.1),
             (latitude: 35.1, longitude: 139.1),
-            (latitude: 35.1, longitude: 138.9)
+            (latitude: 35.1, longitude: 138.9),
         ]
 
         let outside = try GeographicPoint(latitude: 36.0, longitude: 140.0)
@@ -312,7 +314,7 @@ struct PointInPolygonAlgorithmTests {
         let triangle: [(latitude: Double, longitude: Double)] = [
             (latitude: 35.0, longitude: 139.0),
             (latitude: 35.0, longitude: 140.0),
-            (latitude: 36.0, longitude: 139.5)
+            (latitude: 36.0, longitude: 139.5),
         ]
 
         let inside = try GeographicPoint(
@@ -399,7 +401,7 @@ struct SpatialQueryResultTests {
     func testSpatialQueryResultWithDistance() async throws {
         let items: [(item: NearbyStore, distance: Double?)] = [
             (try NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
-            (try NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), nil)
+            (try NearbyStore(name: "Store B", latitude: 35.1, longitude: 139.1), nil),
         ]
 
         let result = SpatialQueryResult(items: items, limitReason: nil)
@@ -505,7 +507,7 @@ struct KNNValidationTests {
             .invalidRadius("maxRadiusKm must be positive and finite, got inf"),
             .invalidRadius("maxRadiusKm (5.0) must be >= initialRadiusKm (10.0)"),
             .invalidKNNParameters("expansionFactor must be > 1.0 and finite, got 1.0"),
-            .invalidKNNParameters("expansionFactor must be > 1.0 and finite, got 0.5")
+            .invalidKNNParameters("expansionFactor must be > 1.0 and finite, got 0.5"),
         ]
 
         for error in errors {
@@ -519,7 +521,7 @@ struct KNNValidationTests {
         let completeItems: [(item: NearbyStore, distance: Double)] = [
             (try NearbyStore(name: "A", latitude: 35.0, longitude: 139.0), 100.0),
             (try NearbyStore(name: "B", latitude: 35.1, longitude: 139.1), 200.0),
-            (try NearbyStore(name: "C", latitude: 35.2, longitude: 139.2), 300.0)
+            (try NearbyStore(name: "C", latitude: 35.2, longitude: 139.2), 300.0),
         ]
 
         // Complete result (count >= k)

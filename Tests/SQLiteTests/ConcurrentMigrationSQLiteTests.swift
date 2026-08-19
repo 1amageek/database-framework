@@ -111,7 +111,12 @@ struct ConcurrentMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV1.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -127,7 +132,12 @@ struct ConcurrentMigrationSQLiteTests {
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
             security: .testingDisabled
         )
         defer { await container.shutdown() }
@@ -154,7 +164,12 @@ struct ConcurrentMigrationSQLiteTests {
         let initialContainer = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV1.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -176,7 +191,12 @@ struct ConcurrentMigrationSQLiteTests {
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
             security: .testingDisabled
         )
         defer { await containerA.shutdown() }
@@ -184,7 +204,12 @@ struct ConcurrentMigrationSQLiteTests {
             for: SQLiteConcurrentMigrationSchemaV2.self,
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
             security: .testingDisabled
         )
         defer { await containerB.shutdown() }
@@ -201,7 +226,12 @@ struct ConcurrentMigrationSQLiteTests {
         let verificationContainer = try await DBContainer.open(
             for: SQLiteConcurrentMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteConcurrentMigrationUserV2.self)]),
             security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }
@@ -216,8 +246,8 @@ struct ConcurrentMigrationSQLiteTests {
         #expect(users.map { $0.fullName } == ["User0", "User1", "User2", "User3", "User4"])
         #expect(users.map { $0.email } == [
             "user0@example.com", "user1@example.com", "user2@example.com",
-            "user3@example.com", "user4@example.com"
-        ])
+            "user3@example.com", "user4@example.com",
+            ])
     }
 
     @Test("Interrupted migration skips rows already encoded for the target")
@@ -232,10 +262,14 @@ struct ConcurrentMigrationSQLiteTests {
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SQLiteConcurrentMigrationUserV1.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -291,10 +325,14 @@ struct ConcurrentMigrationSQLiteTests {
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SQLiteConcurrentMigrationUserV2.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -325,10 +363,14 @@ struct ConcurrentMigrationSQLiteTests {
             for: SQLiteConcurrentMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SQLiteConcurrentMigrationUserV1.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -374,10 +416,14 @@ struct ConcurrentMigrationSQLiteTests {
             migrationPlan: SQLiteConcurrentMigrationPlan.self,
             configuration: .file(database.path),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SQLiteConcurrentMigrationUserV2.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled

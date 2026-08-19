@@ -4,8 +4,8 @@
 // This file is part of VectorIndex module, not DatabaseEngine.
 // DatabaseEngine does not own vector index execution.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 
 /// Vector similarity search query for Fusion
@@ -148,19 +148,22 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Index Discovery
 
-    /// Find the index descriptor using kindIdentifier and fieldName
+    /// Find the index descriptor using indexType and fieldName
     ///
     /// This approach:
-    /// 1. Filters by kindIdentifier ("vector") for efficiency
+    /// 1. Filters by indexType ("vector") for efficiency
     /// 2. Matches by fieldName within the kind
     private func findIndexDescriptor() throws -> IndexDescriptor? {
         try queryContext.indexDescriptors(for: T.self).first { descriptor in
-            guard descriptor.kindIdentifier
-                    == VectorIndexSpecification.identifier,
-                  descriptor.fieldNames == [fieldName] else {
+            guard
+                descriptor.type
+                    == .vector,
+                descriptor.fieldNames == [fieldName] else {
                 return false
             }
-            let specification = try VectorIndexSpecification(descriptor.kind)
+            let specification = try VectorIndexSpecification(
+                descriptor.declaration.definition
+            )
             return specification.dimensions == dimensions
                 && specification.metric.rawValue == metric.rawValue
         }
@@ -211,9 +214,9 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         // Find index descriptor
         guard let descriptor = try findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
-                type: T.persistableType,
+                entity: T.persistableType,
                 field: fieldName,
-                kind: "vector"
+                indexType: .vector
             )
         }
 

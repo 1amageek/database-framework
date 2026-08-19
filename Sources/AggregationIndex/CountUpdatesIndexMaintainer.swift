@@ -4,9 +4,9 @@
 // Tracks the number of times each entity has been updated.
 // Reference: FDB Record Layer COUNT_UPDATES index type
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for COUNT_UPDATES indexes
@@ -29,7 +29,7 @@ import StorageKit
 public struct CountUpdatesIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -38,7 +38,7 @@ public struct CountUpdatesIndexMaintainer<Item: PersistedEntityValue>: SubspaceI
     // MARK: - Initialization
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {

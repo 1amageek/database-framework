@@ -4,9 +4,9 @@
 // Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search",
 // IEEE Transactions on Pattern Analysis and Machine Intelligence, 2011
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for IVF (Inverted File Index) vector indexes
@@ -55,7 +55,7 @@ public struct IVFIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
 
     // MARK: - Properties
 
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -69,14 +69,14 @@ public struct IVFIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     /// Create IVF index maintainer
     ///
     /// - Parameters:
-    ///   - index: Index definition
+    ///   - index: ResolvedIndex definition
     ///   - dimensions: Vector dimensions
     ///   - metric: Distance metric
     ///   - subspace: FDB subspace for this index
     ///   - idExpression: Expression for extracting item's unique identifier
     ///   - parameters: IVF algorithm parameters
     public init(
-        index: Index,
+        index: ResolvedIndex,
         dimensions: Int,
         metric: VectorMetric,
         subspace: Subspace,

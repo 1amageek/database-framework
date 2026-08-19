@@ -1,5 +1,5 @@
 #if !os(WASI)
-#if SQLITE && !DATABASE_MULTIPLE_BASES
+#if SQLITE && !DATABASE_MULTI_BASE
 import DatabaseEngine
 import SQLiteStorage
 import StorageKit
@@ -18,8 +18,7 @@ extension DBContainer {
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
         return try await DBContainer.open(
             for: schema,
@@ -27,8 +26,7 @@ extension DBContainer {
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             runtimeConfiguration: runtimeConfiguration,
-            security: security,
-            indexConfigurations: indexConfigurations
+            security: security
         )
     }
 
@@ -43,8 +41,7 @@ extension DBContainer {
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
-        security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        security: SecurityConfiguration = .enabled()
     ) async throws -> DBContainer {
         return try await DBContainer.open(
             for: schema,
@@ -52,8 +49,7 @@ extension DBContainer {
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             runtimeConfiguration: runtimeConfiguration,
-            security: security,
-            indexConfigurations: indexConfigurations
+            security: security
         )
     }
 }

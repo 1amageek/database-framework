@@ -104,7 +104,7 @@ struct KMeansClustering: Sendable {
     /// - Parameters:
     ///   - vector: Vector to assign
     ///   - centroids: Current centroids
-    /// - Returns: Index of nearest centroid
+    /// - Returns: ResolvedIndex of nearest centroid
     private func assignToNearestCentroid(
         vector: [Float],
         centroids: [[Float]]

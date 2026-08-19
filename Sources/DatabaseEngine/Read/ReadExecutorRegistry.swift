@@ -2,7 +2,7 @@ import DatabaseKit
 import DatabaseTypes
 
 public protocol IndexReadExecutor: Sendable {
-    var kindIdentifier: String { get }
+    var indexType: IndexType { get }
 
     /// Produce an index-native row set.
     ///
@@ -23,14 +23,14 @@ public protocol IndexReadExecutor: Sendable {
 }
 
 public protocol PolymorphicIndexReadExecutor: Sendable {
-    var kindIdentifier: String { get }
+    var indexType: IndexType { get }
 
     /// Produce an index-native row set for a polymorphic group. Same contract
     /// as `IndexReadExecutor.executeRows` — no SQL post-processing in executors.
     func executeRows(
         context: DatabaseContext,
         selectQuery: SelectQuery,
-        index: PolymorphicIndexMetadata,
+        index: IndexDeclaration<String>,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionContext,
@@ -39,7 +39,7 @@ public protocol PolymorphicIndexReadExecutor: Sendable {
 }
 
 public struct ReadExecutorRegistry: Sendable {
-    private let polymorphicIndexExecutors: [String: any PolymorphicIndexReadExecutor]
+    private let polymorphicIndexExecutors: [IndexType: any PolymorphicIndexReadExecutor]
 
     public init(
         polymorphicIndexExecutors: [any PolymorphicIndexReadExecutor] = []
@@ -49,19 +49,19 @@ public struct ReadExecutorRegistry: Sendable {
         )
     }
 
-    public func polymorphicIndexExecutor(for kindIdentifier: String) -> (any PolymorphicIndexReadExecutor)? {
-        polymorphicIndexExecutors[kindIdentifier]
+    public func polymorphicIndexExecutor(for indexType: IndexType) -> (any PolymorphicIndexReadExecutor)? {
+        polymorphicIndexExecutors[indexType]
     }
 
     private static func polymorphicExecutorsByIdentifier(
         _ executors: [any PolymorphicIndexReadExecutor]
-    ) throws(DatabaseRuntimeConfigurationError) -> [String: any PolymorphicIndexReadExecutor] {
-        var result: [String: any PolymorphicIndexReadExecutor] = [:]
+    ) throws(DatabaseRuntimeConfigurationError) -> [IndexType: any PolymorphicIndexReadExecutor] {
+        var result: [IndexType: any PolymorphicIndexReadExecutor] = [:]
         for executor in executors {
-            guard result[executor.kindIdentifier] == nil else {
-                throw .duplicatePolymorphicIndexReadExecutor(executor.kindIdentifier)
+            guard result[executor.indexType] == nil else {
+                throw .duplicatePolymorphicIndexReadExecutor(executor.indexType)
             }
-            result[executor.kindIdentifier] = executor
+            result[executor.indexType] = executor
         }
         return result
     }

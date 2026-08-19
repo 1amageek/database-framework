@@ -1,9 +1,9 @@
 /// GraphTableExecutor.swift
 /// SQL/PGQ GRAPH_TABLE query executor
 
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
-import DatabaseEngine
 import StorageKit
 
 // MARK: - GraphTableRow
@@ -42,7 +42,7 @@ public struct GraphTableRow: Sendable {
             var fields: [String: FieldValue] = [
                 "source": .string(source),
                 "target": .string(target),
-                "edgeLabel": .string(edgeLabel)
+                "edgeLabel": .string(edgeLabel),
             ]
             for (key, value) in properties {
                 fields[key] = value
@@ -81,13 +81,19 @@ public struct GraphTableExecutor: Sendable {
             throw GraphTableError.invalidGraphPattern("No edge patterns found in MATCH clause")
         }
 
-        let metadata = try PropertyGraphIndexMetadata(
-            canonical: indexDescriptor.kind
-        )
+        guard
+            let configuration = PropertyGraphIndexConfiguration(
+                descriptor: indexDescriptor
+            )
+        else {
+            throw GraphTableError.indexNotFound(
+                "Index '\(indexDescriptor.name)' is not a property-graph index"
+            )
+        }
         let scanner = GraphPropertyScanner(
             indexSubspace: indexSubspace,
-            strategy: metadata.strategy,
-            storedFieldNames: indexDescriptor.storedFieldNames
+            strategy: configuration.strategy,
+            includedFieldNames: indexDescriptor.includedFieldNames
         )
 
         var states: [MatchState] = [MatchState()]
@@ -97,7 +103,7 @@ public struct GraphTableExecutor: Sendable {
                 states: states,
                 with: step,
                 scanner: scanner,
-                strategy: metadata.strategy,
+                strategy: configuration.strategy,
                 transaction: transaction
             )
             if states.isEmpty {
@@ -495,7 +501,7 @@ public struct GraphTableExecutor: Sendable {
         var fields: [String: FieldValue] = [
             "source": .string(first.leftID),
             "target": .string(last.rightID),
-            "edgeLabel": .string(edgeLabel)
+            "edgeLabel": .string(edgeLabel),
         ]
         for (key, value) in mergedProperties {
             fields[key] = value
@@ -767,8 +773,8 @@ extension DatabaseContext {
         guard let descriptor = indexQueryContext
             .indexDescriptors(for: T.self)
             .first(
-            where: { $0.kindIdentifier == "graph" }
-        ) else {
+            where: { $0.type == .graph(.property) }
+                ) else {
             throw GraphTableError.indexNotFound(
                 "No property-graph index found for entity \(T.persistableType)"
             )
@@ -778,8 +784,8 @@ extension DatabaseContext {
             guard let index = try await queryContext
                 .readableIndex(
                     named: descriptor.name,
-                    kindIdentifier: descriptor.kindIdentifier,
-                    for: T.self,
+                        indexType: descriptor.type,
+                        for: T.self,
                     transaction: transaction
                 ) else {
                 return []

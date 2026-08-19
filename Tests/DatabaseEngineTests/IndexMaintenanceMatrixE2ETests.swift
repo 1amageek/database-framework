@@ -15,7 +15,6 @@ import DatabaseRuntime
 @testable import FullTextIndex
 @testable import SpatialIndex
 @testable import RankIndex
-@testable import PermutedIndex
 @testable import GraphIndex
 @testable import AggregationIndex
 @testable import VersionIndex
@@ -44,7 +43,10 @@ private struct MatrixScalarUser {
     var email: String = ""
     var city: String = ""
 
-    #Index(.scalar, fields: [\MatrixScalarUser.email], name: "matrix_scalar_email")
+    #Index(
+        .ordered(
+            name: "matrix_scalar_email", keys: [.ascending(\MatrixScalarUser.email)],
+            unique: false))
 }
 
 @Persistable
@@ -56,10 +58,11 @@ private struct MatrixVectorDocument {
     var embedding: Vector
 
     #Index(
-        .vector(dimensions: 3),
-        embedding: \MatrixVectorDocument.embedding,
-        name: "matrix_vector_embedding"
-    )
+        .vector(
+            name: "matrix_vector_embedding",
+            embedding: \MatrixVectorDocument.embedding,
+            dimensions: 3
+        ))
 }
 
 @Persistable
@@ -71,10 +74,11 @@ private struct MatrixFullTextArticle {
     var body: String = ""
 
     #Index(
-        .fullText(tokenizer: .simple),
-        fields: [\MatrixFullTextArticle.body],
-        name: "matrix_fulltext_body"
-    )
+        .text(
+            name: "matrix_fulltext_body", fields: [\MatrixFullTextArticle.body],
+            mode: .fullText(
+                tokenizer: .simple, storePositions: true, ngramSize: 3, minimumTermLength: 2
+            )))
 }
 
 @Persistable
@@ -87,12 +91,11 @@ private struct MatrixGraphEdge {
     var target: String = ""
 
     #Index(
-        .propertyGraph(strategy: .adjacency),
-        from: \MatrixGraphEdge.source,
-        edge: \MatrixGraphEdge.relation,
-        to: \MatrixGraphEdge.target,
-        name: "matrix_graph_adjacency"
-    )
+        .graph(
+            name: "matrix_graph_adjacency",
+            definition: .property(
+                source: \MatrixGraphEdge.source, label: .field(\MatrixGraphEdge.relation),
+                target: \MatrixGraphEdge.target, graph: nil, strategy: .adjacency)))
 }
 
 @Persistable
@@ -104,10 +107,10 @@ private struct MatrixSpatialPlace {
     var location: GeographicPoint
 
     #Index(
-        .spatial(),
-        location: \MatrixSpatialPlace.location,
-        name: "matrix_spatial_location"
-    )
+        .spatial(
+            name: "matrix_spatial_location",
+            location: \MatrixSpatialPlace.location
+        ))
 }
 
 @Persistable
@@ -118,7 +121,7 @@ private struct MatrixRankPlayer {
     var name: String = ""
     var score: Int64 = 0
 
-    #Index(.rank, field: \MatrixRankPlayer.score, name: "matrix_rank_score")
+    #Index(.rank(name: "matrix_rank_score", score: \MatrixRankPlayer.score))
 }
 
 @Persistable
@@ -133,15 +136,35 @@ private struct MatrixAggregationOrder {
     var customerID: String = ""
     var note: String? = nil
 
-    #Index(.count, groupBy: [\MatrixAggregationOrder.region], name: "matrix_count_region")
-    #Index(.sum, groupBy: [\MatrixAggregationOrder.region], value: \MatrixAggregationOrder.amount, name: "matrix_sum_region_amount")
-    #Index(.minimum, groupBy: [\MatrixAggregationOrder.region], value: \MatrixAggregationOrder.amount, name: "matrix_min_region_amount")
-    #Index(.maximum, groupBy: [\MatrixAggregationOrder.region], value: \MatrixAggregationOrder.amount, name: "matrix_max_region_amount")
-    #Index(.average, groupBy: [\MatrixAggregationOrder.region], value: \MatrixAggregationOrder.amount, name: "matrix_average_region_amount")
-    #Index(.countUpdates, field: \MatrixAggregationOrder.id, name: "matrix_count_updates_id")
-    #Index(.countNotNull, groupBy: [\MatrixAggregationOrder.region], value: \MatrixAggregationOrder.note, name: "matrix_count_not_null_region_note")
-    #Index(.distinct(), groupBy: [\MatrixAggregationOrder.region], value: \MatrixAggregationOrder.customerID, name: "matrix_distinct_region_customer")
-    #Index(.percentile(), groupBy: [\MatrixAggregationOrder.region], value: \MatrixAggregationOrder.latencyMs, name: "matrix_percentile_region_latency")
+    #Index(
+        .aggregate(
+            name: "matrix_count_region", function: .count, groupBy: [.ascending(\MatrixAggregationOrder.region)]))
+    #Index(
+        .aggregate(
+            name: "matrix_sum_region_amount", function: .sum, groupBy: [.ascending(\MatrixAggregationOrder.region)], value: \MatrixAggregationOrder.amount))
+    #Index(
+        .aggregate(
+            name: "matrix_min_region_amount", function: .minimum, groupBy: [.ascending(\MatrixAggregationOrder.region)], value: \MatrixAggregationOrder.amount))
+    #Index(
+        .aggregate(
+            name: "matrix_max_region_amount", function: .maximum, groupBy: [.ascending(\MatrixAggregationOrder.region)], value: \MatrixAggregationOrder.amount))
+    #Index(
+        .aggregate(
+            name: "matrix_average_region_amount", function: .average, groupBy: [.ascending(\MatrixAggregationOrder.region)], value: \MatrixAggregationOrder.amount))
+    #Index(.updateCount(name: "matrix_count_updates_id", field: \MatrixAggregationOrder.id))
+    #Index(
+        .aggregate(
+            name: "matrix_count_not_null_region_note", function: .nonNullCount,
+            groupBy: [.ascending(\MatrixAggregationOrder.region)], value: \MatrixAggregationOrder.note
+        ))
+    #Index(
+        .aggregate(
+            name: "matrix_distinct_region_customer",
+            function: .approximateDistinct(precision: 14), groupBy: [.ascending(\MatrixAggregationOrder.region)], value: \MatrixAggregationOrder.customerID))
+    #Index(
+        .aggregate(
+            name: "matrix_percentile_region_latency",
+            function: .percentile(compression: 100), groupBy: [.ascending(\MatrixAggregationOrder.region)], value: \MatrixAggregationOrder.latencyMs))
 }
 
 @Persistable
@@ -152,7 +175,11 @@ private struct MatrixVersionDocument {
     var title: String = ""
     var revision: Int64 = 0
 
-    #Index(.version(strategy: .keepAll), field: \MatrixVersionDocument.id, name: "matrix_version_id")
+    #Index(
+        .history(
+            name: "matrix_version_id", version: \MatrixVersionDocument.id,
+            retention: .keepAll)
+    )
 }
 
 @Persistable
@@ -163,7 +190,7 @@ private struct MatrixBitmapItem {
     var status: String = ""
     var category: String = ""
 
-    #Index(.bitmap, field: \MatrixBitmapItem.status, name: "matrix_bitmap_status")
+    #Index(.bitmap(name: "matrix_bitmap_status", field: \MatrixBitmapItem.status))
 }
 
 @Persistable
@@ -176,16 +203,18 @@ private struct MatrixLeaderboardScore {
     var score: Int64 = 0
 
     #Index(
-        .timeWindowLeaderboard(window: .daily, windowCount: 2),
-        groupBy: [\MatrixLeaderboardScore.region],
-        field: \MatrixLeaderboardScore.score,
-        name: "matrix_leaderboard_region_score"
-    )
+        .leaderboard(
+            name: "matrix_leaderboard_region_score",
+            groupBy: [.ascending(\MatrixLeaderboardScore.region)],
+            score: \MatrixLeaderboardScore.score,
+            window: .daily,
+            windowCount: 2
+        ))
 }
 
 @Persistable
-private struct MatrixPermutedLocation {
-    #Directory<MatrixPermutedLocation>("test", "index_matrix", "permuted_locations")
+private struct MatrixOrderedLocation {
+    #Directory<MatrixOrderedLocation>("test", "index_matrix", "ordered_locations")
 
     var id: String = UUID().uuidString
     var country: String = ""
@@ -193,10 +222,13 @@ private struct MatrixPermutedLocation {
     var name: String = ""
 
     #Index(
-        .permuted(.swapping(0, 1, size: 3)),
-        fields: [\MatrixPermutedLocation.country, \MatrixPermutedLocation.city, \MatrixPermutedLocation.name],
-        name: "matrix_permuted_city_country_name"
-    )
+        .ordered(
+            name: "matrix_ordered_city_country_name",
+            keys: [
+                .ascending(\MatrixOrderedLocation.city),
+                .ascending(\MatrixOrderedLocation.country),
+                .ascending(\MatrixOrderedLocation.name),
+            ]))
 }
 
 @Persistable
@@ -233,7 +265,7 @@ struct IndexMaintenanceMatrixE2ETests {
         ["test", "index_matrix", "version_documents"],
         ["test", "index_matrix", "bitmap_items"],
         ["test", "index_matrix", "leaderboard_scores"],
-        ["test", "index_matrix", "permuted_locations"],
+        ["test", "index_matrix", "ordered_locations"],
         ["test", "index_matrix", "relationship_customers"],
         ["test", "index_matrix", "relationship_orders"],
     ]
@@ -250,7 +282,13 @@ struct IndexMaintenanceMatrixE2ETests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(MatrixScalarUser.self), try DatabaseFrameworkRuntime.entity(MatrixVectorDocument.self), try DatabaseFrameworkRuntime.entity(MatrixFullTextArticle.self), try DatabaseFrameworkRuntime.entity(MatrixGraphEdge.self), try DatabaseFrameworkRuntime.entity(MatrixSpatialPlace.self), try DatabaseFrameworkRuntime.entity(MatrixRankPlayer.self), try DatabaseFrameworkRuntime.entity(MatrixAggregationOrder.self), try DatabaseFrameworkRuntime.entity(MatrixVersionDocument.self), try DatabaseFrameworkRuntime.entity(MatrixBitmapItem.self), try DatabaseFrameworkRuntime.entity(MatrixLeaderboardScore.self), try DatabaseFrameworkRuntime.entity(MatrixPermutedLocation.self), try DatabaseFrameworkRuntime.entity(MatrixRelationshipCustomer.self), try DatabaseFrameworkRuntime.entity(MatrixRelationshipOrder.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(MatrixScalarUser.self), try DatabaseFrameworkRuntime.entity(MatrixVectorDocument.self), try DatabaseFrameworkRuntime.entity(MatrixFullTextArticle.self), try DatabaseFrameworkRuntime.entity(MatrixGraphEdge.self), try DatabaseFrameworkRuntime.entity(MatrixSpatialPlace.self), try DatabaseFrameworkRuntime.entity(MatrixRankPlayer.self), try DatabaseFrameworkRuntime.entity(MatrixAggregationOrder.self), try DatabaseFrameworkRuntime.entity(MatrixVersionDocument.self), try DatabaseFrameworkRuntime.entity(MatrixBitmapItem.self), try DatabaseFrameworkRuntime.entity(MatrixLeaderboardScore.self), try DatabaseFrameworkRuntime.entity(MatrixOrderedLocation.self), try DatabaseFrameworkRuntime.entity(MatrixRelationshipCustomer.self), try DatabaseFrameworkRuntime.entity(MatrixRelationshipOrder.self),
+                ]),
             security: .testingDisabled
         )
         try await cleanup(container: container)
@@ -279,9 +317,10 @@ struct IndexMaintenanceMatrixE2ETests {
         indexName: String
     ) async throws -> Int {
         let typeSubspace = try await container.testBaseDirectory(for: type)
-        let subspace = typeSubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexName)
+        let subspace = try IndexLifecycleStore(
+            container: container,
+            subspace: typeSubspace
+        ).indexSubspace(for: indexName)
         return try await countEntries(container: container, subspace: subspace)
     }
 
@@ -313,14 +352,12 @@ struct IndexMaintenanceMatrixE2ETests {
     private func assertDescriptorShape<T: Persistable>(
         for type: T.Type,
         named name: String,
-        kindIdentifier: String,
-        descriptorFields: [String],
-        kindFields: [String]? = nil
+        indexType: IndexType,
+        descriptorFields: [String]
     ) throws {
         let descriptor = try descriptor(for: type, named: name)
-        #expect(descriptor.kindIdentifier == kindIdentifier)
+        #expect(descriptor.type == indexType)
         #expect(descriptor.fieldNames == descriptorFields)
-        #expect(descriptor.kind.fieldNames == (kindFields ?? descriptorFields))
     }
 
     @Test("Matrix descriptors use expected kind identifiers and KeyPath-derived fields")
@@ -328,118 +365,116 @@ struct IndexMaintenanceMatrixE2ETests {
         try assertDescriptorShape(
             for: MatrixScalarUser.self,
             named: "matrix_scalar_email",
-            kindIdentifier: IndexDefinition.scalar.identifier,
+            indexType: .ordered,
             descriptorFields: ["email"]
         )
         try assertDescriptorShape(
             for: MatrixVectorDocument.self,
             named: "matrix_vector_embedding",
-            kindIdentifier: IndexDefinition.vector(dimensions: 3).identifier,
+            indexType: .vector,
             descriptorFields: ["embedding"]
         )
         try assertDescriptorShape(
             for: MatrixFullTextArticle.self,
             named: "matrix_fulltext_body",
-            kindIdentifier: IndexDefinition.fullText().identifier,
+            indexType: .text(.fullText),
             descriptorFields: ["body"]
         )
         try assertDescriptorShape(
             for: MatrixGraphEdge.self,
             named: "matrix_graph_adjacency",
-            kindIdentifier: IndexDefinition.propertyGraph().identifier,
+            indexType: .graph(.property),
             descriptorFields: ["source", "relation", "target"]
         )
         try assertDescriptorShape(
             for: MatrixSpatialPlace.self,
             named: "matrix_spatial_location",
-            kindIdentifier: IndexDefinition.spatial().identifier,
+            indexType: .spatial,
             descriptorFields: ["location"]
         )
         try assertDescriptorShape(
             for: MatrixRankPlayer.self,
             named: "matrix_rank_score",
-            kindIdentifier: IndexDefinition.rank.identifier,
+            indexType: .rank,
             descriptorFields: ["score"]
         )
         try assertDescriptorShape(
             for: MatrixAggregationOrder.self,
             named: "matrix_count_region",
-            kindIdentifier: IndexDefinition.count.identifier,
+            indexType: .aggregate(.count),
             descriptorFields: ["region"]
         )
         try assertDescriptorShape(
             for: MatrixAggregationOrder.self,
             named: "matrix_sum_region_amount",
-            kindIdentifier: IndexDefinition.sum.identifier,
+            indexType: .aggregate(.sum),
             descriptorFields: ["region", "amount"]
         )
         try assertDescriptorShape(
             for: MatrixAggregationOrder.self,
             named: "matrix_min_region_amount",
-            kindIdentifier: IndexDefinition.minimum.identifier,
+            indexType: .aggregate(.minimum),
             descriptorFields: ["region", "amount"]
         )
         try assertDescriptorShape(
             for: MatrixAggregationOrder.self,
             named: "matrix_max_region_amount",
-            kindIdentifier: IndexDefinition.maximum.identifier,
+            indexType: .aggregate(.maximum),
             descriptorFields: ["region", "amount"]
         )
         try assertDescriptorShape(
             for: MatrixAggregationOrder.self,
             named: "matrix_average_region_amount",
-            kindIdentifier: IndexDefinition.average.identifier,
+            indexType: .aggregate(.average),
             descriptorFields: ["region", "amount"]
         )
         try assertDescriptorShape(
             for: MatrixAggregationOrder.self,
             named: "matrix_count_updates_id",
-            kindIdentifier: IndexDefinition.countUpdates.identifier,
+            indexType: .updateCount,
             descriptorFields: ["id"]
         )
         try assertDescriptorShape(
             for: MatrixAggregationOrder.self,
             named: "matrix_count_not_null_region_note",
-            kindIdentifier: IndexDefinition.countNotNull.identifier,
+            indexType: .aggregate(.nonNullCount),
             descriptorFields: ["region", "note"]
         )
         try assertDescriptorShape(
             for: MatrixAggregationOrder.self,
             named: "matrix_distinct_region_customer",
-            kindIdentifier: IndexDefinition.distinct().identifier,
+            indexType: .aggregate(.approximateDistinct),
             descriptorFields: ["region", "customerID"]
         )
         try assertDescriptorShape(
             for: MatrixAggregationOrder.self,
             named: "matrix_percentile_region_latency",
-            kindIdentifier: IndexDefinition.percentile().identifier,
+            indexType: .aggregate(.percentile),
             descriptorFields: ["region", "latencyMs"]
         )
         try assertDescriptorShape(
             for: MatrixVersionDocument.self,
             named: "matrix_version_id",
-            kindIdentifier: IndexDefinition.version().identifier,
+            indexType: .history,
             descriptorFields: ["id"]
         )
         try assertDescriptorShape(
             for: MatrixBitmapItem.self,
             named: "matrix_bitmap_status",
-            kindIdentifier: IndexDefinition.bitmap.identifier,
+            indexType: .bitmap,
             descriptorFields: ["status"]
         )
         try assertDescriptorShape(
             for: MatrixLeaderboardScore.self,
             named: "matrix_leaderboard_region_score",
-            kindIdentifier: IndexDefinition.timeWindowLeaderboard().identifier,
+            indexType: .leaderboard,
             descriptorFields: ["region", "score"]
         )
         try assertDescriptorShape(
-            for: MatrixPermutedLocation.self,
-            named: "matrix_permuted_city_country_name",
-            kindIdentifier: IndexDefinition.permuted(
-                .swapping(0, 1, size: 3)
-            ).identifier,
-            descriptorFields: ["country", "city", "name"]
+            for: MatrixOrderedLocation.self,
+            named: "matrix_ordered_city_country_name",
+            indexType: .ordered,
+            descriptorFields: ["city", "country", "name"]
         )
         let relationship = try #require(MatrixRelationshipOrder.relationshipDescriptors.first)
         #expect(relationship.name == "MatrixRelationshipOrder.customer")
@@ -687,17 +722,21 @@ struct IndexMaintenanceMatrixE2ETests {
         }
     }
 
-    @Test("Permuted index matrix path stores reordered compound keys")
-    func permutedIndexMatrixPath() async throws {
+    @Test("Ordered compound index matrix path stores declared key order")
+    func orderedCompoundIndexMatrixPath() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let container = try await setupContainer([try MatrixPermutedLocation.schemaEntity])
+            let container = try await setupContainer([
+                try MatrixOrderedLocation.schemaEntity])
             let context = container.testBaseContext()
 
-            try context.insert(MatrixPermutedLocation(country: "JP", city: "Tokyo", name: "Station"))
-            try context.insert(MatrixPermutedLocation(country: "US", city: "New York", name: "Terminal"))
+            try context.insert(
+                MatrixOrderedLocation(country: "JP", city: "Tokyo", name: "Station"))
+            try context.insert(
+                MatrixOrderedLocation(country: "US", city: "New York", name: "Terminal"))
             try await context.save()
 
-            try await assertMaintained(container: container, type: MatrixPermutedLocation.self, indexName: "matrix_permuted_city_country_name", minimumCount: 2)
+            try await assertMaintained(container: container, type: MatrixOrderedLocation.self,
+                indexName: "matrix_ordered_city_country_name", minimumCount: 2)
 
             try await cleanup(container: container)
         }

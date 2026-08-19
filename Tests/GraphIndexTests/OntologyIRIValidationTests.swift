@@ -133,7 +133,13 @@ struct OntologyIRIValidationTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(ValEmployee.self), try DatabaseFrameworkRuntime.entity(ValAssignment.self), try DatabaseFrameworkRuntime.entity(ValBadClass.self), try DatabaseFrameworkRuntime.entity(ValBadRelation.self), try DatabaseFrameworkRuntime.entity(ValDataPropAsObjectProp.self), try DatabaseFrameworkRuntime.entity(ValBadDataProperty.self), try DatabaseFrameworkRuntime.entity(ValObjPropAsDataProp.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(ValEmployee.self), try DatabaseFrameworkRuntime.entity(ValAssignment.self), try DatabaseFrameworkRuntime.entity(ValBadClass.self), try DatabaseFrameworkRuntime.entity(ValBadRelation.self), try DatabaseFrameworkRuntime.entity(ValDataPropAsObjectProp.self), try DatabaseFrameworkRuntime.entity(ValBadDataProperty.self), try DatabaseFrameworkRuntime.entity(ValObjPropAsDataProp.self),
+                ]),
             security: .testingDisabled,
         )
         try await container.resetTestBaseData()
@@ -152,13 +158,13 @@ struct OntologyIRIValidationTests {
             OWLClass(iri: "http://test.org/onto#Project"),
         ]
         ontology.objectProperties = [
-            OWLObjectProperty(iri: "http://test.org/onto#worksOn"),
+            OWLObjectProperty(iri: "http://test.org/onto#worksOn")
         ]
         ontology.dataProperties = [
-            OWLDataProperty(iri: "http://test.org/onto#name"),
+            OWLDataProperty(iri: "http://test.org/onto#name")
         ]
         ontology.axioms = [
-            .subClassOf(sub: .named("http://test.org/onto#Employee"), sup: .named("http://test.org/onto#Person")),
+            .subClassOf(sub: .named("http://test.org/onto#Employee"), sup: .named("http://test.org/onto#Person"))
         ]
         try await context.ontology.load(
             ontology,

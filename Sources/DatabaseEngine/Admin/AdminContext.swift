@@ -36,14 +36,16 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     public func migrationStatus(
         targetVersion: Schema.Version?
     ) async throws -> DatabaseMigrationStatus {
-        try await context.withTransaction(
+        try await container.withMigrationMaintenanceAccess {
+            try await self.context.withTransaction(
             requiredAccess: .administer,
             configuration: .readOnly
         ) { transaction in
             try await self.container.migrationStatus(
                 targetVersion: targetVersion,
                 transaction: transaction.storageAccess
-            )
+                )
+            }
         }
     }
 
@@ -51,19 +53,17 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         targetVersion: Schema.Version?,
         maximumStageCount: UInt64
     ) async throws -> DatabaseMigrationExecutionResult {
-        try await context.withTransaction(
-            requiredAccess: .administer,
-            configuration: .readOnly
-        ) { _ in () }
-        return try await context.withDataOperation {
-            try await self.container.runMigrations(
-                targetVersion: targetVersion,
-                maximumStageCount: maximumStageCount
-            )
+        try await container.withMigrationMaintenanceAccess {
+            try await self.context.withDataOperation {
+                try await self.container.runMigrations(
+                    targetVersion: targetVersion,
+                    maximumStageCount: maximumStageCount
+                )
+            }
         }
     }
 
-    // MARK: - Private: Index State
+    // MARK: - Private: ResolvedIndex State
 
     /// Get index build state from IndexLifecycleStore
     ///
@@ -162,7 +162,10 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         // Resolve directory for the entity
         let subspace = try await resolveDirectoryForEntity(entity)
-        let indexSubspace = subspace.subspace(SubspaceKey.indexes).subspace(indexName)
+        let indexSubspace = try IndexLifecycleStore(
+                container: container,
+                subspace: subspace
+            ).indexSubspace(for: indexName)
         let (begin, end) = indexSubspace.range()
 
         // Get index statistics
@@ -193,8 +196,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         return AdminIndexStatistics(
             indexName: indexName,
-            kindIdentifier: indexDescriptor.kindIdentifier,
-            entryCount: entryCount,
+                indexType: indexDescriptor.type,
+                entryCount: entryCount,
             storageByteCount: storageSize,
             uniqueKeyCount: nil, // Would need HyperLogLog to estimate
             state: state,
@@ -229,7 +232,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         case .fullScan:
             planKind = .tableScan
             selectedIndex = nil
-        case .scalarIndex(let name, _, _):
+        case .orderedIndex(let name, _, _):
             planKind = .indexScan
             selectedIndex = name
         }
@@ -304,15 +307,15 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         // Resolve directory for the entity
         let subspace = try await resolveDirectoryForEntity(entity)
-        let indexSubspace = subspace.subspace(SubspaceKey.indexes)
-
-        // Create IndexLifecycleStore using entity subspace (consistent with DatabaseDataStore)
-        let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
+            // Create IndexLifecycleStore using entity subspace (consistent with DatabaseDataStore)
+            let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
 
         progress?(0.1)
 
         // Step 1: Disable index and clear existing entries atomically
-        let indexDataSubspace = indexSubspace.subspace(indexName)
+        let indexDataSubspace = try indexLifecycleStore.indexSubspace(
+                for: indexName
+            )
         let indexRange = indexDataSubspace.range()
 
         try await context.withStorageAccess(
@@ -335,9 +338,11 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let index = buildIndex(from: indexDescriptor, persistableType: entity.name)
 
         // Step 3: Get index configurations from container
-        let configs = container.indexConfigurations[indexName] ?? []
+        let configs = container.runtimeConfiguration.indexConfigurations(
+                named: indexName
+            )
 
-        progress?(0.3)
+            progress?(0.3)
 
         // Step 4: Build index using EntityIndexBuilder
         // This handles type dispatch and uses OnlineIndexer internally
@@ -365,17 +370,13 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     /// Build Index from IndexDescriptor
     ///
     /// Creates an Index object from an IndexDescriptor for use with IndexMaintainers.
-    private func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> Index {
+    private func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> ResolvedIndex {
         let rootExpression = KeyExpressionFactory.from(keyPaths: descriptor.fieldNames)
 
-        return Index(
-            name: descriptor.name,
-            kind: descriptor.kind,
+        return ResolvedIndex(
+            descriptor: descriptor,
             rootExpression: rootExpression,
-            subspaceKey: descriptor.name,
             itemTypes: Set([persistableType]),
-            isUnique: descriptor.isUnique,
-            storedFieldNames: descriptor.storedFieldNames
         )
     }
 
@@ -405,10 +406,14 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         // Collect index statistics for all indexes
         for entity in container.schema.entities {
             let subspace = try await resolveDirectoryForEntity(entity)
-            let indexSubspace = subspace.subspace(SubspaceKey.indexes)
+                let lifecycleStore = IndexLifecycleStore(
+                    container: container,
+                    subspace: subspace
+                )
 
-            for indexDescriptor in entity.indexDescriptors {
-                let indexDataSubspace = indexSubspace.subspace(indexDescriptor.name)
+                for indexDescriptor in entity.indexDescriptors {
+                let indexDataSubspace = try lifecycleStore.indexSubspace(
+                        for: indexDescriptor.name)
                 try await statisticsService.collectIndexStatistics(
                     index: indexDescriptor,
                     indexSubspace: indexDataSubspace

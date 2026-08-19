@@ -1,9 +1,9 @@
-import DatabaseKit
-import TestSupport
-import DatabaseTypes
 import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
+import DatabaseTypes
 import StorageKit
+import TestSupport
 import Testing
 @testable import AggregationIndex
 
@@ -82,7 +82,13 @@ struct CanonicalAggregationReducerTests {
         let container = try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: InMemoryEngine()),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self),
+                ]),
             security: .testingDisabled
         )
         let context = container.testBaseContext()
@@ -433,21 +439,20 @@ struct CanonicalAggregationReducerTests {
     func minimumIndexRejectsMalformedAggregateValue() async throws {
         let engine = InMemoryEngine()
         let subspace = Subspace(prefix: Tuple("malformed-minimum").pack())
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationTupleEntity.self,
             name: "minimum_by_group",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .minimum,
                 groupingFields: [
                     FieldIdentity(name: "group", number: 2)
                 ],
                 valueField: FieldIdentity(name: "number", number: 3),
-                valueType: .int64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
                 FieldKeyExpression(fieldName: "number"),
             ]),
-            subspaceKey: "minimum_by_group",
             itemTypes: [AggregationTupleEntity.persistableType]
         )
         let maintainer = MinIndexMaintainer<AggregationTupleEntity, Int64>(
@@ -467,22 +472,21 @@ struct CanonicalAggregationReducerTests {
     }
 
     @Test("integer index reads do not round through Double")
-    func integerIndexReadRejectsLossyDoubleConversion() {
-        let index = Index(
+    func integerIndexReadRejectsLossyDoubleConversion() throws {
+        let index = try ResolvedIndex(
+            for: AggregationTupleEntity.self,
             name: "sum_by_group",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .sum,
                 groupingFields: [
                     FieldIdentity(name: "group", number: 2)
                 ],
                 valueField: FieldIdentity(name: "number", number: 3),
-                valueType: .int64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
                 FieldKeyExpression(fieldName: "number"),
             ]),
-            subspaceKey: "sum_by_group",
             itemTypes: [AggregationTupleEntity.persistableType]
         )
         let maintainer = SumIndexMaintainer<AggregationTupleEntity, Int64>(
@@ -504,7 +508,7 @@ struct CanonicalAggregationReducerTests {
     @Test("floating sum storage preserves sub-micro values")
     func floatingSumStorageDoesNotQuantize() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makeSumMaintainer(
+        let maintainer = try makeSumMaintainer(
             valueType: Double.self,
             name: "raw-double-sum"
         )
@@ -534,11 +538,11 @@ struct CanonicalAggregationReducerTests {
     @Test("materialized floating aggregates preserve compensated contributions")
     func materializedFloatingAggregatesUseCompensatedState() async throws {
         let engine = InMemoryEngine()
-        let sumMaintainer = makeSumMaintainer(
+        let sumMaintainer = try makeSumMaintainer(
             valueType: Double.self,
             name: "compensated-double-sum"
         )
-        let averageMaintainer = makeAverageMaintainer(
+        let averageMaintainer = try makeAverageMaintainer(
             valueType: Double.self,
             name: "compensated-double-average"
         )
@@ -620,8 +624,8 @@ struct CanonicalAggregationReducerTests {
     }
 
     @Test("floating aggregate storage rejects noncanonical payload width")
-    func floatingAggregateStorageRejectsLegacyWidth() {
-        let maintainer = makeSumMaintainer(
+    func floatingAggregateStorageRejectsLegacyWidth() throws {
+        let maintainer = try makeSumMaintainer(
             valueType: Double.self,
             name: "strict-double-state"
         )
@@ -638,7 +642,7 @@ struct CanonicalAggregationReducerTests {
     @Test("unsigned sum storage preserves UInt64 maximum")
     func unsignedSumStoragePreservesUInt64Maximum() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makeSumMaintainer(
+        let maintainer = try makeSumMaintainer(
             valueType: UInt64.self,
             name: "uint64-sum"
         )
@@ -679,7 +683,7 @@ struct CanonicalAggregationReducerTests {
     @Test("deleting the final sum member removes the group")
     func deletingFinalSumMemberRemovesGroup() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makeSumMaintainer(
+        let maintainer = try makeSumMaintainer(
             valueType: UInt64.self,
             name: "sum-membership"
         )
@@ -713,7 +717,7 @@ struct CanonicalAggregationReducerTests {
     @Test("deleting the final count member removes the stored group")
     func deletingFinalCountMemberRemovesStoredGroup() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makeCountMaintainer(name: "count-membership")
+        let maintainer = try makeCountMaintainer(name: "count-membership")
         let entity = AggregationTupleEntity(
             id: "1",
             group: "group",
@@ -752,7 +756,7 @@ struct CanonicalAggregationReducerTests {
     @Test("materialized zero count is rejected as index corruption")
     func materializedZeroCountIsRejected() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makeCountMaintainer(name: "invalid-zero-count")
+        let maintainer = try makeCountMaintainer(name: "invalid-zero-count")
         let key = try maintainer.buildGroupingKey(["group"])
 
         try await engine.withTransaction { transaction in
@@ -774,7 +778,7 @@ struct CanonicalAggregationReducerTests {
     @Test("unsigned average storage preserves an exact integral result")
     func unsignedAverageStoragePreservesExactResult() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makeAverageMaintainer(
+        let maintainer = try makeAverageMaintainer(
             valueType: UInt64.self,
             name: "uint64-average"
         )
@@ -825,7 +829,7 @@ struct CanonicalAggregationReducerTests {
     @Test("unsigned sum overflow rolls back the transaction")
     func unsignedSumOverflowRollsBack() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makeSumMaintainer(
+        let maintainer = try makeSumMaintainer(
             valueType: UInt64.self,
             name: "uint64-overflow"
         )
@@ -868,7 +872,7 @@ struct CanonicalAggregationReducerTests {
     func numericAggregateRejectsOrphanedState() async throws {
         let engine = InMemoryEngine()
         let name = "orphaned-sum"
-        let maintainer = makeSumMaintainer(
+        let maintainer = try makeSumMaintainer(
             valueType: Int64.self,
             name: name
         )
@@ -915,7 +919,7 @@ struct CanonicalAggregationReducerTests {
     @Test("deleting Int64 minimum does not negate the contribution")
     func deletingSignedMinimumIsChecked() async throws {
         let engine = InMemoryEngine()
-        let maintainer = makeSumMaintainer(
+        let maintainer = try makeSumMaintainer(
             valueType: Int64.self,
             name: "int64-minimum-delete"
         )
@@ -949,11 +953,11 @@ struct CanonicalAggregationReducerTests {
     @Test("unsigned minimum and maximum indexes preserve UInt64 range")
     func unsignedExtremaIndexesPreserveRange() async throws {
         let engine = InMemoryEngine()
-        let minimum = makeMinimumMaintainer(
+        let minimum = try makeMinimumMaintainer(
             valueType: UInt64.self,
             name: "uint64-minimum"
         )
-        let maximum = makeMaximumMaintainer(
+        let maximum = try makeMaximumMaintainer(
             valueType: UInt64.self,
             name: "uint64-maximum"
         )
@@ -1000,22 +1004,21 @@ struct CanonicalAggregationReducerTests {
     >(
         valueType _: Value.Type,
         name: String
-    ) -> SumIndexMaintainer<AggregationValueEntity<Value>, Value> {
-        let index = Index(
+    ) throws -> SumIndexMaintainer<AggregationValueEntity<Value>, Value> {
+        let index = try ResolvedIndex(
+            for: AggregationValueEntity<Value>.self,
             name: name,
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .sum,
                 groupingFields: [
                     FieldIdentity(name: "group", number: 2)
                 ],
                 valueField: FieldIdentity(name: "value", number: 3),
-                valueType: Value.indexScalarType
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
                 FieldKeyExpression(fieldName: "value"),
             ]),
-            subspaceKey: name,
             itemTypes: [AggregationValueEntity<Value>.persistableType]
         )
         return SumIndexMaintainer(
@@ -1034,7 +1037,13 @@ struct CanonicalAggregationReducerTests {
         let container = try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: InMemoryEngine()),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self),
+                ]),
             security: .testingDisabled
         )
         return container.testBaseContext()
@@ -1049,7 +1058,13 @@ struct CanonicalAggregationReducerTests {
         let container = try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: InMemoryEngine()),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(EmptyGlobalAggregationEntity.self), try DatabaseFrameworkRuntime.entity(IndexedGlobalSketchEntity.self),
+                ]),
             security: .testingDisabled
         )
         return container.testBaseContext()
@@ -1115,16 +1130,16 @@ struct CanonicalAggregationReducerTests {
 
     private func makeCountMaintainer(
         name: String
-    ) -> CountIndexMaintainer<AggregationTupleEntity> {
-        let index = Index(
+    ) throws -> CountIndexMaintainer<AggregationTupleEntity> {
+        let index = try ResolvedIndex(
+            for: AggregationTupleEntity.self,
             name: name,
-            kind: countIndexMetadata(
+            definition: countIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "group", number: 2)
                 ]
             ),
             rootExpression: FieldKeyExpression(fieldName: "group"),
-            subspaceKey: name,
             itemTypes: [AggregationTupleEntity.persistableType]
         )
         return CountIndexMaintainer(
@@ -1139,22 +1154,21 @@ struct CanonicalAggregationReducerTests {
     >(
         valueType _: Value.Type,
         name: String
-    ) -> AverageIndexMaintainer<AggregationValueEntity<Value>, Value> {
-        let index = Index(
+    ) throws -> AverageIndexMaintainer<AggregationValueEntity<Value>, Value> {
+        let index = try ResolvedIndex(
+            for: AggregationValueEntity<Value>.self,
             name: name,
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .average,
                 groupingFields: [
                     FieldIdentity(name: "group", number: 2)
                 ],
                 valueField: FieldIdentity(name: "value", number: 3),
-                valueType: Value.indexScalarType
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
                 FieldKeyExpression(fieldName: "value"),
             ]),
-            subspaceKey: name,
             itemTypes: [AggregationValueEntity<Value>.persistableType]
         )
         return AverageIndexMaintainer(
@@ -1169,22 +1183,21 @@ struct CanonicalAggregationReducerTests {
     >(
         valueType _: Value.Type,
         name: String
-    ) -> MinIndexMaintainer<AggregationValueEntity<Value>, Value> {
-        let index = Index(
+    ) throws -> MinIndexMaintainer<AggregationValueEntity<Value>, Value> {
+        let index = try ResolvedIndex(
+            for: AggregationValueEntity<Value>.self,
             name: name,
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .minimum,
                 groupingFields: [
                     FieldIdentity(name: "group", number: 2)
                 ],
                 valueField: FieldIdentity(name: "value", number: 3),
-                valueType: Value.indexScalarType
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
                 FieldKeyExpression(fieldName: "value"),
             ]),
-            subspaceKey: name,
             itemTypes: [AggregationValueEntity<Value>.persistableType]
         )
         return MinIndexMaintainer(
@@ -1199,22 +1212,21 @@ struct CanonicalAggregationReducerTests {
     >(
         valueType _: Value.Type,
         name: String
-    ) -> MaxIndexMaintainer<AggregationValueEntity<Value>, Value> {
-        let index = Index(
+    ) throws -> MaxIndexMaintainer<AggregationValueEntity<Value>, Value> {
+        let index = try ResolvedIndex(
+            for: AggregationValueEntity<Value>.self,
             name: name,
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .maximum,
                 groupingFields: [
                     FieldIdentity(name: "group", number: 2)
                 ],
                 valueField: FieldIdentity(name: "value", number: 3),
-                valueType: Value.indexScalarType
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "group"),
                 FieldKeyExpression(fieldName: "value"),
             ]),
-            subspaceKey: name,
             itemTypes: [AggregationValueEntity<Value>.persistableType]
         )
         return MaxIndexMaintainer(
@@ -1382,27 +1394,27 @@ private struct EmptyGlobalAggregationEntity {
     var id: String = ""
     var value: Int64 = 0
 
-    #Index(.count, groupBy: [])
+    #Index(.aggregate(name: "EmptyGlobalAggregationEntity_count", function: .count, groupBy: []))
     #Index(
-        .sum,
+        .aggregate(
+            name: "EmptyGlobalAggregationEntity_sum_value", function: .sum,
         groupBy: [],
-        value: \EmptyGlobalAggregationEntity.value
-    )
+        value: \EmptyGlobalAggregationEntity.value))
     #Index(
-        .average,
+        .aggregate(
+            name: "EmptyGlobalAggregationEntity_avg_value", function: .average,
         groupBy: [],
-        value: \EmptyGlobalAggregationEntity.value
-    )
+        value: \EmptyGlobalAggregationEntity.value))
     #Index(
-        .minimum,
+        .aggregate(
+            name: "EmptyGlobalAggregationEntity_min_value", function: .minimum,
         groupBy: [],
-        value: \EmptyGlobalAggregationEntity.value
-    )
+        value: \EmptyGlobalAggregationEntity.value))
     #Index(
-        .maximum,
+        .aggregate(
+            name: "EmptyGlobalAggregationEntity_max_value", function: .maximum,
         groupBy: [],
-        value: \EmptyGlobalAggregationEntity.value
-    )
+        value: \EmptyGlobalAggregationEntity.value))
 }
 
 @Persistable
@@ -1413,15 +1425,17 @@ private struct IndexedGlobalSketchEntity {
     var value: Int64 = 0
 
     #Index(
-        .distinct(),
+        .aggregate(
+            name: "IndexedGlobalSketchEntity_distinct_value",
+            function: .approximateDistinct(precision: 14),
         groupBy: [],
-        value: \IndexedGlobalSketchEntity.value
-    )
+        value: \IndexedGlobalSketchEntity.value))
     #Index(
-        .percentile(),
+        .aggregate(
+            name: "IndexedGlobalSketchEntity_percentile_value",
+            function: .percentile(compression: 100),
         groupBy: [],
-        value: \IndexedGlobalSketchEntity.value
-    )
+        value: \IndexedGlobalSketchEntity.value))
 }
 
 @Persistable

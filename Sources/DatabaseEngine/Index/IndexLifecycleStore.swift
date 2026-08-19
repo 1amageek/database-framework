@@ -1,3 +1,4 @@
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -10,14 +11,17 @@ import StorageKit
 ///
 /// **Thread-safety**: Uses database transactions for consistency
 ///
-/// **State Persistence**: Index states are stored under:
-/// `[subspace]["state"][indexName] = IndexState.rawValue`
+/// **State Persistence**: ResolvedIndex states are stored under:
+/// `[subspace]["state"][indexName][definitionFingerprint][layoutFingerprint]`
+/// stores `IndexState.rawValue`.
 package final class IndexLifecycleStore: Sendable {
     // MARK: - Properties
 
     /// Container used for transaction execution.
     let container: DBContainer
     private let subspace: Subspace
+    private let schema: Schema
+    private let indexPhysicalLayouts: [String: IndexPhysicalLayout]
     private let logger: DatabaseLogger
 
     // MARK: - Initialization
@@ -31,10 +35,59 @@ package final class IndexLifecycleStore: Sendable {
         container: DBContainer,
         subspace: Subspace
     ) {
+        let lease = container.acquireActiveSchemaLease()
         self.container = container
         self.subspace = subspace
+        self.schema = lease.schema
+        self.indexPhysicalLayouts = lease.indexPhysicalLayouts
         self.logger = container.configuration.logging.logger(
             label: "com.database.framework.index-lifecycle"
+        )
+    }
+
+    /// Initializes a store for a schema generation that has been validated but
+    /// is not published yet. The schema and provider layouts are mandatory as a
+    /// pair so staging cannot accidentally resolve one from the active
+    /// generation and the other from the target generation.
+    package init(
+        container: DBContainer,
+        subspace: Subspace,
+        schema: Schema,
+        indexPhysicalLayouts: [String: IndexPhysicalLayout]
+    ) {
+        self.container = container
+        self.subspace = subspace
+        self.schema = schema
+        self.indexPhysicalLayouts = indexPhysicalLayouts
+        self.logger = container.configuration.logging.logger(
+            label: "com.database.framework.index-lifecycle"
+        )
+    }
+
+    /// Resolves the physical subspace for the declaration in this store's
+    /// immutable schema generation.
+    package func indexSubspace(for indexName: String) throws -> Subspace {
+        let identity = try storageIdentity(for: indexName)
+        return
+            subspace
+            .subspace(SubspaceKey.indexes)
+            .subspace(identity.name)
+            .subspace(identity.definitionFingerprint.bytes)
+            .subspace(identity.layoutFingerprint)
+    }
+
+    package func storageIdentity(
+        for indexName: String
+    ) throws -> DatabaseIndexStorageIdentity {
+        guard let physicalLayout = indexPhysicalLayouts[indexName] else {
+            throw DatabaseIndexStorageIdentityError.physicalLayoutNotResolved(
+                indexName
+            )
+        }
+        return try DatabaseIndexStorageIdentity.resolve(
+            named: indexName,
+            in: schema,
+            physicalLayout: physicalLayout
         )
     }
 
@@ -122,7 +175,7 @@ package final class IndexLifecycleStore: Sendable {
         _ indexName: String,
         transaction: any TransactionAccess
     ) async throws {
-        let stateKey = makeStateKey(for: indexName)
+        let stateKey = try makeStateKey(for: indexName)
         let currentState = try await storedState(
             of: indexName,
             transaction: transaction,
@@ -219,7 +272,7 @@ package final class IndexLifecycleStore: Sendable {
                     if pendingBuildIndexes.contains(indexName) {
                         try transaction.setValue(
                             [IndexState.writeOnly.rawValue],
-                            for: makeStateKey(for: indexName)
+                            for: try makeStateKey(for: indexName)
                         )
                         continue
                     }
@@ -229,7 +282,7 @@ package final class IndexLifecycleStore: Sendable {
                 }
                 try transaction.setValue(
                     [IndexState.readable.rawValue],
-                    for: makeStateKey(for: indexName)
+                    for: try makeStateKey(for: indexName)
                 )
                 logger.info("Initialized index '\(indexName)' for an empty store")
                 continue
@@ -319,7 +372,7 @@ package final class IndexLifecycleStore: Sendable {
                 if pendingBuildIndexes.contains(indexName) {
                     try transaction.setValue(
                         [IndexState.writeOnly.rawValue],
-                        for: makeStateKey(for: indexName)
+                        for: try makeStateKey(for: indexName)
                     )
                     logger.info(
                         "Initialized pending index '\(indexName)' as write-only"
@@ -332,7 +385,7 @@ package final class IndexLifecycleStore: Sendable {
             }
             try transaction.setValue(
                 [IndexState.readable.rawValue],
-                for: makeStateKey(for: indexName)
+                for: try makeStateKey(for: indexName)
             )
             logger.info(
                 "Initialized index '\(indexName)' for an empty store"
@@ -345,6 +398,7 @@ package final class IndexLifecycleStore: Sendable {
     package func prepareSchemaBuild(
         _ indexName: String,
         entityRange: (begin: ByteString, end: ByteString),
+        resumesPendingBuild: Bool,
         transaction: any TransactionAccess
     ) async throws -> Bool {
         if let state = try await storedState(
@@ -352,13 +406,17 @@ package final class IndexLifecycleStore: Sendable {
             transaction: transaction,
             snapshot: false
         ) {
-            guard state == .readable else {
+            switch state {
+            case .readable:
+                return false
+            case .writeOnly where resumesPendingBuild:
+                return true
+            case .disabled, .writeOnly:
                 throw IndexStateError.indexNotReady(
                     index: indexName,
                     state: state
                 )
             }
-            return false
         }
         let sourceRows = try await TransactionRangeCollection.collect(
             using: transaction,
@@ -374,9 +432,9 @@ package final class IndexLifecycleStore: Sendable {
             [
                 requiresBuild
                     ? IndexState.writeOnly.rawValue
-                    : IndexState.readable.rawValue,
+                    : IndexState.readable.rawValue
             ],
-            for: makeStateKey(for: indexName)
+            for: try makeStateKey(for: indexName)
         )
         return requiresBuild
     }
@@ -431,7 +489,7 @@ package final class IndexLifecycleStore: Sendable {
     ///   - indexName: Name of the index
     ///   - transaction: The transaction to use
     public func disable(_ indexName: String, transaction: any TransactionAccess) async throws {
-        let stateKey = makeStateKey(for: indexName)
+        let stateKey = try makeStateKey(for: indexName)
         let currentState = try await storedState(
             of: indexName,
             transaction: transaction,
@@ -453,7 +511,7 @@ package final class IndexLifecycleStore: Sendable {
     ///   - transaction: The transaction to use
     /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
     public func enable(_ indexName: String, transaction: any TransactionAccess) async throws {
-        let stateKey = makeStateKey(for: indexName)
+        let stateKey = try makeStateKey(for: indexName)
         let currentState = try await storedState(
             of: indexName,
             transaction: transaction,
@@ -519,12 +577,22 @@ package final class IndexLifecycleStore: Sendable {
 
     /// Make state key for an index
     ///
-    /// Key structure: `[subspace]["state"][indexName]`
+    /// Key structure:
+    /// `[subspace]["state"][indexName][definitionFingerprint][layoutFingerprint]`
     ///
-    /// - Parameter indexName: Index name
+    /// - Parameter indexName: ResolvedIndex name
     /// - Returns: Storage key for the persisted index state
-    private func makeStateKey(for indexName: String) -> ByteString {
-        return subspace.subspace("state").pack(Tuple(indexName))
+    private func makeStateKey(for indexName: String) throws -> ByteString {
+        let identity = try storageIdentity(for: indexName)
+        return
+            subspace.subspace("state")
+            .subspace(identity.name)
+            .pack(
+                Tuple(
+                    identity.definitionFingerprint.bytes,
+                    identity.layoutFingerprint
+                )
+            )
     }
 
     /// Reads the complete persisted representation without materializing it.
@@ -536,7 +604,7 @@ package final class IndexLifecycleStore: Sendable {
         transaction: any TransactionAccess,
         snapshot: Bool
     ) async throws -> IndexState? {
-        let stateKey = makeStateKey(for: indexName)
+        let stateKey = try makeStateKey(for: indexName)
         guard let bytes = try await transaction.getValue(
             for: stateKey,
             snapshot: snapshot

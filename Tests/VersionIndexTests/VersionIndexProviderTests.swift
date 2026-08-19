@@ -13,34 +13,12 @@ struct VersionIndexEntity {
     var title: String
 }
 
-func versionIndexMetadata(
+func versionIndexDefinition(
     strategy: VersionHistoryStrategy
-) -> IndexKindMetadata {
-    let strategyMetadata: [String: FieldValue]
-    switch strategy {
-    case .keepAll:
-        strategyMetadata = ["strategy": .string("keepAll")]
-    case .keepLast(let count):
-        strategyMetadata = [
-            "strategy": .string("keepLast"),
-            "strategyCount": .int64(Int64(count)),
-        ]
-    case .keepForDuration(let duration):
-        strategyMetadata = [
-            "strategy": .string("keepForDuration"),
-            "strategyDuration": .timeSpan(duration),
-        ]
-    }
-
-    return IndexKindMetadata(
-        identifier: "version",
-        subspaceStructure: .hierarchical,
-        fields: [
-            IndexFieldMetadata(
-                identity: FieldIdentity(name: "id", number: 1)
-            )
-        ],
-        metadata: strategyMetadata
+) -> IndexDefinition<FieldIdentity> {
+    .history(
+        version: FieldIdentity(name: "id", number: 1),
+        retention: strategy
     )
 }
 
@@ -48,13 +26,19 @@ func versionIndexMetadata(
 struct VersionIndexProviderTests {
     @Test("Provider creates a maintainer from canonical version metadata")
     func providerCreatesMaintainer() throws {
-        let metadata = versionIndexMetadata(strategy: .keepLast(3))
-        let definition = try IndexDefinition(metadata: metadata)
-        #expect(definition == .version(strategy: .keepLast(3)))
+        let definition = versionIndexDefinition(strategy: .keepLast(3))
+        #expect(
+            definition
+                == .history(
+                    version: FieldIdentity(name: "id", number: 1),
+                    retention: .keepLast(3)
+                )
+        )
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: VersionIndexEntity.self,
             name: "VersionIndexEntity_id",
-            kind: metadata,
+            definition: definition,
             rootExpression: FieldKeyExpression(fieldName: "id")
         )
         let maintainer: any IndexMaintainer<VersionIndexEntity> = try

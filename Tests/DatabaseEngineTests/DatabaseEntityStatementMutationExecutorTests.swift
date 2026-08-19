@@ -44,7 +44,7 @@ struct DatabaseEntityStatementMutationExecutorTests {
                 UpdateQuery(
                     target: TableRef(entity),
                     assignments: [
-                        Assignment(column: "title", value: .string("Updated")),
+                        Assignment(column: "title", value: .string("Updated"))
                     ],
                     filter: .equal(.col("id"), .string("event-1"))
                 )
@@ -118,7 +118,7 @@ struct DatabaseEntityStatementMutationExecutorTests {
                             Assignment(
                                 column: "title",
                                 value: .string("Changed")
-                            ),
+                            )
                         ],
                         filter: .equal(.col("id"), .string("event-2"))
                     )
@@ -178,10 +178,14 @@ struct DatabaseEntityStatementMutationExecutorTests {
             ),
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         EntityMutationFixture.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled

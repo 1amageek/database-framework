@@ -32,7 +32,7 @@ For example, a consuming package selects a graph composition with:
 
 The package has no default traits. `GraphIndexes` enables `ScalarIndexes`; the
 umbrella also includes GraphIndex and OntologyIndex for that composition.
-`Relationships`, storage backends, and `MultipleBases` remain independent
+`Relationships`, storage backends, and `MultiBase` remain independent
 choices.
 
 `Database` does not re-export remote operation execution or native hosting.
@@ -52,7 +52,7 @@ to `DBConfiguration(storageEngine:)`. FoundationDB instead requires an
 `FDBDatabaseConfiguration` with a non-empty application-selected Directory
 path; the facade resolves that Directory once and injects its retained
 `Subspace`. Schema, metadata, data, and index paths are tuple-derived below the
-injected root without a hot-path Directory lookup. With `MultipleBases`, a multi-domain
+injected root without a hot-path Directory lookup. With `MultiBase`, a multi-domain
 composition instead supplies `DatabaseStorageTopology` through the
 trait-specific initializer. The default facade does not create a hidden
 one-domain topology. Opening failure, `DBContainer.shutdown()`, and
@@ -128,12 +128,15 @@ struct Triple {
     var predicate: RDFTerm
     var object: RDFTerm
 
-    #Index(
-        .rdfDataset,
-        from: \Triple.subject,
-        edge: \Triple.predicate,
-        to: \Triple.object
-    )
+    #Index(.graph(
+        name: "Triple_rdf",
+        definition: .rdf(
+            subject: \Triple.subject,
+            predicate: \Triple.predicate,
+            object: \Triple.object,
+            graph: nil
+        )
+    ))
 }
 
 // Execute hybrid query
@@ -439,17 +442,21 @@ Ensure graph indexes match your query patterns:
 ```swift
 @Persistable
 struct Follow {
+    var id: String
     var follower: RDFTerm
     var predicate: RDFTerm
     var following: RDFTerm
 
     // ✅ Good: Index matches query direction
-    #Index(
-        .rdfDataset,
-        from: \Follow.follower,
-        edge: \Follow.predicate,
-        to: \Follow.following
-    )
+    #Index(.graph(
+        name: "Follow_rdf",
+        definition: .rdf(
+            subject: \Follow.follower,
+            predicate: \Follow.predicate,
+            object: \Follow.following,
+            graph: nil
+        )
+    ))
 }
 ```
 

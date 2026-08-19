@@ -38,16 +38,16 @@ private struct LeaderboardBenchmarkContext {
 
         let indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: LeaderboardBenchmarkScore.self,
             name: indexName,
-            kind: timeWindowLeaderboardIndexMetadata(
+            definition: timeWindowLeaderboardIndexDefinition(
                 scoreFieldName: "score",
                 scoreFieldNumber: 3,
                 window: window,
                 windowCount: windowCount
             ),
             rootExpression: FieldKeyExpression(fieldName: "score"),
-            subspaceKey: indexName,
             itemTypes: Set(["LeaderboardBenchmarkScore"])
         )
 
@@ -627,7 +627,7 @@ struct LeaderboardIndexScaleTests {
             let windowTypes: [(LeaderboardWindowType, String)] = [
                 (.hourly, "hourly"),
                 (.daily, "daily"),
-                (.weekly, "weekly")
+                (.weekly, "weekly"),
             ]
 
             for (windowType, name) in windowTypes {

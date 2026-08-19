@@ -49,6 +49,10 @@ private struct CRUDBenchmarkContext: Sendable {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [try DatabaseFrameworkRuntime.entity(CRUDBenchmarkEntity.self)]
             ),
             security: .testingDisabled
@@ -57,7 +61,8 @@ private struct CRUDBenchmarkContext: Sendable {
 
     func cleanup() async throws {
         do {
-            try await engine.removeNamespace(path: ["test", "performance", runID, "crud-entities"])
+            try await engine.removeNamespace(path: ["test", "performance", runID, "crud-entities",
+            ])
         } catch {
             // Ignore missing directory for empty/failed runs.
         }
@@ -198,7 +203,9 @@ struct FDBFrameworkCRUDBenchmarkTests {
                     try await context.frameworkWrite(context.makeEntity(seed: Int.random(in: 0...1_000_000)))
                 }
 
-                let measurements = [rawMeasurement, storageMeasurement, dataStoreMeasurement, frameworkMeasurement]
+                let measurements = [rawMeasurement, storageMeasurement, dataStoreMeasurement,
+                    frameworkMeasurement,
+                ]
                 printBenchmarkReport(title: "FDB Write Path Layer Comparison", measurements: measurements)
 
                 #expect(measurements.allSatisfy { $0.opsPerSecond > 0 })
@@ -247,7 +254,9 @@ struct FDBFrameworkCRUDBenchmarkTests {
                     #expect(entity != nil)
                 }
 
-                let measurements = [rawMeasurement, storageMeasurement, dataStoreMeasurement, frameworkMeasurement]
+                let measurements = [rawMeasurement, storageMeasurement, dataStoreMeasurement,
+                    frameworkMeasurement,
+                ]
                 printBenchmarkReport(title: "FDB Read Path Layer Comparison", measurements: measurements)
 
                 #expect(measurements.allSatisfy { $0.opsPerSecond > 0 })

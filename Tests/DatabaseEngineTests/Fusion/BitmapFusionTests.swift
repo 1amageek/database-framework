@@ -19,15 +19,15 @@ import TestSupport
 @Persistable
 struct BitmapFusionUser {
     #Index(
-        .bitmap,
-        field: \BitmapFusionUser.status,
-        name: "BitmapTestUser_bitmap_status"
-    )
+        .bitmap(
+            name: "BitmapTestUser_bitmap_status",
+            field: \BitmapFusionUser.status
+        ))
     #Index(
-        .bitmap,
-        field: \BitmapFusionUser.role,
-        name: "BitmapTestUser_bitmap_role"
-    )
+        .bitmap(
+            name: "BitmapTestUser_bitmap_role",
+            field: \BitmapFusionUser.role
+        ))
 
     var id: String = UUID().uuidString
     var name: String
@@ -64,11 +64,11 @@ private struct BitmapFusionContext {
         ) else {
             throw BitmapFusionContextError.missingBitmapIndex
         }
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: BitmapFusionUser.self,
             name: indexName,
-            kind: descriptor.kind,
+            definition: descriptor.declaration.definition,
             rootExpression: FieldKeyExpression(fieldName: "status"),
-            subspaceKey: indexName,
             itemTypes: Set(["BitmapFusionUser"])
         )
 
@@ -111,9 +111,9 @@ private struct BitmapFusionContext {
 @Suite("Bitmap Fusion - Unit Tests", .heartbeat)
 struct BitmapFusionUnitTests {
 
-    @Test("Bitmap definition identifier is 'bitmap'")
-    func testBitmapDefinitionIdentifier() {
-        #expect(IndexDefinition.bitmap.identifier == "bitmap")
+    @Test("Bitmap definition selects the bitmap index type")
+    func bitmapDefinitionSelectsBitmapType() {
+        #expect(IndexType.bitmap.diagnosticName == "bitmap")
     }
 
     @Test("Index descriptor configuration")
@@ -123,13 +123,13 @@ struct BitmapFusionUnitTests {
 
         let statusIndex = descriptors.first { $0.name.contains("status") }
         #expect(statusIndex != nil)
-        #expect(statusIndex?.kindIdentifier == "bitmap")
-        #expect(statusIndex?.kind.fieldNames.contains("status") == true)
+        #expect(statusIndex?.type == .bitmap)
+        #expect(statusIndex?.fieldNames.contains("status") == true)
 
         let roleIndex = descriptors.first { $0.name.contains("role") }
         #expect(roleIndex != nil)
-        #expect(roleIndex?.kindIdentifier == "bitmap")
-        #expect(roleIndex?.kind.fieldNames.contains("role") == true)
+        #expect(roleIndex?.type == .bitmap)
+        #expect(roleIndex?.fieldNames.contains("role") == true)
     }
 
     @Test("ScoredResult initialization")
@@ -145,9 +145,9 @@ struct BitmapFusionUnitTests {
     @Test("FusionQueryError - indexNotFound")
     func testFusionQueryErrorIndexNotFound() {
         let error = FusionQueryError.indexNotFound(
-            type: "BitmapFusionUser",
+            entity: "BitmapFusionUser",
             field: "unknownField",
-            kind: "bitmap"
+            indexType: .bitmap
         )
 
         #expect(error.description.contains("bitmap"))
@@ -167,7 +167,7 @@ struct BitmapFusionUnitTests {
         let users = [
             BitmapFusionUser(name: "Alice", status: "active", role: "admin"),
             BitmapFusionUser(name: "Bob", status: "active", role: "user"),
-            BitmapFusionUser(name: "Charlie", status: "active", role: "guest")
+            BitmapFusionUser(name: "Charlie", status: "active", role: "guest"),
         ]
 
         let results = users.map { ScoredResult(item: $0, score: 1.0) }
@@ -312,7 +312,7 @@ struct BitmapFusionPredicateTests {
         let users = [
             BitmapFusionUser(name: "Alice", status: "active", role: "admin"),
             BitmapFusionUser(name: "Bob", status: "pending", role: "user"),
-            BitmapFusionUser(name: "Charlie", status: "active", role: "guest")
+            BitmapFusionUser(name: "Charlie", status: "active", role: "guest"),
         ]
 
         let activeUsers = users.filter { $0.status == "active" }
@@ -325,7 +325,7 @@ struct BitmapFusionPredicateTests {
         let users = [
             BitmapFusionUser(name: "Alice", status: "active", role: "admin"),
             BitmapFusionUser(name: "Bob", status: "pending", role: "user"),
-            BitmapFusionUser(name: "Charlie", status: "inactive", role: "guest")
+            BitmapFusionUser(name: "Charlie", status: "inactive", role: "guest"),
         ]
 
         let targetStatuses = ["active", "pending"]
@@ -339,7 +339,7 @@ struct BitmapFusionPredicateTests {
     func testInPredicateWithSingleValue() {
         let users = [
             BitmapFusionUser(name: "Alice", status: "active", role: "admin"),
-            BitmapFusionUser(name: "Bob", status: "pending", role: "user")
+            BitmapFusionUser(name: "Bob", status: "pending", role: "user"),
         ]
 
         let targetStatuses = ["active"]
@@ -372,7 +372,7 @@ struct BitmapFusionCandidatesTests {
         let users = [
             BitmapFusionUser(id: "user-001", name: "Alice", status: "active", role: "admin"),
             BitmapFusionUser(id: "user-002", name: "Bob", status: "active", role: "user"),
-            BitmapFusionUser(id: "user-003", name: "Charlie", status: "active", role: "guest")
+            BitmapFusionUser(id: "user-003", name: "Charlie", status: "active", role: "guest"),
         ]
 
         let candidates: Set<String> = ["user-001", "user-003"]
@@ -497,7 +497,7 @@ struct BitmapFusionDeduplicationTests {
     func testDeduplicationPreservesFirstOccurrence() {
         let users = [
             BitmapFusionUser(id: "user-001", name: "FirstAlice", status: "active", role: "admin"),
-            BitmapFusionUser(id: "user-001", name: "SecondAlice", status: "pending", role: "user")  // Same ID, different data
+            BitmapFusionUser(id: "user-001", name: "SecondAlice", status: "pending", role: "user"),  // Same ID, different data
         ]
 
         var seen: Set<String> = []

@@ -1,4 +1,4 @@
-#if MultipleBases
+#if MultiBase
 import DatabaseKit
 import DatabaseRuntime
 import StorageKit
@@ -463,7 +463,7 @@ struct CompositionQueryExecutorTests {
                 id: controlDomainID,
                 namespacePath: ["tests", "composition", "control"],
                 storageEngine: controlEngine
-            ),
+            )
         ]
         if !secondarySharesControlDomain {
             domains.append(
@@ -507,8 +507,12 @@ struct CompositionQueryExecutorTests {
                 wallClock: FixedTestWallClock()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(Item.self),
+                    try DatabaseFrameworkRuntime.entity(Item.self)
                 ]
             ),
             security: .testingDisabled
@@ -538,7 +542,7 @@ struct CompositionQueryExecutorTests {
                     subject: .principal(owner.identifier),
                     resource: .base(secondaryBaseID),
                     access: .all
-                ),
+                )
             ]
             if readerCanReadSecondary {
                 secondaryGrants.append(

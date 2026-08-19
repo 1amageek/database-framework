@@ -49,7 +49,7 @@ independently. The standard configuration retains its injected `databaseRoot`;
 model, index, and metadata paths are derived from it without namespace
 resolution. Dedicated backends use the engine root. A host sharing a physical
 backend must resolve the application-selected root before constructing the
-configuration. `MultipleBases` adds a separate
+configuration. `MultiBase` adds a separate
 `DBConfiguration(storageTopology:)` initializer and transfers every domain.
 
 Opening failure, explicit `container.shutdown()`, and container deinitialization
@@ -66,7 +66,7 @@ DBConfiguration(storageEngine:) -> DBContainer.open
                         |-- shutdown() -----> shut down once
                         `-- deinit ----------> shut down once
 
-MultipleBases only
+MultiBase only
   initialized StorageEngine values
           |
           | validated DatabaseStorageTopology
@@ -81,7 +81,7 @@ DBConfiguration -> DBContainer.open
 ### DatabaseContext
 
 Transaction manager and user-facing unit of work. It owns pending changes and
-read-version cache for the one database root. With `MultipleBases`, the
+read-version cache for the one database root. With `MultiBase`, the
 trait-specific session API creates a context fixed to one explicit Base.
 
 ```swift

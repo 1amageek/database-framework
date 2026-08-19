@@ -228,7 +228,7 @@ public struct RangeSet: Sendable {
     /// Record progress after processing a batch
     ///
     /// - Parameters:
-    ///   - rangeIndex: Index of the range being processed
+    ///   - rangeIndex: ResolvedIndex of the range being processed
     ///   - lastProcessedKey: Last key that was successfully processed
     ///   - isComplete: True if the range is fully processed (count < limit)
     public mutating func recordProgress(

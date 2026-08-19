@@ -3,8 +3,8 @@
 //
 // Provides runtime type dispatch for OnlineIndexer instantiation.
 
-import StorageKit
 import DatabaseKit
+import StorageKit
 
 /// Helper namespace for runtime index building
 ///
@@ -15,7 +15,7 @@ package struct EntityIndexBuilder {
         for runtime: EntityRuntimeRegistration,
         container: DBContainer,
         storeSubspace: Subspace,
-        index: Index,
+        index: ResolvedIndex,
         indexLifecycleStore: IndexLifecycleStore,
         batchSize: Int = 100,
         configurations: [any IndexRuntimeConfiguration] = []

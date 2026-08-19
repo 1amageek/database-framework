@@ -138,7 +138,12 @@ struct CachePolicyTests {
             entities: [try CachePolicyEntity.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
         let context = container.testBaseContext()
 
         // Create executor with cache policy
@@ -158,7 +163,12 @@ struct CachePolicyTests {
             entities: [try CachePolicyEntity.schemaEntity],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
+        let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
         let context = container.testBaseContext()
 
         // Chain cache policy with other query methods
@@ -183,7 +193,12 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
             let context = container.testBaseContext()
 
             // Insert test data
@@ -221,7 +236,12 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
             let context = container.testBaseContext()
 
             // Insert test data
@@ -254,7 +274,12 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
             let context = container.testBaseContext()
 
             // Insert test data
@@ -289,7 +314,12 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
             let context = container.testBaseContext()
 
             // Insert test data
@@ -332,7 +362,12 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
             let context = container.testBaseContext()
 
             // Insert test data
@@ -357,7 +392,12 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
             let context = container.testBaseContext()
 
             // Insert test data
@@ -398,7 +438,12 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
             let context = container.testBaseContext()
 
             // Insert test data
@@ -427,7 +472,12 @@ struct CachePolicyTests {
                 entities: [try CachePolicyEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             )
-            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
+            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(CachePolicyEntity.self)]), security: .testingDisabled)
             let context = container.testBaseContext()
 
             // Try to fetch non-existent ID with various cache policies
@@ -452,7 +502,11 @@ struct CachePolicyTests {
         var id: String = UUID().uuidString
         var value: Int64 = 0
 
-        #Index(.scalar, fields: [\CachePolicyEntity.value])
+        #Index(
+            .ordered(
+                name: "CachePolicyEntity_value",
+                keys: [.ascending(\CachePolicyEntity.value)],
+                unique: false))
     }
 }
 #endif

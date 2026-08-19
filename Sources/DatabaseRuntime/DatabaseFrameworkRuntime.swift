@@ -1,22 +1,21 @@
+@_exported import DatabaseEngine
+@_exported import DatabaseKit
+
 #if DATABASE_RUNTIME_AGGREGATION_INDEXES
 @_exported import AggregationIndex
 #endif
 #if DATABASE_RUNTIME_BITMAP_INDEXES
 @_exported import BitmapIndex
 #endif
-@_exported import DatabaseEngine
-@_exported import DatabaseKit
 #if DATABASE_RUNTIME_FULL_TEXT_INDEXES
 @_exported import FullTextIndex
 #endif
 #if DATABASE_RUNTIME_GRAPH_INDEXES
 @_exported import GraphIndex
+@_exported import OntologyIndex
 #endif
 #if DATABASE_RUNTIME_LEADERBOARD_INDEXES
 @_exported import LeaderboardIndex
-#endif
-#if DATABASE_RUNTIME_PERMUTED_INDEXES
-@_exported import PermutedIndex
 #endif
 #if DATABASE_RUNTIME_RANK_INDEXES
 @_exported import RankIndex
@@ -40,19 +39,25 @@
 /// Runtime composition assembled from the capabilities selected by package traits.
 public enum DatabaseFrameworkRuntime {
     public static func configuration(
+        executionIdentity: DatabaseExecutionRuntimeIdentity,
         entityRuntimes: [EntityRuntimeRegistration],
-        authorizationPolicies: [AuthorizationPolicyHandler] = []
+        authorizationPolicies: [AuthorizationPolicyHandler] = [],
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         #if DATABASE_RUNTIME_GRAPH_INDEXES
         try configuration(
+            executionIdentity: executionIdentity,
             entityRuntimes: entityRuntimes,
             sparqlFunctionRegistry: .empty,
-            authorizationPolicies: authorizationPolicies
+            authorizationPolicies: authorizationPolicies,
+            indexConfigurations: indexConfigurations
         )
         #else
         try makeConfiguration(
+            executionIdentity: executionIdentity,
             entityRuntimes: entityRuntimes,
             authorizationPolicies: authorizationPolicies,
+            indexConfigurations: indexConfigurations,
             graphTableSourceExecutor: nil,
             sparqlSourceExecutor: nil
         )
@@ -60,19 +65,25 @@ public enum DatabaseFrameworkRuntime {
     }
 
     public static func configuration(
+        executionIdentity: DatabaseExecutionRuntimeIdentity,
         schema: Schema,
-        authorizationPolicies: [AuthorizationPolicyHandler] = []
+        authorizationPolicies: [AuthorizationPolicyHandler] = [],
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) throws -> DatabaseRuntimeConfiguration {
         #if DATABASE_RUNTIME_GRAPH_INDEXES
         try configuration(
+            executionIdentity: executionIdentity,
             schema: schema,
             sparqlFunctionRegistry: .empty,
-            authorizationPolicies: authorizationPolicies
+            authorizationPolicies: authorizationPolicies,
+            indexConfigurations: indexConfigurations
         )
         #else
         try makeConfiguration(
+            executionIdentity: executionIdentity,
             entityRuntimes: try schema.entities.map(schemaDrivenEntity),
             authorizationPolicies: authorizationPolicies,
+            indexConfigurations: indexConfigurations,
             graphTableSourceExecutor: nil,
             sparqlSourceExecutor: nil
         )
@@ -81,13 +92,17 @@ public enum DatabaseFrameworkRuntime {
 
     #if DATABASE_RUNTIME_GRAPH_INDEXES
     public static func configuration(
+        executionIdentity: DatabaseExecutionRuntimeIdentity,
         entityRuntimes: [EntityRuntimeRegistration],
         sparqlFunctionRegistry: SPARQLFunctionRegistry,
-        authorizationPolicies: [AuthorizationPolicyHandler] = []
+        authorizationPolicies: [AuthorizationPolicyHandler] = [],
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         try makeConfiguration(
+            executionIdentity: executionIdentity,
             entityRuntimes: entityRuntimes,
             authorizationPolicies: authorizationPolicies,
+            indexConfigurations: indexConfigurations,
             graphTableSourceExecutor: GraphTableReadExecutors.sourceExecutor,
             sparqlSourceExecutor: SPARQLReadExecutors.sourceExecutor(
                 functionRegistry: sparqlFunctionRegistry
@@ -96,13 +111,17 @@ public enum DatabaseFrameworkRuntime {
     }
 
     public static func configuration(
+        executionIdentity: DatabaseExecutionRuntimeIdentity,
         schema: Schema,
         sparqlFunctionRegistry: SPARQLFunctionRegistry,
-        authorizationPolicies: [AuthorizationPolicyHandler] = []
+        authorizationPolicies: [AuthorizationPolicyHandler] = [],
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
     ) throws -> DatabaseRuntimeConfiguration {
         try makeConfiguration(
+            executionIdentity: executionIdentity,
             entityRuntimes: try schema.entities.map(schemaDrivenEntity),
             authorizationPolicies: authorizationPolicies,
+            indexConfigurations: indexConfigurations,
             graphTableSourceExecutor: GraphTableReadExecutors.sourceExecutor,
             sparqlSourceExecutor: SPARQLReadExecutors.sourceExecutor(
                 functionRegistry: sparqlFunctionRegistry
@@ -138,19 +157,23 @@ public enum DatabaseFrameworkRuntime {
     #endif
 
     private static func makeConfiguration(
+        executionIdentity: DatabaseExecutionRuntimeIdentity,
         entityRuntimes: [EntityRuntimeRegistration],
         authorizationPolicies: [AuthorizationPolicyHandler],
+        indexConfigurations: [any IndexRuntimeConfiguration],
         graphTableSourceExecutor: (any GraphTableSourceExecutor)?,
         sparqlSourceExecutor: (any SPARQLSourceExecutor)?
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
+            executionIdentity: executionIdentity,
             indexMaintainerProviderDescriptors: maintainerProviderDescriptors(),
             polymorphicIndexReadExecutors: polymorphicIndexReadExecutors(),
             graphTableSourceExecutor: graphTableSourceExecutor,
             sparqlSourceExecutor: sparqlSourceExecutor,
             persistableMutationMaintainers: persistableMutationMaintainers(),
             entityRuntimes: entityRuntimes,
-            authorizationPolicies: authorizationPolicies
+            authorizationPolicies: authorizationPolicies,
+            indexConfigurations: indexConfigurations
         )
     }
 
@@ -178,9 +201,6 @@ public enum DatabaseFrameworkRuntime {
         #if DATABASE_RUNTIME_VERSION_INDEXES
         try VersionReadExecutors.register(with: &definition)
         #endif
-        #if DATABASE_RUNTIME_PERMUTED_INDEXES
-        try PermutedReadExecutors.register(with: &definition)
-        #endif
         try registerMaintainers(with: &definition)
 
         return definition
@@ -205,15 +225,12 @@ public enum DatabaseFrameworkRuntime {
         #if DATABASE_RUNTIME_VERSION_INDEXES
         try VersionReadExecutors.register(with: &definition)
         #endif
-        #if DATABASE_RUNTIME_PERMUTED_INDEXES
-        try PermutedReadExecutors.register(with: &definition)
-        #endif
         try registerMaintainers(with: &definition)
         #if DATABASE_RUNTIME_GRAPH_INDEXES
         if case .owlClass = entity.ontology,
            entity.indexes.contains(where: {
-               $0.kindIdentifier == "owl_class_rdf"
-           }) {
+                $0.type == .graph(.ontologyProjection)
+            }) {
             try definition.register(
                 OWLClassRDFIndexMaintainerProvider(entity: entity)
             )
@@ -240,9 +257,6 @@ public enum DatabaseFrameworkRuntime {
         #endif
         #if DATABASE_RUNTIME_VERSION_INDEXES
         try definition.register(VersionIndexMaintainerProvider())
-        #endif
-        #if DATABASE_RUNTIME_PERMUTED_INDEXES
-        try definition.register(PermutedIndexMaintainerProvider())
         #endif
         #if DATABASE_RUNTIME_SCALAR_INDEXES
         try definition.register(ScalarIndexMaintainerProvider())
@@ -313,9 +327,6 @@ public enum DatabaseFrameworkRuntime {
         #if DATABASE_RUNTIME_RANK_INDEXES
         descriptors.append(.init(describing: RankIndexMaintainerProvider()))
         #endif
-        #if DATABASE_RUNTIME_PERMUTED_INDEXES
-        descriptors.append(.init(describing: PermutedIndexMaintainerProvider()))
-        #endif
         #if DATABASE_RUNTIME_GRAPH_INDEXES
         descriptors.append(.init(describing: GraphIndexMaintainerProvider()))
         descriptors.append(.init(describing: RDFQuadIndexMaintainerProvider()))
@@ -345,9 +356,6 @@ public enum DatabaseFrameworkRuntime {
         #endif
         #if DATABASE_RUNTIME_VERSION_INDEXES
         executors.append(VersionReadExecutors.polymorphicIndexExecutor)
-        #endif
-        #if DATABASE_RUNTIME_PERMUTED_INDEXES
-        executors.append(PermutedReadExecutors.polymorphicIndexExecutor)
         #endif
 
         return executors

@@ -1,21 +1,21 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for sum indexes.
 public struct SumIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "sum"
+    public let indexType: IndexType = .aggregate(.sum)
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        let valueType = try validate(kind: index.kind)
+        let valueType = try index.aggregateValueType(.sum)
         switch valueType {
 
         case .int8:
@@ -40,17 +40,10 @@ public struct SumIndexMaintainerProvider: IndexMaintainerProvider {
         case .float64:
             return SumIndexMaintainer<Item, Double>(index: index, subspace: subspace, idExpression: idExpression)
         case .string, .date, .timestamp:
-            throw IndexMaintainerProviderError.invalidMetadata(
-                kindIdentifier: kindIdentifier,
-                key: "valueType"
+            throw IndexMaintainerProviderError.invalidDefinition(
+                indexType: indexType,
+                reason: "Sum requires a numeric value field"
             )
         }
-    }
-
-    private func validate(kind: IndexKindMetadata) throws -> IndexScalarType {
-        try kind.validateIdentity(identifier: kindIdentifier, subspaceStructure: .aggregation)
-        try kind.validateMetadataKeys(required: ["valueType"])
-        try kind.validateFieldCount(minimum: 1)
-        return try kind.requireScalarType("valueType")
     }
 }

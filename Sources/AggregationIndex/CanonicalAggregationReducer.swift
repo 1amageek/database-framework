@@ -1,6 +1,6 @@
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 
 private enum AggregationValueOrdering {
     case ascending
@@ -490,7 +490,7 @@ enum CanonicalAggregationReducer {
         field: String
     ) throws -> FieldValue {
         guard count > 0 else {
-            throw AggregationQueryError.invalidIndexMetadata(
+            throw AggregationQueryError.invalidIndexDefinition(
                 "Average count must be positive"
             )
         }
@@ -541,7 +541,7 @@ enum CanonicalAggregationReducer {
         field: String
     ) throws -> FieldValue {
         guard count > 0, let unsignedCount = UInt128(exactly: count) else {
-            throw AggregationQueryError.invalidIndexMetadata(
+            throw AggregationQueryError.invalidIndexDefinition(
                 "Average count must be positive"
             )
         }
@@ -582,7 +582,7 @@ enum CanonicalAggregationReducer {
             throw AggregationQueryError.nonFiniteNumericValue(field: field)
         }
         guard count > 0 else {
-            throw AggregationQueryError.invalidIndexMetadata(
+            throw AggregationQueryError.invalidIndexDefinition(
                 "Average count must be positive"
             )
         }

@@ -11,10 +11,9 @@ import DatabaseRuntime
 private struct DatabaseFrameworkE2EAccount {
     #Directory<DatabaseFrameworkE2EAccount>("database-framework-e2e", "accounts")
     #Index(
-        .scalar,
-        fields: [\DatabaseFrameworkE2EAccount.email],
-        name: "database_framework_e2e_account_email"
-    )
+        .ordered(
+            name: "database_framework_e2e_account_email",
+            keys: [.ascending(\DatabaseFrameworkE2EAccount.email)], unique: false))
 
     var id: String = UUID().uuidString
     var email: String = ""
@@ -45,10 +44,9 @@ private struct DatabaseFrameworkE2ETenantAccount {
         layer: .partition
     )
     #Index(
-        .scalar,
-        fields: [\DatabaseFrameworkE2ETenantAccount.email],
-        name: "database_framework_e2e_tenant_account_email"
-    )
+        .ordered(
+            name: "database_framework_e2e_tenant_account_email",
+            keys: [.ascending(\DatabaseFrameworkE2ETenantAccount.email)], unique: false))
 
     var id: String = UUID().uuidString
     var tenantID: String = ""
@@ -60,10 +58,9 @@ private struct DatabaseFrameworkE2ETenantAccount {
 private struct DatabaseFrameworkE2ELargeDocument {
     #Directory<DatabaseFrameworkE2ELargeDocument>("database-framework-e2e", "large-documents")
     #Index(
-        .scalar,
-        fields: [\DatabaseFrameworkE2ELargeDocument.title],
-        name: "database_framework_e2e_large_document_title"
-    )
+        .ordered(
+            name: "database_framework_e2e_large_document_title",
+            keys: [.ascending(\DatabaseFrameworkE2ELargeDocument.title)], unique: false))
 
     var id: String = UUID().uuidString
     var title: String = ""
@@ -128,10 +125,9 @@ private struct DatabaseFrameworkE2EMigratedAccountV1 {
 private struct DatabaseFrameworkE2EMigratedAccountV2 {
     #Directory<DatabaseFrameworkE2EMigratedAccountV2>("database-framework-e2e", "migrated-accounts")
     #Index(
-        .scalar,
-        fields: [\DatabaseFrameworkE2EMigratedAccountV2.fullName],
-        name: "database_framework_e2e_migrated_account_full_name"
-    )
+        .ordered(
+            name: "database_framework_e2e_migrated_account_full_name",
+            keys: [.ascending(\DatabaseFrameworkE2EMigratedAccountV2.fullName)], unique: false))
 
     var id: String = UUID().uuidString
     var fullName: String
@@ -159,7 +155,8 @@ private enum DatabaseFrameworkE2EMigrationSchemaV2: VersionedSchema {
 
 private enum DatabaseFrameworkE2EMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [DatabaseFrameworkE2EMigrationSchemaV1.self, DatabaseFrameworkE2EMigrationSchemaV2.self]
+        [DatabaseFrameworkE2EMigrationSchemaV1.self, DatabaseFrameworkE2EMigrationSchemaV2.self,
+        ]
     }
 
     static var stages: [MigrationStage] {
@@ -249,7 +246,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -270,7 +271,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -291,7 +296,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -323,7 +332,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -385,7 +398,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -415,7 +432,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -462,7 +483,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -489,7 +514,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -531,7 +560,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -558,7 +591,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -600,7 +637,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ESecuredDocument.self)],
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ESecuredDocument.self)],
                 authorizationPolicies: [
                     AuthorizationPolicyHandler(DatabaseFrameworkE2ESecuredDocument.self)
                 ]
@@ -608,7 +649,7 @@ struct DatabaseFrameworkE2ETests {
             security: .enabled()
         )
         defer { await container.shutdown() }
-        #if MultipleBases
+        #if MultiBase
         try await container.grantTestBaseAccess(
             to: .principal("alice"),
             access: [.read, .write]
@@ -652,7 +693,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ESecuredDocument.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ESecuredDocument.self)]
             ),
             security: .testingDisabled
         )
@@ -685,7 +730,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -720,7 +769,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -763,7 +816,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -793,7 +850,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -840,7 +901,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -928,7 +993,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -957,7 +1026,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -996,7 +1069,11 @@ struct DatabaseFrameworkE2ETests {
         let container = try await DBContainer.inMemory(
             for: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ELargeDocument.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ELargeDocument.self)]
             ),
             security: .testingDisabled
         )
@@ -1121,7 +1198,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -1152,7 +1233,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -1194,7 +1279,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -1226,7 +1315,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -1259,7 +1352,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -1301,7 +1398,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -1336,7 +1437,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -1375,7 +1480,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -1428,7 +1537,12 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self), try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self), try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -1470,7 +1584,12 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self), try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self), try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -1502,7 +1621,12 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self), try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self), try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2ETenantAccount.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -1548,7 +1672,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EAccount.self)]
             ),
             security: .testingDisabled
         )
@@ -1606,7 +1734,11 @@ struct DatabaseFrameworkE2ETests {
             for: schema,
             path: databasePath,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EOrder.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EOrder.self)]
             ),
             security: .testingDisabled
         )
@@ -1681,7 +1813,12 @@ struct DatabaseFrameworkE2ETests {
         let initialContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV1.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV1.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV1.self)]),
             security: .testingDisabled
         )
         defer { await initialContainer.shutdown() }
@@ -1708,7 +1845,12 @@ struct DatabaseFrameworkE2ETests {
             for: DatabaseFrameworkE2EMigrationSchemaV2.self,
             migrationPlan: DatabaseFrameworkE2EMigrationPlan.self,
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)]),
             security: .testingDisabled
         )
         defer { await migratedContainer.shutdown() }
@@ -1719,7 +1861,12 @@ struct DatabaseFrameworkE2ETests {
         let verificationContainer = try await DBContainer.open(
             for: DatabaseFrameworkE2EMigrationSchemaV2.makeSchema(),
             configuration: .file(database.path),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseFrameworkE2EMigratedAccountV2.self)]),
             security: .testingDisabled
         )
         defer { await verificationContainer.shutdown() }

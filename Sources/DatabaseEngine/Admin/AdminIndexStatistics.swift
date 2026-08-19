@@ -1,8 +1,9 @@
+import DatabaseKit
 import DatabaseTypes
 
 public struct AdminIndexStatistics: Sendable, Equatable {
     public let indexName: String
-    public let kindIdentifier: String
+    public let indexType: IndexType
     public let entryCount: Int64
     public let storageByteCount: Int64
     public let uniqueKeyCount: Int64?
@@ -12,7 +13,7 @@ public struct AdminIndexStatistics: Sendable, Equatable {
 
     public init(
         indexName: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         entryCount: Int64,
         storageByteCount: Int64,
         uniqueKeyCount: Int64?,
@@ -21,7 +22,7 @@ public struct AdminIndexStatistics: Sendable, Equatable {
         usageCount: Int64?
     ) {
         self.indexName = indexName
-        self.kindIdentifier = kindIdentifier
+        self.indexType = indexType
         self.entryCount = entryCount
         self.storageByteCount = storageByteCount
         self.uniqueKeyCount = uniqueKeyCount

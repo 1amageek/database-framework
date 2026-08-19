@@ -3,9 +3,9 @@
 //
 // Maintains version history using FDB versionstamps for global ordering.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 private enum VersionValueLayout {
@@ -42,7 +42,7 @@ public struct VersionIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
     // MARK: - Properties
 
     /// Index definition
-    public let index: Index
+    public let index: ResolvedIndex
 
     /// Subspace for index storage
     public let subspace: Subspace
@@ -60,7 +60,7 @@ public struct VersionIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
     // MARK: - Initialization
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         strategy: VersionHistoryStrategy,
         subspace: Subspace,
         idExpression: KeyExpression,

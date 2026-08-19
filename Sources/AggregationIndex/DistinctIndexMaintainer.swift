@@ -1,6 +1,6 @@
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 private struct DistinctIndexSubspaces: Sendable {
@@ -54,7 +54,7 @@ public struct DistinctIndexMaintainer<Item: PersistedEntityValue>:
     GroupingKeySupport {
     public static var supportedPersistedPrecision: ClosedRange<Int> { 4...17 }
 
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -67,7 +67,7 @@ public struct DistinctIndexMaintainer<Item: PersistedEntityValue>:
     private var maximumScannedBytes: Int { 16 * 1_024 * 1_024 }
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         precision: Int

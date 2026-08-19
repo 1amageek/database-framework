@@ -239,7 +239,7 @@ extension DatabaseContext {
     /// ```
     ///
     /// **Automatic Index Selection**:
-    /// When a matching precomputed index exists (e.g., `CountIndexKind`, `SumIndexKind`),
+    /// When a matching precomputed aggregate definition exists,
     /// the system automatically uses its bounded group scan. Otherwise, it falls back
     /// to O(n) in-memory computation.
     ///

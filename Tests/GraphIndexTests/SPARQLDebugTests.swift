@@ -15,7 +15,7 @@ import TestSupport
 @testable import GraphIndex
 
 @Persistable
-fileprivate struct DebugEdge {
+private struct DebugEdge {
     #Directory<DebugEdge>("test", "debug_edge")
     var id: String = UUID().uuidString
     var from: String = ""
@@ -24,27 +24,25 @@ fileprivate struct DebugEdge {
     var score: Int64 = 0
 
     #Index(
-        .propertyGraph(strategy: .tripleStore),
-        from: \DebugEdge.from,
-        edge: \DebugEdge.label,
-        to: \DebugEdge.target,
-        storedFields: [\DebugEdge.score],
-        name: "debug_graph"
-    )
+        .graph(
+            name: "debug_graph",
+            definition: .property(
+                source: \DebugEdge.from, label: .field(\DebugEdge.label),
+                target: \DebugEdge.target,
+                graph: nil, strategy: .tripleStore), includedFields: [\DebugEdge.score]))
 }
 
 @Persistable
-fileprivate struct DebugRDFStatement {
+private struct DebugRDFStatement {
     #Directory<DebugRDFStatement>("test", "debug_rdf")
     #Index(
-        .rdfDataset,
-        from: \DebugRDFStatement.subject,
-        edge: \DebugRDFStatement.predicate,
-        to: \DebugRDFStatement.object,
-        graph: \DebugRDFStatement.graph,
-        storedFields: [\DebugRDFStatement.score],
-        name: "debug_rdf"
-    )
+        .graph(
+            name: "debug_rdf",
+            definition: .rdf(
+                subject: \DebugRDFStatement.subject, predicate: \DebugRDFStatement.predicate,
+                object: \DebugRDFStatement.object,
+        graph: \DebugRDFStatement.graph),
+            includedFields: [\DebugRDFStatement.score]))
 
     var id: String = UUID().uuidString
     var subject: RDFTerm = .iri(.xsdString)
@@ -73,7 +71,12 @@ struct SPARQLDebugTests {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DebugEdge.self), try DatabaseFrameworkRuntime.entity(DebugRDFStatement.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DebugEdge.self), try DatabaseFrameworkRuntime.entity(DebugRDFStatement.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -114,9 +117,9 @@ struct SPARQLDebugTests {
             return
         }
 
-        print("✓ Index descriptor storedFieldNames: \(indexDescriptor.storedFieldNames)")
-        #expect(!indexDescriptor.storedFieldNames.isEmpty)
-        #expect(indexDescriptor.storedFieldNames.contains("score"))
+        print("✓ Index descriptor includedFieldNames: \(indexDescriptor.includedFieldNames)")
+        #expect(!indexDescriptor.includedFieldNames.isEmpty)
+        #expect(indexDescriptor.includedFieldNames.contains("score"))
 
         // Execute simple pattern (no filter)
         let pattern = ExecutionPattern.basic([
@@ -167,7 +170,12 @@ struct SPARQLDebugTests {
             for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DebugEdge.self), try DatabaseFrameworkRuntime.entity(DebugRDFStatement.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DebugEdge.self), try DatabaseFrameworkRuntime.entity(DebugRDFStatement.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -202,19 +210,31 @@ struct SPARQLDebugTests {
         }
 
         // Direct GraphPropertyScanner test
-        // Index entries are stored at [typeSubspace]/I/[indexName], not [typeSubspace]/[indexName]
+        // Index entries are scoped by the complete declaration fingerprint.
         let typeSubspace = try await container.testBaseDirectory(for: DebugEdge.self)
-        let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes).subspace(indexName)
+        let indexSubspace = try IndexLifecycleStore(
+            container: container,
+            subspace: typeSubspace
+        ).indexSubspace(for: indexName)
 
-        let metadata = try PropertyGraphIndexMetadata(canonical: indexDescriptor.kind)
+        guard
+            case .graph(
+                .property(_, _, _, _, let declaredStrategy), _
+            ) = indexDescriptor.declaration.definition
+        else {
+            Issue.record("Expected a property graph index")
+            return
+        }
 
         let scanner = GraphPropertyScanner(
             indexSubspace: indexSubspace,
-            strategy: metadata.strategy,
-            storedFieldNames: indexDescriptor.storedFieldNames
+            strategy: declaredStrategy.storageStrategy,
+            includedFieldNames: indexDescriptor.includedFieldNames
         )
 
-        print("✓ GraphPropertyScanner storedFieldNames: \(indexDescriptor.storedFieldNames)")
+        print(
+            "✓ GraphPropertyScanner includedFieldNames: \(indexDescriptor.includedFieldNames)"
+        )
 
         let (edgeCount, propertiesFound) = try await database.withTransaction {
             transaction in

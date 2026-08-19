@@ -156,7 +156,9 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
             transaction: transaction
         )
         let configurations = group.indexes.flatMap { index in
-            container.indexConfigurations[index.name] ?? []
+            container.runtimeConfiguration.indexConfigurations(
+                named: index.name
+            )
         }
         return Projection(
             group: group,
@@ -173,7 +175,6 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
                         SubspaceKey.metadata
                     )
                 ),
-                indexSubspace: subspace.subspace(SubspaceKey.indexes),
                 configurations: configurations
             )
         )

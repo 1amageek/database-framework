@@ -35,16 +35,16 @@ private struct BM25ScoringContext {
         self.subspace = Subspace(prefix: Tuple("test", "bm25", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: BM25Article.self,
             name: indexName,
-            kind: fullTextIndexMetadata(
+            definition: fullTextIndexDefinition(
                 fieldName: "content",
                 fieldNumber: 3,
                 tokenizer: .simple,
                 storePositions: false
             ),
             rootExpression: FieldKeyExpression(fieldName: "content"),
-            subspaceKey: indexName,
             itemTypes: Set(["BM25Article"])
         )
 
@@ -215,7 +215,7 @@ struct BM25IntegrationTests {
         let articles = [
             BM25Article(id: "a1", title: "Swift", content: "Swift programming language is modern"),
             BM25Article(id: "a2", title: "Python", content: "Python is also a programming language"),
-            BM25Article(id: "a3", title: "Rust", content: "Rust programming is safe")
+            BM25Article(id: "a3", title: "Rust", content: "Rust programming is safe"),
         ]
 
         try await ctx.indexArticles(articles)
@@ -352,7 +352,7 @@ struct BM25IntegrationTests {
                 id: "long",
                 title: "Long",
                 content: "Swift is a wonderful language with many features and capabilities for modern development"
-            )
+            ),
         ]
 
         try await ctx.indexArticles(articles)
@@ -397,7 +397,7 @@ struct BM25IntegrationTests {
             BM25Article(id: "a2", title: "Python", content: "Python programming"),
             BM25Article(id: "a3", title: "Java", content: "Java programming"),
             BM25Article(id: "a4", title: "Rust", content: "Rust programming"),
-            BM25Article(id: "a5", title: "Go", content: "Go programming")
+            BM25Article(id: "a5", title: "Go", content: "Go programming"),
         ]
 
         try await ctx.indexArticles(articles)

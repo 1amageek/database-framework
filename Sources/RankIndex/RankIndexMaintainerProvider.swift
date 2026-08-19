@@ -1,10 +1,10 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for rank indexes.
 public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "rank"
+    public let indexType: IndexType = .rank
 
     public var runtimeRequirements: IndexRuntimeRequirements {
         .entityAndPolymorphicReads
@@ -13,17 +13,22 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        try index.kind.validateIdentity(identifier: kindIdentifier, subspaceStructure: .hierarchical)
-        try index.kind.validateMetadataKeys(required: ["scoreType"])
-        try index.kind.validateFieldCount(1)
+        guard case .rank = index.definition,
+            let scoreType = index.descriptor.keyFieldSchemas.first?.indexScalarType
+        else {
+            throw IndexMaintainerProviderError.typeMismatch(
+                registered: indexType,
+                actual: index.type
+            )
+        }
 
-        switch try index.kind.requireScalarType("scoreType") {
+        switch scoreType {
         case .int8:
             return make(Int8.self, index: index, subspace: subspace, idExpression: idExpression)
         case .int16:
@@ -45,9 +50,9 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
         case .float64:
             return make(Double.self, index: index, subspace: subspace, idExpression: idExpression)
         case .string, .date, .timestamp:
-            throw IndexMaintainerProviderError.invalidMetadata(
-                kindIdentifier: kindIdentifier,
-                key: "scoreType"
+            throw IndexMaintainerProviderError.invalidDefinition(
+                indexType: indexType,
+                reason: "Rank requires a numeric score field"
             )
         }
     }
@@ -57,7 +62,7 @@ public struct RankIndexMaintainerProvider: IndexMaintainerProvider {
         Score: IndexNumericValue & TupleDecodable
     >(
         _ scoreType: Score.Type,
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression
     ) -> RankIndexMaintainer<Item, Score> {

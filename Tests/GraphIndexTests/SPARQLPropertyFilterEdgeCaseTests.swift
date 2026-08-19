@@ -14,7 +14,7 @@ import TestSupport
 @testable import GraphIndex
 
 @Persistable
-fileprivate struct EdgeCaseConnection {
+private struct EdgeCaseConnection {
     #Directory<EdgeCaseConnection>("sparql_property_filter_edge_case_tests")
     var id: String = UUID().uuidString
     var from: RDFTerm = .iri(.xsdString)
@@ -24,16 +24,14 @@ fileprivate struct EdgeCaseConnection {
     var note: String = ""
 
     #Index(
-        .rdfDataset,
-        from: \EdgeCaseConnection.from,
-        edge: \EdgeCaseConnection.relation,
-        to: \EdgeCaseConnection.target,
-        storedFields: [
+        .graph(
+            name: "edge_case_graph",
+            definition: .rdf(
+                subject: \EdgeCaseConnection.from, predicate: \EdgeCaseConnection.relation,
+                object: \EdgeCaseConnection.target, graph: nil),
+            includedFields: [
             \EdgeCaseConnection.score,
-            \EdgeCaseConnection.note,
-        ],
-        name: "edge_case_graph"
-    )
+            \EdgeCaseConnection.note]))
 }
 
 @Suite("SPARQL Property Filter Edge Case Tests", .serialized, .foundationDBScenario, .heartbeat)
@@ -84,7 +82,12 @@ struct SPARQLPropertyFilterEdgeCaseTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeCaseConnection.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeCaseConnection.self)]),
             security: .testingDisabled,
         )
 

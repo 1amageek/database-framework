@@ -29,10 +29,10 @@ struct MinMaxAggregationQueryTests {
         var quantity: Int64 = 0
 
         #Index(
-            .minimum,
-            groupBy: [\MinimumOrder.region],
-            value: \MinimumOrder.amount
-        )
+            .aggregate(
+                name: "MinimumOrder_min_region_amount", function: .minimum,
+            groupBy: [.ascending(\MinimumOrder.region)],
+            value: \MinimumOrder.amount))
     }
 
     @Persistable
@@ -46,10 +46,10 @@ struct MinMaxAggregationQueryTests {
         var quantity: Int64 = 0
 
         #Index(
-            .maximum,
-            groupBy: [\MaximumOrder.region],
-            value: \MaximumOrder.amount
-        )
+            .aggregate(
+                name: "MaximumOrder_max_region_amount", function: .maximum,
+            groupBy: [.ascending(\MaximumOrder.region)],
+            value: \MaximumOrder.amount))
     }
 
     @Persistable
@@ -62,17 +62,21 @@ struct MinMaxAggregationQueryTests {
         var amount: Double = 0.0
         var quantity: Int64 = 0
 
-        #Index(.count, groupBy: [\MixedAggregationOrder.region])
         #Index(
-            .minimum,
-            groupBy: [\MixedAggregationOrder.region],
-            value: \MixedAggregationOrder.amount
-        )
+            .aggregate(
+                name: "MixedAggregationOrder_count_region", function: .count, groupBy: [.ascending(\MixedAggregationOrder.region)]))
         #Index(
-            .maximum,
-            groupBy: [\MixedAggregationOrder.region],
+            .aggregate(
+                name: "MixedAggregationOrder_min_region_amount", function: .minimum,
+            groupBy: [.ascending(\MixedAggregationOrder.region)],
             value: \MixedAggregationOrder.amount
-        )
+            ))
+        #Index(
+            .aggregate(
+                name: "MixedAggregationOrder_max_region_amount", function: .maximum,
+            groupBy: [.ascending(\MixedAggregationOrder.region)],
+            value: \MixedAggregationOrder.amount
+            ))
     }
 
     @Persistable
@@ -86,10 +90,10 @@ struct MinMaxAggregationQueryTests {
         var quantity: Int64 = 0
 
         #Index(
-            .minimum,
-            groupBy: [\Int64AggregationOrder.region],
-            value: \Int64AggregationOrder.quantity
-        )
+            .aggregate(
+                name: "Int64AggregationOrder_min_region_quantity", function: .minimum,
+            groupBy: [.ascending(\Int64AggregationOrder.region)],
+            value: \Int64AggregationOrder.quantity))
     }
 
     // MARK: - End-to-End Integration Tests
@@ -107,7 +111,11 @@ struct MinMaxAggregationQueryTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(MinimumOrder.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(MinimumOrder.self)]
             ),
             security: .testingDisabled
         )
@@ -165,7 +173,11 @@ struct MinMaxAggregationQueryTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(MaximumOrder.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(MaximumOrder.self)]
             ),
             security: .testingDisabled
         )
@@ -223,7 +235,11 @@ struct MinMaxAggregationQueryTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(MixedAggregationOrder.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(MixedAggregationOrder.self)]
             ),
             security: .testingDisabled
         )
@@ -310,7 +326,11 @@ struct MinMaxAggregationQueryTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(Int64AggregationOrder.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(Int64AggregationOrder.self)]
             ),
             security: .testingDisabled
         )

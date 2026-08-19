@@ -10,34 +10,30 @@ import TestHeartbeat
 private struct DeepE2EIndexedTicket {
     #Directory<DeepE2EIndexedTicket>("database-framework-deep-e2e", "indexed-tickets")
     #Index(
-        .scalar,
-        fields: [\DeepE2EIndexedTicket.status],
-        name: "deep_e2e_ticket_status"
-    )
+        .ordered(
+            name: "deep_e2e_ticket_status", keys: [.ascending(\DeepE2EIndexedTicket.status)],
+            unique: false))
     #Index(
-        .scalar,
-        fields: [
-            \DeepE2EIndexedTicket.tenantID,
-            \DeepE2EIndexedTicket.status,
-        ],
-        name: "deep_e2e_ticket_tenant_status"
-    )
+        .ordered(
+            name: "deep_e2e_ticket_tenant_status",
+            keys: [
+                .ascending(\DeepE2EIndexedTicket.tenantID),
+                .ascending(\DeepE2EIndexedTicket.status),
+            ], unique: false))
     #Index(
-        .fullText(tokenizer: .simple),
-        fields: [\DeepE2EIndexedTicket.description],
-        name: "deep_e2e_ticket_description"
-    )
+        .text(
+            name: "deep_e2e_ticket_description", fields: [\DeepE2EIndexedTicket.description],
+            mode: .fullText(
+                tokenizer: .simple, storePositions: true, ngramSize: 3, minimumTermLength: 2)))
     #Index(
-        .count,
-        groupBy: [\DeepE2EIndexedTicket.tenantID],
-        name: "deep_e2e_ticket_count_by_tenant"
-    )
+        .aggregate(
+            name: "deep_e2e_ticket_count_by_tenant", function: .count,
+            groupBy: [.ascending(\DeepE2EIndexedTicket.tenantID)]))
     #Index(
-        .sum,
-        groupBy: [\DeepE2EIndexedTicket.tenantID],
-        value: \DeepE2EIndexedTicket.amountCents,
-        name: "deep_e2e_ticket_sum_by_tenant"
-    )
+        .aggregate(
+            name: "deep_e2e_ticket_sum_by_tenant", function: .sum,
+            groupBy: [.ascending(\DeepE2EIndexedTicket.tenantID)],
+            value: \DeepE2EIndexedTicket.amountCents))
 
     var id: String = UUID().uuidString
     var tenantID: String = ""
@@ -76,10 +72,9 @@ private struct DeepE2ESecureTenantDocument: SecurityPolicy {
         layer: .partition
     )
     #Index(
-        .scalar,
-        fields: [\DeepE2ESecureTenantDocument.title],
-        name: "deep_e2e_secure_document_title"
-    )
+        .ordered(
+            name: "deep_e2e_secure_document_title",
+            keys: [.ascending(\DeepE2ESecureTenantDocument.title)], unique: false))
 
     var id: String = UUID().uuidString
     var tenantID: String = ""
@@ -142,6 +137,10 @@ private func deepE2ETemporarySQLiteContainer(
         for: schema,
         path: databasePath,
         runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: entityRuntimes,
             authorizationPolicies: authorizationPolicies
         ),
@@ -424,7 +423,8 @@ struct DatabaseFrameworkDeepE2ETests {
         )
         let (container, directory) = try await deepE2ETemporarySQLiteContainer(
             for: schema,
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2ECustomer.self), try DatabaseFrameworkRuntime.entity(DeepE2ERelationshipOrder.self)]
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2ECustomer.self), try DatabaseFrameworkRuntime.entity(DeepE2ERelationshipOrder.self),
+            ]
         )
         defer {
             await container.shutdown()
@@ -508,7 +508,7 @@ struct DatabaseFrameworkDeepE2ETests {
             await container.shutdown()
             deepE2ERemoveTemporaryDirectory(directory)
         }
-        #if MultipleBases
+        #if MultiBase
         try await container.grantTestBaseAccess(
             to: .principal("alice"),
             access: [.read, .write]
@@ -580,7 +580,11 @@ struct DatabaseFrameworkDeepE2ETests {
             for: schema,
             path: directory.appendingPathComponent("database.sqlite").path,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2ESecureTenantDocument.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DeepE2ESecureTenantDocument.self)]
             ),
             security: .testingDisabled
         )

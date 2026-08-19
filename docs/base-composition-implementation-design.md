@@ -1,8 +1,7 @@
 # Base and Composition Implementation Design
 
-Status: implemented behind the non-default `MultipleBases` trait. The current
-P0/P1 source changes still require a separately authorized build and behavioral
-verification pass. The standard build uses one database data root.
+Status: implemented and behaviorally verified behind the non-default
+`MultiBase` trait. The standard build uses one database data root.
 
 This document translates the semantic contract in
 [Base and Composition](base-composition.md) into package ownership, public API,
@@ -15,7 +14,7 @@ tree unless a paragraph explicitly describes optional future work.
 Base isolation is an optional execution boundary, not a query predicate. The
 standard package graph has one database root and compiles no Base target,
 topology catalog, placement lease, Composition planner, or persisted Grant
-store. When `MultipleBases` is selected, every local or remote data operation
+store. When `MultiBase` is selected, every local or remote data operation
 uses one explicit semantic target, acquires immutable Schema and data-root
 leases, proves the required Grant in the data transaction, and receives only a
 target-bound executor. `database-server` is one adapter over this execution
@@ -23,10 +22,10 @@ contract, not the owner of Composition semantics.
 
 ```mermaid
 flowchart TB
-    Standard["Standard graph<br/>target-free Wire v2"] --> Root["One database root"]
+    Standard["Standard graph<br/>target-free Wire v3"] --> Root["One database root"]
     Root --> StandardTransaction["Direct storage transaction"]
 
-    Multiple["MultipleBases graph<br/>target-bound Wire v4"] --> Prepare["Operation preparation<br/>decode + requirement"]
+    Multiple["MultiBase graph<br/>target-bound Wire v5"] --> Prepare["Operation preparation<br/>decode + requirement"]
     Prepare --> Bind["Execution coordinator<br/>leases + persisted Grant"]
     Bind --> Handler["Target-bound handler"]
     Handler --> Namespace["Authorized Base root<br/>+ relative directory"]
@@ -34,19 +33,19 @@ flowchart TB
 ```
 
 The critical optional-feature property is structural: the standard graph pays
-no Base cost, while code compiled with `MultipleBases` cannot select another
+no Base cost, while code compiled with `MultiBase` cannot select another
 Base through a target-bound executor.
 
 ## 2. Confirmed Current Implementation
 
 | Current fact | Evidence | Enforced consequence |
 |---|---|---|
-| The standard Wire v2 envelope has no target field; `DatabaseOperationTarget` and Wire v4 target encoding compile only with `MultipleBases`. | `database-kit/Sources/DatabaseWire/DatabaseWireRequestEnvelope.swift`; `DatabaseOperationTarget.swift`; `EnvelopeWireFormat.swift` | A normal client or server does not carry dormant Base state. |
+| The standard Wire v3 envelope has no target field; `DatabaseOperationTarget` and Wire v5 target encoding compile only with `MultiBase`. | `database-kit/Sources/DatabaseWire/DatabaseWireRequestEnvelope.swift`; `DatabaseOperationTarget.swift`; `EnvelopeWireFormat.swift` | A normal client or server does not carry dormant Base state. |
 | The standard `DBContainer` claims one injected engine and resolves one database data root directly. | `Sources/DatabaseEngine/Core/DBConfiguration.swift`; `DBContainer.swift`; `DBContainer+DataRootTransaction.swift` | The hot path has no topology dictionary, catalog read, target lease, or persisted Grant lookup. |
-| With `MultipleBases`, a handler prepares the typed payload and exact access/transaction requirement before target execution. | `database-server/Sources/DatabaseServerRuntime/AnyDatabaseOperationHandler.swift`; `DatabaseOperationRequirement.swift` | Target compatibility and access are checked before handler invocation. |
-| With `MultipleBases`, `DatabaseOperationContext` contains a narrow executor and never exposes a raw container. | `database-server/Sources/DatabaseServerRuntime/DatabaseOperationContext.swift`; `DatabaseOperationExecutor.swift` | Data handlers cannot select a second Base. |
-| With `MultipleBases`, `DBContainer` claims a control domain and every data domain exactly once. | `Sources/DatabaseEngine/Topology`; `Sources/DatabaseEngine/Core/DBContainer.swift` | Catalog and Base storage lifecycles have one owner and one shutdown path. |
-| Local operations use a database-bound context, or `DatabaseSession` with a Base or Composition selector when `MultipleBases` is enabled. | `Sources/DatabaseEngine/Core/DBContainer.swift`; `Sources/DatabaseEngine/Base/DatabaseSession.swift` | A public unscoped context does not exist. |
+| With `MultiBase`, a handler prepares the typed payload and exact access/transaction requirement before target execution. | `database-server/Sources/DatabaseServerRuntime/AnyDatabaseOperationHandler.swift`; `DatabaseOperationRequirement.swift` | Target compatibility and access are checked before handler invocation. |
+| With `MultiBase`, `DatabaseOperationContext` contains a narrow executor and never exposes a raw container. | `database-server/Sources/DatabaseServerRuntime/DatabaseOperationContext.swift`; `DatabaseOperationExecutor.swift` | Data handlers cannot select a second Base. |
+| With `MultiBase`, `DBContainer` claims a control domain and every data domain exactly once. | `Sources/DatabaseEngine/Topology`; `Sources/DatabaseEngine/Core/DBContainer.swift` | Catalog and Base storage lifecycles have one owner and one shutdown path. |
+| Local operations use a database-bound context, or `DatabaseSession` with a Base or Composition selector when `MultiBase` is enabled. | `Sources/DatabaseEngine/Core/DBContainer.swift`; `Sources/DatabaseEngine/Base/DatabaseSession.swift` | A public unscoped context does not exist. |
 | Base, Composition, placement, Grant, and layout records are persisted catalogs with immutable generations and leases. | `Sources/DatabaseEngine/Base`; `Sources/DatabaseEngine/Security` | Existence and lifecycle come from catalogs rather than backend namespace probes. |
 | Direct and role Grants are unioned in the Base transaction; role-name administration bypasses are absent. | `DatabaseGrantStore.swift`; `DataStoreSecurityDelegate.swift` | Authentication claims alone never grant data access. |
 | Composition reads hold one transaction per physical domain, authorize all members, and retain origin. | `CompositionDataSource.swift`; `CompositionQueryPlanner.swift` | Partial authorization and silent member omission are impossible. |
@@ -54,10 +53,10 @@ Base through a target-bound executor.
 | Cross-domain remote continuation is a bounded durable snapshot spool owned by the server adapter. | `database-server/Sources/DatabaseServerRuntime/DatabaseQuerySnapshotStore.swift` | Client pages do not retain transactions or carry trusted continuation state; the framework does not own Wire paging. |
 | Removed layouts and populated unformatted roots fail before data execution. | `Sources/DatabaseEngine/Format/DatabaseFormatCatalog.swift`; `DatabaseFormatDescriptor.swift` | No namespace probing, compatibility alias, or migration path is retained. |
 
-## 3. `MultipleBases` Invariants
+## 3. `MultiBase` Invariants
 
 The following invariants apply only to the graph compiled with
-`MultipleBases`. The standard graph has one database mutation and read root.
+`MultiBase`. The standard graph has one database mutation and read root.
 
 1. A Base is the only data mutation target.
 2. A Composition is read-only and contains a canonical, non-recursive set of
@@ -231,7 +230,7 @@ the ownership boundary.
 ```mermaid
 flowchart TB
     CLI["database-cli<br/>options and rendering"] --> Client["database-client<br/>typed invocation"]
-    Client --> Wire["DatabaseWire<br/>v2 standard / v4 MultipleBases"]
+    Client --> Wire["DatabaseWire<br/>v3 standard / v5 MultiBase"]
     Wire --> Kit["DatabaseKit<br/>semantic values"]
 
     NativeHost["database-server executable<br/>native auth and transport"] --> Server["internal server adapter<br/>Wire + paging + jobs"]
@@ -273,23 +272,23 @@ standard compiled graph.
 | Layer | Owns | Must not own |
 |---|---|---|
 | `DatabaseKit` | selection/resolution values, Base-qualified QueryIR, provenance and Wire semantics | transactions, planning, storage, host lifecycle |
-| `DatabaseEngine` under `MultipleBases` | member snapshots, Grants, relational merge/aggregate/join semantics, request-local bounded exact DISTINCT, decision transaction | DatabaseWire dispatch, remote pages, durable jobs, RDF/SPARQL algebra |
-| `GraphIndex` under `MultipleBases` + `GraphIndexes` | RDF identity and SPARQL/ASK/CONSTRUCT/DESCRIBE Composition semantics | Wire pages, server jobs, relational planning |
+| `DatabaseEngine` under `MultiBase` | member snapshots, Grants, relational merge/aggregate/join semantics, request-local bounded exact DISTINCT, decision transaction | DatabaseWire dispatch, remote pages, durable jobs, RDF/SPARQL algebra |
+| `GraphIndex` under `MultiBase` + `GraphIndexes` | RDF identity and SPARQL/ASK/CONSTRUCT/DESCRIBE Composition semantics | Wire pages, server jobs, relational planning |
 | internal `database-server` adapter | semantic-event adaptation, result page/spool ownership, continuations, jobs, error mapping | query meaning, provenance rules, Base Grant decisions |
 | platform host adapter | admission, process/runtime lifecycle, byte transfer, storage host ABI | database semantics |
 
-`AllRuntimeFeatures` does not enable `MultipleBases`. `DatabaseEngine` and
-`GraphIndex` source is guarded by `DATABASE_MULTIPLE_BASES`, and the ordinary
+`AllRuntimeFeatures` does not enable `MultiBase`. `DatabaseEngine` and
+`GraphIndex` source is guarded by `DATABASE_MULTI_BASE`, and the ordinary
 single-root product therefore does not compile the Composition planner,
 catalog, Grant store, topology, or decision transaction.
 
 ## 6. Canonical Wire Contract
 
-### 6.1 Target belongs only in the `MultipleBases` envelope
+### 6.1 Target belongs only in the `MultiBase` envelope
 
-When `MultipleBases` is selected, the request envelope receives a required
-semantic target. It is not metadata and has no optional encoding in Wire v4.
-Without the trait, Wire v2 has no target property or encoded placeholder.
+When `MultiBase` is selected, the request envelope receives a required
+semantic target. It is not metadata and has no optional encoding in Wire v5.
+Without the trait, Wire v3 has no target property or encoded placeholder.
 
 ```swift
 public enum DatabaseOperationTarget: Sendable, Hashable {
@@ -308,8 +307,8 @@ public struct DatabaseWireRequestEnvelope: Sendable, Hashable {
 ```
 
 The two build graphs intentionally expose different canonical protocols. The
-standard graph uses target-free Wire v2. The `MultipleBases` graph uses
-target-bound Wire v4. A single binary never accepts both forms and neither
+standard graph uses target-free Wire v3. The `MultiBase` graph uses
+target-bound Wire v5. A single binary never accepts both forms and neither
 graph contains a compatibility decoder.
 
 `DatabaseClient.execute` requires the target explicitly. Higher-level client
@@ -815,22 +814,22 @@ ownership violations are internal failures, not missing-resource results.
 
 ## 14. Required Changes by Repository
 
-### `database-kit` with `MultipleBases`
+### `database-kit` with `MultiBase`
 
 - Compile Base, Composition, persisted Grant vocabulary, EntityAddress,
   named/derived selection and resolution, and origin-preserving result values
-  only into the `MultipleBases` graph.
+  only into the `MultiBase` graph.
 - Rename Schema directory metadata to its relative meaning and update macros,
   manifest JSON, compatibility analysis, and tests.
-- Add required Wire v4 target encoding only in that graph; preserve target-free
-  Wire v2 in the standard graph.
+- Add required Wire v5 target encoding only in that graph; preserve target-free
+  Wire v3 in the standard graph.
 - Add Base, Composition, and Grant operation families and capabilities.
 - Extend result pages and continuation contracts with provenance and generation
   binding.
 - Qualify idempotency digesting and persistence by operation target.
 - Update all golden vectors; retain no targetless compatibility decoder.
 
-### `database-framework` with `MultipleBases`
+### `database-framework` with `MultiBase`
 
 - Compile catalogs, records, lifecycle actors, immutable generation stores, leases,
   Grant authorizer, placement resolver, and storage topology.
@@ -858,9 +857,9 @@ ownership violations are internal failures, not missing-resource results.
 - Verify Directory Layer allocation and root resolution in the caller's
   lifecycle transaction.
 
-### `database-client` with `MultipleBases`
+### `database-client` with `MultiBase`
 
-- Require a target for raw Wire v4 execution and provide Base/Composition-bound typed
+- Require a target for raw Wire v5 execution and provide Base/Composition-bound typed
   facades.
 - Preserve target and provenance across paging and cancellation.
 - Keep HTTP, WebSocket, JavaScript, and framed-stream transports byte-oriented.
@@ -871,13 +870,13 @@ ownership violations are internal failures, not missing-resource results.
   preparation, error mapping, opaque result paging/spooling, jobs, and schema
   administration; its internal native host owns credentials, TLS, routing,
   listeners, process lifecycle, and native engine construction.
-- The standard host injects one engine. With `MultipleBases`, it injects one or
+- The standard host injects one engine. With `MultiBase`, it injects one or
   more named storage domains.
 - Invoke framework/GraphIndex semantic planners and adapt their events. Do not
   evaluate Base Grants or implement relational, aggregate, DISTINCT, RDF,
   SPARQL, provenance, or transaction semantics.
 
-### `database-cli` with `MultipleBases`
+### `database-cli` with `MultiBase`
 
 - Require exactly one of `--base` or `--composition` for data reads and exactly
   `--base` for mutations.
@@ -887,7 +886,7 @@ ownership violations are internal failures, not missing-resource results.
   format can represent it; reject lossy formats otherwise.
 - Display consistency and generation metadata without interpreting it.
 
-### `database-framework-cloudflare` with `MultipleBases`
+### `database-framework-cloudflare` with `MultiBase`
 
 - Carry application-owned opaque request and context bytes through the host
   boundary and let the application session select its database target.
@@ -933,7 +932,7 @@ resolves to its pushed main commit:
 
 ```mermaid
 flowchart LR
-    Kit["1. database-kit<br/>Wire v4 + selection/resolution"]
+    Kit["1. database-kit<br/>Wire v5 + selection/resolution"]
     Client["2a. database-client"]
     Framework["2b. database-framework"]
     Server["3a. database-server"]

@@ -60,14 +60,14 @@ public final class DatabaseContext: Sendable {
     /// The container that owns this context
     package let container: DBContainer
 
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     /// Security and storage resource selected for every Base operation.
     package let resource: Security.Resource
 
     /// Base identity selected for every operation executed by this context.
     public var baseID: Base.ID {
         guard case .base(let id) = resource else {
-            preconditionFailure("A MultipleBases context must target a Base")
+            preconditionFailure("A MultiBase context must target a Base")
         }
         return id
     }
@@ -145,7 +145,7 @@ public final class DatabaseContext: Sendable {
     /// - Parameters:
     ///   - container: The DBContainer to use for storage
     ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     package init(
         container: DBContainer,
         resource: Security.Resource,
@@ -269,7 +269,7 @@ public final class DatabaseContext: Sendable {
     private func cachedStore<T: Persistable>(
         for type: T.Type
     ) async throws -> DatabaseDataStore {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         let lease = try requireOperationDataRoot()
         let storeKey = DatabaseStoreCacheKey(
             basePlacementGeneration: lease.generation,
@@ -300,7 +300,7 @@ public final class DatabaseContext: Sendable {
     private func pointReadStore<T: Persistable>(
         for type: T.Type
     ) async throws -> DatabaseDataStore {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
         return try await container.store(for: type)
@@ -310,7 +310,7 @@ public final class DatabaseContext: Sendable {
         for type: T.Type,
         path: DirectoryPath<T>
     ) async throws -> DatabaseDataStore {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         let lease = try requireOperationDataRoot()
         let resolvedPath = try AnyDirectoryPath(path).resolve()
         let storeKey = DatabaseStoreCacheKey(
@@ -340,7 +340,7 @@ public final class DatabaseContext: Sendable {
         for type: T.Type,
         path: DirectoryPath<T>
     ) async throws -> DatabaseDataStore {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
         return try await container.store(for: type, path: path)
@@ -672,7 +672,7 @@ public final class DatabaseContext: Sendable {
         transaction: any TransactionAccess
     ) async throws -> [T] {
         try ensureUsable()
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
 
@@ -713,7 +713,7 @@ public final class DatabaseContext: Sendable {
         transaction: any TransactionAccess
     ) async throws -> Int {
         try ensureUsable()
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
 
@@ -1058,7 +1058,7 @@ public final class DatabaseContext: Sendable {
         transaction: any TransactionAccess
     ) async throws -> T? {
         try ensureUsable()
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
 
@@ -1645,7 +1645,7 @@ extension DatabaseContext {
         try ensureUsable()
         return try await withDataOperation {
             if let binding = ActiveDatabaseTransactionContext.binding {
-                #if DATABASE_MULTIPLE_BASES
+                #if DATABASE_MULTI_BASE
                 guard binding.resource == self.resource,
                       binding.authorization == self.authorization,
                       binding.grantedAccess.isSuperset(of: requiredAccess)
@@ -1663,7 +1663,7 @@ extension DatabaseContext {
                     storageAccess: binding.transaction,
                     container: self.container
                 )
-                #if DATABASE_MULTIPLE_BASES
+                #if DATABASE_MULTI_BASE
                 let nestedBinding = DatabaseTransactionExecutionBinding(
                     transaction: binding.transaction,
                     resource: binding.resource,
@@ -1691,7 +1691,7 @@ extension DatabaseContext {
                         }
                     }
             }
-            #if DATABASE_MULTIPLE_BASES
+            #if DATABASE_MULTI_BASE
             let lease = try self.requireOperationDataRoot()
             let selectedTransactionExecutor = lease.transactionExecutor
             #else
@@ -1712,7 +1712,7 @@ extension DatabaseContext {
                     stateLock.withLock { $0.commitOutcomeUnknown = true }
                 }
             ) { storageAccess in
-                #if DATABASE_MULTIPLE_BASES
+                #if DATABASE_MULTI_BASE
                 try await self.requireGrant(
                     requiredAccess,
                     lease: lease,
@@ -1723,7 +1723,7 @@ extension DatabaseContext {
                     storageAccess: storageAccess,
                     container: self.container
                 )
-                #if DATABASE_MULTIPLE_BASES
+                #if DATABASE_MULTI_BASE
                 let executionBinding = DatabaseTransactionExecutionBinding(
                     transaction: storageAccess,
                     resource: self.resource,
@@ -1752,7 +1752,7 @@ extension DatabaseContext {
         }
     }
 
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     @_spi(DatabaseExecution)
     public func withExecutionTransaction<T: Sendable>(
         requiredAccess: Security.Access = .write,
@@ -1822,7 +1822,7 @@ extension DatabaseContext {
 
         return try await withDataOperation {
             if let binding = ActiveDatabaseTransactionContext.binding {
-                #if DATABASE_MULTIPLE_BASES
+                #if DATABASE_MULTI_BASE
                 guard binding.resource == self.resource,
                       binding.authorization == self.authorization,
                       binding.grantedAccess.isSuperset(of: requiredAccess)
@@ -1835,7 +1835,7 @@ extension DatabaseContext {
                 #endif
                 return try await operation(binding.transaction)
             }
-            #if DATABASE_MULTIPLE_BASES
+            #if DATABASE_MULTI_BASE
             let lease = try self.requireOperationDataRoot()
             let selectedTransactionExecutor = lease.transactionExecutor
             #else
@@ -1856,14 +1856,14 @@ extension DatabaseContext {
                     stateLock.withLock { $0.commitOutcomeUnknown = true }
                 }
             ) { transaction in
-                #if DATABASE_MULTIPLE_BASES
+                #if DATABASE_MULTI_BASE
                 try await self.requireGrant(
                     requiredAccess,
                     lease: lease,
                     transaction: transaction
                 )
                 #endif
-                #if DATABASE_MULTIPLE_BASES
+                #if DATABASE_MULTI_BASE
                 let executionBinding = DatabaseTransactionExecutionBinding(
                     transaction: transaction,
                     resource: self.resource,
@@ -1901,7 +1901,7 @@ extension DatabaseContext {
         _ operation: @Sendable () async throws -> Result
     ) async throws -> Result {
         try await container.withOperationSchemaLease { _ in
-            #if DATABASE_MULTIPLE_BASES
+            #if DATABASE_MULTI_BASE
             if let current = ActiveDatabaseDataRootContext.lease {
                 guard current.resource == resource else {
                     throw DatabaseRuntimeError.internalError(
@@ -1939,10 +1939,10 @@ extension DatabaseContext {
     }
 
     /// Root of the database data selected for this context. The lightweight
-    /// runtime has one fixed root; `MultipleBases` resolves the operation-bound
+    /// runtime has one fixed root; `MultiBase` resolves the operation-bound
     /// Base lease before returning its root.
     package func operationDataRoot() throws -> Subspace {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         try requireOperationDataRoot().root
         #else
         container.databaseRoot
@@ -1951,7 +1951,7 @@ extension DatabaseContext {
 
     @_spi(DatabaseExecution)
     public func executionStorage() throws -> DatabaseExecutionStorage {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         let lease = try requireOperationDataRoot()
         return DatabaseExecutionStorage(
             engine: lease.domain.engine,
@@ -1966,7 +1966,7 @@ extension DatabaseContext {
         #endif
     }
 
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     package func requireOperationDataRoot() throws -> DatabaseDataRootLease {
         guard let lease = ActiveDatabaseDataRootContext.lease,
               lease.resource == resource else {

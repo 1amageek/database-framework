@@ -3,8 +3,8 @@
 //
 // Provides community detection for graph indexes.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 // MARK: - Seeded Random Number Generator
@@ -20,10 +20,10 @@ private struct SeededRandomNumberGenerator: RandomNumberGenerator {
         // Initialize state using SplitMix64 to expand the seed
         var s = seed
         func splitMix64() -> UInt64 {
-            s &+= 0x9e3779b97f4a7c15
+            s &+= 0x9e37_79b9_7f4a_7c15
             var z = s
-            z = (z ^ (z >> 30)) &* 0xbf58476d1ce4e5b9
-            z = (z ^ (z >> 27)) &* 0x94d049bb133111eb
+            z = (z ^ (z >> 30)) &* 0xbf58_476d_1ce4_e5b9
+            z = (z ^ (z >> 27)) &* 0x94d0_49bb_1331_11eb
             return z ^ (z >> 31)
         }
         state = (splitMix64(), splitMix64())
@@ -107,7 +107,7 @@ public final class CommunityDetector: Sendable {
     ///
     /// - Parameters:
     ///   - snapshot: Stable storage snapshot for the complete computation
-    ///   - subspace: Index subspace
+    ///   - subspace: ResolvedIndex subspace
     ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
     @_spi(DatabaseExecution)

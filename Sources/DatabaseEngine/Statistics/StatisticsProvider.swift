@@ -1,9 +1,9 @@
 // StatisticsProvider.swift
 // Database statistics for query analysis
 
-import DatabaseTypes
 import DatabaseKit
 import DatabaseMath
+import DatabaseTypes
 import StorageKit
 import Synchronization
 
@@ -697,7 +697,10 @@ public final class SearchStatisticsStorage: Sendable {
 ///
 /// **Usage**:
 /// ```swift
-/// let collector = SearchStatisticsCollector(database: database, subspace: subspace)
+/// let collector = SearchStatisticsCollector(
+///     reader: reader,
+///     physicalIndexSubspace: physicalIndexSubspace
+/// )
 ///
 /// // Collect vector statistics
 /// let vectorStats = try await collector.collectVectorStats(
@@ -713,11 +716,11 @@ public final class SearchStatisticsStorage: Sendable {
 public struct SearchStatisticsCollector: Sendable {
 
     private let reader: StorageReader
-    private let indexSubspace: Subspace
+    private let physicalIndexSubspace: Subspace
 
-    public init(reader: StorageReader, indexSubspace: Subspace) {
+    public init(reader: StorageReader, physicalIndexSubspace: Subspace) {
         self.reader = reader
-        self.indexSubspace = indexSubspace
+        self.physicalIndexSubspace = physicalIndexSubspace
     }
 
     /// Collect vector index statistics
@@ -726,7 +729,7 @@ public struct SearchStatisticsCollector: Sendable {
         dimensions: Int,
         sampleSize: Int = 1000
     ) async throws -> VectorIndexStatistics {
-        let subspace = indexSubspace.subspace(indexName)
+        let subspace = physicalIndexSubspace
 
         var vectorCount = 0
         var sumNorm: Double = 0
@@ -780,7 +783,7 @@ public struct SearchStatisticsCollector: Sendable {
         indexName: String,
         topTermCount: Int = 100
     ) async throws -> FullTextIndexStatistics {
-        let subspace = indexSubspace.subspace(indexName)
+        let subspace = physicalIndexSubspace
         let termsSubspace = subspace.subspace("terms")
 
         var totalDocs: Set<ByteString> = []
@@ -844,7 +847,7 @@ public struct SearchStatisticsCollector: Sendable {
 
     /// Collect spatial index statistics
     public func collectSpatialStats(indexName: String) async throws -> SpatialIndexStatistics {
-        let subspace = indexSubspace.subspace(indexName)
+        let subspace = physicalIndexSubspace
 
         var entryCount = 0
         var cellDensity: [UInt64: Int] = [:]

@@ -3,8 +3,8 @@
 //
 // Provides DatabaseContext extension and fluent query builder for shortest path queries.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 // MARK: - ShortestPathEntryPoint
@@ -69,7 +69,7 @@ public struct ShortestPathEntryPoint<T: Persistable>: Sendable {
         )
     }
 
-    /// Use the default graph index (first GraphIndexKind found)
+    /// Use the first declared property-graph index.
     ///
     /// - Returns: Shortest path query builder configured with the default index
     public func defaultIndex() throws -> ShortestPathQueryBuilder<T> {
@@ -267,7 +267,7 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,
-                strategy: resolvedIndex.metadata.strategy,
+                strategy: resolvedIndex.configuration.strategy,
                 configuration: config
             )
 
@@ -320,7 +320,7 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,
-                strategy: resolvedIndex.metadata.strategy,
+                strategy: resolvedIndex.configuration.strategy,
                 configuration: config
             )
 

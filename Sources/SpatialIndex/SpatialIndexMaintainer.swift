@@ -3,8 +3,8 @@
 //
 // Maintains spatial indexes using S2 or Morton encoding.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -25,13 +25,13 @@ import StorageKit
 /// ```swift
 /// let maintainer = SpatialIndexMaintainer<Restaurant>(
 ///     index: locationIndex,
-///     kind: SpatialIndexKind(encoding: .s2, level: 15),
+///     definition: .spatial(location: location, encoding: .s2, level: 15),
 ///     subspace: spatialSubspace,
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
 public struct SpatialIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMaintainer {
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -39,7 +39,7 @@ public struct SpatialIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
     private let level: Int
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         encoding: SpatialEncoding,
         level: Int,
         subspace: Subspace,

@@ -1,7 +1,7 @@
 #if !os(WASI)
 #if FOUNDATION_DB
 // IndexRebuildConsistencyTests.swift
-// Verifies that all IndexKind implementations produce identical subspace layouts
+// Verifies that index providers produce identical subspace layouts during rebuilds.
 // between save-time and rebuild-time, and that rebuilt indexes remain queryable.
 //
 // These tests detect the EntityIndexBuilder.buildEntityIndex() subspace bug where
@@ -35,7 +35,10 @@ struct RebuildScalarUser {
     var id: String = UUID().uuidString
     var email: String = ""
     var city: String = ""
-    #Index(.scalar, fields: [\RebuildScalarUser.email])
+    #Index(
+        .ordered(
+            name: "RebuildScalarUser_email", keys: [.ascending(\RebuildScalarUser.email)],
+            unique: false))
 }
 
 @Persistable
@@ -46,10 +49,12 @@ struct RebuildTripleStatement {
     var predicate: String = ""
     var object: String = ""
     #Index(
-        .propertyGraph(strategy: .tripleStore),
-        from: \RebuildTripleStatement.subject,
-        edge: \RebuildTripleStatement.predicate,
-        to: \RebuildTripleStatement.object
+        .graph(
+            name: "RebuildTripleStatement_graph_subject_predicate_object",
+            definition: .property(
+                source: \RebuildTripleStatement.subject,
+                label: .field(\RebuildTripleStatement.predicate),
+                target: \RebuildTripleStatement.object, graph: nil, strategy: .tripleStore))
     )
 }
 
@@ -61,11 +66,11 @@ struct RebuildEdge {
     var relation: String = ""
     var target: String = ""
     #Index(
-        .propertyGraph(strategy: .adjacency),
-        from: \RebuildEdge.source,
-        edge: \RebuildEdge.relation,
-        to: \RebuildEdge.target
-    )
+        .graph(
+            name: "RebuildEdge_graph_source_relation_target",
+            definition: .property(
+                source: \RebuildEdge.source, label: .field(\RebuildEdge.relation),
+                target: \RebuildEdge.target, graph: nil, strategy: .adjacency)))
 }
 
 @Persistable
@@ -74,7 +79,12 @@ struct RebuildArticle {
     var id: String = UUID().uuidString
     var title: String = ""
     var content: String = ""
-    #Index(.fullText(tokenizer: .simple), fields: [\RebuildArticle.content])
+    #Index(
+        .text(
+            name: "RebuildArticle_fulltext_content", fields: [\RebuildArticle.content],
+            mode: .fullText(
+                tokenizer: .simple, storePositions: true, ngramSize: 3, minimumTermLength: 2
+            )))
 }
 
 @Persistable
@@ -83,7 +93,9 @@ struct RebuildCountItem {
     var id: String = UUID().uuidString
     var category: String = ""
     var value: Int64 = 0
-    #Index(.count, groupBy: [\RebuildCountItem.category])
+    #Index(
+        .aggregate(
+            name: "RebuildCountItem_count_category", function: .count, groupBy: [.ascending(\RebuildCountItem.category)]))
 }
 
 // MARK: - Test Suite
@@ -105,7 +117,13 @@ struct IndexRebuildConsistencyTests {
         return try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(RebuildScalarUser.self), try DatabaseFrameworkRuntime.entity(RebuildTripleStatement.self), try DatabaseFrameworkRuntime.entity(RebuildEdge.self), try DatabaseFrameworkRuntime.entity(RebuildArticle.self), try DatabaseFrameworkRuntime.entity(RebuildCountItem.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(RebuildScalarUser.self), try DatabaseFrameworkRuntime.entity(RebuildTripleStatement.self), try DatabaseFrameworkRuntime.entity(RebuildEdge.self), try DatabaseFrameworkRuntime.entity(RebuildArticle.self), try DatabaseFrameworkRuntime.entity(RebuildCountItem.self),
+                ]),
             security: .testingDisabled
             )
     }
@@ -157,10 +175,15 @@ struct IndexRebuildConsistencyTests {
 
 
             let context = container.testBaseContext()
-            var u1 = RebuildScalarUser(); u1.email = "a@test.com"
-            var u2 = RebuildScalarUser(); u2.email = "b@test.com"
-            var u3 = RebuildScalarUser(); u3.email = "c@test.com"
-            try context.insert(u1); try context.insert(u2); try context.insert(u3)
+            var u1 = RebuildScalarUser()
+            u1.email = "a@test.com"
+            var u2 = RebuildScalarUser()
+            u2.email = "b@test.com"
+            var u3 = RebuildScalarUser()
+            u3.email = "c@test.com"
+            try context.insert(u1)
+            try context.insert(u2)
+            try context.insert(u3)
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildScalarUser.self, container: container)
@@ -189,9 +212,16 @@ struct IndexRebuildConsistencyTests {
 
 
             let context = container.testBaseContext()
-            var s1 = RebuildTripleStatement(); s1.subject = "A"; s1.predicate = "p"; s1.object = "B"
-            var s2 = RebuildTripleStatement(); s2.subject = "C"; s2.predicate = "q"; s2.object = "D"
-            try context.insert(s1); try context.insert(s2)
+            var s1 = RebuildTripleStatement()
+            s1.subject = "A"
+            s1.predicate = "p"
+            s1.object = "B"
+            var s2 = RebuildTripleStatement()
+            s2.subject = "C"
+            s2.predicate = "q"
+            s2.object = "D"
+            try context.insert(s1)
+            try context.insert(s2)
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildTripleStatement.self, container: container)
@@ -220,9 +250,16 @@ struct IndexRebuildConsistencyTests {
 
 
             let context = container.testBaseContext()
-            var e1 = RebuildEdge(); e1.source = "Alice"; e1.relation = "knows"; e1.target = "Bob"
-            var e2 = RebuildEdge(); e2.source = "Bob"; e2.relation = "knows"; e2.target = "Carol"
-            try context.insert(e1); try context.insert(e2)
+            var e1 = RebuildEdge()
+            e1.source = "Alice"
+            e1.relation = "knows"
+            e1.target = "Bob"
+            var e2 = RebuildEdge()
+            e2.source = "Bob"
+            e2.relation = "knows"
+            e2.target = "Carol"
+            try context.insert(e1)
+            try context.insert(e2)
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildEdge.self, container: container)
@@ -251,9 +288,14 @@ struct IndexRebuildConsistencyTests {
 
 
             let context = container.testBaseContext()
-            var a1 = RebuildArticle(); a1.title = "T1"; a1.content = "hello world"
-            var a2 = RebuildArticle(); a2.title = "T2"; a2.content = "hello swift"
-            try context.insert(a1); try context.insert(a2)
+            var a1 = RebuildArticle()
+            a1.title = "T1"
+            a1.content = "hello world"
+            var a2 = RebuildArticle()
+            a2.title = "T2"
+            a2.content = "hello swift"
+            try context.insert(a1)
+            try context.insert(a2)
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildArticle.self, container: container)
@@ -282,10 +324,18 @@ struct IndexRebuildConsistencyTests {
 
 
             let context = container.testBaseContext()
-            var c1 = RebuildCountItem(); c1.category = "electronics"; c1.value = 100
-            var c2 = RebuildCountItem(); c2.category = "electronics"; c2.value = 200
-            var c3 = RebuildCountItem(); c3.category = "books"; c3.value = 50
-            try context.insert(c1); try context.insert(c2); try context.insert(c3)
+            var c1 = RebuildCountItem()
+            c1.category = "electronics"
+            c1.value = 100
+            var c2 = RebuildCountItem()
+            c2.category = "electronics"
+            c2.value = 200
+            var c3 = RebuildCountItem()
+            c3.category = "books"
+            c3.value = 50
+            try context.insert(c1)
+            try context.insert(c2)
+            try context.insert(c3)
             try await context.save()
 
             let saveKeys = try await getIndexKeys(for: RebuildCountItem.self, container: container)
@@ -316,7 +366,9 @@ struct IndexRebuildConsistencyTests {
 
 
             let context = container.testBaseContext()
-            var u1 = RebuildScalarUser(); u1.email = "alice@test.com"; u1.city = "Tokyo"
+            var u1 = RebuildScalarUser()
+            u1.email = "alice@test.com"
+            u1.city = "Tokyo"
             try context.insert(u1)
             try await context.save()
 
@@ -343,12 +395,20 @@ struct IndexRebuildConsistencyTests {
 
             let context = container.testBaseContext()
             var s1 = RebuildTripleStatement()
-            s1.subject = "Alice"; s1.predicate = "knows"; s1.object = "Bob"
+            s1.subject = "Alice"
+            s1.predicate = "knows"
+            s1.object = "Bob"
             var s2 = RebuildTripleStatement()
-            s2.subject = "Alice"; s2.predicate = "knows"; s2.object = "Carol"
+            s2.subject = "Alice"
+            s2.predicate = "knows"
+            s2.object = "Carol"
             var s3 = RebuildTripleStatement()
-            s3.subject = "Bob"; s3.predicate = "knows"; s3.object = "Dave"
-            try context.insert(s1); try context.insert(s2); try context.insert(s3)
+            s3.subject = "Bob"
+            s3.predicate = "knows"
+            s3.object = "Dave"
+            try context.insert(s1)
+            try context.insert(s2)
+            try context.insert(s3)
             try await context.save()
 
             let admin = container.testBaseAdmin()
@@ -391,9 +451,16 @@ struct IndexRebuildConsistencyTests {
 
 
             let context = container.testBaseContext()
-            var e1 = RebuildEdge(); e1.source = "Alice"; e1.relation = "follows"; e1.target = "Bob"
-            var e2 = RebuildEdge(); e2.source = "Alice"; e2.relation = "follows"; e2.target = "Carol"
-            try context.insert(e1); try context.insert(e2)
+            var e1 = RebuildEdge()
+            e1.source = "Alice"
+            e1.relation = "follows"
+            e1.target = "Bob"
+            var e2 = RebuildEdge()
+            e2.source = "Alice"
+            e2.relation = "follows"
+            e2.target = "Carol"
+            try context.insert(e1)
+            try context.insert(e2)
             try await context.save()
 
             let admin = container.testBaseAdmin()
@@ -425,9 +492,14 @@ struct IndexRebuildConsistencyTests {
 
 
             let context = container.testBaseContext()
-            var a1 = RebuildArticle(); a1.title = "Swift Guide"; a1.content = "swift programming language"
-            var a2 = RebuildArticle(); a2.title = "Rust Guide"; a2.content = "rust programming language"
-            try context.insert(a1); try context.insert(a2)
+            var a1 = RebuildArticle()
+            a1.title = "Swift Guide"
+            a1.content = "swift programming language"
+            var a2 = RebuildArticle()
+            a2.title = "Rust Guide"
+            a2.content = "rust programming language"
+            try context.insert(a1)
+            try context.insert(a2)
             try await context.save()
 
             let admin = container.testBaseAdmin()
@@ -464,10 +536,18 @@ struct IndexRebuildConsistencyTests {
 
 
             let context = container.testBaseContext()
-            var c1 = RebuildCountItem(); c1.category = "electronics"; c1.value = 100
-            var c2 = RebuildCountItem(); c2.category = "electronics"; c2.value = 200
-            var c3 = RebuildCountItem(); c3.category = "books"; c3.value = 50
-            try context.insert(c1); try context.insert(c2); try context.insert(c3)
+            var c1 = RebuildCountItem()
+            c1.category = "electronics"
+            c1.value = 100
+            var c2 = RebuildCountItem()
+            c2.category = "electronics"
+            c2.value = 200
+            var c3 = RebuildCountItem()
+            c3.category = "books"
+            c3.value = 50
+            try context.insert(c1)
+            try context.insert(c2)
+            try context.insert(c3)
             try await context.save()
 
             let admin = container.testBaseAdmin()
@@ -492,7 +572,8 @@ struct IndexRebuildConsistencyTests {
 
 
             let context = container.testBaseContext()
-            var u1 = RebuildScalarUser(); u1.email = "test@test.com"
+            var u1 = RebuildScalarUser()
+            u1.email = "test@test.com"
             try context.insert(u1)
             try await context.save()
 
@@ -523,7 +604,9 @@ struct IndexRebuildConsistencyTests {
 
             let context = container.testBaseContext()
             var s1 = RebuildTripleStatement()
-            s1.subject = "Alice"; s1.predicate = "knows"; s1.object = "Bob"
+            s1.subject = "Alice"
+            s1.predicate = "knows"
+            s1.object = "Bob"
             try context.insert(s1)
             try await context.save()
 
@@ -536,7 +619,9 @@ struct IndexRebuildConsistencyTests {
 
             // Insert AFTER rebuild
             var s2 = RebuildTripleStatement()
-            s2.subject = "Alice"; s2.predicate = "knows"; s2.object = "Carol"
+            s2.subject = "Alice"
+            s2.predicate = "knows"
+            s2.object = "Carol"
             try context.insert(s2)
             try await context.save()
 

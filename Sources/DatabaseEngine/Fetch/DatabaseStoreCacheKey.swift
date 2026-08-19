@@ -1,5 +1,5 @@
 struct DatabaseStoreCacheKey: Sendable, Equatable, Comparable {
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     let basePlacementGeneration: UInt64
     #endif
     let entity: String
@@ -9,7 +9,7 @@ struct DatabaseStoreCacheKey: Sendable, Equatable, Comparable {
         lhs: DatabaseStoreCacheKey,
         rhs: DatabaseStoreCacheKey
     ) -> Bool {
-        #if DATABASE_MULTIPLE_BASES
+        #if DATABASE_MULTI_BASE
         if lhs.basePlacementGeneration != rhs.basePlacementGeneration {
             return lhs.basePlacementGeneration < rhs.basePlacementGeneration
         }

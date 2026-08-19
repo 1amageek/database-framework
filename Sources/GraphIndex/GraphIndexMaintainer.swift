@@ -4,8 +4,8 @@
 // Maintains graph edge indexes using configurable storage strategies.
 // Supports adjacency (2-index), tripleStore (3-index), and hexastore (6-index).
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -38,7 +38,7 @@ public struct GraphIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer 
     // MARK: - Properties
 
     /// Index definition
-    public let index: Index
+    public let index: ResolvedIndex
 
     /// Subspace for index storage
     public let subspace: Subspace
@@ -69,29 +69,44 @@ public struct GraphIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer 
     /// Initialize graph index maintainer
     ///
     /// - Parameters:
-    ///   - index: Index definition
+    ///   - index: ResolvedIndex definition
     ///   - subspace: FDB subspace for this index
     ///   - idExpression: Expression for extracting item's unique identifier
-    ///   - metadata: Validated property-graph declaration.
+    ///   - definition: Validated property-graph declaration.
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        metadata: PropertyGraphIndexMetadata
+        definition: GraphIndexDefinition<FieldIdentity>
     ) throws {
+        guard
+            case .property(
+                let source,
+                let label,
+                let target,
+                let graph,
+                let strategy
+            ) = definition
+        else {
+            throw IndexMaintainerProviderError.typeMismatch(
+                registered: .graph(.property),
+                actual: index.type
+            )
+        }
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
-        self.sourceField = metadata.sourceFieldName
-        self.labelField = metadata.labelFieldName.isEmpty
-            ? nil
-            : metadata.labelFieldName
-        self.targetField = metadata.targetFieldName
-        self.namespaceField = metadata.namespaceFieldName
-        self.strategy = metadata.declarativeStrategy
+        self.sourceField = source.name
+        switch label {
+        case .field(let field): self.labelField = field.name
+        case .implicit: self.labelField = nil
+        }
+        self.targetField = target.name
+        self.namespaceField = graph?.name
+        self.strategy = strategy
         self.strategySubspaces = StrategySubspaces(
             base: subspace,
-            strategy: metadata.declarativeStrategy
+            strategy: strategy
         )
     }
 

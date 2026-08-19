@@ -1,11 +1,12 @@
 import DatabaseKit
 import DatabaseRuntime
-import TestSupport
 import DatabaseTypes
-@testable import DatabaseEngine
 import StorageKit
 import Synchronization
+import TestSupport
 import Testing
+
+@testable import DatabaseEngine
 
 @Persistable
 private struct TransactionLifecycleParent: Equatable {
@@ -465,8 +466,13 @@ struct DatabaseTransactionLifecycleTests {
                 storageEngine: engine
             ),
             runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 persistableMutationMaintainers: maintainers,
-                entityRuntimes: [try DatabaseFrameworkRuntime.entity(TransactionLifecycleParent.self), try DatabaseFrameworkRuntime.entity(TransactionLifecycleChild.self)]
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(TransactionLifecycleParent.self), try DatabaseFrameworkRuntime.entity(TransactionLifecycleChild.self),
+                ]
             ),
             security: .testingDisabled
         )

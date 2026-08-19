@@ -37,21 +37,20 @@ private struct MinimumIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
         // Expression: category + price (grouping + min value)
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: CatalogProduct.self,
             name: indexName,
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .minimum,
                 groupingFields: [
                     FieldIdentity(name: "category", number: 2)
                 ],
                 valueField: FieldIdentity(name: "price", number: 4),
-                valueType: .int64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "category"),
-                FieldKeyExpression(fieldName: "price")
+                FieldKeyExpression(fieldName: "price"),
             ]),
-            subspaceKey: indexName,
             itemTypes: Set(["CatalogProduct"])
         )
 
@@ -127,7 +126,7 @@ struct MinIndexBehaviorTests {
         let products = [
             CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
             CatalogProduct(id: "p2", category: "Electronics", brand: "Samsung", price: 799),
-            CatalogProduct(id: "p3", category: "Electronics", brand: "Sony", price: 599)
+            CatalogProduct(id: "p3", category: "Electronics", brand: "Sony", price: 599),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -232,7 +231,7 @@ struct MinIndexBehaviorTests {
         let products = [
             CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
             CatalogProduct(id: "p2", category: "Electronics", brand: "Samsung", price: 799),
-            CatalogProduct(id: "p3", category: "Electronics", brand: "Budget", price: 199)
+            CatalogProduct(id: "p3", category: "Electronics", brand: "Budget", price: 199),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -260,7 +259,7 @@ struct MinIndexBehaviorTests {
             CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
             CatalogProduct(id: "p2", category: "Electronics", brand: "Budget", price: 199),
             CatalogProduct(id: "p3", category: "Clothing", brand: "Nike", price: 150),
-            CatalogProduct(id: "p4", category: "Clothing", brand: "Budget", price: 29)
+            CatalogProduct(id: "p4", category: "Clothing", brand: "Budget", price: 29),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -303,7 +302,7 @@ struct MinIndexBehaviorTests {
 
         let products = [
             CatalogProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
-            CatalogProduct(id: "p2", category: "Electronics", brand: "Budget", price: 199)
+            CatalogProduct(id: "p2", category: "Electronics", brand: "Budget", price: 199),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -335,7 +334,7 @@ struct MinIndexBehaviorTests {
 
         let products = [
             CatalogProduct(id: "p1", category: "Electronics", brand: "Expensive", price: 999),
-            CatalogProduct(id: "p2", category: "Electronics", brand: "Cheap", price: 99)
+            CatalogProduct(id: "p2", category: "Electronics", brand: "Cheap", price: 99),
         ]
 
         // Insert both

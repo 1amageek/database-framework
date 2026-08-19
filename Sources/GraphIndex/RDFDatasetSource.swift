@@ -7,7 +7,7 @@ public struct RDFDatasetSource: Sendable {
     public let indexName: String
     public let indexSubspace: Subspace
     public let coverage: RDFDatasetSourceCoverage
-    package let storedFieldNames: [String]
+    package let includedFieldNames: [String]
     package let physicalCodec: RDFQuadIndexPhysicalCodec
 
     public init(
@@ -15,13 +15,13 @@ public struct RDFDatasetSource: Sendable {
         indexName: String,
         indexSubspace: Subspace,
         coverage: RDFDatasetSourceCoverage,
-        storedFieldNames: [String] = []
+        includedFieldNames: [String] = []
     ) {
         self.entityName = entityName
         self.indexName = indexName
         self.indexSubspace = indexSubspace
         self.coverage = coverage
-        self.storedFieldNames = storedFieldNames
+        self.includedFieldNames = includedFieldNames
         self.physicalCodec = RDFQuadIndexPhysicalCodec(
             baseSubspace: indexSubspace
         )
@@ -37,7 +37,7 @@ public struct RDFDatasetSource: Sendable {
             indexName: selection.indexName,
             indexSubspace: indexSubspace,
             coverage: try selection.metadata.graphMapping.sourceCoverage,
-            storedFieldNames: selection.storedFieldNames
+            includedFieldNames: selection.includedFieldNames
         )
     }
 }

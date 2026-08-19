@@ -4,7 +4,7 @@ import StorageKit
 /// Enforces the logical uniqueness contract shared by mutations and index builds.
 enum IndexUniquenessConstraint {
     static func enforce<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         item: Item,
         id: Tuple,
         state: IndexState,

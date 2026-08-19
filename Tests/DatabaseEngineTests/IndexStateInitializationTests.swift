@@ -1,9 +1,9 @@
-import DatabaseTypes
-import TestSupport
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
+import DatabaseTypes
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Index State Initialization Tests", .serialized)
@@ -90,10 +90,14 @@ struct IndexStateInitializationTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         BootstrapIndexedEntity.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -104,7 +108,7 @@ struct IndexStateInitializationTests {
             engine: engine,
             indexStateManager: IndexLifecycleStore(container: container, subspace: root),
             entitySubspace: entitySubspace,
-            indexName: "initialization_index"
+            indexName: "bootstrap_value"
         )
     }
 

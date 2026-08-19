@@ -86,16 +86,17 @@ struct SchemaDeclaredIndexBehaviorTests {
             context: scenario.container.testBaseContext(),
             query: automaticQuery
         ).executionPlan()
-        guard case .scalarIndex(
-            let name,
-            let kind,
-            let indexedFields
+        guard
+            case .orderedIndex(
+                let name,
+                let indexType,
+                let indexedFields
         ) = plan.accessPath else {
             Issue.record("Expected the application-composed scalar index")
             return
         }
         #expect(name == scenario.indexName)
-        #expect(kind == "scalar")
+        #expect(indexType == .ordered)
         #expect(indexedFields == ["category"])
 
         let automaticResults = try await QueryExecutor(
@@ -121,7 +122,7 @@ struct SchemaDeclaredIndexBehaviorTests {
                     accessPath: .index(
                         IndexScanSource(
                             indexName: scenario.indexName,
-                            kindIdentifier: "scalar"
+                            indexType: .ordered
                         )
                     ),
                     filter: .equal(
@@ -152,9 +153,12 @@ struct SchemaDeclaredIndexBehaviorTests {
     private func makeScenario() async throws -> CatalogIndexScenario {
         let indexName = "catalog_items_by_category"
         let descriptor = try IndexDescriptor(
-            name: indexName,
-            definition: .scalar,
-            fields: [CatalogItem.fields.category.ascending]
+            entityName: CatalogItem.persistableType,
+            declaration: .ordered(
+                name: indexName,
+                keys: [.ascending(CatalogItem.fields.category.identity)]
+            ),
+            fieldSchemas: CatalogItem.fieldSchemas
         )
         let engine = InMemoryEngine()
         let schema = try Schema(
@@ -169,6 +173,10 @@ struct SchemaDeclaredIndexBehaviorTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         CatalogItem.self,
@@ -201,7 +209,9 @@ private struct CatalogIndexScenario: Sendable {
     }
 
     func indexEntryCount(category: String? = nil) async throws -> Int {
-        let indexSubspace = store.indexSubspace.subspace(indexName)
+        let indexSubspace = try store.indexLifecycleStore.indexSubspace(
+            for: indexName
+        )
         let range: (begin: ByteString, end: ByteString)
         if let category {
             let categoryElement = try FieldValueTupleCodec.tupleElement(

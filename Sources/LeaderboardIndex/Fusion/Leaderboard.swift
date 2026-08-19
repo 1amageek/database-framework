@@ -1,9 +1,9 @@
+import DatabaseEngine
 // Leaderboard.swift
 // LeaderboardIndex - Leaderboard ranking query for Fusion
 //
 import DatabaseKit
 import DatabaseTypes
-import DatabaseEngine
 import StorageKit
 
 /// Leaderboard ranking query for Fusion
@@ -140,17 +140,17 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Index Discovery
 
-    /// Find the index descriptor and kind for leaderboard
-    private func findIndexDescriptorAndKind() throws -> (
+    /// Find the leaderboard descriptor and its typed configuration.
+    private func findIndexDescriptorAndConfiguration() throws -> (
         descriptor: IndexDescriptor,
         configuration: TimeWindowLeaderboardConfiguration
     )? {
         for descriptor in queryContext.indexDescriptors(for: T.self) {
-            guard descriptor.kind.identifier == "time_window_leaderboard" else {
+            guard descriptor.type == .leaderboard else {
                 continue
             }
             let configuration = try TimeWindowLeaderboardConfiguration(
-                metadata: descriptor.kind
+                definition: descriptor.declaration.definition
             )
             if configuration.scoreFieldName == scoreFieldName {
                 return (descriptor, configuration)
@@ -162,16 +162,18 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     // MARK: - FusionQuery
 
     public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
-        guard let (descriptor, indexKind) = try findIndexDescriptorAndKind() else {
+        guard let (descriptor, indexConfiguration) =
+                try findIndexDescriptorAndConfiguration() else {
             throw FusionQueryError.indexNotFound(
-                type: T.persistableType,
+                entity: T.persistableType,
                 field: scoreFieldName,
-                kind: "leaderboard"
+                indexType: .leaderboard
             )
         }
 
         let indexName = descriptor.name
-        let windowDurationSeconds = Int64(indexKind.window.durationSeconds)
+        let windowDurationSeconds = Int64(
+            indexConfiguration.window.durationSeconds)
 
         // Execute leaderboard query within transaction
         let grouping = try groupValue.map {
@@ -180,7 +182,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         let topKResults: [(pk: Tuple, score: Int64)] = try await queryContext
             .withReadableIndex(
                 named: indexName,
-                kindIdentifier: descriptor.kindIdentifier,
+                indexType: descriptor.type,
                 for: T.self
             ) { readableIndex, transaction in
             guard let readableIndex else {

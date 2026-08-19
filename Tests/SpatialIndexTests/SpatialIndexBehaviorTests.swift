@@ -55,16 +55,16 @@ private struct SpatialIndexContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.level = level
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: GeospatialLocation.self,
             name: indexName,
-            kind: spatialIndexMetadata(
+            definition: spatialIndexDefinition(
                 fieldName: "location",
                 fieldNumber: 3,
                 encoding: encoding,
                 level: level
             ),
             rootExpression: FieldKeyExpression(fieldName: "location"),
-            subspaceKey: indexName,
             itemTypes: Set(["GeospatialLocation"])
         )
 
@@ -158,7 +158,7 @@ struct SpatialIndexBehaviorTests {
         let locations = [
             try GeospatialLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671),
             try GeospatialLocation(id: "shibuya", name: "Shibuya Station", latitude: 35.6580, longitude: 139.7016),
-            try GeospatialLocation(id: "shinjuku", name: "Shinjuku Station", latitude: 35.6896, longitude: 139.7006)
+            try GeospatialLocation(id: "shinjuku", name: "Shinjuku Station", latitude: 35.6896, longitude: 139.7006),
         ]
 
         try await ctx.database.withTransaction { transaction in
@@ -313,7 +313,7 @@ struct SpatialIndexBehaviorTests {
 
         let locations = [
             try GeospatialLocation(id: "p1", name: "Point 1", latitude: 35.0, longitude: 139.0),
-            try GeospatialLocation(id: "p2", name: "Point 2", latitude: 36.0, longitude: 140.0)
+            try GeospatialLocation(id: "p2", name: "Point 2", latitude: 36.0, longitude: 140.0),
         ]
 
         try await ctx.database.withTransaction { transaction in

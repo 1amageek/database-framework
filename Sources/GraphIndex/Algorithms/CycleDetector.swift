@@ -3,8 +3,8 @@
 //
 // Provides efficient cycle detection for directed graphs.
 
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 // MARK: - CycleDetectorConfiguration
@@ -243,7 +243,7 @@ public final class CycleDetector: Sendable {
     ///
     /// - Parameters:
     ///   - snapshot: Stable storage snapshot for the complete traversal
-    ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
+    ///   - subspace: ResolvedIndex subspace (same as used by GraphIndexMaintainer)
     ///   - configuration: Algorithm configuration
     @_spi(DatabaseExecution)
     public init(

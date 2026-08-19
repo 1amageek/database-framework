@@ -4,10 +4,9 @@ import DatabaseTypes
 @Persistable
 struct RuntimeConfigurationScalarEntity {
     #Index(
-        .scalar,
-        fields: [\RuntimeConfigurationScalarEntity.name],
-        name: "RuntimeConfigurationScalarEntity_name"
-    )
+        .ordered(
+            name: "RuntimeConfigurationScalarEntity_name", keys: [.ascending(\RuntimeConfigurationScalarEntity.name)],
+            unique: false))
 
     var id: String = ""
     var name: String

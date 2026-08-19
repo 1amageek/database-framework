@@ -1,5 +1,5 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Enumerates canonical RDF dataset indexes that can expose a named graph.
@@ -30,8 +30,8 @@ public struct RDFDatasetSourcePlanner: Sendable {
 
                 guard let readableIndex = try await queryContext.readableIndex(
                     named: descriptor.name,
-                    kindIdentifier: descriptor.kindIdentifier,
-                    forEntityName: entity.name,
+                        indexType: descriptor.type,
+                        forEntityName: entity.name,
                     partitions: FieldObject(),
                     transaction: transaction
                 ) else {
@@ -43,7 +43,7 @@ public struct RDFDatasetSourcePlanner: Sendable {
                         indexName: descriptor.name,
                         indexSubspace: readableIndex.subspace,
                         coverage: try metadata.graphMapping.sourceCoverage,
-                        storedFieldNames: selection.storedFieldNames
+                        includedFieldNames: selection.includedFieldNames
                     )
                 )
             }

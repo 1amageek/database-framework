@@ -2,9 +2,11 @@ import DatabaseKit
 import DatabaseTypes
 
 public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
-    case duplicateIndexMaintainerProvider(String)
-    case duplicateIndexReadExecutor(String)
-    case duplicatePolymorphicIndexReadExecutor(String)
+    case invalidExecutionIdentityIdentifier
+    case invalidExecutionIdentityRevision
+    case duplicateIndexMaintainerProvider(IndexType)
+    case duplicateIndexReadExecutor(IndexType)
+    case duplicatePolymorphicIndexReadExecutor(IndexType)
     case duplicateFusionReadExecutor(String)
     case duplicatePersistableMutationMaintainer(identifier: String)
     case duplicatePersistableType(entityName: String)
@@ -22,29 +24,29 @@ public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
     case missingIndexMaintainerProvider(
         source: DatabaseRuntimeIndexRequirementSource,
         indexName: String,
-        kindIdentifier: String
+        indexType: IndexType
     )
     case missingIndexUniquenessSupport(
         source: DatabaseRuntimeIndexRequirementSource,
         indexName: String,
-        kindIdentifier: String
+        indexType: IndexType
     )
     case missingIndexReadExecutor(
         source: DatabaseRuntimeIndexRequirementSource,
         indexName: String,
-        kindIdentifier: String
+        indexType: IndexType
     )
     case missingPolymorphicIndexReadExecutor(
         source: DatabaseRuntimeIndexRequirementSource,
         indexName: String,
-        kindIdentifier: String
+        indexType: IndexType
     )
     case missingGraphTableSourceExecutor
     case missingSPARQLSourceExecutor
     case unsupportedStorageCapability(
         source: DatabaseRuntimeIndexRequirementSource,
         indexName: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         capability: DatabaseRuntimeStorageCapability
     )
     case missingPersistableMutationMaintainer(

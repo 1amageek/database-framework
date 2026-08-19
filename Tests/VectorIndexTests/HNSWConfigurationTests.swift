@@ -1,13 +1,14 @@
 // HNSWConfigurationTests.swift
 // Tests for HNSW configuration selection and basic functionality
 
-import Testing
-import TestHeartbeat
-import Foundation
-import StorageKit
 import DatabaseKit
 import DatabaseTypes
+import Foundation
+import StorageKit
+import TestHeartbeat
 import TestSupport
+import Testing
+
 @testable import DatabaseEngine
 @testable import VectorIndex
 
@@ -24,6 +25,22 @@ struct HNSWDocument {
     var embedding: Vector
 }
 
+private struct UnknownVectorOptionConfiguration:
+    IndexRuntimeConfiguration
+{
+    static let indexType = IndexType.vector
+    let indexName = "HNSWDocument_embedding"
+
+    var executionOptions: FieldObject {
+        get throws {
+            try FieldObject([
+                ("algorithm", .string("flat")),
+                ("unknown", .bool(true)),
+            ])
+        }
+    }
+}
+
 // MARK: - Configuration Selection Tests
 
 @Suite("VectorIndexConfiguration Selection Tests", .heartbeat)
@@ -31,14 +48,8 @@ struct VectorIndexConfigurationSelectionTests {
 
     @Test("Default configuration returns FlatVectorIndexMaintainer")
     func testDefaultReturnsFlatMaintainer() async throws {
-        let specification = try VectorIndexSpecification(vectorIndexMetadata(dimensions: 4, metric: .cosine))
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let specification = try VectorIndexSpecification(vectorIndexDefinition(dimensions: 4, metric: .cosine))
+        let index = try resolvedHNSWIndex(specification)
 
         let subspace = Subspace(prefix: Tuple("test").pack())
 
@@ -59,20 +70,14 @@ struct VectorIndexConfigurationSelectionTests {
 
     @Test("HNSW configuration returns HNSWIndexMaintainer")
     func testHNSWConfigurationReturnsHNSWMaintainer() async throws {
-        let specification = try VectorIndexSpecification(vectorIndexMetadata(dimensions: 4, metric: .cosine))
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let specification = try VectorIndexSpecification(vectorIndexDefinition(dimensions: 4, metric: .cosine))
+        let index = try resolvedHNSWIndex(specification)
 
         let subspace = Subspace(prefix: Tuple("test").pack())
 
         // Configure HNSW
-        let config = VectorIndexConfiguration<HNSWDocument>(
-            field: HNSWDocument.fields.embedding,
+        let config = VectorIndexConfiguration(
+            indexName: "HNSWDocument_embedding",
             algorithm: .hnsw(.default)
         )
 
@@ -92,20 +97,14 @@ struct VectorIndexConfigurationSelectionTests {
 
     @Test("Explicit flat configuration returns FlatVectorIndexMaintainer")
     func testExplicitFlatConfigurationReturnsFlatMaintainer() async throws {
-        let specification = try VectorIndexSpecification(vectorIndexMetadata(dimensions: 4, metric: .cosine))
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let specification = try VectorIndexSpecification(vectorIndexDefinition(dimensions: 4, metric: .cosine))
+        let index = try resolvedHNSWIndex(specification)
 
         let subspace = Subspace(prefix: Tuple("test").pack())
 
         // Explicitly configure flat
-        let config = VectorIndexConfiguration<HNSWDocument>(
-            field: HNSWDocument.fields.embedding,
+        let config = VectorIndexConfiguration(
+            indexName: "HNSWDocument_embedding",
             algorithm: .flat
         )
 
@@ -124,22 +123,19 @@ struct VectorIndexConfigurationSelectionTests {
 
     @Test("Non-matching configuration returns FlatVectorIndexMaintainer")
     func testNonMatchingConfigurationReturnsFlatMaintainer() async throws {
-        let specification = try VectorIndexSpecification(vectorIndexMetadata(dimensions: 4, metric: .cosine))
+        let specification = try VectorIndexSpecification(vectorIndexDefinition(dimensions: 4, metric: .cosine))
         let subspace = Subspace(prefix: Tuple("test").pack())
 
         // Configure HNSW for a different index name
-        let config = VectorIndexConfiguration<HNSWDocument>(
-            field: HNSWDocument.fields.embedding,
+        let config = VectorIndexConfiguration(
+            indexName: "HNSWDocument_embedding",
             algorithm: .hnsw(.default)
         )
 
         // Create index with a different name than the config targets
-        let otherIndex = Index(
-            name: "OtherIndex_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "OtherIndex_embedding",
-            itemTypes: Set(["HNSWDocument"])
+        let otherIndex = try resolvedHNSWIndex(
+            specification,
+            name: "OtherIndex_embedding"
         )
 
         let maintainer: any IndexMaintainer<HNSWDocument> = try VectorIndexMaintainerProvider()
@@ -161,27 +157,35 @@ struct VectorIndexConfigurationSelectionTests {
 @Suite("VectorIndexConfiguration Tests", .heartbeat)
 struct VectorIndexConfigurationTests {
 
-    @Test("Runtime policy resolves configured index algorithms")
+    @Test("Runtime policy rejects duplicate index algorithms")
     func resolvesConfiguredIndexAlgorithms() throws {
-        let flat = VectorIndexConfiguration<HNSWDocument>(
-            field: HNSWDocument.fields.embedding,
+        let flat = VectorIndexConfiguration(
+            indexName: "HNSWDocument_embedding",
             algorithm: .flat
         )
-        let hnsw = VectorIndexConfiguration<HNSWDocument>(
-            field: HNSWDocument.fields.embedding,
-            algorithm: .hnsw(.default),
-            subspaceKey: "unused-secondary-configuration"
+        let hnsw = VectorIndexConfiguration(
+            indexName: "HNSWDocument_embedding",
+            algorithm: .hnsw(.default)
         )
 
-        let policies = try VectorRuntimePolicy.resolveConfiguredIndexes(
+        #expect(
+            throws: IndexRuntimeConfigurationError.duplicateConfiguration(
+                indexName: "HNSWDocument_embedding"
+            )
+        ) {
+            _ = try VectorRuntimePolicy.resolveConfiguredIndexes(
             in: [flat, hnsw]
-        )
-        let policy = try #require(policies[flat.indexName])
-        guard case .flat = policy.algorithm else {
-            Issue.record("Expected the first effective vector policy to remain Flat")
-            return
+            )
         }
-        #expect(policy.subspaceKey == nil)
+    }
+
+    @Test("Runtime policy rejects unknown execution options")
+    func rejectsUnknownExecutionOptions() {
+        #expect(throws: VectorIndexError.self) {
+            _ = try VectorRuntimePolicy.resolve(
+                in: [UnknownVectorOptionConfiguration()]
+            )
+        }
     }
 
     @Test("Default algorithm is an exact flat scan")
@@ -192,21 +196,67 @@ struct VectorIndexConfigurationTests {
         }
     }
 
-    @Test("VectorIndexConfiguration has correct kindIdentifier")
-    func testKindIdentifier() {
-        #expect(VectorIndexConfiguration<HNSWDocument>.kindIdentifier == "vector")
+    @Test("VectorIndexConfiguration selects the vector index type")
+    func selectsVectorIndexType() {
+        #expect(VectorIndexConfiguration.indexType == .vector)
     }
 
-    @Test("VectorIndexConfiguration generates correct indexName")
+    @Test("VectorIndexConfiguration retains the explicit index name")
     func testIndexName() {
-        let config = VectorIndexConfiguration<HNSWDocument>(
-            field: HNSWDocument.fields.embedding,
+        let config = VectorIndexConfiguration(
+            indexName: "custom_embedding_index",
             algorithm: .flat
         )
 
-        #expect(config.indexName == "HNSWDocument_embedding")
-        #expect(config.entityName == HNSWDocument.persistableType)
-        #expect(config.fieldName == "embedding")
+        #expect(config.indexName == "custom_embedding_index")
+    }
+
+    @Test("Search tuning does not create a new HNSW physical generation")
+    func hnswSearchTuningPreservesPhysicalLayout() throws {
+        let first = VectorRuntimePolicy(
+            algorithm: .hnsw(
+                VectorHNSWParameters(
+                    m: 16,
+                    efConstruction: 200,
+                    efSearch: 40
+                )
+            )
+        )
+        let second = VectorRuntimePolicy(
+            algorithm: .hnsw(
+                VectorHNSWParameters(
+                    m: 16,
+                    efConstruction: 200,
+                    efSearch: 120
+                )
+            )
+        )
+
+        #expect(try first.physicalLayout == second.physicalLayout)
+    }
+
+    @Test("Persisted HNSW parameters create a new physical generation")
+    func hnswPersistedParametersChangePhysicalLayout() throws {
+        let first = VectorRuntimePolicy(
+            algorithm: .hnsw(
+                VectorHNSWParameters(
+                    m: 16,
+                    efConstruction: 200,
+                    efSearch: 50
+                )
+            )
+        )
+        let second = VectorRuntimePolicy(
+            algorithm: .hnsw(
+                VectorHNSWParameters(
+                    m: 32,
+                    efConstruction: 200,
+                    efSearch: 50
+                )
+            )
+        )
+
+        #expect(try first.physicalLayout != second.physicalLayout)
     }
 
     @Test("VectorHNSWParameters default values")
@@ -249,14 +299,8 @@ struct HNSWBasicBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWDocument_embedding")
 
-        let specification = try VectorIndexSpecification(vectorIndexMetadata(dimensions: 4, metric: .cosine))
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let specification = try VectorIndexSpecification(vectorIndexDefinition(dimensions: 4, metric: .cosine))
+        let index = try resolvedHNSWIndex(specification)
 
         let maintainer = HNSWIndexMaintainer<HNSWDocument>(
             index: index,
@@ -298,14 +342,8 @@ struct HNSWBasicBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWDocument_embedding")
 
-        let specification = try VectorIndexSpecification(vectorIndexMetadata(dimensions: 4, metric: .cosine))
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let specification = try VectorIndexSpecification(vectorIndexDefinition(dimensions: 4, metric: .cosine))
+        let index = try resolvedHNSWIndex(specification)
 
         let maintainer = HNSWIndexMaintainer<HNSWDocument>(
             index: index,
@@ -320,7 +358,7 @@ struct HNSWBasicBehaviorTests {
         let docs = [
             HNSWDocument(id: "exact", title: "Exact", embedding: try Vector(float32: [1.0, 0.0, 0.0, 0.0])),
             HNSWDocument(id: "similar", title: "Similar", embedding: try Vector(float32: [0.9, 0.1, 0.0, 0.0])),
-            HNSWDocument(id: "different", title: "Different", embedding: try Vector(float32: [0.0, 1.0, 0.0, 0.0]))
+            HNSWDocument(id: "different", title: "Different", embedding: try Vector(float32: [0.0, 1.0, 0.0, 0.0])),
         ]
 
         for doc in docs {
@@ -370,15 +408,9 @@ struct HNSWBasicBehaviorTests {
             "HNSWDocument_embedding"
         )
         let specification = try VectorIndexSpecification(
-            vectorIndexMetadata(dimensions: 4, metric: .cosine)
+            vectorIndexDefinition(dimensions: 4, metric: .cosine)
         )
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let index = try resolvedHNSWIndex(specification)
         let maintainer = HNSWIndexMaintainer<HNSWDocument>(
             index: index,
             dimensions: specification.dimensions,
@@ -415,15 +447,9 @@ struct HNSWBasicBehaviorTests {
             "HNSWDocument_embedding"
         )
         let specification = try VectorIndexSpecification(
-            vectorIndexMetadata(dimensions: 4, metric: .cosine)
+            vectorIndexDefinition(dimensions: 4, metric: .cosine)
         )
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let index = try resolvedHNSWIndex(specification)
         let maintainer = HNSWIndexMaintainer<HNSWDocument>(
             index: index,
             dimensions: specification.dimensions,
@@ -452,14 +478,8 @@ struct HNSWBasicBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "hnsw", "scanItems", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWDocument_embedding")
 
-        let specification = try VectorIndexSpecification(vectorIndexMetadata(dimensions: 4, metric: .cosine))
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let specification = try VectorIndexSpecification(vectorIndexDefinition(dimensions: 4, metric: .cosine))
+        let index = try resolvedHNSWIndex(specification)
 
         let maintainer = HNSWIndexMaintainer<HNSWDocument>(
             index: index,
@@ -473,7 +493,7 @@ struct HNSWBasicBehaviorTests {
         let docs = [
             HNSWDocument(id: "batch-exact", title: "Exact", embedding: try Vector(float32: [1.0, 0.0, 0.0, 0.0])),
             HNSWDocument(id: "batch-similar", title: "Similar", embedding: try Vector(float32: [0.9, 0.1, 0.0, 0.0])),
-            HNSWDocument(id: "batch-different", title: "Different", embedding: try Vector(float32: [0.0, 1.0, 0.0, 0.0]))
+            HNSWDocument(id: "batch-different", title: "Different", embedding: try Vector(float32: [0.0, 1.0, 0.0, 0.0])),
         ]
 
         try await database.withTransaction { transaction in
@@ -516,14 +536,8 @@ struct HNSWBasicBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "hnsw", "cacheRefresh", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWDocument_embedding")
 
-        let specification = try VectorIndexSpecification(vectorIndexMetadata(dimensions: 4, metric: .cosine))
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let specification = try VectorIndexSpecification(vectorIndexDefinition(dimensions: 4, metric: .cosine))
+        let index = try resolvedHNSWIndex(specification)
 
         let maintainer = HNSWIndexMaintainer<HNSWDocument>(
             index: index,
@@ -591,14 +605,8 @@ struct HNSWBasicBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "hnsw", "corruptMetadata", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWDocument_embedding")
 
-        let specification = try VectorIndexSpecification(vectorIndexMetadata(dimensions: 4, metric: .cosine))
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let specification = try VectorIndexSpecification(vectorIndexDefinition(dimensions: 4, metric: .cosine))
+        let index = try resolvedHNSWIndex(specification)
 
         let maintainer = HNSWIndexMaintainer<HNSWDocument>(
             index: index,
@@ -649,15 +657,9 @@ struct HNSWBasicBehaviorTests {
             .subspace("I")
             .subspace("HNSWDocument_embedding")
         let specification = try VectorIndexSpecification(
-            vectorIndexMetadata(dimensions: 4, metric: .cosine)
+            vectorIndexDefinition(dimensions: 4, metric: .cosine)
         )
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let index = try resolvedHNSWIndex(specification)
         let maintainer = HNSWIndexMaintainer<HNSWDocument>(
             index: index,
             dimensions: specification.dimensions,
@@ -747,14 +749,8 @@ struct HNSWBasicBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWDocument_embedding")
 
-        let specification = try VectorIndexSpecification(vectorIndexMetadata(dimensions: 4, metric: .cosine))
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let specification = try VectorIndexSpecification(vectorIndexDefinition(dimensions: 4, metric: .cosine))
+        let index = try resolvedHNSWIndex(specification)
 
         let maintainer = HNSWIndexMaintainer<HNSWDocument>(
             index: index,
@@ -831,15 +827,9 @@ struct HNSWBasicBehaviorTests {
             "HNSWDocument_embedding"
         )
         let specification = try VectorIndexSpecification(
-            vectorIndexMetadata(dimensions: 4, metric: .dotProduct)
+            vectorIndexDefinition(dimensions: 4, metric: .dotProduct)
         )
-        let index = Index(
-            name: "HNSWDocument_embedding",
-            kind: specification.metadata,
-            rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
-            itemTypes: Set(["HNSWDocument"])
-        )
+        let index = try resolvedHNSWIndex(specification)
         let maintainer = HNSWIndexMaintainer<HNSWDocument>(
             index: index,
             dimensions: 4,
@@ -903,11 +893,12 @@ struct HNSWBasicBehaviorTests {
         let cosineSubspace = Subspace(
             prefix: Tuple("test", "hnsw", "largeCosine").pack()
         )
-        let cosineIndex = Index(
+        let cosineIndex = try ResolvedIndex(
+            for: HNSWDocument.self,
             name: "HNSWDocument_embedding",
-            kind: vectorIndexMetadata(dimensions: 4, metric: .cosine),
+            definition: vectorIndexDefinition(
+                dimensions: 4, metric: .cosine),
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
             itemTypes: Set(["HNSWDocument"])
         )
         let cosineMaintainer = HNSWIndexMaintainer<HNSWDocument>(
@@ -959,11 +950,12 @@ struct HNSWBasicBehaviorTests {
         let dotSubspace = Subspace(
             prefix: Tuple("test", "hnsw", "largeDotProduct").pack()
         )
-        let dotIndex = Index(
+        let dotIndex = try ResolvedIndex(
+            for: HNSWDocument.self,
             name: "HNSWDocument_embedding",
-            kind: vectorIndexMetadata(dimensions: 4, metric: .dotProduct),
+            definition: vectorIndexDefinition(
+                dimensions: 4, metric: .dotProduct),
             rootExpression: FieldKeyExpression(fieldName: "embedding"),
-            subspaceKey: "HNSWDocument_embedding",
             itemTypes: Set(["HNSWDocument"])
         )
         let dotMaintainer = HNSWIndexMaintainer<HNSWDocument>(
@@ -998,6 +990,23 @@ struct HNSWBasicBehaviorTests {
         }
         #expect(dotNodeCount == 0)
     }
+}
+
+private func resolvedHNSWIndex(
+    _ specification: VectorIndexSpecification,
+    name: String = "HNSWDocument_embedding"
+) throws -> ResolvedIndex {
+    try ResolvedIndex(
+        for: HNSWDocument.self,
+        name: name,
+        definition: .vector(
+            embedding: HNSWDocument.fields.embedding.identity,
+            dimensions: specification.dimensions,
+            metric: specification.metric
+        ),
+        rootExpression: FieldKeyExpression(fieldName: "embedding"),
+        itemTypes: Set([HNSWDocument.persistableType])
+    )
 }
 
 private enum HNSWTestError: Error {

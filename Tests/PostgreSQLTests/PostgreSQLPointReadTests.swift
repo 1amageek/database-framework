@@ -90,7 +90,12 @@ struct PostgreSQLPointReadTests {
             for: schema,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGPointReadItem.self), try DatabaseFrameworkRuntime.entity(PGSecuredPointReadItem.self), try DatabaseFrameworkRuntime.entity(TenantOrder.self)],
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PGPointReadItem.self), try DatabaseFrameworkRuntime.entity(PGSecuredPointReadItem.self), try DatabaseFrameworkRuntime.entity(TenantOrder.self),
+                ],
                 authorizationPolicies: [
                     AuthorizationPolicyHandler(PGSecuredPointReadItem.self)
                 ]
@@ -236,7 +241,7 @@ struct PostgreSQLPointReadTests {
         try await PostgreSQLScenarioCoordinator.shared.withIsolatedScenario {
             let container = try await setupSecuredContainer()
             let itemID = uniqueID("secure")
-            #if MultipleBases
+            #if MultiBase
             try await container.grantTestBaseAccess(
                 to: .principal("owner"),
                 access: .all

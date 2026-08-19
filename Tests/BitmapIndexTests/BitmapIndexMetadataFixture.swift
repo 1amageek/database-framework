@@ -1,21 +1,12 @@
 import DatabaseKit
 
-func bitmapIndexMetadata(
+func bitmapIndexDefinition(
     fieldName: String,
     fieldNumber: Int
-) -> IndexKindMetadata {
-    let definition = IndexDefinition.bitmap
-    return IndexKindMetadata(
-        identifier: definition.identifier,
-        subspaceStructure: definition.subspaceStructure,
-        fields: [
-            IndexFieldMetadata(
-                identity: FieldIdentity(
+) -> IndexDefinition<FieldIdentity> {
+    .bitmap(
+        field: FieldIdentity(
                     name: fieldName,
-                    number: fieldNumber
-                )
-            )
-        ],
-        metadata: [:]
+                    number: fieldNumber)
     )
 }

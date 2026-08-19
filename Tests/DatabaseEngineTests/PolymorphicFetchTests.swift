@@ -18,20 +18,21 @@ import DatabaseRuntime
 @Polymorphable
 @PolymorphicDirectory("polymorphic_fetch_tests_shared")
 @PolymorphicIndex(
-    .scalar,
-    fields: ["title"],
-    name: "PolymorphicFetchDocument_title"
-)
+    .ordered(
+        name: "PolymorphicFetchDocument_title",
+        keys: [.ascending("title")]
+    ))
 @PolymorphicIndex(
-    .scalar,
-    fields: ["id"],
-    name: "PolymorphicFetchDocument_id"
-)
+    .ordered(
+        name: "PolymorphicFetchDocument_id",
+        keys: [.ascending("id")]
+    ))
 @PolymorphicIndex(
-    .fullText(tokenizer: .simple),
-    fields: ["title"],
-    name: "PolymorphicFetchDocument_title_fulltext"
-)
+    .text(
+        name: "PolymorphicFetchDocument_title_fulltext",
+        fields: ["title"],
+        mode: .fullText(tokenizer: .simple)
+    ))
 protocol PolymorphicFetchDocument:
     Polymorphable<PolymorphicFetchDocumentPolymorphicGroup>
 {
@@ -68,8 +69,8 @@ struct PolymorphicFetchReport: PolymorphicFetchDocument {
 ///
 /// The regression was not caught by existing tests because no test exercised
 /// the end-to-end round trip through the flat-tuple item subspace:
-/// - `PermutedReadExecutors` / `VectorReadExecutors` use `fetchPolymorphicItems`
-///   (a different code path that reconstructs keys from entity annotations).
+/// - Index-specific readers use `fetchPolymorphicItems` (a different code path
+///   that reconstructs keys from entity annotations).
 /// - `CanonicalQueryRPC` tests use `scanPolymorphicItems`, which scans the
 ///   whole item subspace without reconstructing a per-type subspace.
 ///
@@ -97,7 +98,13 @@ struct PolymorphicFetchTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicFetchArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicFetchReport.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(PolymorphicFetchArticle.self), try DatabaseFrameworkRuntime.entity(PolymorphicFetchReport.self),
+                ]),
             security: .testingDisabled,
         )
     }
@@ -113,9 +120,10 @@ struct PolymorphicFetchTests {
     ) async throws -> Int {
         let group = try container.polymorphicGroup(identifier: PolymorphicFetchArticle.polymorphableType)
         let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
-        var indexSubspace = groupSubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexName)
+        var indexSubspace = try IndexLifecycleStore(
+            container: container,
+            subspace: groupSubspace
+        ).indexSubspace(for: indexName)
 
         if let valuePrefix {
             let value = try FieldValue.string(valuePrefix).toTupleElement()
@@ -336,7 +344,8 @@ struct PolymorphicFetchTests {
 
         #expect(firstPage.results.map { $0.fields["title"]?.stringValue } == ["Alpha", "Beta"])
         #expect(try firstPage.results.first?.decodedModel(as: PolymorphicFetchReport.self)?.id == alpha.id)
-        #expect(try firstPage.results.dropFirst().first?.decodedModel(as: PolymorphicFetchArticle.self)?.id == beta.id)
+        #expect(try firstPage.results.dropFirst().first?.decodedModel(as: PolymorphicFetchArticle.self)?
+                .id == beta.id)
         #expect(firstPage.continuation != nil)
 
         let secondPage = try await context.findPolymorphic(PolymorphicFetchArticle.self)

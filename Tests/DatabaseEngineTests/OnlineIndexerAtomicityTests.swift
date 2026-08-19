@@ -34,7 +34,7 @@ struct OnlineIndexerAtomicityTests {
         let indexSubspace: Subspace
         let blobsSubspace: Subspace
 
-        init() async throws {
+        init(index: ResolvedIndex) async throws {
             self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
             let testId = UUID().uuidString.prefix(8)
             self.testSubspace = Subspace(prefix: Tuple("test", "atomicity", String(testId)).pack())
@@ -43,8 +43,24 @@ struct OnlineIndexerAtomicityTests {
             self.blobsSubspace = testSubspace.subspace("B")
 
             // Create container with Player schema
-            let schema = try Schema(entities: [try Player.schemaEntity], version: Schema.Version(1, 0, 0))
-            self.container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(Player.self)]), security: .testingDisabled)
+            let schema = try Schema(entities: [
+                    try Schema.Entity(
+                        from: Player.self,
+                        including: [index.descriptor]
+                    )
+                ],
+                version: Schema.Version(1, 0, 0))
+            self.container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [
+                        try DatabaseFrameworkRuntime.entity(
+                            Player.self,
+                            including: [index.descriptor]
+                        )
+                    ]), security: .testingDisabled)
         }
 
         func cleanup() async throws {
@@ -77,20 +93,20 @@ struct OnlineIndexerAtomicityTests {
     @Test("Progress is consistent with indexed data")
     func testProgressConsistencyWithIndexedData() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let ctx = try await AtomicIndexingContext()
+            let index = try PlayerIdentifierIndexDefinition.make(
+                name: "consistency_idx"
+            )
+            let ctx = try await AtomicIndexingContext(index: index)
 
             let players = PlayerDatasetGenerator.generatePlayers(count: 100, nameLength: 50)
             try await ctx.insertPlayers(players)
 
-            let index = PlayerIdentifierIndexDefinition.make(name: "consistency_idx")
-            let maintainer = CountingIndexMaintainer<Player>(
-                indexSubspace: ctx.indexSubspace,
-                indexName: index.name
-            )
-
             let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
-                subspace: ctx.indexSubspace.subspace("_meta")
+                subspace: ctx.testSubspace
+            )
+            let maintainer = CountingIndexMaintainer<Player>(
+                indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
             )
 
             try await lifecycleStore.enable(index.name)
@@ -119,7 +135,10 @@ struct OnlineIndexerAtomicityTests {
     @Test("RangeSet progress is saved atomically with work")
     func testRangeSetAtomicProgress() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let ctx = try await AtomicIndexingContext()
+            let index = try PlayerIdentifierIndexDefinition.make(
+                name: "rangeset_idx"
+            )
+            let ctx = try await AtomicIndexingContext(index: index)
 
             let batchSize = 10
             let players = PlayerDatasetGenerator.generateForBatchTesting(
@@ -129,15 +148,12 @@ struct OnlineIndexerAtomicityTests {
             )
             try await ctx.insertPlayers(players)
 
-            let index = PlayerIdentifierIndexDefinition.make(name: "rangeset_idx")
-            let maintainer = CountingIndexMaintainer<Player>(
-                indexSubspace: ctx.indexSubspace,
-                indexName: index.name
-            )
-
             let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
-                subspace: ctx.indexSubspace.subspace("_meta")
+                subspace: ctx.testSubspace
+            )
+            let maintainer = CountingIndexMaintainer<Player>(
+                indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
             )
 
             try await lifecycleStore.enable(index.name)
@@ -168,20 +184,23 @@ struct OnlineIndexerAtomicityTests {
     @Test("Progress cleared after successful completion")
     func testProgressClearedAfterCompletion() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let ctx = try await AtomicIndexingContext()
+            let index = try PlayerIdentifierIndexDefinition.make(
+                name: "clear_progress_idx"
+            )
+            let ctx = try await AtomicIndexingContext(index: index)
 
             let players = PlayerDatasetGenerator.generatePlayers(count: 25, nameLength: 50)
             try await ctx.insertPlayers(players)
 
-            let index = PlayerIdentifierIndexDefinition.make(name: "clear_progress_idx")
-            let maintainer = CountingIndexMaintainer<Player>(
-                indexSubspace: ctx.indexSubspace,
-                indexName: index.name
-            )
-
             let lifecycleStore = IndexLifecycleStore(
                 container: ctx.container,
-                subspace: ctx.indexSubspace.subspace("_meta")
+                subspace: ctx.testSubspace
+            )
+            let physicalIndexSubspace = try lifecycleStore.indexSubspace(
+                for: index.name
+            )
+            let maintainer = CountingIndexMaintainer<Player>(
+                indexSubspace: physicalIndexSubspace
             )
 
             try await lifecycleStore.enable(index.name)
@@ -199,7 +218,8 @@ struct OnlineIndexerAtomicityTests {
             try await indexer.buildIndex(clearFirst: true)
 
             // Verify progress key is cleared
-            let progressKey = ctx.indexSubspace
+            let progressKey =
+                physicalIndexSubspace
                 .subspace("_progress")
                 .pack(Tuple(index.name))
 

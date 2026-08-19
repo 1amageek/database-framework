@@ -27,11 +27,11 @@ struct SetOperationEdge {
     var to: RDFTerm = .string("")
 
     #Index(
-        .rdfDataset,
-        from: \SetOperationEdge.from,
-        edge: \SetOperationEdge.relationship,
-        to: \SetOperationEdge.to
-    )
+        .graph(
+            name: "SetOperationEdge_rdf_quad_from_relationship_to",
+            definition: .rdf(
+                subject: \SetOperationEdge.from, predicate: \SetOperationEdge.relationship,
+                object: \SetOperationEdge.to, graph: nil)))
 }
 
 // MARK: - Test Suite
@@ -60,7 +60,12 @@ struct SPARQLSetOperationTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SetOperationEdge.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SetOperationEdge.self)]),
             security: .testingDisabled,
         )
     }
@@ -629,7 +634,7 @@ struct SPARQLSetOperationTests {
         let pred2 = uniqueID("hasSomething")
 
         let edges = [
-            try makeEdge(from: "Entity", relationship: pred2, to: "Value"),
+            try makeEdge(from: "Entity", relationship: pred2, to: "Value")
         ]
 
         try await insertEdges(edges, context: context)
@@ -670,7 +675,7 @@ struct SPARQLSetOperationTests {
         let pred2 = uniqueID("emptyPred")
 
         let edges = [
-            try makeEdge(from: "Entity", relationship: pred1, to: "Value"),
+            try makeEdge(from: "Entity", relationship: pred1, to: "Value")
         ]
 
         try await insertEdges(edges, context: context)
@@ -735,7 +740,7 @@ struct SPARQLSetOperationTests {
         let pred2 = uniqueID("something")
 
         let edges = [
-            try makeEdge(from: "E1", relationship: pred2, to: "V1"),
+            try makeEdge(from: "E1", relationship: pred2, to: "V1")
         ]
 
         try await insertEdges(edges, context: context)

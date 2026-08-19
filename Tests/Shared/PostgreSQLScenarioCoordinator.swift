@@ -213,6 +213,10 @@ public actor PostgreSQLScenarioCoordinator {
             for: schema,
             configuration: .testing(storageEngine: pgEngine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: entityRuntimes
             ),
             security: .testingDisabled

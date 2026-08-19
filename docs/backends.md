@@ -3,7 +3,7 @@
 database-framework executes against StorageKit protocols. `DatabaseEngine`
 never creates or selects a concrete backend. Its storage construction contract
 is one initialized `StorageEngine` in the default composition. The independent
-`MultipleBases` trait replaces that input with a validated
+`MultiBase` trait replaces that input with a validated
 `DatabaseStorageTopology` containing a control domain, one or more data
 domains, and named Base placements.
 
@@ -23,7 +23,7 @@ DBContainer
     -> one StorageEngine
         -> Transaction
 
-DBContainer [MultipleBases]
+DBContainer [MultiBase]
     -> DatabaseSession
         -> BaseDataSource or CompositionDataSource
             -> target-bound executor
@@ -31,7 +31,7 @@ DBContainer [MultipleBases]
                     -> Transaction
 ~~~
 
-`DatabaseContext` is backend-neutral. With `MultipleBases`, it is additionally
+`DatabaseContext` is backend-neutral. With `MultiBase`, it is additionally
 target-bound. A
 Composition is read-only and uses its planner-backed executor instead of a
 mutation context. Backend
@@ -44,10 +44,10 @@ placement without exposing backend credentials through the semantic API.
 ~~~bash
 scripts/fdb-test-env run --clean -- \
   scripts/xcode-test-harness \
-    --traits FoundationDB,AllRuntimeFeatures,MultipleBases \
+    --traits FoundationDB,AllRuntimeFeatures,MultiBase \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3651 \
+    --expected-count 3607 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -79,7 +79,7 @@ Enable the data-partitioning feature independently:
 .package(
     url: "https://github.com/1amageek/database-framework.git",
     from: "26.0818.0",
-    traits: ["SQLite", "AllRuntimeFeatures", "MultipleBases"]
+    traits: ["SQLite", "AllRuntimeFeatures", "MultiBase"]
 )
 ~~~
 
@@ -98,7 +98,7 @@ when the optional trait is enabled:
 
 ~~~bash
 scripts/xcode-test-harness \
-  --traits SQLite,AllRuntimeFeatures,MultipleBases \
+  --traits SQLite,AllRuntimeFeatures,MultiBase \
   --only-testing SQLiteTests \
   --expected-count 114 \
   --require-zero-skips \
@@ -238,7 +238,7 @@ must fail explicitly; they must not silently fall back to another backend.
 ## Storage Engine Lifecycle
 
 Passing one engine to `DBConfiguration(storageEngine:)` transfers its lifecycle
-to the configuration/container owner. With `MultipleBases`, passing a topology
+to the configuration/container owner. With `MultiBase`, passing a topology
 to `DBConfiguration(storageTopology:)` transfers every engine lifecycle. Do not
 use or shut down any transferred engine through another owner afterward.
 
@@ -248,7 +248,7 @@ default
                                                        |-- open failure -> shutdown once
                                                        `-- shutdown() --> shutdown once
 
-MultipleBases
+MultiBase
   StorageEngine(s)
     |
     | validate topology and transfer ownership

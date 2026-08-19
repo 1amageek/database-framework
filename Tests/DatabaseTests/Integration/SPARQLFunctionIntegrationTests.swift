@@ -49,11 +49,12 @@ struct SPARQLFunctionIntegrationTests {
         var object: RDFTerm
 
         #Index(
-            .rdfDataset,
-            from: \SPARQLFunctionTriple.subject,
-            edge: \SPARQLFunctionTriple.predicate,
-            to: \SPARQLFunctionTriple.object
-        )
+            .graph(
+                name: "SPARQLFunctionTriple_rdf_quad_subject_predicate_object",
+                definition: .rdf(
+                    subject: \SPARQLFunctionTriple.subject,
+                    predicate: \SPARQLFunctionTriple.predicate,
+                    object: \SPARQLFunctionTriple.object, graph: nil)))
 
         init(
             subject: String,
@@ -93,7 +94,13 @@ struct SPARQLFunctionIntegrationTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLFunctionUser.self), try DatabaseFrameworkRuntime.entity(SPARQLFunctionTriple.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(SPARQLFunctionUser.self), try DatabaseFrameworkRuntime.entity(SPARQLFunctionTriple.self),
+                ]),
             security: .testingDisabled,
         )
 
@@ -134,9 +141,9 @@ struct SPARQLFunctionIntegrationTests {
 
         // Execute: SQL with SPARQL() function
         let sql = """
-        SELECT * FROM SPARQLFunctionUser
-        WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:knows> <\(bob.id)> }'))
-        """
+            SELECT * FROM SPARQLFunctionUser
+            WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:knows> <\(bob.id)> }'))
+            """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
@@ -176,10 +183,10 @@ struct SPARQLFunctionIntegrationTests {
 
         // Execute: SQL with SPARQL() + age filter
         let sql = """
-        SELECT * FROM SPARQLFunctionUser
-        WHERE age > 25
-          AND resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:role> "admin" }'))
-        """
+            SELECT * FROM SPARQLFunctionUser
+            WHERE age > 25
+              AND resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:role> "admin" }'))
+            """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
@@ -224,10 +231,10 @@ struct SPARQLFunctionIntegrationTests {
 
         // Execute: Find users who are admins AND have swift skill
         let sql = """
-        SELECT * FROM SPARQLFunctionUser
-        WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:role> "admin" }'))
-          AND resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:skill> "swift" }'))
-        """
+            SELECT * FROM SPARQLFunctionUser
+            WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:role> "admin" }'))
+              AND resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:skill> "swift" }'))
+            """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
@@ -246,9 +253,9 @@ struct SPARQLFunctionIntegrationTests {
         let context = container.testBaseContext()
 
         let sql = """
-        SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(NonExistentType, 'SELECT ?s WHERE { ?s <urn:predicate:p> "o" }'))
-        """
+            SELECT * FROM SPARQLFunctionUser
+            WHERE id IN (SPARQL(NonExistentType, 'SELECT ?s WHERE { ?s <urn:predicate:p> "o" }'))
+            """
 
         await #expect(throws: SPARQLFunctionError.self) {
             try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
@@ -264,9 +271,9 @@ struct SPARQLFunctionIntegrationTests {
 
         // User type has no graph index
         let sql = """
-        SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionUser, 'SELECT ?s WHERE { ?s <urn:predicate:p> "o" }'))
-        """
+            SELECT * FROM SPARQLFunctionUser
+            WHERE id IN (SPARQL(SPARQLFunctionUser, 'SELECT ?s WHERE { ?s <urn:predicate:p> "o" }'))
+            """
 
         await #expect(throws: SPARQLFunctionError.self) {
             try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
@@ -290,9 +297,9 @@ struct SPARQLFunctionIntegrationTests {
 
         // Execute: Query returns multiple variables (?s and ?o)
         let sql = """
-        SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s <urn:predicate:knows> ?o }'))
-        """
+            SELECT * FROM SPARQLFunctionUser
+            WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s <urn:predicate:knows> ?o }'))
+            """
 
         await #expect(throws: SPARQLFunctionError.self) {
             try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
@@ -322,9 +329,9 @@ struct SPARQLFunctionIntegrationTests {
 
         // Execute: Query returns ?s and ?o, but we explicitly select ?s
         let sql = """
-        SELECT * FROM SPARQLFunctionUser
-        WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s <urn:predicate:knows> ?o }', '?s'))
-        """
+            SELECT * FROM SPARQLFunctionUser
+            WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s <urn:predicate:knows> ?o }', '?s'))
+            """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
@@ -350,9 +357,9 @@ struct SPARQLFunctionIntegrationTests {
 
         // Execute: SPARQL returns no results
         let sql = """
-        SELECT * FROM SPARQLFunctionUser
-        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:nonexistent> "value" }'))
-        """
+            SELECT * FROM SPARQLFunctionUser
+            WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:nonexistent> "value" }'))
+            """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
@@ -388,10 +395,10 @@ struct SPARQLFunctionIntegrationTests {
 
         // Execute: Should return all users
         let sql = """
-        SELECT * FROM SPARQLFunctionUser
-        WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:status> "active" }'))
-        LIMIT 100
-        """
+            SELECT * FROM SPARQLFunctionUser
+            WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:status> "active" }'))
+            LIMIT 100
+            """
 
         let startTime = Date()
         let results = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
@@ -472,11 +479,11 @@ struct SPARQLFunctionIntegrationTests {
 
         // Execute: SPARQL + ORDER BY + LIMIT
         let sql = """
-        SELECT * FROM SPARQLFunctionUser
-        WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:verified> "true" }'))
-        ORDER BY age ASC
-        LIMIT 2
-        """
+            SELECT * FROM SPARQLFunctionUser
+            WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:verified> "true" }'))
+            ORDER BY age ASC
+            LIMIT 2
+            """
 
         let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 

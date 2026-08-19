@@ -1,10 +1,11 @@
-import DatabaseKit
-import TestSupport
-import DatabaseRuntime
 @_spi(DatabaseExecution) import DatabaseEngine
-@testable import GraphIndex
+import DatabaseKit
+import DatabaseRuntime
 import StorageKit
+import TestSupport
 import Testing
+
+@testable import GraphIndex
 
 @Suite("Canonical RDF document store", .serialized)
 struct DatabaseRDFDocumentStoreTests {
@@ -183,8 +184,12 @@ struct DatabaseRDFDocumentStoreTests {
             ),
             configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(Player.self),
+                    try DatabaseFrameworkRuntime.entity(Player.self)
                 ]
             ),
             security: .testingDisabled

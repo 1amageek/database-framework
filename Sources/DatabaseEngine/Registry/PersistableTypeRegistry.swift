@@ -1,6 +1,6 @@
 import DatabaseKit
 
-/// Immutable container-scoped lookup for statically bound entity runtimes.
+/// Immutable lookup of statically bound entities in one runtime generation.
 public struct EntityRuntimeRegistry: Sendable {
     private let registrationsByEntityName: [String: EntityRuntimeRegistration]
 

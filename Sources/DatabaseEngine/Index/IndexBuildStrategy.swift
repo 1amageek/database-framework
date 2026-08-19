@@ -1,5 +1,5 @@
-import StorageKit
 import DatabaseKit
+import StorageKit
 
 /// Protocol for custom index build strategies
 ///
@@ -27,7 +27,7 @@ import DatabaseKit
 ///         itemSubspace: Subspace,
 ///         indexSubspace: Subspace,
 ///         itemType: String,
-///         index: Index,
+///         index: ResolvedIndex,
 ///         dataAccess: any DataAccess<Item>
 ///     ) async throws {
 ///         // 1. Load all vectors
@@ -62,7 +62,7 @@ public protocol IndexBuildStrategy<Item>: Sendable {
     ///   - itemSubspace: Subspace where items are stored ([R]/)
     ///   - indexSubspace: Subspace where index data is stored ([I]/)
     ///   - itemType: Type name of items to index (e.g., "User", "Product")
-    ///   - index: Index definition (name, kind, rootExpression)
+    ///   - index: ResolvedIndex definition (name, kind, rootExpression)
     /// - Throws: Error if build fails
     ///
     /// **Note**: Use `DataAccess.serialize()`, `DataAccess.deserialize()`, and `DataAccess.evaluate()` to work with items
@@ -71,6 +71,6 @@ public protocol IndexBuildStrategy<Item>: Sendable {
         itemSubspace: Subspace,
         indexSubspace: Subspace,
         itemType: String,
-        index: Index
+        index: ResolvedIndex
     ) async throws
 }

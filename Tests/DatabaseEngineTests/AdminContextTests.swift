@@ -27,7 +27,11 @@ struct AdminContextTests {
         var id: String = UUID().uuidString
         var value: String = ""
 
-        #Index(.scalar, fields: [\AdminIndexedEntity.value])
+        #Index(
+            .ordered(
+                name: "AdminIndexedEntity_value",
+                keys: [.ascending(\AdminIndexedEntity.value)],
+                unique: false))
     }
 
     @Persistable
@@ -55,7 +59,13 @@ struct AdminContextTests {
         return try await DBContainer.open(
             for: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AdminIndexedEntity.self), try DatabaseFrameworkRuntime.entity(AdminUnindexedEntity.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(AdminIndexedEntity.self), try DatabaseFrameworkRuntime.entity(AdminUnindexedEntity.self),
+                ]),
             security: .testingDisabled
             )
     }

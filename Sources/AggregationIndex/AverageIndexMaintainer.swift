@@ -3,9 +3,9 @@
 //
 // Maintains averages by storing an exact typed sum and count separately.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Maintainer for AVERAGE aggregation indexes with compile-time type safety
@@ -32,7 +32,7 @@ import StorageKit
 public struct AverageIndexMaintainer<Item: PersistedEntityValue, Value: IndexNumericValue>: NumericAggregationMaintainer {
     // MARK: - Properties
 
-    public let index: Index
+    public let index: ResolvedIndex
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -47,7 +47,7 @@ public struct AverageIndexMaintainer<Item: PersistedEntityValue, Value: IndexNum
     // MARK: - Initialization
 
     public init(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
@@ -348,12 +348,12 @@ public struct AverageIndexMaintainer<Item: PersistedEntityValue, Value: IndexNum
         transaction: any TransactionAccess
     ) async throws {
         switch (oldData, newData) {
-        case let (.some(old), .some(new))
+        case (.some(let old), .some(let new))
             where old.sumKey == new.sumKey
                 && old.numericValue == new.numericValue:
             break
 
-        case let (.some(old), .some(new))
+        case (.some(let old), .some(let new))
             where old.sumKey == new.sumKey:
             try await mutateNumericAggregate(
                 sumKey: new.sumKey,
@@ -363,14 +363,14 @@ public struct AverageIndexMaintainer<Item: PersistedEntityValue, Value: IndexNum
                 transaction: transaction
             )
 
-        case let (.some(old), .some(new)):
+        case (.some(let old), .some(let new)):
             try await remove(old, transaction: transaction)
             try await insert(new, transaction: transaction)
 
-        case let (nil, .some(new)):
+        case (nil, .some(let new)):
             try await insert(new, transaction: transaction)
 
-        case let (.some(old), nil):
+        case (.some(let old), nil):
             try await remove(old, transaction: transaction)
 
         case (nil, nil):

@@ -101,7 +101,7 @@ default composition
        |-- no Base catalog / placement / persisted Grant lookup
        `-- tuple-derived schema / metadata / data / index subspaces
 
-MultipleBases composition
+MultiBase composition
   DatabaseStorageTopology -> DBConfiguration(storageTopology:) -> DBContainer
        |-- control domain + named data placements
        `-- Base / Composition / persisted Grant execution
@@ -115,7 +115,7 @@ both ownership paths
 The default configuration carries only one engine lifecycle owner. It does not
 construct a one-domain topology as a hidden approximation. The topology owner,
 catalogs, target leases, and persisted Grant checks are compiled only when the
-`MultipleBases` trait is selected. Once injected, an engine must not be reused
+`MultiBase` trait is selected. Once injected, an engine must not be reused
 or shut down by its former caller. Dedicated backends use their engine root.
 FoundationDB and other shared backends require the host to resolve an explicit
 application-selected root before injection. Startup installs a format
@@ -195,24 +195,23 @@ nor registers those framework implementations.
 | `RankIndexes` | rank indexes and readers |
 | `BitmapIndexes` | bitmap indexes and readers |
 | `VersionIndexes` | version indexes and readers |
-| `PermutedIndexes` | permuted indexes and readers |
 | `GraphIndexes` | ScalarIndex, GraphIndex, OntologyIndex, RDF, and SPARQL; enables `ScalarIndexes` |
 | `AggregationIndexes` | count, numeric, distinct, and percentile indexes |
 | `LeaderboardIndexes` | time-window leaderboard indexes |
 | `Relationships` | relationship mutation maintenance and inverse lookup execution |
-| `MultipleBases` | Base lifecycle, placement, Base-local Grants, and read-only Composition execution |
-| `AllRuntimeFeatures` | every index and relationship capability above; excludes `MultipleBases` |
+| `MultiBase` | Base lifecycle, placement, Base-local Grants, and read-only Composition execution |
+| `AllRuntimeFeatures` | every index and relationship capability above; excludes `MultiBase` |
 
-`MultipleBases` is a storage and authorization model, not a baseline database
+`MultiBase` is a storage and authorization model, not a baseline database
 feature. Without it, the Base/Composition/topology/Grant implementation is
 conditionally compiled out and the hot transaction path uses the one engine
-directly. The standard DatabaseWire v2 graph is target-free. Enabling
-`MultipleBases` compiles the Base and Grant values together with the
-target-bound DatabaseWire v4 graph; the two package graphs do not expose a
+directly. The standard DatabaseWire v3 graph is target-free. Enabling
+`MultiBase` compiles the Base and Grant values together with the
+target-bound DatabaseWire v5 graph; the two package graphs do not expose a
 half-enabled target model.
 
 The framework package has no default traits. Every backend, runtime feature,
-and `MultipleBases` is selected explicitly by the consuming package. The
+and `MultiBase` is selected explicitly by the consuming package. The
 independent native `database-server` package currently defaults its own
 standalone composition to SQLite and all runtime features, but that host
 default does not change the framework dependency graph for in-process or
@@ -227,12 +226,16 @@ an injected host storage engine; Cloudflare Durable Object SQLite is composed
 by database-framework-cloudflare rather than selected as a native backend trait.
 
 Feature selection never weakens runtime validation. The selected providers,
-readers, logical-source executors, and mutation maintainers are still assembled
-into one container-scoped `DatabaseRuntimeConfiguration`. During bootstrap,
-schema validation rejects every declared index or relationship whose required
-runtime capability is absent. Unsupported declarations therefore fail before
-the container serves requests; they do not fall back to scans or no-op
-maintenance.
+readers, logical-source executors, and mutation maintainers are assembled into
+the immutable `DatabaseRuntimeConfiguration` paired with each schema generation.
+The configuration also carries an explicit application execution identity.
+Changing its revision, query execution options, or the security mode publishes a
+new execution generation so server-owned continuations cannot cross incompatible
+runtime behavior.
+Before publication, schema validation rejects every declared index or
+relationship whose required runtime capability is absent. Unsupported
+declarations therefore fail before that generation serves requests; they do not
+fall back to scans or no-op maintenance.
 
 ## Value and Ownership Contract
 
@@ -278,7 +281,7 @@ maintenance.
 - An online build validates its configuration before changing lifecycle state.
 - An index becomes readable only after its build, uniqueness checks, and progress
   finalization succeed.
-- A provider declares whether its index kind supports uniqueness. Runtime
+- A provider declares whether its index type supports uniqueness. Runtime
   configuration rejects a unique index when that capability is absent.
 - The concrete uniqueness-capable maintainer owns physical key interpretation and
   conflict discovery. DatabaseEngine owns lifecycle policy, violation persistence,

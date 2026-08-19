@@ -28,22 +28,22 @@ private struct BenchmarkContext {
         self.indexSubspace = subspace.subspace("I").subspace("edges")
         self.strategy = strategy
 
-        let kind = propertyGraphIndexMetadata(
-            sourceFieldName: "source",
-            labelFieldName: "label",
-            targetFieldName: "target",
+        let definition = propertyGraphIndexDefinition(
+            source: BenchmarkEdge.fields.source.identity,
+            label: BenchmarkEdge.fields.label.identity,
+            target: BenchmarkEdge.fields.target.identity,
             strategy: strategy
         )
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: BenchmarkEdge.self,
             name: "edges",
-            kind: kind,
+            definition: .graph(definition, includedFields: []),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "source"),
                 FieldKeyExpression(fieldName: "label"),
-                FieldKeyExpression(fieldName: "target")
+                FieldKeyExpression(fieldName: "target"),
             ]),
-            subspaceKey: "edges",
             itemTypes: Set(["BenchmarkEdge"])
         )
 
@@ -51,7 +51,7 @@ private struct BenchmarkContext {
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            metadata: try PropertyGraphIndexMetadata(canonical: index.kind)
+            definition: definition
         )
     }
 

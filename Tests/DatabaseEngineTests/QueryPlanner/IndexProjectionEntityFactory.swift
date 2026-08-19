@@ -4,38 +4,39 @@ import DatabaseKit
 import DatabaseEngine
 
 enum IndexProjectionEntityFactory {
-    static let storedFields = ["name", "age", "nickname", "tags", "target"]
+    static let includedFields = ["name", "age", "nickname", "tags", "target"]
 
     static func descriptor(
         includesStoredFields: Bool = true
     ) throws -> IndexDescriptor {
         try IndexDescriptor(
-            name: "IndexProjectionEntity_email",
-            definition: .scalar,
-            fields: [IndexProjectionEntity.fields.email.ascending],
-            storedFields: includesStoredFields
+            entityName: IndexProjectionEntity.persistableType,
+            declaration: .ordered(
+                name: "IndexProjectionEntity_email",
+                keys: [
+                    .ascending(IndexProjectionEntity.fields.email.identity)
+                ],
+                includedFields: includesStoredFields
                 ? [
-                    IndexProjectionEntity.fields.name.ascending,
-                    IndexProjectionEntity.fields.age.ascending,
-                    IndexProjectionEntity.fields.nickname.ascending,
-                    IndexProjectionEntity.fields.tags.ascending,
-                    IndexProjectionEntity.fields.target.ascending,
-                ]
-                : []
+                    IndexProjectionEntity.fields.name.identity,
+                        IndexProjectionEntity.fields.age.identity,
+                        IndexProjectionEntity.fields.nickname.identity,
+                        IndexProjectionEntity.fields.tags.identity,
+                        IndexProjectionEntity.fields.target.identity,
+                    ]
+                    : []
+            ),
+            fieldSchemas: IndexProjectionEntity.fieldSchemas
         )
     }
 
     static func runtimeIndex(
-        from descriptor: IndexDescriptor,
-        storedFieldNames: [String]? = nil
-    ) -> Index {
-        Index(
-            name: descriptor.name,
-            kind: descriptor.kind,
-            rootExpression: KeyExpressionFactory.from(keyPaths: descriptor.fieldNames),
-            isUnique: descriptor.isUnique,
-            storedFieldNames: storedFieldNames
-                ?? descriptor.storedFieldNames
+        from descriptor: IndexDescriptor
+    ) -> ResolvedIndex {
+        ResolvedIndex(
+            descriptor: descriptor,
+            rootExpression: KeyExpressionFactory.from(keyPaths: descriptor.fieldNames
+            )
         )
     }
 

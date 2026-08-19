@@ -12,7 +12,7 @@ maintenance primitives. Physical storage is injected through the
 [`storage-kit`](https://github.com/1amageek/storage-kit).
 
 The package has no default SwiftPM traits. Backends, index families,
-relationships, and `MultipleBases` are selected explicitly by the consuming
+relationships, and `MultiBase` are selected explicitly by the consuming
 package.
 
 ## Scope
@@ -150,16 +150,15 @@ and the `Database` umbrella:
 | `RankIndexes` | Ordered rank indexes |
 | `BitmapIndexes` | Bitmap indexes |
 | `VersionIndexes` | Version-aware indexes |
-| `PermutedIndexes` | Alternate field-order indexes |
 | `GraphIndexes` | Scalar, graph, ontology, RDF, and SPARQL execution; enables `ScalarIndexes` |
 | `AggregationIndexes` | Count, numeric, distinct, and percentile indexes |
 | `LeaderboardIndexes` | Time-window leaderboard indexes |
 | `Relationships` | Relationship mutation maintenance and reads |
 | `AllRuntimeFeatures` | Every index and relationship feature above |
-| `MultipleBases` | Base lifecycle, placement, persisted Grants, named/derived read-only Composition execution, and same-domain decision transactions |
+| `MultiBase` | Base lifecycle, placement, persisted Grants, named/derived read-only Composition execution, and same-domain decision transactions |
 
 `AllRuntimeFeatures` does not enable a backend and does not enable
-`MultipleBases`. Runtime bootstrap validates the selected implementation set
+`MultiBase`. Runtime bootstrap validates the selected implementation set
 against the complete schema and fails when a required capability is missing;
 it does not replace missing capabilities with scans or no-op maintenance.
 
@@ -173,12 +172,11 @@ import Database
 @Persistable
 struct User {
     #Directory<User>("app", "users")
-    #Index(
-        .scalar,
-        fields: [\User.email],
-        unique: true,
-        name: "User_email"
-    )
+    #Index(.ordered(
+        name: "User_email",
+        keys: [.ascending(\User.email)],
+        unique: true
+    ))
 
     var id: String = ""
     var email: String
@@ -191,6 +189,10 @@ let schema = try Schema(
 )
 
 let runtime = try DatabaseFrameworkRuntime.configuration(
+    executionIdentity: DatabaseExecutionRuntimeIdentity(
+        identifier: "application",
+        revision: 1
+    ),
     entityRuntimes: [
         try DatabaseFrameworkRuntime.entity(User.self)
     ]
@@ -224,6 +226,12 @@ let users = try await context.fetch(User.self)
 
 await container.shutdown()
 ```
+
+`executionIdentity` identifies application-owned executable behavior that is
+not represented by the schema manifest. Keep its identifier stable and increase
+the revision whenever authorization policies, entity adapters, mutation
+maintainers, or query executors change. A revision change publishes a new
+execution generation and invalidates continuations created by the prior one.
 
 `engine`, `applicationMonotonicClock`, and `applicationWallClock` are supplied
 by the composition layer. Native facade overloads can construct selected
@@ -264,9 +272,9 @@ DBContainer
 
 The framework binds and executes type-safe key-path queries and canonical
 query contracts from `database-kit`. `QueryAST` supplies SQL and SPARQL parsing
-and serialization. Trait-selected modules provide physical readers for scalar,
-vector, full-text, spatial, graph, aggregation, rank, bitmap, version,
-leaderboard, and permuted indexes.
+and serialization. Trait-selected modules provide physical readers for
+ordered, vector, full-text, spatial, graph, aggregation, rank, bitmap,
+history, and leaderboard indexes.
 
 Planning, index admission, and the physical read share the caller-owned
 transaction. Unsupported operations, malformed persisted state, and storage
@@ -284,6 +292,9 @@ transaction, manages lifecycle state, and performs online build and scrub
 operations. Only a persisted `readable` state can reach a physical index
 reader.
 
+See [Index Runtime Design](docs/INDEX_RUNTIME_DESIGN.md) for typed dispatch,
+fingerprinted physical generations, lifecycle, and replacement semantics.
+
 Feature-specific APIs are documented with their modules:
 
 | Area | Documentation |
@@ -298,7 +309,6 @@ Feature-specific APIs are documented with their modules:
 | Version | [VersionIndex](Sources/VersionIndex/README.md) |
 | Bitmap | [BitmapIndex](Sources/BitmapIndex/README.md) |
 | Leaderboard | [LeaderboardIndex](Sources/LeaderboardIndex/README.md) |
-| Permuted | [PermutedIndex](Sources/PermutedIndex/README.md) |
 | Relationships | [RelationshipIndex](Sources/RelationshipIndex/README.md) |
 
 ### Schema and migrations
@@ -323,10 +333,10 @@ Query authorization is not implemented as client-side or post-query filtering.
 See [Security](docs/security.md) for policy registration and production
 requirements.
 
-### Multiple Bases
+### MultiBase
 
 The standard composition owns one engine and one database root. The optional
-`MultipleBases` trait instead enables explicit Base data boundaries,
+`MultiBase` trait instead enables explicit Base data boundaries,
 placement, Base-local persisted Grants, and read-only Compositions.
 
 ```text
@@ -334,7 +344,7 @@ standard composition
     DBContainer(one engine, one root)
         `-- newContext(authorization:)
 
-MultipleBases composition
+MultiBase composition
     DBContainer(control and data domains)
         `-- session(authorization:)
                 +-- base(id)             -> read and mutation
@@ -370,7 +380,7 @@ core engine dependency.
 | `QueryAST` | SQL and SPARQL syntax parsing and serialization |
 | `DatabaseMath` | Numeric primitives shared by execution features |
 | `ScalarIndex`, `VectorIndex`, `FullTextIndex`, `SpatialIndex` | Individual index implementations |
-| `RankIndex`, `PermutedIndex`, `AggregationIndex`, `VersionIndex` | Individual index implementations |
+| `RankIndex`, `AggregationIndex`, `VersionIndex` | Individual index implementations |
 | `BitmapIndex`, `LeaderboardIndex`, `GraphIndex`, `OntologyIndex`, `RelationshipIndex` | Individual index implementations |
 | `FullTextIndexFoundation` | Foundation-specific full-text adaptation |
 | `SwiftLogDatabaseLogging` | Swift Log adapter |

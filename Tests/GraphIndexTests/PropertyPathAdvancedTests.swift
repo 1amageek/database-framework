@@ -30,11 +30,11 @@ struct AdvancedPathEdge {
     var to: RDFTerm = .iri(.xsdString)
 
     #Index(
-        .rdfDataset,
-        from: \AdvancedPathEdge.from,
-        edge: \AdvancedPathEdge.relationship,
-        to: \AdvancedPathEdge.to
-    )
+        .graph(
+            name: "AdvancedPathEdge_rdf_quad_from_relationship_to",
+            definition: .rdf(
+                subject: \AdvancedPathEdge.from, predicate: \AdvancedPathEdge.relationship,
+                object: \AdvancedPathEdge.to, graph: nil)))
 }
 
 // MARK: - Test Suite
@@ -71,7 +71,12 @@ struct PropertyPathAdvancedTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(AdvancedPathEdge.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(AdvancedPathEdge.self)]),
             security: .testingDisabled,
         )
     }
@@ -123,7 +128,7 @@ struct PropertyPathAdvancedTests {
         let selection = selections[0]
         let readableIndex = try await context.indexQueryContext.withReadableIndex(
             named: selection.indexName,
-            kindIdentifier: selection.kindIdentifier,
+            indexType: selection.indexType,
             for: AdvancedPathEdge.self
         ) { index, _ in
             index
@@ -771,7 +776,7 @@ struct PropertyPathAdvancedTests {
                     from: node,
                     relationship: unrelatedPred,
                     to: unrelatedTarget
-                ),
+                )
             ],
             context: context
         )
@@ -801,7 +806,7 @@ struct PropertyPathAdvancedTests {
         let linkPred = try uniquePredicate("link")
 
         let edges = [
-            try makeEdge(from: node, relationship: linkPred, to: target),
+            try makeEdge(from: node, relationship: linkPred, to: target)
         ]
 
         try await insertEdges(edges, context: context)

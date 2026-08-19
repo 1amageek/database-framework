@@ -1,6 +1,6 @@
 import DatabaseKit
 
-/// Persisted migration progress for the container's compiled schema.
+/// Persisted migration progress for the selected data root and compiled schema.
 public struct DatabaseMigrationStatus: Sendable, Hashable {
     public let currentVersion: Schema.Version?
     public let targetVersion: Schema.Version

@@ -1,9 +1,9 @@
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 enum DatabaseSchemaFingerprint {
-    private static let formatVersion: UInt16 = 1
+    private static let formatVersion: UInt16 = 2
 
     static func compute(_ schema: Schema) throws -> ByteString {
         let projection = try StorageFrameEncoder.encode {

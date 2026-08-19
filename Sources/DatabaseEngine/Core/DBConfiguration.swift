@@ -1,26 +1,18 @@
-import StorageKit
 import DatabaseKit
+import StorageKit
 
 /// Database configuration
 ///
-/// Configures an injected storage engine and runtime index parameters.
+/// Configures an injected storage engine and operational container services.
 ///
 /// **Example usage**:
 /// ```swift
 /// let sqliteEngine = try SQLiteStorageEngine(configuration: .inMemory)
-/// let config = DBConfiguration(
-///     storageEngine: sqliteEngine,
-///     indexConfigurations: [
-///         VectorIndexConfiguration<Document>(
-///             field: Document.fields.embedding,
-///             hnsw: .default
-///         )
-///     ]
-/// )
+/// let config = DBConfiguration(storageEngine: sqliteEngine)
 /// let container = try await DBContainer.open(for: schema, configuration: config)
 /// ```
 public struct DBConfiguration: Sendable {
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     package struct TestingBootstrap: Sendable {
         package let baseID: Base.ID
         package let principal: Principal
@@ -32,7 +24,7 @@ public struct DBConfiguration: Sendable {
     /// Configuration name (optional, for debugging)
     public let name: String?
 
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     /// Single-use lifecycle that owns every injected storage domain.
     private let storageTopologyLifecycle: DatabaseStorageTopologyLifecycle
     #else
@@ -47,15 +39,6 @@ public struct DBConfiguration: Sendable {
     /// this configuration. Dedicated backends use the engine root.
     public let databaseRoot: Subspace
     #endif
-
-    /// Index configurations for runtime parameters
-    ///
-    /// Used for indexes that require heavy, environment-dependent parameters:
-    /// - Vector indexes: dimensions, HNSW parameters
-    /// - Full-text search: language settings, tokenizer configuration
-    ///
-    /// Multiple configurations for the same index are allowed (e.g., multi-language full-text).
-    public let indexConfigurations: [any IndexRuntimeConfiguration]
 
     /// Canonical physical entity format for this database.
     public let itemStorage: ItemStorageConfiguration
@@ -73,7 +56,7 @@ public struct DBConfiguration: Sendable {
     public let wallClock: any WallClock
 
     /// Explicit test-only Base bootstrap supplied by TestSupport.
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     package let testingBootstrap: TestingBootstrap?
     #endif
 
@@ -83,15 +66,13 @@ public struct DBConfiguration: Sendable {
     ///
     /// - Parameters:
     ///   - name: Configuration name for debugging (default: nil)
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     ///   - storageTopology: Validated storage domains and placements.
-    ///   - indexConfigurations: Runtime index configurations (default: [])
     public init(
         name: String? = nil,
         storageTopology: DatabaseStorageTopology,
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
-        indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
@@ -100,7 +81,6 @@ public struct DBConfiguration: Sendable {
         self.storageTopologyLifecycle = DatabaseStorageTopologyLifecycle(
             topology: storageTopology
         )
-        self.indexConfigurations = indexConfigurations
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics
@@ -117,7 +97,6 @@ public struct DBConfiguration: Sendable {
         wallClock: any WallClock,
         testingBaseID: Base.ID,
         testingPrincipal: Principal,
-        indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
@@ -126,7 +105,6 @@ public struct DBConfiguration: Sendable {
         self.storageTopologyLifecycle = DatabaseStorageTopologyLifecycle(
             topology: storageTopology
         )
-        self.indexConfigurations = indexConfigurations
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics
@@ -170,7 +148,6 @@ public struct DBConfiguration: Sendable {
         databaseRoot: Subspace = Subspace(),
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
-        indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
@@ -180,7 +157,6 @@ public struct DBConfiguration: Sendable {
             storageEngine: storageEngine
         )
         self.databaseRoot = databaseRoot
-        self.indexConfigurations = indexConfigurations
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics
@@ -215,7 +191,6 @@ public struct DBConfiguration: Sendable {
 extension DBConfiguration: CustomDebugStringConvertible {
     public var debugDescription: String {
         let nameDesc = name ?? "unnamed"
-        let indexConfigCount = indexConfigurations.count
-        return "DBConfiguration(name: \(nameDesc), indexConfigs: \(indexConfigCount), itemEncoding: \(itemStorage.encoding))"
+        return "DBConfiguration(name: \(nameDesc), itemEncoding: \(itemStorage.encoding))"
     }
 }

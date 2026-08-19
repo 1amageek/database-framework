@@ -23,15 +23,16 @@ protocol FDBPolymorphicMigrationDocumentV1:
 @Polymorphable(identifier: "FDBPolymorphicMigrationDocument")
 @PolymorphicDirectory("polymorphic_migration_fdb_shared")
 @PolymorphicIndex(
-    .scalar,
-    fields: ["title"],
-    name: "FDBPolymorphicMigrationDocument_title"
-)
+    .ordered(
+        name: "FDBPolymorphicMigrationDocument_title",
+        keys: [.ascending("title")]
+    ))
 @PolymorphicIndex(
-    .fullText(tokenizer: .simple),
-    fields: ["title"],
-    name: "FDBPolymorphicMigrationDocument_title_fulltext"
-)
+    .text(
+        name: "FDBPolymorphicMigrationDocument_title_fulltext",
+        fields: ["title"],
+        mode: .fullText(tokenizer: .simple)
+    ))
 protocol FDBPolymorphicMigrationDocumentV2:
     Polymorphable<FDBPolymorphicMigrationDocumentV2PolymorphicGroup>
 {
@@ -51,15 +52,16 @@ protocol FDBPolymorphicMigrationDocumentV3:
 @Polymorphable(identifier: "FDBPolymorphicMigrationDocument")
 @PolymorphicDirectory("polymorphic_migration_fdb_shared")
 @PolymorphicIndex(
-    .scalar,
-    fields: ["title"],
-    name: "FDBPolymorphicMigrationDocument_title"
-)
+    .ordered(
+        name: "FDBPolymorphicMigrationDocument_title",
+        keys: [.ascending("title")]
+    ))
 @PolymorphicIndex(
-    .fullText(tokenizer: .simple),
-    fields: ["title"],
-    name: "FDBPolymorphicMigrationDocument_title_fulltext"
-)
+    .text(
+        name: "FDBPolymorphicMigrationDocument_title_fulltext",
+        fields: ["title"],
+        mode: .fullText(tokenizer: .simple)
+    ))
 protocol FDBPolymorphicMigrationDocumentV4:
     Polymorphable<FDBPolymorphicMigrationDocumentV4PolymorphicGroup>
 {
@@ -269,7 +271,13 @@ struct PolymorphicMigrationFDBTests {
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV1.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV1.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV1.self),
+                    ]),
                 security: .testingDisabled
             )
             let initialContext = initialContainer.testBaseContext()
@@ -288,7 +296,13 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV2.self,
                 migrationPlan: FDBPolymorphicMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self),
+                    ]),
                 security: .testingDisabled
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
@@ -296,7 +310,13 @@ struct PolymorphicMigrationFDBTests {
             let verificationContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self),
+                    ]),
                 security: .testingDisabled
             )
             let verificationContext = verificationContainer.testBaseContext()
@@ -341,8 +361,8 @@ struct PolymorphicMigrationFDBTests {
         }
     }
 
-    @Test("FDB migration removes polymorphic index data and disables index state")
-    func fdbMigrationRemovesPolymorphicIndexDataAndDisablesIndexState() async throws {
+    @Test("FDB migration removes polymorphic index data and lifecycle state")
+    func fdbMigrationRemovesPolymorphicIndexDataAndLifecycleState() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let engine = try await Self.makeSystemPriorityEngine()
             try await Self.clearState(in: engine)
@@ -350,7 +370,13 @@ struct PolymorphicMigrationFDBTests {
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self),
+                    ]),
                 security: .testingDisabled
             )
             let initialContext = initialContainer.testBaseContext()
@@ -369,12 +395,22 @@ struct PolymorphicMigrationFDBTests {
                 container: initialContainer,
                 indexName: "FDBPolymorphicMigrationDocument_title"
             ) == 2)
+            #expect(try await Self.countPolymorphicIndexStateEntries(
+                container: initialContainer,
+                indexName: "FDBPolymorphicMigrationDocument_title"
+            ) == 1)
 
             let migratedContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV3.self,
                 migrationPlan: FDBPolymorphicRemovalMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV3.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV3.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV3.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV3.self),
+                    ]),
                 security: .testingDisabled
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
@@ -383,10 +419,10 @@ struct PolymorphicMigrationFDBTests {
                 container: migratedContainer,
                 indexName: "FDBPolymorphicMigrationDocument_title"
             ) == 0)
-            #expect(try await Self.polymorphicIndexState(
+            #expect(try await Self.countPolymorphicIndexStateEntries(
                 container: migratedContainer,
                 indexName: "FDBPolymorphicMigrationDocument_title"
-            ) == .disabled)
+            ) == 0)
 
             let postRemovalContext = migratedContainer.testBaseContext()
             var postRemovalArticle = FDBPolymorphicMigrationArticleV3(
@@ -417,7 +453,13 @@ struct PolymorphicMigrationFDBTests {
             let initialContainer = try await DBContainer.open(
                 for: FDBPolymorphicMigrationSchemaV2.makeSchema(),
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV2.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV2.self),
+                    ]),
                 security: .testingDisabled
             )
             let initialContext = initialContainer.testBaseContext()
@@ -449,7 +491,13 @@ struct PolymorphicMigrationFDBTests {
                 for: FDBPolymorphicMigrationSchemaV4.self,
                 migrationPlan: FDBPolymorphicRebuildMigrationPlan.self,
                 configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV4.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV4.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationArticleV4.self), try DatabaseFrameworkRuntime.entity(FDBPolymorphicMigrationReportV4.self),
+                    ]),
                 security: .testingDisabled
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
@@ -560,6 +608,28 @@ struct PolymorphicMigrationFDBTests {
 
         try await container.engine.withTransaction { transaction in
             try transaction.clearRange(beginKey: range.begin, endKey: range.end)
+        }
+    }
+
+    private static func countPolymorphicIndexStateEntries(
+        container: DBContainer,
+        indexName: String
+    ) async throws -> Int {
+        let group = try container.polymorphicGroup(
+            identifier: FDBPolymorphicMigrationArticleV2.polymorphableType
+        )
+        let groupSubspace = try await container
+            .testBasePolymorphicDirectory(for: group.identifier)
+        let stateSubspace = groupSubspace
+            .subspace("state")
+            .subspace(indexName)
+        let range = stateSubspace.range()
+        return try await container.engine.withTransaction { transaction in
+            try await transaction.collectRange(
+                begin: range.begin,
+                end: range.end,
+                snapshot: true
+            ).count
         }
     }
 

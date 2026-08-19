@@ -106,7 +106,7 @@ struct ExecutionPatternNamedGraphTests {
                 subject: .variable("?s"),
                 predicate: knows,
                 object: .variable("?o")
-            ),
+            )
         ])
         let pattern = ExecutionPattern.graph(.named(graph), basic)
 
@@ -133,7 +133,7 @@ struct ExecutionPatternNamedGraphTests {
                 subject: .variable("?s"),
                 predicate: knows,
                 object: .variable("?o")
-            ),
+            )
         ])
         let pattern = ExecutionPattern.graph(.variable("?g"), basic)
 
@@ -152,14 +152,14 @@ struct ExecutionPatternNamedGraphTests {
                 subject: .variable("?s"),
                 predicate: knows,
                 object: .variable("?o")
-            ),
+            )
         ])
         let right = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?o"),
                 predicate: name,
                 object: .variable("?name")
-            ),
+            )
         ])
         let joined = ExecutionPattern.join(left, right)
         let pattern = ExecutionPattern.graph(.named(graph), joined)
@@ -224,7 +224,7 @@ struct ExecutionPatternNamedGraphTests {
                 subject: .variable("?s"),
                 predicate: knows,
                 object: .variable("?o")
-            ),
+            )
         ])
 
         let social = ExecutionPattern.graph(.named(socialGraph), basic)
@@ -249,7 +249,7 @@ struct ExecutionPatternNamedGraphTests {
                 subject: .variable("?s"),
                 predicate: knows,
                 object: .variable("?o")
-            ),
+            )
         ])
         let nested = ExecutionPattern.graph(
             .named(outerGraph),
@@ -271,64 +271,73 @@ struct ExecutionPatternNamedGraphTests {
     }
 }
 
-// MARK: - Canonical Named Graph Metadata Tests
+// MARK: - Canonical Named Graph Definition Tests
 
-@Suite("Canonical Named Graph Metadata", .heartbeat)
-struct CanonicalNamedGraphMetadataTests {
-    @Test("A namespace field is the fourth canonical field")
-    func namespaceFieldIsCanonical() throws {
-        let kind = propertyGraphIndexMetadata(
-            sourceFieldName: "source",
-            labelFieldName: "label",
-            targetFieldName: "target",
-            namespaceFieldName: "graph",
+@Suite("Canonical named graph definitions", .heartbeat)
+struct CanonicalNamedGraphDefinitionTests {
+    @Test("A graph field is the fourth canonical key")
+    func graphFieldIsCanonical() {
+        let definition = IndexDefinition<String>.graph(
+            .property(
+                source: "source",
+                label: .field("label"),
+                target: "target",
+                graph: "graph",
             strategy: .tripleStore
-        )
-        let metadata = try PropertyGraphIndexMetadata(
-            canonical: kind
+            ),
+            includedFields: []
         )
 
-        #expect(kind.fieldNames == [
+        #expect(
+            definition.keys.map(\.field) == [
             "source",
             "label",
             "target",
             "graph",
         ])
-        #expect(metadata.namespaceFieldName == "graph")
-        #expect(metadata.strategy == .tripleStore)
+        #expect(definition.type == .graph(.property))
     }
 
-    @Test("The default namespace omits the fourth field")
-    func defaultNamespaceOmitsField() throws {
-        let kind = propertyGraphIndexMetadata(
-            sourceFieldName: "source",
-            labelFieldName: "label",
-            targetFieldName: "target",
-            strategy: .hexastore
-        )
-        let metadata = try PropertyGraphIndexMetadata(
-            canonical: kind
+    @Test("The default graph omits the fourth key")
+    func defaultGraphOmitsField() {
+        let definition = IndexDefinition<String>.graph(
+            .property(
+                source: "source",
+                label: .field("label"),
+                target: "target",
+                graph: nil,
+                strategy: .hexastore
+            ),
+            includedFields: []
         )
 
-        #expect(kind.fieldNames == ["source", "label", "target"])
-        #expect(metadata.namespaceFieldName == nil)
-        #expect(metadata.strategy == .hexastore)
+        #expect(
+            definition.keys.map(\.field) == ["source", "label",
+                "target",
+            ])
     }
 
-    @Test("Canonical metadata equality includes namespace identity")
-    func equalityIncludesNamespace() {
-        let named = propertyGraphIndexMetadata(
-            sourceFieldName: "source",
-            labelFieldName: "label",
-            targetFieldName: "target",
-            namespaceFieldName: "graph",
+    @Test("Definition equality includes graph identity")
+    func equalityIncludesGraphIdentity() {
+        let named = IndexDefinition<String>.graph(
+            .property(
+                source: "source",
+                label: .field("label"),
+                target: "target",
+                graph: "graph",
             strategy: .tripleStore
+            ),
+            includedFields: []
         )
-        let defaultGraph = propertyGraphIndexMetadata(
-            sourceFieldName: "source",
-            labelFieldName: "label",
-            targetFieldName: "target",
-            strategy: .tripleStore
+        let defaultGraph = IndexDefinition<String>.graph(
+            .property(
+                source: "source",
+                label: .field("label"),
+                target: "target",
+                graph: nil,
+                strategy: .tripleStore
+            ),
+            includedFields: []
         )
 
         #expect(named != defaultGraph)

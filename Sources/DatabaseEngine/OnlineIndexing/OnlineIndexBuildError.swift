@@ -17,6 +17,7 @@ public enum OnlineIndexBuildError:
     case unsupportedCustomBuildStrategy(indexName: String)
     case unsupportedUniqueCustomBuildStrategy(indexName: String)
     case unsupportedUniquenessConstraint(indexName: String)
+    case invalidIndexStorageIdentity(indexName: String, reason: String)
     case requiresSymmetricConfiguration
     case corruptedProgress
 
@@ -28,11 +29,11 @@ public enum OnlineIndexBuildError:
             let totalEntities
         ):
             return """
-            Unique index '\(indexName)' has violations: \
-            \(violationCount) duplicate value(s) affecting \(totalEntities) entity(s). \
-            Index remains in write-only state. \
-            Use scanUniquenessViolations() to review and resolve duplicates.
-            """
+                Unique index '\(indexName)' has violations: \
+                \(violationCount) duplicate value(s) affecting \(totalEntities) entity(s). \
+                Index remains in write-only state. \
+                Use scanUniquenessViolations() to review and resolve duplicates.
+                """
         case .invalidBatchSize(let value):
             return "Online index batch size must be greater than zero; received \(value)"
         case .invalidThrottleDelayMilliseconds(let value):
@@ -47,6 +48,8 @@ public enum OnlineIndexBuildError:
             return "Unique online index '\(indexName)' cannot use an opaque custom build strategy"
         case .unsupportedUniquenessConstraint(let indexName):
             return "Online index '\(indexName)' requires a uniqueness-capable maintainer"
+        case .invalidIndexStorageIdentity(let indexName, let reason):
+            return "Online index '\(indexName)' has no valid physical storage identity: \(reason)"
         case .requiresSymmetricConfiguration:
             return "A symmetric index builder requires a symmetric index configuration"
         case .corruptedProgress:

@@ -3,9 +3,9 @@
 //
 // Fluent builder for constructing SPARQL GROUP BY queries with aggregation.
 
-import DatabaseTypes
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 /// Builder for SPARQL GROUP BY queries with aggregation
@@ -331,7 +331,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         // Step 1: Pattern evaluation + GROUP BY + HAVING
         var (bindings, stats) = try await queryContext.withReadableIndex(
             named: selection.indexName,
-            kindIdentifier: selection.kindIdentifier,
+            indexType: selection.indexType,
             for: T.self
         ) {
             readableIndex,

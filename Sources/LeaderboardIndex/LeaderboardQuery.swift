@@ -3,9 +3,9 @@
 //
 // Provides DatabaseContext extension and query builder for leaderboard operations.
 
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
-import DatabaseEngine
 import StorageKit
 
 // MARK: - Leaderboard Entry Point
@@ -124,11 +124,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of (item, score) tuples sorted by score descending
     public func execute() async throws -> [(item: T, score: Int64)] {
-        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
+        let (descriptor, indexConfiguration) =
+            try resolveIndexDescriptorAndConfiguration()
 
         let results: [(pk: Tuple, score: Int64)] = try await withReadableMaintainer(
             descriptor: descriptor,
-            configuration: indexKind,
+            configuration: indexConfiguration,
             missing: { [] }
         ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
@@ -173,11 +174,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of (item, score) tuples sorted by score ascending
     public func executeBottom() async throws -> [(item: T, score: Int64)] {
-        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
+        let (descriptor, indexConfiguration) =
+            try resolveIndexDescriptorAndConfiguration()
 
         let results: [(pk: Tuple, score: Int64)] = try await withReadableMaintainer(
             descriptor: descriptor,
-            configuration: indexKind,
+            configuration: indexConfiguration,
             missing: { [] }
         ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
@@ -223,11 +225,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     /// - Parameter id: The item's ID
     /// - Returns: Rank (1-based) or nil if not found
     public func rank<ID: TupleElement>(for id: ID) async throws -> Int? {
-        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
+        let (descriptor, indexConfiguration) =
+            try resolveIndexDescriptorAndConfiguration()
 
         return try await withReadableMaintainer(
             descriptor: descriptor,
-            configuration: indexKind,
+            configuration: indexConfiguration,
             missing: { nil as Int? }
         ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
@@ -255,11 +258,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     /// - Parameter id: The item's ID
     /// - Returns: Dense rank (1-based) or nil if not found
     public func denseRank<ID: TupleElement>(for id: ID) async throws -> Int? {
-        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
+        let (descriptor, indexConfiguration) =
+            try resolveIndexDescriptorAndConfiguration()
 
         return try await withReadableMaintainer(
             descriptor: descriptor,
-            configuration: indexKind,
+            configuration: indexConfiguration,
             missing: { nil as Int? }
         ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
@@ -282,11 +286,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     /// - Parameter percentile: Percentile value between 0.0 and 1.0 (e.g., 0.5 for median)
     /// - Returns: Score at the given percentile, or nil if no entries
     public func percentile(_ percentile: Double) async throws -> Int64? {
-        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
+        let (descriptor, indexConfiguration) =
+            try resolveIndexDescriptorAndConfiguration()
 
         return try await withReadableMaintainer(
             descriptor: descriptor,
-            configuration: indexKind,
+            configuration: indexConfiguration,
             missing: { nil as Int64? }
         ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
@@ -312,11 +317,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of window IDs (newest first)
     public func availableWindows() async throws -> [Int64] {
-        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
+        let (descriptor, indexConfiguration) =
+            try resolveIndexDescriptorAndConfiguration()
 
         return try await withReadableMaintainer(
             descriptor: descriptor,
-            configuration: indexKind,
+            configuration: indexConfiguration,
             missing: { [] }
         ) { maintainer, transaction in
             return try await maintainer.getAvailableWindows(transaction: transaction)
@@ -325,26 +331,26 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
 
     // MARK: - Private Methods
 
-    private func resolveIndexDescriptorAndKind() throws -> (
+    private func resolveIndexDescriptorAndConfiguration() throws -> (
         descriptor: IndexDescriptor,
         configuration: TimeWindowLeaderboardConfiguration
     ) {
-        guard let result = try findIndexDescriptorAndKind() else {
+        guard let result = try findIndexDescriptorAndConfiguration() else {
             throw LeaderboardQueryError.indexNotFound("\(T.persistableType).\(scoreFieldName)")
         }
         return result
     }
 
-    private func findIndexDescriptorAndKind() throws -> (
+    private func findIndexDescriptorAndConfiguration() throws -> (
         descriptor: IndexDescriptor,
         configuration: TimeWindowLeaderboardConfiguration
     )? {
         for descriptor in queryContext.indexDescriptors(for: T.self) {
-            guard descriptor.kind.identifier == "time_window_leaderboard" else {
+            guard descriptor.type == .leaderboard else {
                 continue
             }
             let configuration = try TimeWindowLeaderboardConfiguration(
-                metadata: descriptor.kind
+                definition: descriptor.declaration.definition
             )
             if configuration.scoreFieldName == scoreFieldName {
                 return (descriptor, configuration)
@@ -356,19 +362,17 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     private func createMaintainer(
         indexSubspace: Subspace,
         descriptor: IndexDescriptor,
-        indexKind: TimeWindowLeaderboardConfiguration
+        configuration: TimeWindowLeaderboardConfiguration
     ) -> TimeWindowLeaderboardIndexMaintainer<T> {
         return TimeWindowLeaderboardIndexMaintainer<T>(
-            index: Index(
-                name: descriptor.name,
-                kind: descriptor.kind,
-                rootExpression: FieldKeyExpression(fieldName: scoreFieldName),
-                subspaceKey: descriptor.name
+            index: ResolvedIndex(
+                descriptor: descriptor,
+                rootExpression: FieldKeyExpression(fieldName: scoreFieldName)
             ),
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            window: indexKind.window,
-            windowCount: indexKind.windowCount,
+            window: configuration.window,
+            windowCount: configuration.windowCount,
             wallClock: queryContext.context.container.wallClock
         )
     }
@@ -384,7 +388,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     ) async throws -> Result {
         return try await queryContext.withReadableIndex(
             named: descriptor.name,
-            kindIdentifier: descriptor.kindIdentifier,
+            indexType: descriptor.type,
             for: T.self
         ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -393,7 +397,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
             let maintainer = createMaintainer(
                 indexSubspace: readableIndex.subspace,
                 descriptor: descriptor,
-                indexKind: configuration
+                configuration: configuration
             )
             return try await operation(maintainer, transaction)
         }

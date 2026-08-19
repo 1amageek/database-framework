@@ -8,22 +8,25 @@ struct TimeWindowLeaderboardConfiguration: Sendable, Equatable {
     let window: LeaderboardWindowType
     let windowCount: Int
 
-    init(metadata: IndexKindMetadata) throws {
-        let definition = try IndexDefinition(metadata: metadata)
-        guard case .timeWindowLeaderboard(let window, let windowCount) = definition,
-              let scoreFieldName = metadata.fieldNames.last else {
-            throw TimeWindowLeaderboardConfigurationError.invalidKind(
-                metadata.identifier
+    init(definition: IndexDefinition<FieldIdentity>) throws {
+        guard
+            case .leaderboard(
+                let groupBy,
+                let score,
+                let window, let windowCount) = definition
+        else {
+            throw TimeWindowLeaderboardConfigurationError.invalidDefinition(
+                definition.type
             )
         }
-        self.fieldNames = metadata.fieldNames
-        self.scoreFieldName = scoreFieldName
-        self.groupingFieldNames = Array(metadata.fieldNames.dropLast())
+        self.groupingFieldNames = groupBy.map { $0.field.name }
+        self.scoreFieldName = score.name
+        self.fieldNames = groupingFieldNames + [score.name]
         self.window = window
         self.windowCount = windowCount
     }
 }
 
 enum TimeWindowLeaderboardConfigurationError: Error, Sendable, Equatable {
-    case invalidKind(String)
+    case invalidDefinition(IndexType)
 }

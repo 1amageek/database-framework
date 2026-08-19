@@ -266,7 +266,7 @@ package struct DatabaseRetainedBuffer<Element: Sendable>: ~Copyable, Sendable {
         return elements
     }
 
-    #if DATABASE_MULTIPLE_BASES
+    #if DATABASE_MULTI_BASE
     /// Ends this unique intermediate owner without promoting its storage to
     /// an output boundary. This is used after a replacement representation
     /// has been admitted and constructed under its own reservation.

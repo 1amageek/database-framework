@@ -1,26 +1,25 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for version-history indexes.
 public struct VersionIndexMaintainerProvider: IndexMaintainerProvider {
-    public let kindIdentifier = "version"
+    public let indexType: IndexType = .history
     public let runtimeRequirements: IndexRuntimeRequirements = .versionHistory
 
     public init() {}
 
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<Item> {
-        let definition = try IndexDefinition(metadata: index.kind)
-        guard case .version(let strategy) = definition else {
-            throw IndexMaintainerProviderError.invalidMetadata(
-                kindIdentifier: kindIdentifier,
-                key: "identifier"
+        guard case .history(_, let strategy) = index.definition else {
+            throw IndexMaintainerProviderError.typeMismatch(
+                registered: indexType,
+                actual: index.type
             )
         }
 

@@ -1,11 +1,11 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import StorageKit
 
 /// Canonical runtime provider for OWL class RDF projections.
 public struct OWLClassRDFIndexMaintainerProvider:
     CanonicalEntityIndexMaintainerProvider {
-    public let kindIdentifier = "owl_class_rdf"
+    public let indexType: IndexType = .graph(.ontologyProjection)
     public let runtimeRequirements: IndexRuntimeRequirements = .graphQueries
 
     private let entityName: String
@@ -19,31 +19,46 @@ public struct OWLClassRDFIndexMaintainerProvider:
             throw OWLClassRDFIndexError.missingOWLClassBinding(entity: entity.name)
         }
         guard let descriptor = entity.indexDescriptors.first(where: {
-            $0.kindIdentifier == "owl_class_rdf"
-        }) else {
+                $0.type == .graph(.ontologyProjection)
+            }) else {
             throw IndexMaintainerProviderRegistryError.providerNotRegistered(
-                kindIdentifier: "owl_class_rdf",
+                indexType: .graph(.ontologyProjection),
                 indexName: entity.name + "_owl_rdf"
             )
         }
-        let metadata = try OWLClassRDFIndexMetadata(canonical: descriptor.kind)
+        guard
+            case .graph(
+                .ontologyProjection(let individualIRIBase, let graph), _
+            ) = descriptor.declaration.definition
+        else {
+            throw IndexMaintainerProviderError.typeMismatch(
+                registered: .graph(.ontologyProjection),
+                actual: descriptor.type
+            )
+        }
         self.entityName = entity.name
         self.classIRI = classIRI
-        self.individualIRIBase = metadata.individualIRIBase
-        self.graph = metadata.graph
+        self.individualIRIBase = individualIRIBase
+        self.graph = graph
         self.properties = properties
     }
 
     public func makeIndexMaintainer(
-        index: Index,
+        index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexRuntimeConfiguration],
         wallClock: any WallClock
     ) throws -> any IndexMaintainer<PersistedModel> {
-        let metadata = try OWLClassRDFIndexMetadata(canonical: index.kind)
-        guard metadata.individualIRIBase == individualIRIBase,
-              metadata.graph == graph,
+        guard
+            case .graph(
+                .ontologyProjection(
+                    let declaredIndividualIRIBase,
+                    let declaredGraph
+                ), _
+            ) = index.definition,
+            declaredIndividualIRIBase == individualIRIBase,
+            declaredGraph == graph,
               index.itemTypes == Set([entityName]) else {
             throw OWLClassRDFIndexError.projectionConfigurationMismatch(
                 typeName: entityName

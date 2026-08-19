@@ -76,15 +76,15 @@ struct AggregationIndexPerformanceTests {
         let regions = ["Tokyo", "Osaka", "Nagoya", "Fukuoka", "Sapporo"]
         let categories = ["Electronics", "Clothing", "Food", "Books", "Sports"]
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationBenchmarkSale.self,
             name: "count_region",
-            kind: countIndexMetadata(
+            definition: countIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ]
             ),
             rootExpression: FieldKeyExpression(fieldName: "region"),
-            subspaceKey: "count_region",
             itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
@@ -147,17 +147,18 @@ struct AggregationIndexPerformanceTests {
         let indexSubspace = subspace.subspace("I").subspace("count_region")
 
         let regions = ["Tokyo", "Osaka", "Nagoya", "Fukuoka", "Sapporo",
-                       "Kobe", "Kyoto", "Sendai", "Hiroshima", "Yokohama"]
+                       "Kobe", "Kyoto", "Sendai", "Hiroshima", "Yokohama",
+        ]
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationBenchmarkSale.self,
             name: "count_region",
-            kind: countIndexMetadata(
+            definition: countIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ]
             ),
             rootExpression: FieldKeyExpression(fieldName: "region"),
-            subspaceKey: "count_region",
             itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
@@ -229,21 +230,20 @@ struct AggregationIndexPerformanceTests {
 
         let regions = ["Tokyo", "Osaka", "Nagoya", "Fukuoka", "Sapporo"]
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationBenchmarkSale.self,
             name: "sum_region_amount",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .sum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 4),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "sum_region_amount",
             itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
@@ -305,21 +305,20 @@ struct AggregationIndexPerformanceTests {
         let subspace = Subspace(prefix: Tuple("test", "perf", "sum", "update", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("sum_region_amount")
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationBenchmarkSale.self,
             name: "sum_region_amount",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .sum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 4),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "sum_region_amount",
             itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
@@ -394,21 +393,20 @@ struct AggregationIndexPerformanceTests {
 
         let regions = ["Tokyo", "Osaka", "Nagoya", "Fukuoka", "Sapporo"]
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationBenchmarkSale.self,
             name: "min_region_amount",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .minimum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 4),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "min_region_amount",
             itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
@@ -484,21 +482,20 @@ struct AggregationIndexPerformanceTests {
 
         let regions = ["Tokyo", "Osaka", "Nagoya", "Fukuoka", "Sapporo"]
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationBenchmarkSale.self,
             name: "max_region_amount",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .maximum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 4),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "max_region_amount",
             itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
@@ -570,21 +567,20 @@ struct AggregationIndexPerformanceTests {
 
         let regions = ["Tokyo", "Osaka", "Nagoya", "Fukuoka", "Sapporo"]
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationBenchmarkSale.self,
             name: "avg_region_amount",
-            kind: numericAggregationIndexMetadata(
+            definition: numericAggregationIndexDefinition(
                 .average,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ],
                 valueField: FieldIdentity(name: "amount", number: 4),
-                valueType: .float64
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "amount")
+                FieldKeyExpression(fieldName: "amount"),
             ]),
-            subspaceKey: "avg_region_amount",
             itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
@@ -676,9 +672,10 @@ struct AggregationIndexPerformanceTests {
         let regions = ["Tokyo", "Osaka", "Nagoya"]
         let categories = ["Electronics", "Clothing", "Food", "Books"]
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationBenchmarkSale.self,
             name: "count_region_category",
-            kind: countIndexMetadata(
+            definition: countIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2),
                     FieldIdentity(name: "category", number: 3),
@@ -686,9 +683,8 @@ struct AggregationIndexPerformanceTests {
             ),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
-                FieldKeyExpression(fieldName: "category")
+                FieldKeyExpression(fieldName: "category"),
             ]),
-            subspaceKey: "count_region_category",
             itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
@@ -740,7 +736,7 @@ struct AggregationIndexPerformanceTests {
                     try await maintainer.getCount(
                         groupingValues: [
                             .string(regions[i % regions.count]),
-                            .string(categories[i % categories.count])
+                            .string(categories[i % categories.count]),
                         ],
                         transaction: transaction
                     )
@@ -772,15 +768,15 @@ struct AggregationIndexPerformanceTests {
         let groupCount = 100
         let itemCount = 5000
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationBenchmarkSale.self,
             name: "count_scale",
-            kind: countIndexMetadata(
+            definition: countIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ]
             ),
             rootExpression: FieldKeyExpression(fieldName: "region"),
-            subspaceKey: "count_scale",
             itemTypes: Set(["AggregationBenchmarkSale"])
         )
 
@@ -850,15 +846,15 @@ struct AggregationIndexPerformanceTests {
 
         let regions = ["Tokyo", "Osaka", "Nagoya"]
 
-        let index = Index(
+        let index = try ResolvedIndex(
+            for: AggregationBenchmarkSale.self,
             name: "count_delete",
-            kind: countIndexMetadata(
+            definition: countIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ]
             ),
             rootExpression: FieldKeyExpression(fieldName: "region"),
-            subspaceKey: "count_delete",
             itemTypes: Set(["AggregationBenchmarkSale"])
         )
 

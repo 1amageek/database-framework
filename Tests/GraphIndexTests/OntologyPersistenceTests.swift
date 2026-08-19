@@ -35,11 +35,12 @@ struct OntologyPersistenceEntity {
     var object: String = ""
 
     #Index(
-        .propertyGraph(strategy: .tripleStore),
-        from: \OntologyPersistenceEntity.subject,
-        edge: \OntologyPersistenceEntity.predicate,
-        to: \OntologyPersistenceEntity.object
-    )
+        .graph(
+            name: "OntologyPersistenceEntity_graph_subject_predicate_object",
+            definition: .property(
+                source: \OntologyPersistenceEntity.subject,
+                label: .field(\OntologyPersistenceEntity.predicate),
+                target: \OntologyPersistenceEntity.object, graph: nil, strategy: .tripleStore)))
 }
 
 // MARK: - Ontology Persistence Tests
@@ -61,7 +62,12 @@ struct OntologyPersistenceTests {
         let container = try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntologyPersistenceEntity.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(OntologyPersistenceEntity.self)]),
             security: .testingDisabled,
         )
         return container.testBaseContext()
@@ -179,13 +185,13 @@ struct OntologyPersistenceTests {
                 iri: "ex:worksFor",
                 domains: [.named("ex:Person")],
                 ranges: [.named("ex:Company")]
-            ),
+            )
         ]
         ontology.dataProperties = [
             OWLDataProperty(
                 iri: "ex:name",
                 domains: [.named("ex:Person")]
-            ),
+            )
         ]
 
         // Save
@@ -272,7 +278,7 @@ struct OntologyPersistenceTests {
                     .named("ex:Corporation"),
                     .dataHasValue(property: "ex:scale", literal: .string("Global")),
                 ]),
-            ]),
+            ])
         ]
 
         // Save then load
@@ -339,7 +345,7 @@ struct OntologyPersistenceTests {
         var ontology1 = OWLOntology(iri: Self.testOntologyIRI)
         ontology1.classes = [OWLClass(iri: "ex:A"), OWLClass(iri: "ex:B")]
         ontology1.axioms = [
-            .subClassOf(sub: .named("ex:A"), sup: .named("ex:B")),
+            .subClassOf(sub: .named("ex:A"), sup: .named("ex:B"))
         ]
         try await context.ontology.load(
             ontology1,
@@ -350,7 +356,7 @@ struct OntologyPersistenceTests {
         var ontology2 = OWLOntology(iri: Self.testOntologyIRI)
         ontology2.classes = [OWLClass(iri: "ex:X"), OWLClass(iri: "ex:Y")]
         ontology2.axioms = [
-            .subClassOf(sub: .named("ex:X"), sup: .named("ex:Y")),
+            .subClassOf(sub: .named("ex:X"), sup: .named("ex:Y"))
         ]
         try await context.ontology.load(
             ontology2,
@@ -381,7 +387,7 @@ struct OntologyPersistenceTests {
             OWLClass(iri: "ex:C"),
         ]
         ontology.objectProperties = [
-            OWLObjectProperty(iri: "ex:rel"),
+            OWLObjectProperty(iri: "ex:rel")
         ]
         ontology.axioms = [
             .subClassOf(sub: .named("ex:A"), sup: .named("ex:B")),
@@ -425,7 +431,7 @@ struct OntologyPersistenceTests {
                 iri: "ex:regulatedBy",
                 domains: [.named("ex:Company")],
                 ranges: [.named("ex:Organization")]
-            ),
+            )
         ]
         ontology.axioms = [
             .subClassOf(sub: .named("ex:Company"), sup: .named("ex:Organization")),
@@ -475,7 +481,7 @@ struct OntologyPersistenceTests {
                 iri: "ex:regulatedBy",
                 domains: [.named("ex:Company")],
                 ranges: [.named("ex:RegulatoryAuthority")]
-            ),
+            )
         ]
         ontology.dataProperties = [
             OWLDataProperty(iri: "ex:name"),

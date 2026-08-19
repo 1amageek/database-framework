@@ -1,6 +1,6 @@
 import DatabaseEngine
-import DatabaseTypes
 import DatabaseKit
+import DatabaseTypes
 
 /// Conservative retained-memory accounting for one unique dataset scan row.
 ///
@@ -27,7 +27,7 @@ struct RDFDatasetScanRetainedMetrics: Sendable, Equatable {
         _ quad: RDFQuad,
         mergesNamedGraphs: Bool,
         coveringValueByteCount: Int = 0,
-        storedFieldNames: [String] = []
+        includedFieldNames: [String] = []
     ) throws -> RDFDatasetScanRetainedMetrics {
         let setValueByteCount = mergesNamedGraphs
             ? tripleValueBaseline
@@ -90,15 +90,15 @@ struct RDFDatasetScanRetainedMetrics: Sendable, Equatable {
             )
         }
 
-        if !storedFieldNames.isEmpty {
+        if !includedFieldNames.isEmpty {
             var storedFieldFootprint = try checkedAdd(
                 storedFieldArrayOverhead,
                 checkedMultiply(
-                    UInt64(storedFieldNames.count),
+                    UInt64(includedFieldNames.count),
                     storedFieldSlotByteCount
                 )
             )
-            for fieldName in storedFieldNames {
+            for fieldName in includedFieldNames {
                 storedFieldFootprint = try addRetainedString(
                     fieldName,
                     to: storedFieldFootprint

@@ -70,7 +70,10 @@ struct SchemaRegistryMigratedUserV1 {
 
 @Persistable(type: "SchemaRegistryMigratedUser")
 struct SchemaRegistryMigratedUserV2 {
-    #Index(.scalar, fields: [\SchemaRegistryMigratedUserV2.fullName], name: "SchemaRegistryMigratedUser_fullName")
+    #Index(
+        .ordered(
+            name: "SchemaRegistryMigratedUser_fullName",
+            keys: [.ascending(\SchemaRegistryMigratedUserV2.fullName)], unique: false))
 
     var id: String = ""
     var fullName: String
@@ -140,7 +143,10 @@ struct MigrationTests {
     @Persistable
     struct MigrationUser {
         #Directory<MigrationUser>("test", "migration", "users")
-        #Index(.scalar, fields: [\MigrationUser.email])
+        #Index(
+            .ordered(
+                name: "MigrationUser_email", keys: [.ascending(\MigrationUser.email)],
+                unique: false))
 
         var id: String = UUID().uuidString
         var email: String
@@ -180,7 +186,11 @@ struct MigrationTests {
                 storageEngine: database
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
             ),
             security: .testingDisabled
             )
@@ -202,7 +212,11 @@ struct MigrationTests {
                 storageEngine: database
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(BatchMigrationEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(BatchMigrationEntity.self)]
             ),
             security: .testingDisabled
             )
@@ -283,7 +297,11 @@ struct MigrationTests {
                     storageEngine: database
                 ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
                 ),
                 security: .testingDisabled
             )
@@ -297,7 +315,11 @@ struct MigrationTests {
                     storageEngine: database
                 ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(MigrationUser.self)]
                 ),
                 security: .testingDisabled
             )
@@ -343,7 +365,12 @@ struct MigrationTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: database
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV1.self)]),
                 security: .testingDisabled
             )
             let initialContext = initialContainer.testBaseContext()
@@ -364,7 +391,12 @@ struct MigrationTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: database
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV2.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -374,7 +406,12 @@ struct MigrationTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: database
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryAppendOnlyUserV2.self)]),
                 security: .testingDisabled
             )
             let migratedUsers = try await verificationContainer
@@ -443,7 +480,12 @@ struct MigrationTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: database
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV1.self)]),
                 security: .testingDisabled
             )
             let initialContext = initialContainer.testBaseContext()
@@ -463,7 +505,12 @@ struct MigrationTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: database
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -483,7 +530,12 @@ struct MigrationTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: database
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
                 security: .testingDisabled
             )
             let verificationContext = verificationContainer.testBaseContext()
@@ -512,7 +564,12 @@ struct MigrationTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: database
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV1.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV1.self)]),
                 security: .testingDisabled
             )
             let initialContext = initialContainer.testBaseContext()
@@ -541,7 +598,12 @@ struct MigrationTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: database
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
             )
             try await migratedContainer.testBaseAdmin().migrateIfNeeded()
 
@@ -551,7 +613,12 @@ struct MigrationTests {
                     databaseIdentifier: databaseIdentifier,
                     storageEngine: database
                 ),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
+                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(SchemaRegistryMigratedUserV2.self)]),
                 security: .testingDisabled
             )
             let migratedUsers = try await verificationContainer
@@ -584,7 +651,6 @@ struct MigrationTests {
             let subspace = try await container.testBaseDirectory(for: BatchMigrationEntity.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
-                indexSubspace: subspace.subspace(SubspaceKey.indexes),
                 blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
             let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
@@ -641,7 +707,6 @@ struct MigrationTests {
             let subspace = try await container.testBaseDirectory(for: BatchMigrationEntity.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
-                indexSubspace: subspace.subspace(SubspaceKey.indexes),
                 blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
             let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]
@@ -678,7 +743,6 @@ struct MigrationTests {
             let subspace = try await container.testBaseDirectory(for: BatchMigrationEntity.self)
             let storeInfo = MigrationStoreInfo(
                 subspace: subspace,
-                indexSubspace: subspace.subspace(SubspaceKey.indexes),
                 blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
             let storeRegistry = [BatchMigrationEntity.persistableType: storeInfo]

@@ -24,11 +24,12 @@ struct EdgeForPropertyPath {
     var to: RDFTerm = .iri(.xsdString)
 
     #Index(
-        .rdfDataset,
-        from: \EdgeForPropertyPath.from,
-        edge: \EdgeForPropertyPath.relationship,
-        to: \EdgeForPropertyPath.to
-    )
+        .graph(
+            name: "EdgeForPropertyPath_rdf_quad_from_relationship_to",
+            definition: .rdf(
+                subject: \EdgeForPropertyPath.from,
+                predicate: \EdgeForPropertyPath.relationship,
+                object: \EdgeForPropertyPath.to, graph: nil)))
 }
 
 // MARK: - Test Suite
@@ -65,7 +66,12 @@ struct PropertyPathTests {
         return try await DBContainer.open(
             testing: schema,
             configuration: .testing(storageEngine: database),
-            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForPropertyPath.self)]),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(EdgeForPropertyPath.self)]),
             security: .testingDisabled,
         )
     }
@@ -335,7 +341,7 @@ struct PropertyPathTests {
         let predicate = try uniquePredicate("knows")
 
         let edges = [
-            try makeEdge(from: alice, relationship: predicate, to: bob),
+            try makeEdge(from: alice, relationship: predicate, to: bob)
         ]
 
         try await insertEdges(edges, context: context)

@@ -1,5 +1,5 @@
-import DatabaseKit
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -35,7 +35,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
                 context: context,
                 selectQuery: selectQuery,
                 options: options,
-                storedFieldNames: runtime.storedFieldNames,
+                includedFieldNames: runtime.includedFieldNames,
                 datasetScanner: runtime.scanner,
                 transaction: transaction
             )
@@ -60,7 +60,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             context: context,
             selectQuery: selectQuery,
             options: options,
-            storedFieldNames: runtime.storedFieldNames,
+            includedFieldNames: runtime.includedFieldNames,
             datasetScanner: runtime.scanner,
             transaction: transaction
         )
@@ -168,7 +168,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         transaction: any TransactionAccess
     ) async throws -> (
         scanner: CanonicalRDFDatasetScanner,
-        storedFieldNames: [String]
+        includedFieldNames: [String]
     ) {
         let resolution = try RDFDatasetReadResolver.resolve(
             schema: context.container.schema
@@ -194,7 +194,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
                 ),
                 projectedSources: projectedSources
             ),
-            storedFieldNames: resolution?.indexDescriptor.storedFieldNames ?? []
+            includedFieldNames: resolution?.indexDescriptor.includedFieldNames ?? []
         )
     }
 
@@ -208,8 +208,8 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         guard let index = try await queryContext
             .readableIndex(
                 named: resolution.indexDescriptor.name,
-                kindIdentifier: resolution.indexDescriptor.kindIdentifier,
-                forEntityName: resolution.entity.name,
+                    indexType: resolution.indexDescriptor.type,
+                    forEntityName: resolution.entity.name,
                 partitions: partitions,
                 transaction: transaction
             ) else {
@@ -221,7 +221,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             indexName: resolution.indexDescriptor.name,
             indexSubspace: index.subspace,
             coverage: try resolution.metadata.graphMapping.sourceCoverage,
-            storedFieldNames: resolution.indexDescriptor.storedFieldNames
+            includedFieldNames: resolution.indexDescriptor.includedFieldNames
         )
     }
 
@@ -244,14 +244,14 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        storedFieldNames: [String],
+        includedFieldNames: [String],
         datasetScanner: any RDFDatasetScanner,
         transaction: (any TransactionAccess)?
     ) async throws -> QueryResponse {
         let selectPlan = try SPARQLSelectPlanCompiler
             .compileForCanonicalPagination(
                 selectQuery,
-                additionalProjectionVariables: storedFieldNames,
+                additionalProjectionVariables: includedFieldNames,
                 structuralLimits: options.queryStructuralLimits
             )
         let projectedVariables = selectPlan.projectionVariables
