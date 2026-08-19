@@ -48,13 +48,16 @@ package enum IndexStorageRetirer {
                     .subspace(layoutFingerprint),
                 transaction: transaction
             )
-            try clearRange(
-                storeSubspace
+            try transaction.clear(
+                key: storeSubspace
                     .subspace("state")
                     .subspace(indexName)
-                    .subspace(definitionFingerprint.bytes)
-                    .subspace(layoutFingerprint),
-                transaction: transaction
+                    .pack(
+                        Tuple(
+                            definitionFingerprint.bytes,
+                            layoutFingerprint
+                        )
+                    )
             )
             try clearRange(
                 storeSubspace
@@ -65,14 +68,17 @@ package enum IndexStorageRetirer {
                     .subspace(layoutFingerprint),
                 transaction: transaction
             )
-            try clearRange(
-                storeSubspace
+            try transaction.clear(
+                key: storeSubspace
                     .subspace(SubspaceKey.metadata)
                     .subspace("index-rebuild")
-                    .subspace(indexName)
-                    .subspace(definitionFingerprint.bytes)
-                    .subspace(layoutFingerprint),
-                transaction: transaction
+                    .pack(
+                        Tuple(
+                            indexName,
+                            definitionFingerprint.bytes,
+                            layoutFingerprint
+                        )
+                    )
             )
         }
     }

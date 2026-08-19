@@ -105,7 +105,7 @@ scripts/fdb-test-env run --clean -- \
     --traits FoundationDB,AllRuntimeFeatures,MultiBase \
     --skip-testing BenchmarkFrameworkTests \
     --skip-testing PerformanceBenchmarks \
-    --expected-count 3607 \
+    --expected-count 3608 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings

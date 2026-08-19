@@ -958,16 +958,15 @@ extension DBContainer {
             let definitionFingerprint,
             let layoutFingerprint
         ):
-            let range =
-                builds
-                .subspace(scope)
-                .subspace(index)
-                .subspace(definitionFingerprint.bytes)
-                .subspace(layoutFingerprint)
-                .range()
-            try transaction.clearRange(
-                beginKey: range.begin,
-                endKey: range.end
+            try transaction.clear(
+                key: builds.pack(
+                    Tuple(
+                        scope,
+                        index,
+                        definitionFingerprint.bytes,
+                        layoutFingerprint
+                    )
+                )
             )
         }
     }

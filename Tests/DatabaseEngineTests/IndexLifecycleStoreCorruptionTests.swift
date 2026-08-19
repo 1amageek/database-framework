@@ -211,7 +211,7 @@ struct IndexLifecycleStoreCorruptionTests {
             )
         )
 
-        try await engine.withTransaction { transaction in
+        _ = try await engine.withTransaction { transaction in
             #expect(throws: DatabaseSchemaPublicationError.self) {
                 try container.completeSchemaIndexBuild(
                     mismatchedTarget,
@@ -472,6 +472,171 @@ struct IndexLifecycleStoreCorruptionTests {
             try first.indexSubspace(for: "test_index")
                 != second.indexSubspace(for: "test_index")
         )
+    }
+
+    @Test("Exact retirement clears generation roots without touching peers")
+    func exactRetirementClearsGenerationRootValues() async throws {
+        let engine = InMemoryEngine()
+        let entity = try CatalogEntry.schemaEntity
+        let schema = try Schema(entities: [entity])
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: engine),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(CatalogEntry.self)
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let indexName = "test_index"
+        let definitionFingerprint = try DatabaseIndexStorageIdentity
+            .definitionFingerprint(named: indexName, in: schema)
+        let retiredLayout = try IndexPhysicalLayout(
+            name: "test.ordered",
+            revision: 1
+        ).fingerprint
+        let retainedLayout = try IndexPhysicalLayout(
+            name: "test.ordered",
+            revision: 2
+        ).fingerprint
+        let store = Subspace(
+            prefix: Tuple("exact-index-retirement").pack()
+        )
+        let scope = DatabaseIndexStorageScope.entity(
+            name: entity.name,
+            directoryComponents: entity.directoryComponents
+        )
+        let pendingBuilds = try await container.withTestBaseOperation {
+            try container.dataRootSchemaMetadataSubspace()
+                .subspace("schema")
+                .subspace("index-build")
+        }
+
+        func keys(
+            layoutFingerprint: ByteString
+        ) -> (data: ByteString, state: ByteString,
+              violation: ByteString, rebuild: ByteString,
+              pendingBuild: ByteString) {
+            let generation = store
+                .subspace(SubspaceKey.indexes)
+                .subspace(indexName)
+                .subspace(definitionFingerprint.bytes)
+                .subspace(layoutFingerprint)
+            let state = store
+                .subspace("state")
+                .subspace(indexName)
+                .pack(
+                    Tuple(
+                        definitionFingerprint.bytes,
+                        layoutFingerprint
+                    )
+                )
+            let violation = store
+                .subspace(SubspaceKey.metadata)
+                .subspace("_violations")
+                .subspace(indexName)
+                .subspace(definitionFingerprint.bytes)
+                .subspace(layoutFingerprint)
+                .pack(Tuple("value"))
+            let rebuild = store
+                .subspace(SubspaceKey.metadata)
+                .subspace("index-rebuild")
+                .pack(
+                    Tuple(
+                        indexName,
+                        definitionFingerprint.bytes,
+                        layoutFingerprint
+                    )
+                )
+            return (
+                data: generation.pack(Tuple("entry")),
+                state: state,
+                violation: violation,
+                rebuild: rebuild,
+                pendingBuild: pendingBuilds.pack(
+                    Tuple(
+                        scope.stableOrderingKey,
+                        indexName,
+                        definitionFingerprint.bytes,
+                        layoutFingerprint
+                    )
+                )
+            )
+        }
+
+        let retired = keys(layoutFingerprint: retiredLayout)
+        let retained = keys(layoutFingerprint: retainedLayout)
+        try await container.withTestBaseOperation {
+            try await engine.withTransaction { transaction in
+                for key in [
+                    retired.data,
+                    retired.state,
+                    retired.violation,
+                    retired.rebuild,
+                    retired.pendingBuild,
+                    retained.data,
+                    retained.state,
+                    retained.violation,
+                    retained.rebuild,
+                    retained.pendingBuild,
+                ] {
+                    try transaction.setValue([1], for: key)
+                }
+                try IndexStorageRetirer.retire(
+                    indexName: indexName,
+                    selection: .physicalGeneration(
+                        definitionFingerprint: definitionFingerprint,
+                        layoutFingerprint: retiredLayout
+                    ),
+                    storeSubspace: store,
+                    transaction: transaction
+                )
+                try container.clearSchemaIndexBuildPending(
+                    scope: scope,
+                    index: indexName,
+                    selection: .physicalGeneration(
+                        definitionFingerprint: definitionFingerprint,
+                        layoutFingerprint: retiredLayout
+                    ),
+                    transaction: transaction
+                )
+            }
+        }
+
+        try await engine.withTransaction { transaction in
+            for key in [
+                retired.data,
+                retired.state,
+                retired.violation,
+                retired.rebuild,
+                retired.pendingBuild,
+            ] {
+                let value = try await transaction.getValue(
+                    for: key,
+                    snapshot: true
+                )
+                #expect(value == nil)
+            }
+            for key in [
+                retained.data,
+                retained.state,
+                retained.violation,
+                retained.rebuild,
+                retained.pendingBuild,
+            ] {
+                let value = try await transaction.getValue(
+                    for: key,
+                    snapshot: true
+                )
+                #expect(value == [1])
+            }
+        }
     }
 
     @Test("Container reads fail when an existing index loses its state")
