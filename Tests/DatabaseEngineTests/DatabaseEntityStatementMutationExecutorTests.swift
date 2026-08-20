@@ -137,6 +137,133 @@ struct DatabaseEntityStatementMutationExecutorTests {
         )
     }
 
+    @Test("statement mutations reserve each retained change before execution")
+    func enforcesRetainedChangeRowBudget() async throws {
+        let container = try await makeContainer()
+        let context = container.testBaseContext()
+        let executor = try makeExecutor(container: container)
+        let entity = EntityMutationFixture.persistableType
+
+        for identifier in ["event-a", "event-b"] {
+            _ = try await execute(
+                .insert(
+                    InsertQuery(
+                        target: TableRef(entity),
+                        columns: ["id", "title"],
+                        source: .values([[
+                            .string(identifier),
+                            .string("Original"),
+                        ]])
+                    )
+                ),
+                executor: executor,
+                container: container
+            )
+        }
+
+        await #expect(
+            throws: DatabaseWorkLimitError.maximumIntermediateRows(
+                stage: .mutationPlanning,
+                consumed: 1,
+                requested: 1,
+                maximum: 1
+            )
+        ) {
+            try await execute(
+                .update(
+                    UpdateQuery(
+                        target: TableRef(entity),
+                        assignments: [
+                            Assignment(
+                                column: "title",
+                                value: .string("Changed")
+                            )
+                        ]
+                    )
+                ),
+                executor: executor,
+                container: container,
+                budget: ExecutionBudget(
+                    maximumRows: 16,
+                    maximumWorkUnits: 1_000,
+                    maximumIntermediateRows: 1,
+                    maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                    timeoutMilliseconds: 30_000
+                )
+            )
+        }
+
+        await #expect(
+            throws: DatabaseEntityStatementMutationError.scanLimitExceeded(
+                actual: 2,
+                maximum: 1
+            )
+        ) {
+            try await execute(
+                .delete(DeleteQuery(target: TableRef(entity))),
+                executor: executor,
+                container: container,
+                budget: ExecutionBudget(
+                    maximumRows: 1,
+                    maximumWorkUnits: 1_000,
+                    maximumIntermediateRows: 16,
+                    maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                    timeoutMilliseconds: 30_000
+                )
+            )
+        }
+
+        #expect(
+            try await context.model(
+                for: "event-a",
+                as: EntityMutationFixture.self
+            )?.title == "Original"
+        )
+        #expect(
+            try await context.model(
+                for: "event-b",
+                as: EntityMutationFixture.self
+            )?.title == "Original"
+        )
+
+        let effects = try await execute(
+            .update(
+                UpdateQuery(
+                    target: TableRef(entity),
+                    assignments: [
+                        Assignment(
+                            column: "title",
+                            value: .string("Changed")
+                        )
+                    ],
+                    filter: .equal(.col("id"), .string("event-a"))
+                )
+            ),
+            executor: executor,
+            container: container,
+            budget: ExecutionBudget(
+                maximumRows: 16,
+                maximumWorkUnits: 1_000,
+                maximumIntermediateRows: 3,
+                maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                timeoutMilliseconds: 30_000
+            )
+        )
+        #expect(effects.count == 1)
+        #expect(
+            try await context.model(
+                for: "event-a",
+                as: EntityMutationFixture.self
+            )?.title == "Changed"
+        )
+        #expect(
+            try await context.model(
+                for: "event-b",
+                as: EntityMutationFixture.self
+            )?.title == "Original"
+        )
+    }
+
     private func makeExecutor(
         container: DBContainer
     ) throws -> DatabaseEntityStatementMutationExecutor {
@@ -153,7 +280,8 @@ struct DatabaseEntityStatementMutationExecutorTests {
         _ statement: QueryStatement,
         preconditions: [EntityMutationPrecondition] = [],
         executor: DatabaseEntityStatementMutationExecutor,
-        container: DBContainer
+        container: DBContainer,
+        budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> [EntityMutationEffect] {
         let context = container.testBaseContext()
         return try await context.withTransaction(configuration: .batch) {
@@ -163,7 +291,7 @@ struct DatabaseEntityStatementMutationExecutorTests {
                 preconditions: preconditions,
                 transaction: transaction,
                 workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget(),
+                    budget: budget,
                     monotonicClock: container.monotonicClock
                 )
             )

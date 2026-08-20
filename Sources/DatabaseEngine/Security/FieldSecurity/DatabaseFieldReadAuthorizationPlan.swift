@@ -299,7 +299,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             let entityFieldName: String
         }
 
-        func matchingBindings(
+        private func matchingBindings(
             column: ColumnRef,
             localBindings: [SourceBinding],
             outerScopes: [[SourceBinding]]

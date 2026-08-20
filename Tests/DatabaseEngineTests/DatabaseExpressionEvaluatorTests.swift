@@ -1,5 +1,6 @@
 import DatabaseTypes
 import DatabaseKit
+import StorageKitSystemClock
 import Testing
 @testable import DatabaseEngine
 
@@ -37,6 +38,63 @@ struct DatabaseExpressionEvaluatorTests {
                 .cast(.string(uuid.description), targetType: .uuid)
             ) == .uuid(uuid)
         )
+    }
+
+    @Test("LIKE preserves wildcard and Unicode character semantics")
+    func likeWildcardSemantics() throws {
+        let cases: [(String, String, Bool)] = [
+            ("", "", true),
+            ("", "%", true),
+            ("", "_", false),
+            ("A📅BC", "A_B%", true),
+            ("A📅BC", "%📅%", true),
+            ("A📅BC", "A_C", false),
+            ("aaab", "%aab", true),
+            ("mississippi", "%iss%ppi", true),
+            ("abefcdgiescdfimde", "ab%cd_i%de", true),
+            ("abc", "%%", true),
+            ("abc", "a_d", false),
+        ]
+
+        for (value, pattern, expected) in cases {
+            let evaluator = DatabaseExpressionEvaluator(fields: [
+                "value": .string(value),
+            ])
+            #expect(
+                try evaluator.predicate(
+                    .like(.col("value"), pattern: pattern)
+                ) == expected
+            )
+        }
+    }
+
+    @Test("LIKE stops at the exact expression work limit")
+    func likeHonorsWorkLimit() {
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 1,
+                maximumWorkUnits: 1,
+                timeoutMilliseconds: 30_000
+            ),
+            monotonicClock: SystemStorageClock()
+        )
+        let evaluator = DatabaseExpressionEvaluator(
+            fields: ["value": .string("abc")],
+            workMeter: workMeter
+        )
+
+        #expect(
+            throws: DatabaseWorkLimitError.maximumWorkUnits(
+                stage: .expressionEvaluation,
+                consumed: 1,
+                requested: 1,
+                maximum: 1
+            )
+        ) {
+            _ = try evaluator.predicate(
+                .like(.col("value"), pattern: "abc")
+            )
+        }
     }
 
     @Test("decimal arithmetic remains exact and normalized")

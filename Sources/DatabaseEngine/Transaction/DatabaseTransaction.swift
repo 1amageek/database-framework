@@ -374,23 +374,26 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         }
     }
 
-    @_spi(DatabaseExecution)
-    public func scanPersistedModelsForExecution(
+    package func scanPersistedModelChangesForMutation(
         entity: String,
         partition: AnyDirectoryPath?,
-        limit: Int,
-        offset: Int = 0,
-        startingAfterIdentifier: ByteString? = nil,
-        workMeter: DatabaseWorkMeter? = nil
-    ) async throws -> [PersistedModel] {
-        try await scanPersistedModels(
-            entity: entity,
-            partition: partition,
-            limit: limit,
-            offset: offset,
-            startingAfterIdentifier: startingAfterIdentifier,
-            workMeter: workMeter
-        )
+        maximumRows: Int,
+        maximumChanges: Int,
+        workMeter: DatabaseWorkMeter,
+        transform: @Sendable (
+            borrowing PersistedModel
+        ) throws -> EntityMutationChange?
+    ) async throws -> sending DatabaseRetainedEntityMutationScan {
+        try await performOperation { _ in
+            try await scanPersistedModelChangesForMutationUnchecked(
+                entity: entity,
+                partition: partition,
+                maximumRows: maximumRows,
+                maximumChanges: maximumChanges,
+                workMeter: workMeter,
+                transform: transform
+            )
+        }
     }
 
     @_spi(DatabaseExecution)
@@ -438,6 +441,14 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 operationID: operationID
             )
         }
+    }
+
+    @_spi(DatabaseExecution)
+    public func persistedMutationEffectCount() throws -> Int {
+        guard state == .open else {
+            throw lifecycleError(for: state)
+        }
+        return mutationJournal.persistedEffectCount
     }
 
     @_spi(DatabaseExecution)
@@ -860,6 +871,108 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             models.append(model)
         }
         return models
+    }
+
+    private func scanPersistedModelChangesForMutationUnchecked(
+        entity: String,
+        partition: AnyDirectoryPath?,
+        maximumRows: Int,
+        maximumChanges: Int,
+        workMeter: DatabaseWorkMeter,
+        transform: @Sendable (
+            borrowing PersistedModel
+        ) throws -> EntityMutationChange?
+    ) async throws -> sending DatabaseRetainedEntityMutationScan {
+        guard maximumRows >= 0, maximumRows < Int.max else {
+            throw DatabaseTransactionError.invalidLimit(maximumRows)
+        }
+        guard maximumChanges > 0 else {
+            throw DatabaseEntityMutationError.changeLimitExceeded(
+                actual: 0,
+                maximum: maximumChanges
+            )
+        }
+        let runtime = try entityRuntime(named: entity)
+        if runtime.entity.hasDynamicDirectory, partition == nil {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: entity,
+                fields: runtime.entity.dynamicFieldNames
+            )
+        }
+        let storageLimit = maximumRows + 1
+        try container.securityDelegate?.evaluateList(
+            entity: runtime.entity.name,
+            limit: storageLimit,
+            offset: nil,
+            orderBy: nil
+        )
+        var changes = try DatabaseRetainedArrayBuilder<EntityMutationChange>(
+            workMeter: workMeter,
+            stage: .mutationPlanning,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: EntityMutationChange.self)
+        )
+        guard let subspaces = try await openSubspaces(
+            for: runtime.entity,
+            partition: partition
+        ) else {
+            return DatabaseRetainedEntityMutationScan(
+                changes: changes.finish(),
+                hasMoreSourceRows: false
+            )
+        }
+        let (begin, end) = subspaces.items.subspace(entity).range()
+        let storage = container.itemStorageFactory.make(
+            transaction: storageAccess,
+            blobsSubspace: subspaces.blobs
+        )
+        var iterator = storage.scan(
+            begin: begin,
+            end: end,
+            startingAfter: nil,
+            snapshot: false,
+            limit: storageLimit
+        ).makeAsyncIterator()
+        var sourceRowCount = 0
+        while let (_, data) = try await iterator.next() {
+            try workMeter.consume(at: .storageRow)
+            let persistedModel = try DataAccess.deserializePersistedModel(
+                data,
+                expectedEntity: entity
+            )
+            let model = try runtime.canonicalized(persistedModel)
+            try container.securityDelegate?.evaluateGet(
+                persistedModel,
+                fields: nil
+            )
+            guard sourceRowCount < maximumRows else {
+                return DatabaseRetainedEntityMutationScan(
+                    changes: changes.finish(),
+                    hasMoreSourceRows: true
+                )
+            }
+            sourceRowCount += 1
+            guard let change = try transform(model) else { continue }
+            guard changes.count < maximumChanges else {
+                throw DatabaseEntityMutationError.changeLimitExceeded(
+                    actual: maximumChanges == Int.max
+                        ? Int.max
+                        : maximumChanges + 1,
+                    maximum: maximumChanges
+                )
+            }
+            try changes.append(
+                footprint: try DatabaseEntityMutationFootprintMeter.footprint(
+                    of: change,
+                    workMeter: workMeter
+                ),
+                make: { change }
+            )
+        }
+        return DatabaseRetainedEntityMutationScan(
+            changes: changes.finish(),
+            hasMoreSourceRows: false
+        )
     }
 
     // MARK: - Operation lifecycle

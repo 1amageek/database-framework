@@ -886,14 +886,47 @@ internal struct SPARQLFunctionRewriter: Sendable {
             throw SPARQLFunctionError.multipleVariablesNotSupported
         }
 
-        // Convert directly to the rewritten representation so the graph result
-        // is not copied through a second temporary literal array.
-        return try result.bindings.map { binding in
+        // IN-list order and duplicates are not observable SQL semantics. A
+        // canonical value order keeps the rewritten query fingerprint stable
+        // when a historical continuation repeats this rewrite at the same
+        // read version without an explicit SPARQL ORDER BY.
+        var values = try DatabaseRetainedArrayBuilder<FieldValue>(
+            workMeter: workMeter,
+            stage: .expressionEvaluation,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: FieldValue.self),
+            expectedCount: result.bindings.count
+        )
+        for binding in result.bindings {
+            try workMeter.consume(at: .expressionEvaluation)
             guard let fieldValue = binding[variable] else {
                 throw SPARQLFunctionError.missingVariable(variable)
             }
-            return .literal(try fieldValueToLiteral(fieldValue))
+            try values.append(
+                footprint: try CanonicalRelationalFootprintMeter.footprint(
+                    of: QueryRow(fields: ["value": fieldValue]),
+                    workMeter: workMeter
+                ),
+                make: { fieldValue }
+            )
         }
+        let sortedValues = try values.finish().sortingElements { lhs, rhs in
+            try workMeter.consume(2, at: .sortComparison)
+            return lhs < rhs
+        }
+
+        var expressions: [DatabaseKit.Expression] = []
+        expressions.reserveCapacity(sortedValues.count)
+        try sortedValues.withSpan { values in
+            var previous: FieldValue?
+            for value in values {
+                guard value != previous else { continue }
+                try workMeter.consume(at: .expressionEvaluation)
+                expressions.append(.literal(try fieldValueToLiteral(value)))
+                previous = value
+            }
+        }
+        return expressions
     }
 
     // MARK: - Argument Extraction

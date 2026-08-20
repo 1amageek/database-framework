@@ -4,13 +4,16 @@ import DatabaseKit
 package struct DatabaseExpressionEvaluator: Sendable {
     package let fields: [String: FieldValue]
     package let ambiguousColumns: Set<String>
+    package let workMeter: DatabaseWorkMeter?
 
     package init(
         fields: [String: FieldValue],
-        ambiguousColumns: Set<String> = []
+        ambiguousColumns: Set<String> = [],
+        workMeter: DatabaseWorkMeter? = nil
     ) {
         self.fields = fields
         self.ambiguousColumns = ambiguousColumns
+        self.workMeter = workMeter
     }
 
     package func predicate(_ expression: Expression) throws -> Bool {
@@ -84,7 +87,7 @@ package struct DatabaseExpressionEvaluator: Sendable {
             guard case .string(let value) = candidate else {
                 throw DatabaseExpressionEvaluationError.typeMismatch(operation: "LIKE")
             }
-            return .bool(Self.matchesLike(value, pattern: pattern))
+            return .bool(try matchesLike(value, pattern: pattern))
         case .regex:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("REGEX")
         case .between(let nested, let low, let high):
@@ -223,7 +226,7 @@ package struct DatabaseExpressionEvaluator: Sendable {
         if lhs.isNull || rhs.isNull { return nil }
         do {
             return try FieldValueComparator.equal(lhs, rhs)
-        } catch let failure as FieldValueComparisonError {
+        } catch let failure {
             throw expressionComparisonError(
                 failure,
                 operation: "equality"
@@ -252,7 +255,7 @@ package struct DatabaseExpressionEvaluator: Sendable {
             case .equal: return .equal
             case .greaterThan: return .greater
             }
-        } catch let failure as FieldValueComparisonError {
+        } catch let failure {
             throw expressionComparisonError(
                 failure,
                 operation: "ordering"
@@ -653,32 +656,47 @@ package struct DatabaseExpressionEvaluator: Sendable {
         }
     }
 
-    private static func matchesLike(_ value: String, pattern: String) -> Bool {
-        let value = Array(value)
-        let pattern = Array(pattern)
-        var previous = Array(repeating: false, count: value.count + 1)
-        previous[0] = true
+    private func matchesLike(_ value: String, pattern: String) throws -> Bool {
+        var valueIndex = value.startIndex
+        var patternIndex = pattern.startIndex
+        var wildcardPatternResume: String.Index?
+        var wildcardValueResume: String.Index?
 
-        for token in pattern {
-            var current = Array(repeating: false, count: value.count + 1)
-            if token == "%" {
-                current[0] = previous[0]
-                if !value.isEmpty {
-                    for index in 1...value.count {
-                        current[index] = previous[index] || current[index - 1]
-                    }
+        while valueIndex < value.endIndex {
+            try workMeter?.consume(at: .expressionEvaluation)
+
+            if patternIndex < pattern.endIndex {
+                let token = pattern[patternIndex]
+                if token == "_" || token == value[valueIndex] {
+                    value.formIndex(after: &valueIndex)
+                    pattern.formIndex(after: &patternIndex)
+                    continue
                 }
-            } else {
-                if !value.isEmpty {
-                    for index in 1...value.count {
-                        current[index] = previous[index - 1]
-                            && (token == "_" || token == value[index - 1])
-                    }
+                if token == "%" {
+                    pattern.formIndex(after: &patternIndex)
+                    wildcardPatternResume = patternIndex
+                    wildcardValueResume = valueIndex
+                    continue
                 }
             }
-            previous = current
+
+            guard let resumePattern = wildcardPatternResume,
+                  var resumeValue = wildcardValueResume,
+                  resumeValue < value.endIndex else {
+                return false
+            }
+            value.formIndex(after: &resumeValue)
+            wildcardValueResume = resumeValue
+            valueIndex = resumeValue
+            patternIndex = resumePattern
         }
-        return previous[value.count]
+
+        while patternIndex < pattern.endIndex {
+            try workMeter?.consume(at: .expressionEvaluation)
+            guard pattern[patternIndex] == "%" else { return false }
+            pattern.formIndex(after: &patternIndex)
+        }
+        return true
     }
 
     private func performExactDecimalOperation<T>(

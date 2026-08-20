@@ -30,7 +30,7 @@ public struct DatabaseEntityMutationExecutor: Sendable {
         _ changes: [EntityMutationChange],
         preconditions: [EntityMutationPrecondition],
         workMeter: DatabaseWorkMeter
-    ) throws -> [PreparedChange] {
+    ) throws -> DatabasePreparedEntityMutation {
         guard !changes.isEmpty else {
             throw DatabaseEntityMutationError.emptyMutation
         }
@@ -47,9 +47,24 @@ public struct DatabaseEntityMutationExecutor: Sendable {
             )
         }
 
-        var seen = ResolvedEntityMap<Void>()
-        var result: [PreparedChange] = []
-        result.reserveCapacity(changes.count)
+        var preparedChanges = try DatabaseRetainedArrayBuilder<PreparedChange>(
+            workMeter: workMeter,
+            stage: .validation,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: PreparedChange.self),
+            expectedCount: changes.count
+        )
+        var identities = try DatabaseRetainedArrayBuilder<
+            DatabasePreparedEntityMutation.Identity
+        >(
+            workMeter: workMeter,
+            stage: .validation,
+            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+                for: DatabasePreparedEntityMutation.Identity.self
+            ),
+            expectedCount: changes.count
+        )
+
         for change in changes {
             try workMeter.consume(at: .validation)
             let model: PersistedModel?
@@ -81,6 +96,7 @@ public struct DatabaseEntityMutationExecutor: Sendable {
                 }
                 model = try runtime.persistedModel(from: change.fields)
             }
+
             let resolved = try ResolvedEntityReference.resolve(
                 change.identity,
                 container: container,
@@ -91,21 +107,65 @@ public struct DatabaseEntityMutationExecutor: Sendable {
                 id: resolved.id.pack(),
                 partitionPath: resolved.partitionPath
             )
-            guard seen.insert((), for: key) else {
-                throw DatabaseEntityMutationError.duplicateChange(
-                    change.identity
-                )
-            }
-            result.append(
-                PreparedChange(
-                    change: change,
-                    resolved: resolved,
-                    model: model
-                )
+            try identities.append(
+                footprint: try DatabaseEntityMutationFootprintMeter.footprint(
+                    of: change.identity,
+                    workMeter: workMeter
+                ),
+                make: {
+                    DatabasePreparedEntityMutation.Identity(
+                        key: key,
+                        identity: change.identity
+                    )
+                }
+            )
+            try preparedChanges.append(
+                footprint: try DatabaseEntityMutationFootprintMeter.footprint(
+                    identity: change.identity,
+                    model: model,
+                    workMeter: workMeter
+                ),
+                make: {
+                    PreparedChange(
+                        kind: change.kind,
+                        identity: change.identity,
+                        resolved: resolved,
+                        model: model
+                    )
+                }
             )
         }
-        try validatePreconditionSet(preconditions)
-        return result
+
+        let sortedIdentities = try identities.finish().sortingElements {
+            lhs,
+            rhs in
+            try workMeter.consume(at: .sortComparison)
+            return lhs.key < rhs.key
+        }
+        try sortedIdentities.withSpan { identities in
+            for index in identities.indices.dropFirst() {
+                let previous = identities[index - 1]
+                let current = identities[index]
+                guard previous.key != current.key else {
+                    throw DatabaseEntityMutationError.duplicateChange(
+                        current.identity
+                    )
+                }
+            }
+        }
+
+        return DatabasePreparedEntityMutation(
+            changes: try preparedChanges.finish().moveToSharedOwnership(
+                at: .validation
+            ),
+            identities: try sortedIdentities.moveToSharedOwnership(
+                at: .validation
+            ),
+            preconditions: try preparePreconditions(
+                preconditions,
+                workMeter: workMeter
+            )
+        )
     }
 
     public func execute(
@@ -114,152 +174,137 @@ public struct DatabaseEntityMutationExecutor: Sendable {
         workMeter: DatabaseWorkMeter,
         transaction: DatabaseTransaction
     ) async throws -> [EntityMutationEffect] {
-        try await execute(
-            prepare(
-                changes,
-                preconditions: preconditions,
-                workMeter: workMeter
-            ),
+        let prepared = try prepare(
+            changes,
             preconditions: preconditions,
+            workMeter: workMeter
+        )
+        return try await execute(
+            prepared,
             workMeter: workMeter,
             transaction: transaction
         )
     }
 
     public func execute(
-        _ changes: [PreparedChange],
-        preconditions: [EntityMutationPrecondition],
+        _ preparedMutation: DatabasePreparedEntityMutation,
         workMeter: DatabaseWorkMeter,
         transaction: DatabaseTransaction
     ) async throws -> [EntityMutationEffect] {
-        var states = ResolvedEntityMap<DatabaseEntityState>()
+        var mutations = try DatabaseRetainedArrayBuilder<PersistableMutation>(
+            workMeter: workMeter,
+            stage: .mutationPlanning,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: PersistableMutation.self),
+            expectedCount: preparedMutation.changes.count
+        )
 
-        for prepared in changes {
-            states.insert(
-                try await load(
-                    prepared.resolved,
-                    transaction: transaction,
-                    workMeter: workMeter
-                ),
-                for: prepared.key
-            )
-        }
-        for precondition in preconditions {
-            let identity = precondition.identity
-            let key = try ResolvedEntityReference.key(
-                identity,
-                container: container
-            )
-            if states.value(for: key) == nil {
-                let resolved = try ResolvedEntityReference.resolve(
-                    identity,
-                    container: container
-                )
-                states.insert(
-                    try await load(
-                        resolved,
-                        transaction: transaction,
-                        workMeter: workMeter
-                    ),
-                    for: key
-                )
-            }
-        }
-
-        for precondition in preconditions {
-            let key = try ResolvedEntityReference.key(
-                precondition.identity,
-                container: container
-            )
-            guard let state = states.value(for: key) else {
-                throw DatabaseEntityMutationError.entityNotFound(
-                    precondition.identity
-                )
-            }
-            try validate(precondition, state: state)
-        }
-        for prepared in changes {
-            guard let state = states.value(for: prepared.key) else {
-                throw DatabaseEntityMutationError.entityNotFound(
-                    prepared.change.identity
-                )
-            }
-            switch (prepared.change.kind, state) {
-            case (.insert, .present):
-                throw DatabaseEntityMutationError.entityAlreadyExists(
-                    prepared.change.identity
-                )
-            case (.update, .missing), (.delete, .missing):
-                throw DatabaseEntityMutationError.entityNotFound(
-                    prepared.change.identity
-                )
-            default:
-                break
-            }
-        }
-
-        var mutations: [PersistableMutation] = []
-        mutations.reserveCapacity(changes.count)
-        for prepared in changes {
+        for prepared in preparedMutation.changes {
             try workMeter.consume(at: .mutationPlanning)
-            switch prepared.change.kind {
+            let state = try await load(
+                prepared.resolved,
+                transaction: transaction,
+                workMeter: workMeter
+            )
+            try validatePreconditions(
+                for: prepared.key,
+                state: state,
+                in: preparedMutation.preconditions
+            )
+            try validate(
+                prepared.kind,
+                identity: prepared.identity,
+                state: state
+            )
+
+            let mutation: PersistableMutation
+            switch prepared.kind {
             case .insert, .update, .upsert:
                 guard let model = prepared.model else {
                     throw DatabaseEntityMutationError.fieldsRequired(
-                        prepared.change.identity
+                        prepared.identity
                     )
                 }
-                mutations.append(
-                    .save(
-                        identity: prepared.change.identity,
-                        model: model,
-                        precondition: writePrecondition(
-                            for: prepared.change,
-                            preconditions: preconditions
-                        )
+                mutation = .save(
+                    identity: prepared.identity,
+                    model: model,
+                    precondition: writePrecondition(
+                        for: prepared.kind,
+                        key: prepared.key,
+                        preconditions: preparedMutation.preconditions
                     )
                 )
             case .delete:
-                guard case .present(let model) = states.value(
-                    for: prepared.key
-                ) else {
+                guard case .present(let model) = state else {
                     throw DatabaseEntityMutationError.entityNotFound(
-                        prepared.change.identity
+                        prepared.identity
                     )
                 }
-                mutations.append(
-                    .delete(
-                        identity: prepared.change.identity,
-                        model: model,
-                        precondition: writePrecondition(
-                            for: prepared.change,
-                            preconditions: preconditions
-                        )
+                mutation = .delete(
+                    identity: prepared.identity,
+                    model: model,
+                    precondition: writePrecondition(
+                        for: prepared.kind,
+                        key: prepared.key,
+                        preconditions: preparedMutation.preconditions
                     )
                 )
             }
+            try mutations.append(
+                footprint: try DatabaseEntityMutationFootprintMeter.footprint(
+                    of: mutation,
+                    workMeter: workMeter
+                ),
+                make: { mutation }
+            )
         }
-        try await transaction.apply(mutations)
 
-        let persistedEffects = try await transaction
-            .persistedMutationEffects()
-        guard persistedEffects.count <= limits.maximumChanges else {
+        try await validateUnchangedPreconditions(
+            preparedMutation,
+            transaction: transaction,
+            workMeter: workMeter
+        )
+
+        let retainedMutations = try mutations.finish().moveToSharedOwnership(
+            at: .mutationPlanning
+        )
+        try await retainedMutations.withElements { mutations in
+            try await transaction.apply(mutations)
+        }
+
+        let persistedEffectCount = try await transaction
+            .persistedMutationEffectCount()
+        guard persistedEffectCount <= limits.maximumChanges else {
             throw DatabaseEntityMutationError.changeLimitExceeded(
-                actual: persistedEffects.count,
+                actual: persistedEffectCount,
                 maximum: limits.maximumChanges
             )
         }
+        guard let outputCount = UInt32(exactly: persistedEffectCount) else {
+            throw DatabaseWorkLimitError.maximumRows(
+                stage: .resultMaterialization,
+                consumed: workMeter.consumedRows,
+                requested: UInt32.max,
+                maximum: workMeter.budget.maximumRows
+            )
+        }
         try workMeter.consume(
-            UInt64(persistedEffects.count),
+            UInt64(outputCount),
             at: .validation
         )
-        return try persistedEffects.map { effect in
+        try workMeter.recordOutputRows(
+            outputCount,
+            at: .resultMaterialization
+        )
+        let persistedEffects = try await transaction.persistedMutationEffects()
+        let effects = try persistedEffects.map { effect in
             EntityMutationEffect(
                 kind: mutationKind(effect.kind),
                 identity: effect.identity,
                 version: try effect.model.map(entityVersion)
             )
         }
+        return effects
     }
 
     public func validate(
@@ -273,11 +318,19 @@ public struct DatabaseEntityMutationExecutor: Sendable {
                 maximum: limits.maximumPreconditions
             )
         }
-        try validatePreconditionSet(preconditions)
-
-        for precondition in preconditions {
+        let prepared = try preparePreconditions(
+            preconditions,
+            workMeter: workMeter
+        )
+        var index = prepared.startIndex
+        while index < prepared.endIndex {
+            let range = preconditionRange(
+                for: prepared[index].key,
+                in: prepared
+            )
+            let identity = prepared[index].value.identity
             let resolved = try ResolvedEntityReference.resolve(
-                precondition.identity,
+                identity,
                 container: container
             )
             let state = try await load(
@@ -285,28 +338,223 @@ public struct DatabaseEntityMutationExecutor: Sendable {
                 transaction: transaction,
                 workMeter: workMeter
             )
-            try validate(precondition, state: state)
+            for preconditionIndex in range {
+                try validate(prepared[preconditionIndex].value, state: state)
+            }
+            index = range.upperBound
         }
     }
 
-    private func writePrecondition(
-        for change: EntityMutationChange,
-        preconditions: [EntityMutationPrecondition]
-    ) -> WritePrecondition {
+    private func preparePreconditions(
+        _ preconditions: [EntityMutationPrecondition],
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseSharedRetainedArray<
+        DatabasePreparedEntityMutation.Precondition
+    > {
+        var prepared = try DatabaseRetainedArrayBuilder<
+            DatabasePreparedEntityMutation.Precondition
+        >(
+            workMeter: workMeter,
+            stage: .validation,
+            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+                for: DatabasePreparedEntityMutation.Precondition.self
+            ),
+            expectedCount: preconditions.count
+        )
         for precondition in preconditions {
-            guard case .expectedVersion(let identity, let version) = precondition,
-                  identity == change.identity else {
-                continue
+            try workMeter.consume(at: .validation)
+            let key = try ResolvedEntityReference.key(
+                precondition.identity,
+                container: container
+            )
+            try prepared.append(
+                footprint: try DatabaseEntityMutationFootprintMeter.footprint(
+                    of: precondition,
+                    workMeter: workMeter
+                ),
+                make: {
+                    DatabasePreparedEntityMutation.Precondition(
+                        key: key,
+                        value: precondition
+                    )
+                }
+            )
+        }
+
+        let sorted = try prepared.finish().sortingElements { lhs, rhs in
+            try workMeter.consume(at: .sortComparison)
+            return lhs.key < rhs.key
+        }
+        try sorted.withSpan(validatePreconditionSet)
+        return try sorted.moveToSharedOwnership(at: .validation)
+    }
+
+    private func validatePreconditionSet(
+        _ preconditions: Span<DatabasePreparedEntityMutation.Precondition>
+    ) throws {
+        var index = 0
+        while index < preconditions.count {
+            let key = preconditions[index].key
+            let identity = preconditions[index].value.identity
+            var requiresExistence = false
+            var requiresAbsence = false
+            var expectedVersion: ByteString?
+            var sawMustExist = false
+            var sawMustNotExist = false
+
+            while index < preconditions.count,
+                  preconditions[index].key == key {
+                switch preconditions[index].value {
+                case .expectedVersion(_, let version):
+                    if let expectedVersion {
+                        if expectedVersion == version {
+                            throw DatabaseEntityMutationError
+                                .duplicatePrecondition(identity)
+                        }
+                        throw DatabaseEntityMutationError
+                            .incompatiblePreconditions(identity)
+                    }
+                    expectedVersion = version
+                    requiresExistence = true
+                case .mustExist:
+                    guard !sawMustExist else {
+                        throw DatabaseEntityMutationError
+                            .duplicatePrecondition(identity)
+                    }
+                    sawMustExist = true
+                    requiresExistence = true
+                case .mustNotExist:
+                    guard !sawMustNotExist else {
+                        throw DatabaseEntityMutationError
+                            .duplicatePrecondition(identity)
+                    }
+                    sawMustNotExist = true
+                    requiresAbsence = true
+                }
+                guard !(requiresExistence && requiresAbsence) else {
+                    throw DatabaseEntityMutationError
+                        .incompatiblePreconditions(identity)
+                }
+                index += 1
             }
-            return .matchesStored(version: version)
         }
-        if preconditions.contains(.mustNotExist(change.identity)) {
-            return .notExists
+    }
+
+    private func validateUnchangedPreconditions(
+        _ preparedMutation: DatabasePreparedEntityMutation,
+        transaction: DatabaseTransaction,
+        workMeter: DatabaseWorkMeter
+    ) async throws {
+        let preconditions = preparedMutation.preconditions
+        var index = preconditions.startIndex
+        while index < preconditions.endIndex {
+            let key = preconditions[index].key
+            let range = preconditionRange(for: key, in: preconditions)
+            if !containsIdentity(key, in: preparedMutation.identities) {
+                let identity = preconditions[index].value.identity
+                let resolved = try ResolvedEntityReference.resolve(
+                    identity,
+                    container: container
+                )
+                let state = try await load(
+                    resolved,
+                    transaction: transaction,
+                    workMeter: workMeter
+                )
+                for preconditionIndex in range {
+                    try validate(
+                        preconditions[preconditionIndex].value,
+                        state: state
+                    )
+                }
+            }
+            index = range.upperBound
         }
-        if preconditions.contains(.mustExist(change.identity)) {
-            return .exists
+    }
+
+    private func validatePreconditions(
+        for key: ResolvedEntityReference.Key,
+        state: DatabaseEntityState,
+        in preconditions: DatabaseSharedRetainedArray<
+            DatabasePreparedEntityMutation.Precondition
+        >
+    ) throws {
+        for index in preconditionRange(for: key, in: preconditions) {
+            try validate(preconditions[index].value, state: state)
         }
-        switch change.kind {
+    }
+
+    private func preconditionRange(
+        for key: ResolvedEntityReference.Key,
+        in preconditions: DatabaseSharedRetainedArray<
+            DatabasePreparedEntityMutation.Precondition
+        >
+    ) -> Range<Int> {
+        var lower = preconditions.startIndex
+        var upper = preconditions.endIndex
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if preconditions[middle].key < key {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        let start = lower
+        upper = preconditions.endIndex
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if key < preconditions[middle].key {
+                upper = middle
+            } else {
+                lower = middle + 1
+            }
+        }
+        return start..<lower
+    }
+
+    private func containsIdentity(
+        _ key: ResolvedEntityReference.Key,
+        in identities: DatabaseSharedRetainedArray<
+            DatabasePreparedEntityMutation.Identity
+        >
+    ) -> Bool {
+        var lower = identities.startIndex
+        var upper = identities.endIndex
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            let candidate = identities[middle].key
+            if candidate < key {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        return lower < identities.endIndex && identities[lower].key == key
+    }
+
+    private func writePrecondition(
+        for kind: EntityMutationKind,
+        key: ResolvedEntityReference.Key,
+        preconditions: DatabaseSharedRetainedArray<
+            DatabasePreparedEntityMutation.Precondition
+        >
+    ) -> WritePrecondition {
+        var mustExist = false
+        var mustNotExist = false
+        for index in preconditionRange(for: key, in: preconditions) {
+            switch preconditions[index].value {
+            case .expectedVersion(_, let version):
+                return .matchesStored(version: version)
+            case .mustExist:
+                mustExist = true
+            case .mustNotExist:
+                mustNotExist = true
+            }
+        }
+        if mustNotExist { return .notExists }
+        if mustExist { return .exists }
+        switch kind {
         case .insert:
             return .notExists
         case .update:
@@ -331,48 +579,6 @@ public struct DatabaseEntityMutationExecutor: Sendable {
         }
     }
 
-    private func validatePreconditionSet(
-        _ preconditions: [EntityMutationPrecondition]
-    ) throws {
-        struct Flags: Sendable {
-            var requiresExistence = false
-            var requiresAbsence = false
-            var version: ByteString?
-            var values: [EntityMutationPrecondition] = []
-        }
-        var flagsByKey = ResolvedEntityMap<Flags>()
-        for precondition in preconditions {
-            let identity = precondition.identity
-            let key = try ResolvedEntityReference.key(
-                identity,
-                container: container
-            )
-            var flags = flagsByKey.value(for: key) ?? Flags()
-            guard !flags.values.contains(precondition) else {
-                throw DatabaseEntityMutationError.duplicatePrecondition(identity)
-            }
-            flags.values.append(precondition)
-            switch precondition {
-            case .expectedVersion(_, let version):
-                flags.requiresExistence = true
-                if let current = flags.version, current != version {
-                    throw DatabaseEntityMutationError
-                        .incompatiblePreconditions(identity)
-                }
-                flags.version = version
-            case .mustExist:
-                flags.requiresExistence = true
-            case .mustNotExist:
-                flags.requiresAbsence = true
-            }
-            guard !(flags.requiresExistence && flags.requiresAbsence) else {
-                throw DatabaseEntityMutationError
-                    .incompatiblePreconditions(identity)
-            }
-            flagsByKey.insert(flags, for: key)
-        }
-    }
-
     private func load(
         _ resolved: ResolvedEntityReference,
         transaction: DatabaseTransaction,
@@ -387,6 +593,23 @@ public struct DatabaseEntityMutationExecutor: Sendable {
             return .present(model)
         }
         return .missing
+    }
+
+    private func validate(
+        _ kind: EntityMutationKind,
+        identity: EntityReference,
+        state: DatabaseEntityState
+    ) throws {
+        switch (kind, state) {
+        case (.insert, .present):
+            throw DatabaseEntityMutationError.entityAlreadyExists(
+                identity
+            )
+        case (.update, .missing), (.delete, .missing):
+            throw DatabaseEntityMutationError.entityNotFound(identity)
+        default:
+            break
+        }
     }
 
     private func validate(
@@ -415,14 +638,15 @@ public struct DatabaseEntityMutationExecutor: Sendable {
         try PersistableVersionTokenCodec.digest(fields: model.fields)
     }
 
-    public struct PreparedChange: Sendable {
-        let change: EntityMutationChange
+    package struct PreparedChange: Sendable {
+        let kind: EntityMutationKind
+        let identity: EntityReference
         let resolved: ResolvedEntityReference
         let model: PersistedModel?
 
         var key: ResolvedEntityReference.Key {
             ResolvedEntityReference.Key(
-                entity: change.identity.entity,
+                entity: identity.entity,
                 id: resolved.id.pack(),
                 partitionPath: resolved.partitionPath
             )

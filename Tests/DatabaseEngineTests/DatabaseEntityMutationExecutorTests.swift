@@ -22,6 +22,10 @@ struct DatabaseEntityMutationExecutorTests {
             id: .string(model.id)
         )
         let fields = try DatabaseEntityProjection.fieldObject(for: persisted)
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: container.monotonicClock
+        )
 
         let effects = try await context.withTransaction { transaction in
             try await executor.execute(
@@ -33,15 +37,13 @@ struct DatabaseEntityMutationExecutorTests {
                     )
                 ],
                 preconditions: [.mustNotExist(identity)],
-                workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget(),
-                    monotonicClock: container.monotonicClock
-                ),
+                workMeter: workMeter,
                 transaction: transaction
             )
         }
 
         #expect(effects.count == 1)
+        #expect(workMeter.consumedRows == 1)
         #expect(effects.first?.kind == .insert)
         #expect(effects.first?.identity == identity)
         #expect(effects.first?.version != nil)
@@ -50,6 +52,53 @@ struct DatabaseEntityMutationExecutorTests {
                 for: model.id,
                 as: EntityMutationFixture.self
             ) == model
+        )
+    }
+
+    @Test("entity mutation effects enforce the output row budget")
+    func enforcesMutationEffectRowBudget() async throws {
+        let container = try await makeContainer()
+        let context = container.testBaseContext()
+        let executor = try makeExecutor(container: container)
+        let model = EntityMutationFixture(id: "bounded", title: "Original")
+        let persisted = try PersistedModel(model)
+        let identity = try EntityReference(
+            entity: EntityMutationFixture.persistableType,
+            id: .string(model.id)
+        )
+        let fields = try DatabaseEntityProjection.fieldObject(for: persisted)
+
+        await #expect(
+            throws: DatabaseWorkLimitError.maximumRows(
+                stage: .resultMaterialization,
+                consumed: 0,
+                requested: 1,
+                maximum: 0
+            )
+        ) {
+            try await context.withTransaction { transaction in
+                try await executor.execute(
+                    [
+                        EntityMutationChange(
+                            kind: .insert,
+                            identity: identity,
+                            fields: fields
+                        )
+                    ],
+                    workMeter: DatabaseWorkMeter(
+                        budget: ExecutionBudget(maximumRows: 0),
+                        monotonicClock: container.monotonicClock
+                    ),
+                    transaction: transaction
+                )
+            }
+        }
+
+        #expect(
+            try await context.model(
+                for: model.id,
+                as: EntityMutationFixture.self
+            ) == nil
         )
     }
 

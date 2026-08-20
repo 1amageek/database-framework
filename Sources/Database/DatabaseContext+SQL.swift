@@ -113,7 +113,8 @@ extension DatabaseContext {
         if SPARQLFunctionRewriter.containsSPARQLFunction(in: selectQuery) {
             return try await indexQueryContext.withTransaction {
                 transaction in
-                let executableQuery = try await self.rewriteSPARQLFunctions(
+                let executableQuery = try await self
+                    .prepareSQLSelectForCanonicalExecution(
                     selectQuery,
                     workMeter: workMeter,
                     transaction: transaction,
@@ -138,12 +139,18 @@ extension DatabaseContext {
     /// - Parameter selectQuery: Query to rewrite
     /// - Returns: Rewritten query with SPARQL() replaced by literal values
     /// - Throws: `SPARQLFunctionError` for SPARQL execution errors
-    private func rewriteSPARQLFunctions(
+    @_spi(DatabaseExecution)
+    public func prepareSQLSelectForCanonicalExecution(
         _ selectQuery: SelectQuery,
         workMeter: DatabaseWorkMeter,
         transaction: any TransactionAccess,
         structuralLimits: QueryStructuralLimits
     ) async throws -> SelectQuery {
+        guard SPARQLFunctionRewriter.containsSPARQLFunction(
+            in: selectQuery
+        ) else {
+            return selectQuery
+        }
         let rewriter = SPARQLFunctionRewriter(
             context: self,
             workMeter: workMeter,
@@ -151,6 +158,19 @@ extension DatabaseContext {
             structuralLimits: structuralLimits
         )
         return try await rewriter.rewrite(selectQuery)
+    }
+    #else
+    @_spi(DatabaseExecution)
+    public func prepareSQLSelectForCanonicalExecution(
+        _ selectQuery: SelectQuery,
+        workMeter: DatabaseWorkMeter,
+        transaction: any TransactionAccess,
+        structuralLimits: QueryStructuralLimits
+    ) async throws -> SelectQuery {
+        _ = workMeter
+        _ = transaction
+        _ = structuralLimits
+        return selectQuery
     }
     #endif
 }

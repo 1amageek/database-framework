@@ -33,6 +33,16 @@ let package = Package(
     ],
     targets: [
         .testTarget(
+            name: "SQLMutationPerformanceBenchmarks",
+            dependencies: [
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "QueryAST", package: "database-framework"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ]
+        ),
+        .testTarget(
             name: "FrameworkPerformanceBenchmarks",
             dependencies: [
                 .product(
@@ -41,6 +51,7 @@ let package = Package(
                 ),
                 .product(name: "DatabaseEngine", package: "database-framework"),
                 .product(name: "DatabaseRuntime", package: "database-framework"),
+                .product(name: "QueryAST", package: "database-framework"),
                 .product(name: "ScalarIndex", package: "database-framework"),
                 .product(name: "VectorIndex", package: "database-framework"),
                 .product(name: "FullTextIndex", package: "database-framework"),

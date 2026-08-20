@@ -105,6 +105,16 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>:
         return try body(elements.span)
     }
 
+    /// Keeps the immutable owner and its reservation alive while an
+    /// asynchronous consumer uses the shared COW Array value. The consumer
+    /// cannot outlive this call, so the Array never has an unaccounted
+    /// lifetime across suspension.
+    package func withElements<Result: Sendable>(
+        _ body: (borrowing [Element]) async throws -> Result
+    ) async rethrows -> Result {
+        try await body(storage.elements)
+    }
+
     /// Borrows one element while retaining the immutable shared owner.
     package func withElement<Result, Failure: Error>(
         at index: Int,

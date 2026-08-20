@@ -2537,7 +2537,8 @@ extension DatabaseContext {
                                 partitionMode: partitionMode,
                                 namedSubqueries: namedSubqueries,
                                 outerRow: allowsOuterReferences ? outerRow : nil
-                            )
+                            ),
+                            workMeter: options.workMeter
                         )
                     }
                     outputRow = CanonicalSourceRow(fields: fields)
@@ -2902,7 +2903,8 @@ extension DatabaseContext {
                     right: rightRow,
                     condition: condition,
                     joinType: type,
-                    evaluationContext: evaluationContext
+                    evaluationContext: evaluationContext,
+                    workMeter: workMeter
                 ) {
                     matched = true
                     matchedRightIndexes.insert(rightIndex)
@@ -3164,7 +3166,8 @@ extension DatabaseContext {
                        right: right,
                        condition: condition,
                        joinType: type,
-                       evaluationContext: evaluationContext
+                       evaluationContext: evaluationContext,
+                       workMeter: workMeter
                    ) == false {
                     continue
                 }
@@ -3320,7 +3323,8 @@ extension DatabaseContext {
         right: CanonicalSourceRow,
         condition: JoinCondition?,
         joinType: JoinType,
-        evaluationContext: CanonicalQueryEvaluationContext?
+        evaluationContext: CanonicalQueryEvaluationContext?,
+        workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         if joinType == .cross {
             return true
@@ -3346,7 +3350,7 @@ extension DatabaseContext {
                     ) else {
                         return false
                     }
-                } catch let failure as FieldValueComparisonError {
+                } catch let failure {
                     throw canonicalComparisonReadError(
                         failure,
                         operation: "JOIN USING equality"
@@ -3359,7 +3363,8 @@ extension DatabaseContext {
             return try await evaluateQueryBoolean(
                 expression,
                 on: merged,
-                context: evaluationContext
+                context: evaluationContext,
+                workMeter: workMeter
             )
         }
     }
@@ -3832,7 +3837,8 @@ extension DatabaseContext {
             guard try await evaluateQueryBoolean(
                 filter,
                 on: row,
-                context: evaluationContext
+                context: evaluationContext,
+                workMeter: workMeter
             ) else { continue }
             try retained.append(
                 footprint: try CanonicalRelationalFootprintMeter.footprint(
@@ -3892,7 +3898,8 @@ extension DatabaseContext {
                     try await evaluateQueryExpression(
                         key.expression,
                         on: row,
-                        context: evaluationContext
+                        context: evaluationContext,
+                        workMeter: workMeter
                     )
                 )
             }
@@ -4018,7 +4025,8 @@ extension DatabaseContext {
                     fields[fieldName] = try await evaluateQueryExpression(
                         item.expression,
                         on: row,
-                        context: evaluationContext
+                        context: evaluationContext,
+                        workMeter: workMeter
                     )
                 }
                 let projected = QueryRow(
@@ -4091,7 +4099,8 @@ extension DatabaseContext {
             let values = try await evaluateExpressions(
                 groupBy,
                 on: row,
-                context: evaluationContext
+                context: evaluationContext,
+                workMeter: workMeter
             )
             let key = CanonicalGroupKey(
                 values: values,
@@ -4494,7 +4503,8 @@ extension DatabaseContext {
         return try await evaluateQueryExpression(
             rewritten,
             on: group.representative,
-            context: evaluationContext
+            context: evaluationContext,
+            workMeter: workMeter
         )
     }
 
@@ -4810,7 +4820,8 @@ extension DatabaseContext {
                     try await evaluateQueryExpression(
                         expression,
                         on: row,
-                        context: evaluationContext
+                        context: evaluationContext,
+                        workMeter: workMeter
                     )
                 )
             } else {
@@ -4856,7 +4867,7 @@ extension DatabaseContext {
                     result = try accumulator.average()
                 }
                 return result ?? .null
-            } catch let failure as DatabaseNumericAggregateAccumulator.Failure {
+            } catch let failure {
                 throw CanonicalReadError.aggregateEvaluation(
                     aggregateNumericError(
                         function: functionName,
@@ -4881,7 +4892,7 @@ extension DatabaseContext {
                         || (functionName == "MAX" && comparison == .greaterThan) {
                         result = value
                     }
-                } catch let failure as FieldValueComparisonError {
+                } catch let failure {
                     switch failure {
                     case .incomparable(let left, let right):
                         throw CanonicalReadError.aggregateEvaluation(
@@ -4944,12 +4955,14 @@ extension DatabaseContext {
     private func evaluateQueryBoolean(
         _ expression: DatabaseKit.Expression,
         on row: CanonicalSourceRow,
-        context: CanonicalQueryEvaluationContext?
+        context: CanonicalQueryEvaluationContext?,
+        workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let value = try await evaluateQueryExpression(
             expression,
             on: row,
-            context: context
+            context: context,
+            workMeter: workMeter
         )
         do {
             return try DatabaseExpressionEvaluator(fields: ["value": value])
@@ -4962,18 +4975,21 @@ extension DatabaseContext {
     private func evaluateQueryExpression(
         _ expression: DatabaseKit.Expression,
         on row: CanonicalSourceRow,
-        context: CanonicalQueryEvaluationContext?
+        context: CanonicalQueryEvaluationContext?,
+        workMeter: DatabaseWorkMeter
     ) async throws -> FieldValue {
         let effectiveRow = row.overlaying(outer: context?.outerRow)
         let resolved = try await resolveQueryScopedExpression(
             expression,
             on: effectiveRow,
-            context: context
+            context: context,
+            workMeter: workMeter
         )
         do {
             return try DatabaseExpressionEvaluator(
                 fields: effectiveRow.fields,
-                ambiguousColumns: effectiveRow.ambiguousUnqualifiedColumns
+                ambiguousColumns: effectiveRow.ambiguousUnqualifiedColumns,
+                workMeter: workMeter
             )
                 .evaluate(resolved)
         } catch let error as DatabaseExpressionEvaluationError {
@@ -4984,7 +5000,8 @@ extension DatabaseContext {
     private func evaluateExpressions(
         _ expressions: [Expression],
         on row: CanonicalSourceRow,
-        context: CanonicalQueryEvaluationContext?
+        context: CanonicalQueryEvaluationContext?,
+        workMeter: DatabaseWorkMeter
     ) async throws -> [FieldValue] {
         var values: [FieldValue] = []
         values.reserveCapacity(expressions.count)
@@ -4993,7 +5010,8 @@ extension DatabaseContext {
                 try await evaluateQueryExpression(
                     expression,
                     on: row,
-                    context: context
+                    context: context,
+                    workMeter: workMeter
                 )
             )
         }
@@ -5003,13 +5021,15 @@ extension DatabaseContext {
     private func resolveQueryScopedExpression(
         _ expression: Expression,
         on row: CanonicalSourceRow,
-        context: CanonicalQueryEvaluationContext?
+        context: CanonicalQueryEvaluationContext?,
+        workMeter: DatabaseWorkMeter
     ) async throws -> Expression {
         func resolve(_ nested: Expression) async throws -> Expression {
             try await resolveQueryScopedExpression(
                 nested,
                 on: row,
-                context: context
+                context: context,
+                workMeter: workMeter
             )
         }
 
@@ -5064,7 +5084,8 @@ extension DatabaseContext {
             do {
                 candidate = try DatabaseExpressionEvaluator(
                     fields: row.fields,
-                    ambiguousColumns: row.ambiguousUnqualifiedColumns
+                    ambiguousColumns: row.ambiguousUnqualifiedColumns,
+                    workMeter: workMeter
                 ).evaluate(resolvedValue)
             } catch let error as DatabaseExpressionEvaluationError {
                 throw CanonicalReadError.expressionEvaluation(error)
@@ -5103,7 +5124,7 @@ extension DatabaseContext {
                     if try FieldValueComparator.equal(candidate, value) {
                         return .literal(.bool(true))
                     }
-                } catch let failure as FieldValueComparisonError {
+                } catch let failure {
                     throw canonicalComparisonReadError(
                         failure,
                         operation: "IN subquery equality"

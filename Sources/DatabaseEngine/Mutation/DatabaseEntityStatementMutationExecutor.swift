@@ -96,6 +96,15 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         }
 
         guard !rows.isEmpty else { return [] }
+        guard let requestedRows = UInt32(exactly: rows.count),
+              requestedRows <= workMeter.budget.maximumRows else {
+            throw DatabaseWorkLimitError.maximumRows(
+                stage: .mutationPlanning,
+                consumed: 0,
+                requested: UInt32(exactly: rows.count) ?? UInt32.max,
+                maximum: workMeter.budget.maximumRows
+            )
+        }
         guard rows.count <= limits.maximumChanges else {
             throw DatabaseEntityMutationError.changeLimitExceeded(
                 actual: rows.count,
@@ -103,8 +112,13 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             )
         }
 
-        var changes: [EntityMutationChange] = []
-        changes.reserveCapacity(rows.count)
+        var changes = try DatabaseRetainedArrayBuilder<EntityMutationChange>(
+            workMeter: workMeter,
+            stage: .mutationPlanning,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: EntityMutationChange.self),
+            expectedCount: rows.count
+        )
         for row in rows {
             try workMeter.consume(at: .mutationPlanning)
             let suppliedFields: FieldObject
@@ -116,7 +130,10 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                         "INSERT row has \(row.count) values for \(columns.count) columns"
                     )
                 }
-                let evaluator = DatabaseExpressionEvaluator(fields: [:])
+                let evaluator = DatabaseExpressionEvaluator(
+                    fields: [:],
+                    workMeter: workMeter
+                )
                 let suppliedEntries = try zip(columns, row).map {
                     schema,
                     expression in
@@ -145,6 +162,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                 targetIdentity,
                 model: candidate
             )
+            try workMeter.consume(at: .storageRow)
             let existing = try await transaction.loadPersistedModel(
                 entity: entity.name,
                 id: resolved.id,
@@ -154,12 +172,15 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             switch (query.onConflict, existing) {
             case (.none, _), (.some(.doNothing), .none),
                  (.some(.doUpdate), .none):
-                changes.append(
-                    EntityMutationChange(
-                        kind: .insert,
-                        identity: targetIdentity,
-                        fields: candidateFields
-                    )
+                let change = EntityMutationChange(
+                    kind: .insert,
+                    identity: targetIdentity,
+                    fields: candidateFields
+                )
+                try changes.append(
+                    footprint: try DatabaseEntityMutationFootprintMeter
+                        .footprint(of: change, workMeter: workMeter),
+                    make: { change }
                 )
             case (.some(.doNothing), .some):
                 continue
@@ -172,7 +193,10 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                     table: query.target
                 )
                 if let filter,
-                   try !DatabaseExpressionEvaluator(fields: evaluation)
+                   try !DatabaseExpressionEvaluator(
+                       fields: evaluation,
+                       workMeter: workMeter
+                   )
                     .predicate(filter) {
                     continue
                 }
@@ -180,36 +204,32 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                     assignments,
                     to: originalFields,
                     evaluationFields: evaluation,
-                    entity: entity
+                    entity: entity,
+                    workMeter: workMeter
                 )
                 let updated = try entity.runtime.persistedModel(
                     from: updatedFields
                 )
-                changes.append(
-                    EntityMutationChange(
-                        kind: .update,
-                        identity: try entity.runtime.identity(for: model),
-                        fields: try DatabaseEntityProjection.fieldObject(
-                            for: updated
-                        )
+                let change = EntityMutationChange(
+                    kind: .update,
+                    identity: try entity.runtime.identity(for: model),
+                    fields: try DatabaseEntityProjection.fieldObject(
+                        for: updated
                     )
+                )
+                try changes.append(
+                    footprint: try DatabaseEntityMutationFootprintMeter
+                        .footprint(of: change, workMeter: workMeter),
+                    make: { change }
                 )
             }
         }
-
-        guard !changes.isEmpty else {
-            try await entities.validate(
-                preconditions,
-                transaction: transaction,
-                workMeter: workMeter
-            )
-            return []
-        }
-        return try await entities.execute(
-            changes,
+        return try await executeRetainedChanges(
+            changes.finish(),
+            entities: entities,
             preconditions: preconditions,
-            workMeter: workMeter,
-            transaction: transaction
+            transaction: transaction,
+            workMeter: workMeter
         )
     }
 
@@ -236,57 +256,50 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             )
         }
         let entity = try resolve(query.target)
-        let models = try await scan(
+        let scan = try await scanChanges(
             entity,
             transaction: transaction,
             workMeter: workMeter
-        )
-        var changes: [EntityMutationChange] = []
-        for model in models {
+        ) { model in
             try workMeter.consume(at: .mutationPlanning)
             let originalFields = try DatabaseEntityProjection.fieldObject(
                 for: model
             )
-            let evaluation = evaluationFields(originalFields, table: query.target)
+            let evaluation = evaluationFields(
+                originalFields,
+                table: query.target
+            )
             if let filter = query.filter,
-               try !DatabaseExpressionEvaluator(fields: evaluation)
-                .predicate(filter) {
-                continue
+               try !DatabaseExpressionEvaluator(
+                   fields: evaluation,
+                   workMeter: workMeter
+               ).predicate(filter) {
+                return nil
             }
             let updatedFields = try applying(
                 query.assignments,
                 to: originalFields,
                 evaluationFields: evaluation,
-                entity: entity
-            )
-            let updated = try entity.runtime.persistedModel(from: updatedFields)
-            changes.append(
-                EntityMutationChange(
-                    kind: .update,
-                    identity: try entity.runtime.identity(for: model),
-                    fields: try DatabaseEntityProjection.fieldObject(for: updated)
-                )
-            )
-            guard changes.count <= limits.maximumChanges else {
-                throw DatabaseEntityMutationError.changeLimitExceeded(
-                    actual: changes.count,
-                    maximum: limits.maximumChanges
-                )
-            }
-        }
-        guard !changes.isEmpty else {
-            try await entities.validate(
-                preconditions,
-                transaction: transaction,
+                entity: entity,
                 workMeter: workMeter
             )
-            return []
+            let updated = try entity.runtime.persistedModel(
+                from: updatedFields
+            )
+            return EntityMutationChange(
+                kind: .update,
+                identity: try entity.runtime.identity(for: model),
+                fields: try DatabaseEntityProjection.fieldObject(
+                    for: updated
+                )
+            )
         }
-        return try await entities.execute(
-            changes,
+        return try await executeRetainedChanges(
+            scan.takeChanges(),
+            entities: entities,
             preconditions: preconditions,
-            workMeter: workMeter,
-            transaction: transaction
+            transaction: transaction,
+            workMeter: workMeter
         )
     }
 
@@ -308,55 +321,47 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             )
         }
         let entity = try resolve(query.target)
-        let models = try await scan(
+        let scan = try await scanChanges(
             entity,
             transaction: transaction,
             workMeter: workMeter
-        )
-        var changes: [EntityMutationChange] = []
-        for model in models {
+        ) { model in
             try workMeter.consume(at: .mutationPlanning)
-            let fields = try DatabaseEntityProjection.fieldObject(for: model)
+            let fields = try DatabaseEntityProjection.fieldObject(
+                for: model
+            )
             if let filter = query.filter,
                try !DatabaseExpressionEvaluator(
-                    fields: evaluationFields(fields, table: query.target)
+                   fields: evaluationFields(
+                       fields,
+                       table: query.target
+                   ),
+                   workMeter: workMeter
                ).predicate(filter) {
-                continue
+                return nil
             }
-            changes.append(
-                EntityMutationChange(
-                    kind: .delete,
-                    identity: try entity.runtime.identity(for: model)
-                )
+            return EntityMutationChange(
+                kind: .delete,
+                identity: try entity.runtime.identity(for: model)
             )
-            guard changes.count <= limits.maximumChanges else {
-                throw DatabaseEntityMutationError.changeLimitExceeded(
-                    actual: changes.count,
-                    maximum: limits.maximumChanges
-                )
-            }
         }
-        guard !changes.isEmpty else {
-            try await entities.validate(
-                preconditions,
-                transaction: transaction,
-                workMeter: workMeter
-            )
-            return []
-        }
-        return try await entities.execute(
-            changes,
+        return try await executeRetainedChanges(
+            scan.takeChanges(),
+            entities: entities,
             preconditions: preconditions,
-            workMeter: workMeter,
-            transaction: transaction
+            transaction: transaction,
+            workMeter: workMeter
         )
     }
 
-    private func scan(
+    private func scanChanges(
         _ entity: ResolvedEntity,
         transaction: DatabaseTransaction,
-        workMeter: DatabaseWorkMeter
-    ) async throws -> [PersistedModel] {
+        workMeter: DatabaseWorkMeter,
+        transform: @Sendable (
+            borrowing PersistedModel
+        ) throws -> EntityMutationChange?
+    ) async throws -> sending DatabaseRetainedEntityMutationScan {
         let configuredMaximum = workMeter.budget.maximumRows
         guard let maximumRows = Int(exactly: configuredMaximum),
               maximumRows < Int.max else {
@@ -365,19 +370,53 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                     maximum: configuredMaximum
                 )
         }
-        let models = try await transaction.scanPersistedModelsForExecution(
+        let scan = try await transaction.scanPersistedModelChangesForMutation(
             entity: entity.name,
             partition: entity.partition,
-            limit: maximumRows + 1
+            maximumRows: maximumRows,
+            maximumChanges: limits.maximumChanges,
+            workMeter: workMeter,
+            transform: transform
         )
-        guard models.count <= maximumRows else {
+        guard !scan.hasMoreSourceRows else {
             throw DatabaseEntityStatementMutationError.scanLimitExceeded(
-                actual: models.count,
+                actual: maximumRows + 1,
                 maximum: configuredMaximum
             )
         }
-        try workMeter.consume(UInt64(models.count), at: .storageRow)
-        return models
+        return scan
+    }
+
+    private func executeRetainedChanges(
+        _ changes: consuming DatabaseRetainedBuffer<EntityMutationChange>,
+        entities: DatabaseEntityMutationExecutor,
+        preconditions: [EntityMutationPrecondition],
+        transaction: DatabaseTransaction,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> [EntityMutationEffect] {
+        guard !changes.isEmpty else {
+            try await entities.validate(
+                preconditions,
+                transaction: transaction,
+                workMeter: workMeter
+            )
+            return []
+        }
+        let prepared: DatabasePreparedEntityMutation
+        do {
+            let retained = changes.moveRetainingReservation()
+            defer { retained.reservation.release() }
+            prepared = try entities.prepare(
+                retained.elements,
+                preconditions: preconditions,
+                workMeter: workMeter
+            )
+        }
+        return try await entities.execute(
+            prepared,
+            workMeter: workMeter,
+            transaction: transaction
+        )
     }
 
     private func resolve(_ table: TableRef) throws -> ResolvedEntity {
@@ -454,13 +493,17 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         _ assignments: [Assignment],
         to fields: FieldObject,
         evaluationFields: [String: FieldValue],
-        entity: ResolvedEntity
+        entity: ResolvedEntity,
+        workMeter: DatabaseWorkMeter
     ) throws -> FieldObject {
         var byName = Dictionary(
             uniqueKeysWithValues: fields.fields.map { ($0.key, $0.value) }
         )
         var seen = Set<String>()
-        let evaluator = DatabaseExpressionEvaluator(fields: evaluationFields)
+        let evaluator = DatabaseExpressionEvaluator(
+            fields: evaluationFields,
+            workMeter: workMeter
+        )
         for assignment in assignments {
             guard seen.insert(assignment.column).inserted else {
                 throw DatabaseEntityStatementMutationError.unsupportedStatement(

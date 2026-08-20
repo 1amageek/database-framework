@@ -47,6 +47,14 @@ struct TransactionMutationJournal: Sendable {
         entries.compactMap { $0.currentModel }
     }
 
+    var persistedEffectCount: Int {
+        entries.reduce(into: 0) { count, entry in
+            if entry.originalModel != nil || entry.currentModel != nil {
+                count += 1
+            }
+        }
+    }
+
     func persistedEffects() -> [PersistableMutationEffect] {
         entries.compactMap { entry in
             switch (entry.originalModel, entry.currentModel) {
