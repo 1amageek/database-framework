@@ -45,7 +45,7 @@ placement without exposing backend credentials through the semantic API.
 scripts/fdb-test-env run --clean -- \
   scripts/xcode-test-harness \
     --traits FoundationDB,AllRuntimeFeatures,MultiBase \
-    --expected-count 3420 \
+    --expected-count 3425 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings

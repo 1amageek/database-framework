@@ -254,7 +254,7 @@ jobs:
             perl -e 'alarm shift; exec @ARGV' 2400 \
               scripts/xcode-test-harness \
                 --traits FoundationDB,AllRuntimeFeatures,MultiBase \
-                --expected-count 3420 \
+                --expected-count 3425 \
                 --require-zero-skips \
                 --require-zero-expected-failures \
                 --require-zero-runtime-warnings
