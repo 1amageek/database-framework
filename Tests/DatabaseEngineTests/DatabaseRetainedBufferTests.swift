@@ -165,6 +165,48 @@ struct DatabaseRetainedBufferTests {
         #expect(meter.retainedIntermediateBytes == 15)
     }
 
+    @Test("operator hand-off retains reservation through every shared alias")
+    func operatorHandOffRetainsReservation() throws {
+        let meter = makeMeter(rows: 2, bytes: 15)
+        do {
+            let builder = try makeTwoElementBuilder(meter: meter)
+            let shared = try builder.finish().moveToSharedOwnership(
+                at: .joinCandidate
+            )
+            do {
+                let downstream = shared
+                #expect(Array(downstream) == [1, 2])
+                #expect(meter.retainedIntermediateRows == 2)
+                #expect(meter.retainedIntermediateBytes == 15)
+
+                let output = shared.promoteToOutput()
+                #expect(output == [1, 2])
+                #expect(meter.retainedIntermediateRows == 2)
+                #expect(meter.retainedIntermediateBytes == 15)
+            }
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("failed operator hand-off releases the consumed unique owner")
+    func failedOperatorHandOffReleasesReservation() throws {
+        let meter = makeMeter(rows: 2, bytes: 12)
+        let builder = try makeTwoElementBuilder(meter: meter)
+
+        do {
+            _ = try builder.finish().moveToSharedOwnership(at: .joinCandidate)
+            Issue.record("Expected shared-owner admission to fail")
+        } catch is DatabaseWorkLimitError {
+            // Expected typed admission failure.
+        } catch {
+            Issue.record("Unexpected operator hand-off failure: \(error)")
+        }
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     @Test("failed sharing admission preserves the unique buffer")
     func failedSharingAdmissionPreservesUniqueBuffer() throws {
         let meter = makeMeter(rows: 2, bytes: 13)

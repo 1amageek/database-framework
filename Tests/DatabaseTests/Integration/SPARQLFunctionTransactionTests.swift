@@ -70,9 +70,68 @@ struct SPARQLFunctionTransactionTests {
                 ]
             )
         )
+        let nestedGraphQuery = SelectQuery(
+            projection: .items([
+                ProjectionItem(
+                    .subquery(
+                        SelectQuery(
+                            projection: .items([
+                                ProjectionItem(.column(ColumnRef("id"))),
+                            ]),
+                            source: .table(
+                                TableRef("SPARQLTransactionUser")
+                            ),
+                            filter: graphQuery.filter
+                        )
+                    ),
+                    alias: "nested_id"
+                ),
+            ]),
+            source: .values([[]], columnNames: [])
+        )
+        let graphPatternQuery = SelectQuery(
+            projection: .all,
+            source: .graphPattern(
+                .filter(
+                    .values(variables: [], bindings: [[]]),
+                    .inList(
+                        .literal(.string("resource")),
+                        values: [
+                            .function(
+                                FunctionCall(
+                                    name: "SPARQL",
+                                    arguments: [
+                                        .column(
+                                            ColumnRef(
+                                                "SPARQLTransactionStatement"
+                                            )
+                                        ),
+                                        .literal(
+                                            .string(
+                                                "SELECT ?s WHERE { ?s ?p ?o }"
+                                            )
+                                        ),
+                                    ]
+                                )
+                            ),
+                        ]
+                    )
+                )
+            )
+        )
 
         #expect(!SPARQLFunctionRewriter.containsSPARQLFunction(in: plainQuery))
         #expect(SPARQLFunctionRewriter.containsSPARQLFunction(in: graphQuery))
+        #expect(
+            SPARQLFunctionRewriter.containsSPARQLFunction(
+                in: nestedGraphQuery
+            )
+        )
+        #expect(
+            SPARQLFunctionRewriter.containsSPARQLFunction(
+                in: graphPatternQuery
+            )
+        )
     }
 
     @Test("SPARQL rewrite and parent SQL read share one transaction")

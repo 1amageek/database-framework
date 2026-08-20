@@ -524,7 +524,10 @@ public struct SortDescriptor<T: Persistable>: Sendable {
     ) throws(QueryEvaluationError) -> QueryComparison {
         let left = try fieldValue(from: lhs)
         let right = try fieldValue(from: rhs)
-        guard let rawResult = left.compare(to: right) else {
+        let rawResult: QueryComparison
+        do {
+            rawResult = try FieldValueComparator.compare(left, right)
+        } catch {
             throw .incomparableValues(
                 entity: T.persistableType,
                 field: field,

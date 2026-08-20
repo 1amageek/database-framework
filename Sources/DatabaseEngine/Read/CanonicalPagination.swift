@@ -12,6 +12,11 @@ public struct CanonicalPageWindow<Item: Sendable>: Sendable {
     }
 }
 
+package struct CanonicalRetainedPageWindow: Sendable {
+    package let range: Range<Int>
+    package let continuation: QueryContinuation?
+}
+
 public enum CanonicalQueryPagination {
     private static let fingerprintedCursorMarker: UInt32 = 0x4351_5031
     private static let stableSnapshotCursorMarker: UInt32 = 0x4351_5032
@@ -99,6 +104,50 @@ public enum CanonicalQueryPagination {
         continuationPosition: ByteString? = nil,
         prevalidatedQueryFingerprint: ByteString? = nil
     ) throws -> CanonicalPageWindow<QueryRow> {
+        let selection = try retainedWindowSelection(
+            rows: rows,
+            selectQuery: selectQuery,
+            options: options,
+            rowsAreContinuationRelative: rowsAreContinuationRelative,
+            continuationPosition: continuationPosition,
+            prevalidatedQueryFingerprint: prevalidatedQueryFingerprint
+        )
+        return CanonicalPageWindow(
+            items: trimOwnedRows(consume rows, to: selection.range),
+            continuation: selection.continuation
+        )
+    }
+
+    /// Resolves a page without releasing or copying the retained row owner.
+    /// Internal query composition uses the returned range as a zero-copy view;
+    /// only a public result boundary promotes the backing Array.
+    package static func retainedWindow(
+        rows: DatabaseSharedRetainedArray<QueryRow>,
+        selectQuery: SelectQuery,
+        options: ReadExecutionContext,
+        rowsAreContinuationRelative: Bool = false,
+        continuationPosition: ByteString? = nil,
+        prevalidatedQueryFingerprint: ByteString? = nil
+    ) throws -> CanonicalRetainedPageWindow {
+        try retainedWindowSelection(
+            rows: rows,
+            selectQuery: selectQuery,
+            options: options,
+            rowsAreContinuationRelative: rowsAreContinuationRelative,
+            continuationPosition: continuationPosition,
+            prevalidatedQueryFingerprint: prevalidatedQueryFingerprint
+        )
+    }
+
+    private static func retainedWindowSelection<Rows: RandomAccessCollection>(
+        rows: Rows,
+        selectQuery: SelectQuery,
+        options: ReadExecutionContext,
+        rowsAreContinuationRelative: Bool,
+        continuationPosition: ByteString?,
+        prevalidatedQueryFingerprint: ByteString?
+    ) throws -> CanonicalRetainedPageWindow
+    where Rows.Element == QueryRow, Rows.Index == Int {
         // Pagination can be reached from native and graph execution paths, so
         // it performs its own bounded admission before internal wire limits are
         // relaxed for canonical streaming.
@@ -136,7 +185,7 @@ public enum CanonicalQueryPagination {
                 throw CanonicalReadError.invalidContinuation
             }
             let visible = trimOwnedRows(
-                consume rows,
+                totalCount: rows.count,
                 offset: queryOffset,
                 count: logicalLimit
             )
@@ -144,7 +193,10 @@ public enum CanonicalQueryPagination {
                 UInt64(visible.count),
                 at: .resultMaterialization
             )
-            return CanonicalPageWindow(items: visible, continuation: nil)
+            return CanonicalRetainedPageWindow(
+                range: visible,
+                continuation: nil
+            )
         }
 
         let queryFingerprint: ByteString
@@ -185,7 +237,10 @@ public enum CanonicalQueryPagination {
             continuationOffset >= $0 ? 0 : $0 - continuationOffset
         }
         guard remainingLimit != 0 else {
-            return CanonicalPageWindow(items: [], continuation: nil)
+            return CanonicalRetainedPageWindow(
+                range: rows.startIndex..<rows.startIndex,
+                continuation: nil
+            )
         }
         let effectivePageSize = pageSize(
             requested: requestedPageSize,
@@ -193,7 +248,7 @@ public enum CanonicalQueryPagination {
         )
         guard let effectivePageSize else {
             let visible = trimOwnedRows(
-                consume rows,
+                totalCount: rows.count,
                 offset: baseOffset,
                 count: nil
             )
@@ -201,8 +256,8 @@ public enum CanonicalQueryPagination {
                 UInt64(visible.count),
                 at: .resultMaterialization
             )
-            return CanonicalPageWindow(
-                items: visible,
+            return CanonicalRetainedPageWindow(
+                range: visible,
                 continuation: nil
             )
         }
@@ -240,12 +295,12 @@ public enum CanonicalQueryPagination {
             ).encode()
             : nil
         let visible = trimOwnedRows(
-            consume rows,
+            totalCount: rows.count,
             offset: baseOffset,
             count: visibleCount
         )
-        return CanonicalPageWindow(
-            items: visible,
+        return CanonicalRetainedPageWindow(
+            range: visible,
             continuation: continuation
         )
     }
@@ -295,24 +350,31 @@ public enum CanonicalQueryPagination {
         )
     }
 
-    /// Narrows a uniquely-owned result buffer in place. The owned array is
-    /// consumed so pagination never allocates ArraySlice and Array copies for
-    /// the lookahead window and the visible page.
     private static func trimOwnedRows(
-        _ rows: consuming [QueryRow],
+        totalCount: Int,
         offset: Int,
         count requestedCount: Int?
-    ) -> [QueryRow] {
-        guard offset < rows.count else { return [] }
-        var result = consume rows
-        let availableCount = result.count - offset
+    ) -> Range<Int> {
+        guard offset < totalCount else { return totalCount..<totalCount }
+        let availableCount = totalCount - offset
         let visibleCount = min(requestedCount ?? availableCount, availableCount)
-        let end = offset + visibleCount
-        if end < result.count {
-            result.removeLast(result.count - end)
+        return offset..<(offset + visibleCount)
+    }
+
+    /// Narrows a uniquely-owned result buffer in place. The owned array is
+    /// consumed so pagination never allocates ArraySlice and Array copies for
+    /// the visible page.
+    private static func trimOwnedRows(
+        _ rows: consuming [QueryRow],
+        to range: Range<Int>
+    ) -> [QueryRow] {
+        guard !range.isEmpty else { return [] }
+        var result = consume rows
+        if range.upperBound < result.count {
+            result.removeLast(result.count - range.upperBound)
         }
-        if offset > 0 {
-            result.removeFirst(offset)
+        if range.lowerBound > 0 {
+            result.removeFirst(range.lowerBound)
         }
         return result
     }
@@ -443,10 +505,10 @@ public enum CanonicalQueryPagination {
         try workMeter.consume(totalBytes, at: .resultMaterialization)
     }
 
-    private static func resultFingerprint(
-        _ rows: [QueryRow],
+    private static func resultFingerprint<Rows: Sequence>(
+        _ rows: Rows,
         workMeter: DatabaseWorkMeter
-    ) throws -> ByteString {
+    ) throws -> ByteString where Rows.Element == QueryRow {
         var hasher = SHA256Accumulator()
         updateDomain(0x0150_4244, hasher: &hasher)
         for row in rows {

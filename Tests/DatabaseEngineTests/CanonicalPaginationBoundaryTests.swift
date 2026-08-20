@@ -124,6 +124,44 @@ struct CanonicalPaginationBoundaryTests {
         #expect(sourceAddress == pageAddress)
     }
 
+    @Test("Internal pagination retains ownership and exposes a bounded view")
+    func retainedPaginationPreservesReservation() throws {
+        let execution = execution(pageSize: 2)
+        do {
+            var builder = try DatabaseRetainedArrayBuilder<DatabaseEngine.QueryRow>(
+                workMeter: execution.workMeter,
+                stage: .resultMaterialization,
+                layout: try CanonicalRelationalFootprintMeter
+                    .retainedArrayLayout(for: DatabaseEngine.QueryRow.self),
+                expectedCount: 4
+            )
+            for row in rows(4) {
+                try builder.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: row,
+                        workMeter: execution.workMeter
+                    ),
+                    make: { row }
+                )
+            }
+            let retained = try builder.finish().moveToSharedOwnership(
+                at: .resultMaterialization
+            )
+            let page = try CanonicalQueryPagination.retainedWindow(
+                rows: retained,
+                selectQuery: selectQuery(offset: 1),
+                options: execution
+            )
+            let visible = retained.boundedView(page.range)
+
+            #expect(visible.map { $0.fields["id"] } == [.int64(1), .int64(2)])
+            #expect(execution.workMeter.retainedIntermediateRows == 4)
+            #expect(page.continuation != nil)
+        }
+        #expect(execution.workMeter.retainedIntermediateRows == 0)
+        #expect(execution.workMeter.retainedIntermediateBytes == 0)
+    }
+
     private func selectQuery(
         table: String = "PaginationEntity",
         limit: UInt64? = nil,

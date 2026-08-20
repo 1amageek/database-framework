@@ -272,6 +272,34 @@ struct LiteralConversionTests {
         #expect(try comparison.toExpression() == expression)
     }
 
+    @Test("Predicate conversion keeps three-valued SQL expressions residual")
+    func predicateConversionPreservesUnknownTruthValues() throws {
+        let nullComparison = Expression.greaterThan(
+            .column(ColumnRef(column: "value")),
+            .literal(.null)
+        )
+        let negatedNullableComparison = Expression.not(
+            .equal(
+                .column(ColumnRef(column: "note")),
+                .literal(.string("value"))
+            )
+        )
+        let notInContainingNull = Expression.notInList(
+            .column(ColumnRef(column: "value")),
+            values: [.literal(.int(1)), .literal(.null)]
+        )
+
+        #expect(
+            try nullComparison.toPredicate(for: Entity.self) == nil
+        )
+        #expect(
+            try negatedNullableComparison.toPredicate(for: Entity.self) == nil
+        )
+        #expect(
+            try notInContainingNull.toPredicate(for: Entity.self) == nil
+        )
+    }
+
     @Test("Empty logical groups retain their boolean identities")
     func emptyLogicalGroupsRetainBooleanIdentities() throws {
         #expect(

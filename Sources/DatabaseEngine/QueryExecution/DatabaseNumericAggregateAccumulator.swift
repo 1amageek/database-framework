@@ -1,9 +1,11 @@
 import DatabaseTypes
 
 /// Canonical numeric state used when an aggregate is reduced incrementally.
-/// Integer inputs remain exact through an Int128 accumulator; floating-point
-/// inputs use compensated summation. Mixing integer and floating-point kinds
-/// is rejected instead of silently changing the query's numeric semantics.
+/// Integer inputs remain exact through an Int128 accumulator, decimal inputs
+/// use `ExactDecimal`, and floating-point inputs use compensated summation.
+/// Exact integer and decimal inputs may be combined; mixing either exact kind
+/// with floating point is rejected instead of silently changing numeric
+/// semantics.
 @_spi(DatabaseExecution)
 public struct DatabaseNumericAggregateAccumulator: Sendable {
     public enum Failure: Error, Sendable, Equatable {
@@ -27,9 +29,15 @@ public struct DatabaseNumericAggregateAccumulator: Sendable {
         var count: Int128 = 0
     }
 
+    private struct DecimalState: Sendable {
+        var total: ExactDecimal
+        var count: Int128
+    }
+
     private enum State: Sendable {
         case empty
         case integer(IntegerState)
+        case decimal(DecimalState)
         case floatingPoint(FloatingPointState)
     }
 
@@ -57,6 +65,8 @@ public struct DatabaseNumericAggregateAccumulator: Sendable {
             try addInteger(Int128(value), signed: false)
         case .uint64(let value):
             try addInteger(Int128(value), signed: false)
+        case .decimal(let value):
+            try addDecimal(value)
         case .float32(let value):
             try addFloatingPoint(Double(value))
         case .float64(let value):
@@ -72,6 +82,8 @@ public struct DatabaseNumericAggregateAccumulator: Sendable {
             return nil
         case .integer(let state):
             return try integerResult(state.total, state: state)
+        case .decimal(let state):
+            return .decimal(state.total)
         case .floatingPoint(let state):
             let value = state.sum + state.compensation
             guard value.isFinite else { throw .numericOverflow }
@@ -96,6 +108,21 @@ public struct DatabaseNumericAggregateAccumulator: Sendable {
             let value = total / count
             guard value.isFinite else { throw .numericOverflow }
             return .float64(value)
+        case .decimal(let state):
+            do {
+                return .decimal(
+                    try state.total.dividing(
+                        by: ExactDecimal(
+                            coefficient: state.count,
+                            scale: 0
+                        )
+                    )
+                )
+            } catch ExactDecimalError.inexactResult {
+                throw .resultNotRepresentable
+            } catch {
+                throw .numericOverflow
+            }
         case .floatingPoint(let state):
             guard let count = Double(exactly: state.count) else {
                 throw .resultNotRepresentable
@@ -118,6 +145,12 @@ public struct DatabaseNumericAggregateAccumulator: Sendable {
         case .integer(var next):
             try Self.accumulate(value, signed: signed, into: &next)
             state = .integer(next)
+        case .decimal(var next):
+            try Self.accumulate(
+                ExactDecimal(coefficient: value, scale: 0),
+                into: &next
+            )
+            state = .decimal(next)
         case .floatingPoint:
             throw .incompatibleNumericKinds
         }
@@ -134,10 +167,47 @@ public struct DatabaseNumericAggregateAccumulator: Sendable {
             state = .floatingPoint(next)
         case .integer:
             throw .incompatibleNumericKinds
+        case .decimal:
+            throw .incompatibleNumericKinds
         case .floatingPoint(var next):
             try Self.accumulate(value, into: &next)
             state = .floatingPoint(next)
         }
+    }
+
+    private mutating func addDecimal(
+        _ value: ExactDecimal
+    ) throws(Failure) {
+        switch state {
+        case .empty:
+            state = .decimal(DecimalState(total: value, count: 1))
+        case .integer(let integer):
+            var next = DecimalState(
+                total: ExactDecimal(coefficient: integer.total, scale: 0),
+                count: integer.count
+            )
+            try Self.accumulate(value, into: &next)
+            state = .decimal(next)
+        case .decimal(var next):
+            try Self.accumulate(value, into: &next)
+            state = .decimal(next)
+        case .floatingPoint:
+            throw .incompatibleNumericKinds
+        }
+    }
+
+    private static func accumulate(
+        _ value: ExactDecimal,
+        into state: inout DecimalState
+    ) throws(Failure) {
+        let count = state.count.addingReportingOverflow(1)
+        guard !count.overflow else { throw .numericOverflow }
+        do {
+            state.total = try state.total.adding(value)
+        } catch {
+            throw .numericOverflow
+        }
+        state.count = count.partialValue
     }
 
     private static func accumulate(

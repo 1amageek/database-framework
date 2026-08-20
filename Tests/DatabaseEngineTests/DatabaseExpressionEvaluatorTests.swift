@@ -3,7 +3,7 @@ import DatabaseKit
 import Testing
 @testable import DatabaseEngine
 
-@Suite("Database mutation expression evaluator")
+@Suite("Database expression evaluator")
 struct DatabaseExpressionEvaluatorTests {
     @Test("arithmetic and SQL null logic are deterministic")
     func arithmeticAndNullLogic() throws {
@@ -76,6 +76,50 @@ struct DatabaseExpressionEvaluatorTests {
                     .literal(.uint(UInt64.max))
                 )
             ) == .bool(true)
+        )
+    }
+
+    @Test("Canonical arithmetic accepts every stored numeric width")
+    func storedNumericWidths() throws {
+        let evaluator = DatabaseExpressionEvaluator(fields: [
+            "small": .int16(7),
+            "unsigned": .uint32(4),
+            "floating": .float32(0.5),
+        ])
+
+        #expect(
+            try evaluator.evaluate(.add(.col("small"), .int(2)))
+                == .int64(9)
+        )
+        #expect(
+            try evaluator.evaluate(.multiply(.col("unsigned"), .literal(.uint(3))))
+                == .uint64(12)
+        )
+        #expect(
+            try evaluator.evaluate(.add(.col("floating"), .int(2)))
+                == .float64(2.5)
+        )
+        #expect(
+            try evaluator.evaluate(
+                .subtract(.col("small"), .col("unsigned"))
+            ) == .decimal(ExactDecimal(coefficient: 3, scale: 0))
+        )
+        #expect(
+            try evaluator.evaluate(
+                .greaterThan(.col("floating"), .literal(.double(0.25)))
+            ) == .bool(true)
+        )
+        #expect(
+            try evaluator.evaluate(
+                .function(
+                    FunctionCall(name: "ABS", arguments: [.col("small")])
+                )
+            ) == .int64(7)
+        )
+        #expect(
+            try evaluator.evaluate(
+                .cast(.col("unsigned"), targetType: .bigint)
+            ) == .int64(4)
         )
     }
 

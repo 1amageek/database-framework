@@ -1,5 +1,6 @@
 public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, CustomStringConvertible {
     case missingColumn(String)
+    case ambiguousColumn(String)
     case unboundParameter
     case typeMismatch(operation: String)
     case divisionByZero
@@ -14,6 +15,8 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
         switch self {
         case .missingColumn(let name):
             return "Expression references unknown column '\(name)'"
+        case .ambiguousColumn(let name):
+            return "Expression references ambiguous column '\(name)'"
         case .unboundParameter:
             return "Expression contains a parameter that was not bound"
         case .typeMismatch(let operation):
@@ -25,9 +28,9 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
         case .numericOverflow:
             return "Expression numeric result is outside the canonical value range"
         case .unsupportedExpression(let expression):
-            return "Expression is not supported in an entity mutation: \(expression)"
+            return "Expression is not supported by the database evaluator: \(expression)"
         case .unsupportedFunction(let function):
-            return "Scalar function '\(function)' is not supported in an entity mutation"
+            return "Scalar function '\(function)' is not supported by the database evaluator"
         case .invalidCast(let type):
             return "Expression cannot be cast to \(type)"
         case .invalidRDFLiteral(let datatype):

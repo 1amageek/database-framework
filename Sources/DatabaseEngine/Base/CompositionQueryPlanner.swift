@@ -214,6 +214,10 @@ public struct CompositionQueryPlanner: Sendable {
         options: CompositionQueryExecutionOptions,
         emit: @Sendable @escaping (CompositionQueryEvent) async throws -> Bool
     ) async throws {
+        try QueryStructuralValidator.validate(
+            query,
+            limits: structuralLimits
+        )
         try Self.validatePageSize(options.pageSize)
         let memberExecutor = RelationalMemberQueryExecutor()
         let crossBaseJoin = try Self.crossBaseJoinPlan(query)
@@ -239,6 +243,10 @@ public struct CompositionQueryPlanner: Sendable {
         memberExecutor: any CompositionMemberQueryExecutor,
         emit: @Sendable @escaping (CompositionQueryEvent) async throws -> Bool
     ) async throws {
+        try QueryStructuralValidator.validate(
+            query,
+            limits: structuralLimits
+        )
         try Self.validatePageSize(options.pageSize)
         guard !Self.containsBaseQualifier(query.source) else {
             throw CompositionQueryError.unsupportedPlan(
@@ -566,7 +574,7 @@ public struct CompositionQueryPlanner: Sendable {
         )
         let response: QueryResponse
         do {
-            response = try joinContext.executeCompositionCrossBaseJoin(
+            response = try await joinContext.executeCompositionCrossBaseJoin(
                 query,
                 join: plan.join,
                 leftRows: consume leftRows,
@@ -1244,10 +1252,29 @@ public struct CompositionQueryPlanner: Sendable {
                 state = .extremum(value)
                 return
             }
-            guard let comparison = value.compare(to: current) else {
-                throw CompositionQueryError.aggregateFailure(
+            let comparison: QueryComparison
+            if value.isNumeric && current.isNumeric {
+                guard let numericComparison =
+                    RelationalValueIdentity.compareNumeric(value, current)
+                else {
+                    throw CompositionQueryError.aggregateFailure(
+                        "MIN/MAX values contain a non-finite numeric value"
+                    )
+                }
+                if numericComparison < 0 {
+                    comparison = .lessThan
+                } else if numericComparison > 0 {
+                    comparison = .greaterThan
+                } else {
+                    comparison = .equal
+                }
+            } else {
+                guard let fieldComparison = value.compare(to: current) else {
+                    throw CompositionQueryError.aggregateFailure(
                         "MIN/MAX values are not mutually comparable"
                     )
+                }
+                comparison = fieldComparison
             }
             if descriptor.kind.isMinimum
                 ? comparison == .lessThan

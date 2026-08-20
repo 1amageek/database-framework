@@ -90,7 +90,10 @@ enum SelectQueryPlanner {
         // Filter: partial AND pushdown.
         var residualFilter: Expression? = nil
         if let filter = selectQuery.filter {
-            let split = try filter.splitAnd(for: T.self)
+            let split = try filter.splitAnd(
+                for: T.self,
+                sourceQualifier: tableRef.effectiveName
+            )
             query.predicates.append(contentsOf: split.pushed)
             if !split.residual.isEmpty {
                 residualFilter = combineAnd(split.residual)
@@ -103,7 +106,11 @@ enum SelectQueryPlanner {
         // SortDescriptor does not model null ordering).
         var residualOrderBy: [SortKey]? = nil
         if let orderBy = selectQuery.orderBy, !orderBy.isEmpty {
-            if let descriptors = sortDescriptors(from: orderBy, for: T.self) {
+            if let descriptors = sortDescriptors(
+                from: orderBy,
+                for: T.self,
+                sourceQualifier: tableRef.effectiveName
+            ) {
                 query.sortDescriptors = descriptors
             } else {
                 residualOrderBy = orderBy
@@ -126,8 +133,7 @@ enum SelectQueryPlanner {
            selectQuery.filter == nil,
            selectQuery.accessPath == nil,
            options.options.continuationSnapshotIsStable,
-           !selectQuery.distinct,
-           !isCountProjection(selectQuery.projection),
+           windowPushdownIsSemanticallySafe(selectQuery),
            let pageSize = resolvedPageSize {
             let cursor = try CanonicalQueryPagination
                 .validatedStableSnapshotCursor(
@@ -189,7 +195,8 @@ enum SelectQueryPlanner {
         } else if noResidualFilter
                     && noOrderBy
                     && options.continuation == nil
-                    && options.options.pageSize == nil {
+                    && options.options.pageSize == nil
+                    && windowPushdownIsSemanticallySafe(selectQuery) {
             if let limit = selectQuery.limit {
                 guard let limit = Int(exactly: limit) else {
                     throw CanonicalReadError.unsupportedSelectQuery(
@@ -236,9 +243,14 @@ enum SelectQueryPlanner {
         )
     }
 
-    private static func isCountProjection(_ projection: Projection) -> Bool {
-        guard case .items(let items) = projection, items.count == 1,
-              case .aggregate(.count) = items[0].expression else {
+    private static func windowPushdownIsSemanticallySafe(
+        _ query: SelectQuery
+    ) -> Bool {
+        guard !query.distinct,
+              !canonicalQueryRequiresAggregation(query) else {
+            return false
+        }
+        if case .distinctItems = query.projection {
             return false
         }
         return true
@@ -288,7 +300,9 @@ enum SelectQueryPlanner {
     /// Returns `nil` if any sort key cannot be represented as a pushed
     /// descriptor (non-column expression, unknown column, or NULLS ordering).
     private static func sortDescriptors<T: Persistable>(
-        from sortKeys: [SortKey], for type: T.Type
+        from sortKeys: [SortKey],
+        for type: T.Type,
+        sourceQualifier: String
     ) -> [SortDescriptor<T>]? {
         var descriptors: [SortDescriptor<T>] = []
         descriptors.reserveCapacity(sortKeys.count)
@@ -298,6 +312,10 @@ enum SelectQueryPlanner {
             // so the canonical layer can honor it.
             if sortKey.nulls != nil { return nil }
             guard case .column(let column) = sortKey.expression else { return nil }
+            guard column.table == nil
+                    || column.table == sourceQualifier else {
+                return nil
+            }
             guard let schema = T.fieldSchemas.first(where: {
                 $0.name == column.column && $0.fieldNumber > 0
             }) else {

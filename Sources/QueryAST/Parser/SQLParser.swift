@@ -259,12 +259,14 @@ extension SQLParser {
                            "EXCEPT", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
                            "CREATE", "DROP", "TABLE", "INDEX", "GRAPH", "PROPERTY", "MATCH",
                            "WITH", "CASE", "WHEN", "THEN", "ELSE", "END", "CAST", "COUNT",
-                           "SUM", "AVG", "MIN", "MAX", "EXISTS", "ANY", "SOME", "NULLS",
+                           "SUM", "AVG", "MIN", "MAX", "ARRAY_AGG", "GROUP_CONCAT",
+                           "EXISTS", "ANY", "SOME", "NULLS",
                            "FIRST", "LAST", "OVER", "PARTITION", "ROWS", "RANGE",
                            "GRAPH_TABLE", "COLUMNS", "WALK", "TRAIL", "ACYCLIC", "SIMPLE",
                            "SHORTEST", "DEFAULT", "CONFLICT", "DO", "NOTHING", "RETURNING",
                            "IF", "VERTEX", "TABLES", "EDGE", "KEY", "LABEL",
-                           "DESTINATION", "REFERENCES", "PROPERTIES", "NO"]
+                           "DESTINATION", "REFERENCES", "PROPERTIES", "NO", "LATERAL",
+                           "NATURAL"]
 
             if keywords.contains(upper) {
                 admitToken(.keyword(upper))
@@ -519,7 +521,12 @@ extension SQLParser {
             advance()
             source = try parseDataSource()
         } else {
-            source = try makeStructuralNode(.table(TableRef("")))
+            // A SELECT without FROM evaluates once against the SQL singleton
+            // relation. Represent it explicitly instead of routing an empty
+            // table name into entity resolution.
+            source = try makeStructuralNode(
+                .values([[]], columnNames: [])
+            )
         }
 
         // WHERE
@@ -718,8 +725,23 @@ extension SQLParser {
 
         // Check for JOINs
         var result = source
-        while case .keyword(let kw) = currentToken, ["INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN"].contains(kw) {
-            let joinType = try parseJoinType()
+        while case .keyword(let kw) = currentToken,
+              ["INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "NATURAL"]
+                .contains(kw) {
+            var joinType = try parseJoinType()
+            if case .keyword("LATERAL") = currentToken {
+                switch joinType {
+                case .inner, .cross:
+                    joinType = .lateral
+                case .left:
+                    joinType = .leftLateral
+                default:
+                    throw ParseError.unsupportedFeature(
+                        "LATERAL is supported only for INNER, CROSS, or LEFT joins"
+                    )
+                }
+                advance()
+            }
             let right = try parseTableRef()
             var condition: JoinCondition?
 
@@ -743,7 +765,42 @@ extension SQLParser {
                     }
                 }
                 try expect(")")
+                guard !cols.isEmpty else {
+                    throw ParseError.invalidSyntax(
+                        message: "JOIN USING requires at least one column",
+                        position: input.distance(
+                            from: input.startIndex,
+                            to: position
+                        )
+                    )
+                }
                 condition = .using(cols)
+            }
+
+            let naturalJoin: Bool
+            switch joinType {
+            case .natural, .naturalLeft, .naturalRight, .naturalFull:
+                naturalJoin = true
+            default:
+                naturalJoin = false
+            }
+            if naturalJoin, condition != nil {
+                throw ParseError.invalidSyntax(
+                    message: "NATURAL JOIN cannot declare ON or USING",
+                    position: input.distance(
+                        from: input.startIndex,
+                        to: position
+                    )
+                )
+            }
+            if joinType == .cross, condition != nil {
+                throw ParseError.invalidSyntax(
+                    message: "CROSS JOIN cannot declare ON or USING",
+                    position: input.distance(
+                        from: input.startIndex,
+                        to: position
+                    )
+                )
             }
 
             result = try makeStructuralNode(
@@ -871,6 +928,13 @@ extension SQLParser {
     }
 
     private func parseJoinType() throws -> JoinType {
+        let isNatural: Bool
+        if case .keyword("NATURAL") = currentToken {
+            isNatural = true
+            advance()
+        } else {
+            isNatural = false
+        }
         var joinType: JoinType = .inner
 
         switch currentToken {
@@ -892,11 +956,29 @@ extension SQLParser {
             break
         }
 
-        if case .keyword("JOIN") = currentToken {
-            advance()
+        guard case .keyword("JOIN") = currentToken else {
+            throw ParseError.unexpectedToken(
+                expected: "JOIN",
+                found: tokenDescription(currentToken),
+                position: input.distance(
+                    from: input.startIndex,
+                    to: position
+                )
+            )
         }
+        advance()
 
-        return joinType
+        guard isNatural else { return joinType }
+        switch joinType {
+        case .inner: return .natural
+        case .left: return .naturalLeft
+        case .right: return .naturalRight
+        case .full: return .naturalFull
+        default:
+            throw ParseError.unsupportedFeature(
+                "NATURAL CROSS JOIN is not supported"
+            )
+        }
     }
 
     private func parseExpression() throws -> Expression {
@@ -1021,6 +1103,85 @@ extension SQLParser {
             }
             try expect(")")
             return try makeStructuralNode(.inList(left, values: values))
+        case .keyword("NOT"):
+            advance()
+            switch currentToken {
+            case .keyword("IN"):
+                advance()
+                try expect("(")
+                if case .keyword("SELECT") = currentToken {
+                    let subquery = try parseSelectQuery()
+                    try expect(")")
+                    return try makeStructuralNode(
+                        .not(
+                            try makeStructuralNode(
+                                .inSubquery(left, subquery: subquery)
+                            )
+                        )
+                    )
+                }
+                if case .keyword("WITH") = currentToken {
+                    let subquery = try parseSelectQuery()
+                    try expect(")")
+                    return try makeStructuralNode(
+                        .not(
+                            try makeStructuralNode(
+                                .inSubquery(left, subquery: subquery)
+                            )
+                        )
+                    )
+                }
+                var values: [Expression] = []
+                var first = true
+                while first || isSymbol(",") {
+                    if !first { advance() }
+                    first = false
+                    try admitCollectionElement()
+                    values.append(try parseExpression())
+                }
+                try expect(")")
+                return try makeStructuralNode(
+                    .notInList(left, values: values)
+                )
+            case .keyword("BETWEEN"):
+                advance()
+                let low = try parseAddExpression()
+                try expect("AND")
+                let high = try parseAddExpression()
+                return try makeStructuralNode(
+                    .not(
+                        try makeStructuralNode(
+                            .between(left, low: low, high: high)
+                        )
+                    )
+                )
+            case .keyword("LIKE"):
+                advance()
+                guard case .string(let pattern) = currentToken else {
+                    throw ParseError.invalidSyntax(
+                        message: "Expected string pattern after NOT LIKE",
+                        position: input.distance(
+                            from: input.startIndex,
+                            to: position
+                        )
+                    )
+                }
+                advance()
+                return try makeStructuralNode(
+                    .not(
+                        try makeStructuralNode(.like(left, pattern: pattern))
+                    )
+                )
+            default:
+                throw ParseError.unexpectedToken(
+                    expected: "IN, BETWEEN, or LIKE after NOT",
+                    found: tokenDescription(currentToken),
+                    position: input.distance(
+                        from: input.startIndex,
+                        to: position
+                    )
+                )
+            }
         case .keyword("BETWEEN"):
             advance()
             let low = try parseAddExpression()
@@ -1165,7 +1326,9 @@ extension SQLParser {
             advance()
             return try makeLiteralExpression(.null)
 
-        case .keyword("COUNT"), .keyword("SUM"), .keyword("AVG"), .keyword("MIN"), .keyword("MAX"):
+        case .keyword("COUNT"), .keyword("SUM"), .keyword("AVG"),
+                .keyword("MIN"), .keyword("MAX"),
+                .keyword("ARRAY_AGG"), .keyword("GROUP_CONCAT"):
             return try parseAggregate()
 
         case .keyword("CASE"):
@@ -1240,7 +1403,50 @@ extension SQLParser {
             arg = try parseExpression()
         }
 
+        var separator: String?
+        if funcName == .keyword("GROUP_CONCAT"), isSymbol(",") {
+            advance()
+            guard case .string(let value) = currentToken else {
+                throw ParseError.invalidSyntax(
+                    message: "GROUP_CONCAT separator must be a string literal",
+                    position: input.distance(
+                        from: input.startIndex,
+                        to: position
+                    )
+                )
+            }
+            separator = value
+            advance()
+        }
+
+        var aggregateOrderBy: [SortKey]?
+        if funcName == .keyword("ARRAY_AGG"),
+           case .keyword("ORDER") = currentToken {
+            advance()
+            try expect("BY")
+            aggregateOrderBy = try parseOrderBy()
+        }
+
         try expect(")")
+
+        if arg == nil, funcName != .keyword("COUNT") {
+            throw ParseError.invalidSyntax(
+                message: "Only COUNT may use '*' as its aggregate argument",
+                position: input.distance(
+                    from: input.startIndex,
+                    to: position
+                )
+            )
+        }
+        if arg == nil, distinct {
+            throw ParseError.invalidSyntax(
+                message: "COUNT(DISTINCT *) is not valid",
+                position: input.distance(
+                    from: input.startIndex,
+                    to: position
+                )
+            )
+        }
 
         switch funcName {
         case .keyword("COUNT"):
@@ -1263,6 +1469,24 @@ extension SQLParser {
         case .keyword("MAX"):
             let operand = try arg ?? makeLiteralExpression(.null)
             return try makeAggregateExpression(.max(operand))
+        case .keyword("ARRAY_AGG"):
+            let operand = try arg ?? makeLiteralExpression(.null)
+            return try makeAggregateExpression(
+                .arrayAgg(
+                    operand,
+                    orderBy: aggregateOrderBy,
+                    distinct: distinct
+                )
+            )
+        case .keyword("GROUP_CONCAT"):
+            let operand = try arg ?? makeLiteralExpression(.null)
+            return try makeAggregateExpression(
+                .groupConcat(
+                    operand,
+                    separator: separator,
+                    distinct: distinct
+                )
+            )
         default:
             throw ParseError.invalidSyntax(message: "Unknown aggregate function", position: input.distance(from: input.startIndex, to: position))
         }

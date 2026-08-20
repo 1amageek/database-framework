@@ -10,6 +10,55 @@ import StorageKit
 // MARK: - DatabaseContext + SQL String Execution
 
 extension DatabaseContext {
+    /// Execute a SQL SELECT statement and return canonical rows.
+    ///
+    /// Parsing and parameter binding use the same structural limits. SPARQL
+    /// rewriting and relational execution share one work meter and read snapshot.
+    public func executeSQL(
+        _ sql: String,
+        parameters: [QueryParameter] = [],
+        options: ReadExecutionOptions = .default,
+        structuralLimits: QueryStructuralLimits = .default
+    ) async throws -> QueryResponse {
+        let workMeter = DatabaseWorkMeter(
+            budget: options.budget,
+            monotonicClock: container.monotonicClock
+        )
+        let parser = SQLParser(structuralLimits: structuralLimits)
+        let parsedStatement = try parser.parse(sql)
+        let statement = try QueryParameterBinder(
+            parameters: parameters,
+            structuralLimits: structuralLimits
+        ).bind(parsedStatement)
+        guard case .select(let selectQuery) = statement else {
+            throw SQLExecutionError.unsupportedStatement(
+                "Only SELECT queries are supported"
+            )
+        }
+
+        let execution = ReadExecutionContext(
+            options: options,
+            monotonicClock: container.monotonicClock,
+            workMeter: workMeter,
+            queryStructuralLimits: structuralLimits
+        )
+        let response = try await executeSQLSelect(
+            selectQuery,
+            execution: execution,
+            workMeter: workMeter
+        )
+        guard let rowCount = UInt32(exactly: response.rows.count) else {
+            throw DatabaseWorkLimitError.maximumRows(
+                stage: .resultMaterialization,
+                consumed: workMeter.consumedRows,
+                requested: UInt32.max,
+                maximum: options.budget.maximumRows
+            )
+        }
+        try workMeter.recordOutputRows(rowCount)
+        return response
+    }
+
     /// Execute a SQL query string and return typed results
     ///
     /// **SPARQL() Function Support**:
@@ -40,38 +89,35 @@ extension DatabaseContext {
     public func executeSQL<T: Persistable>(
         _ sql: String,
         as type: T.Type,
-        budget: ExecutionBudget = ExecutionBudget()
+        parameters: [QueryParameter] = [],
+        budget: ExecutionBudget = ExecutionBudget(),
+        structuralLimits: QueryStructuralLimits = .default
     ) async throws -> [T] {
-        let workMeter = DatabaseWorkMeter(
-            budget: budget,
-            monotonicClock: container.monotonicClock
-        )
-        // 1. Parse SQL string
-        let parser = SQLParser()
-        let statement = try parser.parse(sql)
-
-        // 2. Extract SelectQuery
-        guard case .select(let selectQuery) = statement else {
-            throw SQLExecutionError.unsupportedStatement("Only SELECT queries are supported")
-        }
-
-        let execution = ReadExecutionContext(
+        let response = try await executeSQL(
+            sql,
+            parameters: parameters,
             options: ReadExecutionOptions(budget: budget),
-            monotonicClock: container.monotonicClock,
-            workMeter: workMeter
+            structuralLimits: structuralLimits
         )
+        return try response.rows.map { row in
+            try QueryRowCodec.decode(row, as: type)
+        }
+    }
 
-        // 3. Rewrite SPARQL() functions and execute the parent SQL read on one
-        // storage transaction so every graph and entity read shares a snapshot.
+    private func executeSQLSelect(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> QueryResponse {
         #if DATABASE_GRAPH_INDEXES
-        let response: QueryResponse
         if SPARQLFunctionRewriter.containsSPARQLFunction(in: selectQuery) {
-            response = try await indexQueryContext.withTransaction {
+            return try await indexQueryContext.withTransaction {
                 transaction in
                 let executableQuery = try await self.rewriteSPARQLFunctions(
                     selectQuery,
                     workMeter: workMeter,
-                    transaction: transaction
+                    transaction: transaction,
+                    structuralLimits: execution.queryStructuralLimits
                 )
                 return try await self.query(
                     executableQuery,
@@ -79,32 +125,9 @@ extension DatabaseContext {
                     transaction: transaction
                 )
             }
-        } else {
-            response = try await query(
-                selectQuery,
-                execution: execution
-            )
         }
-        #else
-        let response = try await query(
-            selectQuery,
-            execution: execution
-        )
         #endif
-
-        // 4. Materialize typed models from canonical rows.
-        guard let rowCount = UInt32(exactly: response.rows.count) else {
-            throw DatabaseWorkLimitError.maximumRows(
-                stage: .resultMaterialization,
-                consumed: workMeter.consumedRows,
-                requested: UInt32.max,
-                maximum: budget.maximumRows
-            )
-        }
-        try workMeter.recordOutputRows(rowCount)
-        return try response.rows.map { row in
-            try QueryRowCodec.decode(row, as: type)
-        }
+        return try await query(selectQuery, execution: execution)
     }
 
     #if DATABASE_GRAPH_INDEXES
@@ -118,12 +141,14 @@ extension DatabaseContext {
     private func rewriteSPARQLFunctions(
         _ selectQuery: SelectQuery,
         workMeter: DatabaseWorkMeter,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        structuralLimits: QueryStructuralLimits
     ) async throws -> SelectQuery {
         let rewriter = SPARQLFunctionRewriter(
             context: self,
             workMeter: workMeter,
-            transaction: transaction
+            transaction: transaction,
+            structuralLimits: structuralLimits
         )
         return try await rewriter.rewrite(selectQuery)
     }

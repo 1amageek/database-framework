@@ -318,6 +318,35 @@ struct CanonicalAggregationReducerTests {
         #expect(result == .uint64(9_007_199_254_740_992))
     }
 
+    @Test("extrema compare decimal and binary values without rounding")
+    func extremaUseExactMixedNumericOrdering() throws {
+        let lower = FieldValue.decimal(
+            ExactDecimal(
+                coefficient: 1_000_000_000_000_000_055,
+                scale: 19
+            )
+        )
+        let upper = FieldValue.decimal(
+            ExactDecimal(
+                coefficient: 1_000_000_000_000_000_056,
+                scale: 19
+            )
+        )
+
+        #expect(
+            try CanonicalAggregationReducer.minimum(
+                values: [.float64(0.1), lower],
+                field: "value"
+            ) == lower
+        )
+        #expect(
+            try CanonicalAggregationReducer.maximum(
+                values: [.float64(0.1), upper],
+                field: "value"
+            ) == upper
+        )
+    }
+
     @Test("incomparable values are not ordered by enum case")
     func incomparableValuesFail() {
         #expect(
@@ -397,6 +426,34 @@ struct CanonicalAggregationReducerTests {
 
         #expect(result == .int64(1))
         #expect(identity == [.null])
+    }
+
+    @Test("grouping preserves output values and canonicalizes only the key")
+    func groupingSeparatesOutputFromIdentity() throws {
+        let field = FieldIdentity(name: "value", number: 3)
+        let decimal = try CanonicalAggregationReducer.canonicalGroupIdentity(
+            values: [
+                .decimal(ExactDecimal(coefficient: 15, scale: 1)),
+            ],
+            fields: [field]
+        )
+        let floatingPoint = try CanonicalAggregationReducer
+            .canonicalGroupIdentity(
+                values: [.float64(1.5)],
+                fields: [field]
+            )
+        let entity = AggregationReducerEntity(
+            id: "1",
+            group: nil,
+            value: 1.5
+        )
+        let output = try CanonicalAggregationReducer.groupIdentity(
+            item: entity,
+            fields: [field]
+        )
+
+        #expect(decimal == floatingPoint)
+        #expect(output == [.float64(1.5)])
     }
 
     @Test("unknown fields are not silently treated as null")

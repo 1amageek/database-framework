@@ -327,9 +327,33 @@ enum CanonicalAggregationReducer {
         var identity: [FieldValue] = []
         identity.reserveCapacity(fields.count)
         for field in fields {
-            identity.append(
-                try fieldValue(item: item, field: field)
-            )
+            identity.append(try fieldValue(item: item, field: field))
+        }
+        return identity
+    }
+
+    static func canonicalGroupIdentity(
+        values: [FieldValue],
+        fields: [FieldIdentity]
+    ) throws -> [FieldValue] {
+        precondition(values.count == fields.count)
+        var identity: [FieldValue] = []
+        identity.reserveCapacity(values.count)
+        for (value, field) in zip(values, fields) {
+            do {
+                identity.append(
+                    try RelationalValueIdentity.canonicalize(value).value
+                )
+            } catch RelationalValueIdentityError.nonFiniteNumericValue {
+                throw AggregationQueryError.nonFiniteNumericValue(
+                    field: field.name
+                )
+            } catch RelationalValueIdentityError.invalidObject {
+                throw AggregationQueryError.resultNotRepresentable(
+                    operation: "group",
+                    field: field.name
+                )
+            }
         }
         return identity
     }
@@ -437,10 +461,10 @@ enum CanonicalAggregationReducer {
     ) throws {
         guard !value.isNull else { return }
         do {
-            values.insert(try DistinctValueIdentity.canonicalize(value).value)
-        } catch DistinctValueIdentityError.nonFiniteNumericValue {
+            values.insert(try RelationalValueIdentity.canonicalize(value).value)
+        } catch RelationalValueIdentityError.nonFiniteNumericValue {
             throw AggregationQueryError.nonFiniteNumericValue(field: field)
-        } catch DistinctValueIdentityError.invalidObject {
+        } catch RelationalValueIdentityError.invalidObject {
             throw AggregationQueryError.resultNotRepresentable(
                 operation: "distinct",
                 field: field
@@ -794,8 +818,15 @@ enum CanonicalAggregationReducer {
         field: String
     ) throws -> AggregationValueOrdering {
         if lhs.isNumeric && rhs.isNumeric {
-            if lhs == rhs { return .same }
-            return lhs < rhs ? .ascending : .descending
+            guard let comparison = RelationalValueIdentity.compareNumeric(
+                lhs,
+                rhs
+            ) else {
+                throw AggregationQueryError.nonFiniteNumericValue(field: field)
+            }
+            if comparison < 0 { return .ascending }
+            if comparison > 0 { return .descending }
+            return .same
         }
 
         switch (lhs, rhs) {

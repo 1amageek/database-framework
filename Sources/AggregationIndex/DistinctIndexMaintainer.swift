@@ -895,7 +895,7 @@ private func canonicalDistinctValue(
     fieldName: String
 ) throws -> FieldValue {
     do {
-        return try DistinctValueIdentity.canonicalize(value).value
+        return try RelationalValueIdentity.canonicalize(value).value
     } catch {
         throw DistinctIndexError.invalidDistinctValue(
             fieldName: fieldName

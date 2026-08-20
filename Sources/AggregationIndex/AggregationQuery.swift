@@ -350,24 +350,39 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         // Otherwise, fall back to in-memory computation
         let items = try await queryContext.context.fetch(T.self).execute()
 
-        // The typed values are the identity. Dictionary hashing only selects a
-        // bucket; exact FieldValue equality resolves every collision.
-        var groups: [[FieldValue]: [T]] = [:]
+        // Preserve the first typed group value for output while using the same
+        // canonical relational identity as equality, JOIN, and DISTINCT.
+        var groupIndexes: [[FieldValue]: Int] = [:]
+        var groupValues: [[FieldValue]] = []
+        var groupedItems: [[T]] = []
         for item in items {
-            let groupFieldValues = try CanonicalAggregationReducer.groupIdentity(
+            let values = try CanonicalAggregationReducer.groupIdentity(
                 item: item,
                 fields: groupByFields
             )
-
-            groups[groupFieldValues, default: []].append(item)
+            let identity = try CanonicalAggregationReducer
+                .canonicalGroupIdentity(
+                    values: values,
+                    fields: groupByFields
+                )
+            if let index = groupIndexes[identity] {
+                groupedItems[index].append(item)
+            } else {
+                groupIndexes[identity] = groupValues.count
+                groupValues.append(values)
+                groupedItems.append([item])
+            }
         }
-        if groups.isEmpty && groupByFieldNames.isEmpty {
-            groups[[]] = []
+        if groupValues.isEmpty && groupByFieldNames.isEmpty {
+            groupValues.append([])
+            groupedItems.append([])
         }
 
         // Compute aggregates for each group
         var results: [AggregateResult<T>] = []
-        for (groupFieldValues, groupItems) in groups {
+        for index in groupValues.indices {
+            let groupFieldValues = groupValues[index]
+            let groupItems = groupedItems[index]
 
             // Build group key dictionary from stored FieldValue (type-preserving)
             var groupKeyDict: [String: FieldValue] = [:]

@@ -735,14 +735,15 @@ package final class DatabaseDataStore: DataStore, Sendable {
                     of: accessPath.descriptor.name
                 )
                 if state.isReadable {
-                    let totalCount = try await countUsingIndex(accessPath)
-                    return QueryResultWindow.resultCount(
-                        totalCount: totalCount,
-                        limit: query.fetchLimit,
-                        offset: query.fetchOffset
-                    )
-                }
-                if query.forcedIndex != nil {
+                    if !selection.requiresPostFilter {
+                        let totalCount = try await countUsingIndex(accessPath)
+                        return QueryResultWindow.resultCount(
+                            totalCount: totalCount,
+                            limit: query.fetchLimit,
+                            offset: query.fetchOffset
+                        )
+                    }
+                } else if query.forcedIndex != nil {
                     throw CanonicalReadError.indexHintNotReadable(
                         indexName: accessPath.descriptor.name,
                         state: state.description
@@ -1377,17 +1378,18 @@ package final class DatabaseDataStore: DataStore, Sendable {
                     transaction: transaction
                 )
                 if state.isReadable {
-                    let totalCount = try await countUsingIndexWithTransaction(
-                        accessPath,
-                        transaction: transaction
-                    )
-                    return QueryResultWindow.resultCount(
-                        totalCount: totalCount,
-                        limit: query.fetchLimit,
-                        offset: query.fetchOffset
-                    )
-                }
-                if query.forcedIndex != nil {
+                    if !selection.requiresPostFilter {
+                        let totalCount = try await countUsingIndexWithTransaction(
+                            accessPath,
+                            transaction: transaction
+                        )
+                        return QueryResultWindow.resultCount(
+                            totalCount: totalCount,
+                            limit: query.fetchLimit,
+                            offset: query.fetchOffset
+                        )
+                    }
+                } else if query.forcedIndex != nil {
                     throw CanonicalReadError.indexHintNotReadable(
                         indexName: accessPath.descriptor.name,
                         state: state.description

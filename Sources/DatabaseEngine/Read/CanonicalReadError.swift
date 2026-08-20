@@ -26,6 +26,18 @@ public enum CanonicalReadError: Error, Sendable {
     /// A `Expression` could not be converted to a canonical operation.
     case unsupportedExpression
 
+    /// A supported scalar expression failed with a typed evaluation error.
+    case expressionEvaluation(DatabaseExpressionEvaluationError)
+
+    /// A grouped or aggregate expression failed during canonical reduction.
+    case aggregateEvaluation(DatabaseAggregateEvaluationError)
+
+    /// A scalar subquery returned more than one row or more than one column.
+    case invalidScalarSubquery(rowCount: Int?, columnCount: Int?)
+
+    /// An IN subquery did not expose exactly one column.
+    case invalidMembershipSubquery(columnCount: Int)
+
     /// A literal value type is incompatible with its target column/parameter.
     case incompatibleLiteralType
 

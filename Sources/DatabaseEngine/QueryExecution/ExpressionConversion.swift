@@ -100,9 +100,11 @@ extension Expression {
             guard let left: Predicate<T> = try lhs.toPredicate(for: type),
                   let right: Predicate<T> = try rhs.toPredicate(for: type) else { return nil }
             return .or([left, right])
-        case .not(let inner):
-            guard let pred: Predicate<T> = try inner.toPredicate(for: type) else { return nil }
-            return .not(pred)
+        case .not:
+            // Predicate<T> has two-valued Boolean semantics. SQL NOT must
+            // preserve UNKNOWN for nullable operands, so it is evaluated by
+            // the canonical three-valued expression evaluator instead.
+            return nil
 
         // Null checks
         case .isNull(.column(let col)):
@@ -148,7 +150,11 @@ extension Expression {
             var collected: [FieldValue] = []
             for v in values {
                 guard case .literal(let literal) = v else { return nil }
-                collected.append(try literal.toFieldValue())
+                let value = try literal.toFieldValue()
+                // `x NOT IN (..., NULL)` is UNKNOWN when no non-null member
+                // matches. Predicate<T>.notIn would return true instead.
+                guard !value.isNull else { return nil }
+                collected.append(value)
             }
             return .comparison(FieldComparison<T>(
                 field: field,
@@ -179,6 +185,9 @@ extension Expression {
         guard case .column(let col) = lhs,
               case .literal(let literal) = rhs else { return nil }
         let fieldValue = try literal.toFieldValue()
+        // Typed field comparisons order NULL as a canonical value, whereas SQL
+        // comparisons with NULL yield UNKNOWN. Keep these expressions residual.
+        guard !fieldValue.isNull else { return nil }
         guard let field = T.persistedFieldIdentity(
             named: col.column
         ) else { return nil }
@@ -238,7 +247,8 @@ extension Expression {
     /// Canonical literals that cannot be represented by `FieldValue` are errors,
     /// rather than being mislabeled as unsupported expression syntax.
     func splitAnd<T: Persistable>(
-        for type: T.Type
+        for type: T.Type,
+        sourceQualifier: String
     ) throws(LiteralConversionError) -> SplitAndResult<T> {
         var pushed: [Predicate<T>] = []
         var residual: [Expression] = []
@@ -249,6 +259,10 @@ extension Expression {
                 pending.append(lhs)
                 continue
             }
+            guard conjunct.referencesOnlySourceQualifier(sourceQualifier) else {
+                residual.append(conjunct)
+                continue
+            }
             if let predicate: Predicate<T> = try conjunct.toPredicate(for: type) {
                 pushed.append(predicate)
             } else {
@@ -256,5 +270,84 @@ extension Expression {
             }
         }
         return SplitAndResult(pushed: pushed, residual: residual)
+    }
+
+    private func referencesOnlySourceQualifier(_ sourceQualifier: String) -> Bool {
+        switch self {
+        case .column(let column):
+            return column.table == nil || column.table == sourceQualifier
+        case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
+                .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
+                .modulo(let lhs, let rhs), .equal(let lhs, let rhs),
+                .notEqual(let lhs, let rhs), .lessThan(let lhs, let rhs),
+                .lessThanOrEqual(let lhs, let rhs),
+                .greaterThan(let lhs, let rhs),
+                .greaterThanOrEqual(let lhs, let rhs),
+                .and(let lhs, let rhs), .or(let lhs, let rhs),
+                .nullIf(let lhs, let rhs):
+            return lhs.referencesOnlySourceQualifier(sourceQualifier)
+                && rhs.referencesOnlySourceQualifier(sourceQualifier)
+        case .negate(let operand), .not(let operand),
+                .isNull(let operand), .isNotNull(let operand),
+                .like(let operand, _), .regex(let operand, _, _),
+                .cast(let operand, _), .isTriple(let operand),
+                .subject(let operand), .predicate(let operand),
+                .object(let operand):
+            return operand.referencesOnlySourceQualifier(sourceQualifier)
+        case .between(let operand, let lower, let upper):
+            return operand.referencesOnlySourceQualifier(sourceQualifier)
+                && lower.referencesOnlySourceQualifier(sourceQualifier)
+                && upper.referencesOnlySourceQualifier(sourceQualifier)
+        case .inList(let operand, let values),
+                .notInList(let operand, let values):
+            return operand.referencesOnlySourceQualifier(sourceQualifier)
+                && values.allSatisfy {
+                    $0.referencesOnlySourceQualifier(sourceQualifier)
+                }
+        case .inSubquery, .subquery, .exists:
+            return false
+        case .aggregate(let aggregate):
+            switch aggregate {
+            case .count(let expression, _):
+                return expression?.referencesOnlySourceQualifier(
+                    sourceQualifier
+                ) ?? true
+            case .sum(let expression, _), .avg(let expression, _),
+                    .min(let expression), .max(let expression),
+                    .groupConcat(let expression, _, _),
+                    .sample(let expression):
+                return expression.referencesOnlySourceQualifier(
+                    sourceQualifier
+                )
+            case .arrayAgg(let expression, let orderBy, _):
+                return expression.referencesOnlySourceQualifier(
+                    sourceQualifier
+                ) && (orderBy ?? []).allSatisfy {
+                    $0.expression.referencesOnlySourceQualifier(
+                        sourceQualifier
+                    )
+                }
+            }
+        case .function(let function):
+            return function.arguments.allSatisfy {
+                $0.referencesOnlySourceQualifier(sourceQualifier)
+            }
+        case .caseWhen(let cases, let elseResult):
+            return cases.allSatisfy {
+                $0.condition.referencesOnlySourceQualifier(sourceQualifier)
+                    && $0.result.referencesOnlySourceQualifier(sourceQualifier)
+            } && (elseResult?.referencesOnlySourceQualifier(sourceQualifier)
+                ?? true)
+        case .coalesce(let expressions):
+            return expressions.allSatisfy {
+                $0.referencesOnlySourceQualifier(sourceQualifier)
+            }
+        case .triple(let subject, let predicate, let object):
+            return subject.referencesOnlySourceQualifier(sourceQualifier)
+                && predicate.referencesOnlySourceQualifier(sourceQualifier)
+                && object.referencesOnlySourceQualifier(sourceQualifier)
+        case .literal, .variable, .parameter, .bound:
+            return true
+        }
     }
 }

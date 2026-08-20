@@ -77,10 +77,14 @@ let users = try await context.executeSQL(sql, as: User.self)
 ### Supported SQL Features
 
 - `SELECT` statements with projection
+- `SELECT` without `FROM`
 - `WHERE` clauses with predicates
+- `JOIN`, `NATURAL JOIN`, and `LATERAL` sources
+- `GROUP BY`, `HAVING`, and canonical aggregate functions
 - `LIMIT` and `OFFSET`
 - `ORDER BY`
-- `IN` predicates
+- `IN`, `NOT IN`, scalar, and correlated subqueries
+- named and positional parameters
 - String literals and numeric literals
 
 The parser produces the canonical `SelectQuery` contract and DatabaseEngine
@@ -256,7 +260,8 @@ do {
 
 - **Index-backed**: SPARQL queries use graph index for fast traversal
 - **Single transaction**: No additional round-trips for SPARQL execution
-- **Result inlining**: SPARQL results are cached within transaction scope
+- **Result inlining**: Each `SPARQL()` occurrence is evaluated once and its
+  canonical scalar results are reused by the parent relational execution
 - **Scalability**: Tested with 100+ result items per query
 
 ### Limitations
@@ -331,6 +336,19 @@ AND type = 'document'
 
 ### DatabaseContext Extensions
 
+#### executeSQL(_:parameters:options:structuralLimits:)
+
+Executes a SQL query string and returns canonical rows.
+
+```swift
+public func executeSQL(
+    _ sql: String,
+    parameters: [QueryParameter] = [],
+    options: ReadExecutionOptions = .default,
+    structuralLimits: QueryStructuralLimits = .default
+) async throws -> QueryResponse
+```
+
 #### executeSQL(_:as:)
 
 Executes a SQL query string and returns typed results.
@@ -338,13 +356,19 @@ Executes a SQL query string and returns typed results.
 ```swift
 public func executeSQL<T: Persistable>(
     _ sql: String,
-    as type: T.Type
+    as type: T.Type,
+    parameters: [QueryParameter] = [],
+    budget: ExecutionBudget = ExecutionBudget(),
+    structuralLimits: QueryStructuralLimits = .default
 ) async throws -> [T]
 ```
 
 **Parameters**:
 - `sql`: SQL query string
 - `type`: The Persistable type to fetch
+- `parameters`: Named or positional canonical query values
+- `budget`: Work and intermediate-memory limits for the complete execution
+- `structuralLimits`: Shared parser, binder, and QueryIR structure limits
 
 **Returns**: Array of matching models
 

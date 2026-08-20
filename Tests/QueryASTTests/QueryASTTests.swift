@@ -510,6 +510,40 @@ struct SQLParserTests {
         #expect(query.groupBy != nil)
         #expect(query.groupBy?.count == 1)
     }
+
+    @Test("Parse ordered ARRAY_AGG and GROUP_CONCAT")
+    func testParseCollectionAggregates() throws {
+        let parser = SQLParser()
+        let query = try parser.parseSelect(
+            "SELECT ARRAY_AGG(DISTINCT name ORDER BY rank DESC) AS names, GROUP_CONCAT(name, '|') AS joined FROM users"
+        )
+
+        guard case .items(let items) = query.projection,
+              items.count == 2 else {
+            Issue.record("Expected two aggregate projections")
+            return
+        }
+        guard case .aggregate(
+            .arrayAgg(.column(let value), let orderBy, let distinct)
+        ) = items[0].expression else {
+            Issue.record("Expected ARRAY_AGG")
+            return
+        }
+        #expect(value.column == "name")
+        #expect(distinct)
+        #expect(orderBy?.count == 1)
+        #expect(orderBy?.first?.direction == .descending)
+
+        guard case .aggregate(
+            .groupConcat(.column(let joined), let separator, let isDistinct)
+        ) = items[1].expression else {
+            Issue.record("Expected GROUP_CONCAT")
+            return
+        }
+        #expect(joined.column == "name")
+        #expect(separator == "|")
+        #expect(!isDistinct)
+    }
 }
 
 @Suite("SPARQL Parser Tests", .serialized, .heartbeat)

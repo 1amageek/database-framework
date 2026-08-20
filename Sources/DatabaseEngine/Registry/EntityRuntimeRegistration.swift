@@ -164,7 +164,7 @@ struct EntityIndexSliceResult: Sendable {
 }
 
 struct EntityTableRows: Sendable {
-    let rows: [CanonicalSourceRow]
+    let rows: DatabaseSharedRetainedArray<CanonicalSourceRow>
     let residualFilter: DatabaseKit.Expression?
     let residualOrderBy: [SortKey]?
     let limitPushed: Bool
@@ -259,7 +259,9 @@ public struct EntityRuntimeDefinition: Sendable {
                     make: { sourceRow }
                 )
             }
-            let rows = retainedRows.finish().promoteToOutput()
+            let rows = try retainedRows.finish().moveToSharedOwnership(
+                at: .resultMaterialization
+            )
             let continuationPosition: ByteString?
             if let visiblePageSize = plan.visiblePageSize,
                items.count > visiblePageSize,
@@ -697,7 +699,9 @@ public struct EntityRuntimeDefinition: Sendable {
                 make: { sourceRow }
             )
         }
-        let rows = retainedRows.finish().promoteToOutput()
+        let rows = try retainedRows.finish().moveToSharedOwnership(
+            at: .resultMaterialization
+        )
         let continuationPosition: ByteString?
         if let stablePageWindow,
            models.count > stablePageWindow.visibleCount,
@@ -741,8 +745,7 @@ public struct EntityRuntimeDefinition: Sendable {
         guard options.options.continuationSnapshotIsStable,
               selectQuery.filter == nil,
               selectQuery.orderBy?.isEmpty ?? true,
-              !selectQuery.distinct,
-              !isCountProjection(selectQuery.projection),
+              windowPushdownIsSemanticallySafe(selectQuery),
               let pageSize = try options.resolvePageSize() else {
             return nil
         }
@@ -784,9 +787,14 @@ public struct EntityRuntimeDefinition: Sendable {
         )
     }
 
-    private static func isCountProjection(_ projection: Projection) -> Bool {
-        guard case .items(let items) = projection, items.count == 1,
-              case .aggregate(.count) = items[0].expression else {
+    private static func windowPushdownIsSemanticallySafe(
+        _ query: SelectQuery
+    ) -> Bool {
+        guard !query.distinct,
+              !canonicalQueryRequiresAggregation(query) else {
+            return false
+        }
+        if case .distinctItems = query.projection {
             return false
         }
         return true

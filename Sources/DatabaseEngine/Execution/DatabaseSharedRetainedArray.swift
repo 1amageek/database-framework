@@ -1,9 +1,12 @@
 /// Copyable immutable ownership for a retained Array used by fan-out paths.
 ///
-/// Copies share both the COW Array buffer and its reservation. The raw Array
-/// is intentionally never exposed or promoted from shared ownership.
-package struct DatabaseSharedRetainedArray<Element: Sendable>: Sendable {
-    private final class Storage: Sendable {
+/// Copies share both the COW Array buffer and its reservation. Intermediate
+/// consumers receive only scoped borrows or an iterator that retains the
+/// owner; raw Array promotion is reserved for the final result boundary.
+package struct DatabaseSharedRetainedArray<Element: Sendable>:
+    Sendable,
+    RandomAccessCollection {
+    fileprivate final class Storage: Sendable {
         let elements: [Element]
         let elementReservation: DatabaseIntermediateReservation
         let ownerReservation: DatabaseIntermediateReservation
@@ -21,6 +24,23 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>: Sendable {
 
     private let storage: Storage
 
+    package struct Iterator: IteratorProtocol {
+        private let storage: Storage
+        private var index: Int
+
+        fileprivate init(storage: Storage) {
+            self.storage = storage
+            self.index = storage.elements.startIndex
+        }
+
+        package mutating func next() -> Element? {
+            guard index < storage.elements.endIndex else { return nil }
+            let element = storage.elements[index]
+            storage.elements.formIndex(after: &index)
+            return element
+        }
+    }
+
     init(
         elements: consuming [Element],
         elementReservation: DatabaseIntermediateReservation,
@@ -35,6 +55,46 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>: Sendable {
 
     package var count: Int { storage.elements.count }
     package var isEmpty: Bool { storage.elements.isEmpty }
+    package var startIndex: Int { storage.elements.startIndex }
+    package var endIndex: Int { storage.elements.endIndex }
+
+    package func index(after index: Int) -> Int { index + 1 }
+    package func index(before index: Int) -> Int { index - 1 }
+    package func distance(from start: Int, to end: Int) -> Int { end - start }
+    package func index(_ index: Int, offsetBy distance: Int) -> Int {
+        index + distance
+    }
+
+    package subscript(position: Int) -> Element {
+        precondition(
+            position >= storage.elements.startIndex
+                && position < storage.elements.endIndex
+        )
+        return storage.elements[position]
+    }
+
+    package func makeIterator() -> Iterator {
+        Iterator(storage: storage)
+    }
+
+    /// Creates a bounded view that retains the same immutable owner and its
+    /// request reservation. The range uses this collection's zero-based
+    /// indices and cannot outlive the retained storage.
+    package func boundedView(
+        _ range: Range<Int>
+    ) -> DatabaseSharedRetainedArrayView<Element> {
+        precondition(
+            range.lowerBound >= startIndex && range.upperBound <= endIndex
+        )
+        return DatabaseSharedRetainedArrayView(owner: self, range: range)
+    }
+
+    /// Moves the shared Array value into the final result while allowing any
+    /// remaining intermediate aliases to retain their reservation. This is
+    /// valid only at a top-level output boundary.
+    package consuming func promoteToOutput() -> [Element] {
+        storage.elements
+    }
 
     package func withSpan<Result, Failure: Error>(
         _ body: (Span<Element>) throws(Failure) -> Result
@@ -68,5 +128,36 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>: Sendable {
                 && index < storage.elements.endIndex
         )
         return try await body(storage.elements[index])
+    }
+}
+
+/// A bounded, zero-copy view over immutable request-accounted Array storage.
+package struct DatabaseSharedRetainedArrayView<Element: Sendable>:
+    Sendable,
+    RandomAccessCollection {
+    private let owner: DatabaseSharedRetainedArray<Element>
+    private let range: Range<Int>
+
+    fileprivate init(
+        owner: DatabaseSharedRetainedArray<Element>,
+        range: Range<Int>
+    ) {
+        self.owner = owner
+        self.range = range
+    }
+
+    package var startIndex: Int { 0 }
+    package var endIndex: Int { range.count }
+
+    package func index(after index: Int) -> Int { index + 1 }
+    package func index(before index: Int) -> Int { index - 1 }
+    package func distance(from start: Int, to end: Int) -> Int { end - start }
+    package func index(_ index: Int, offsetBy distance: Int) -> Int {
+        index + distance
+    }
+
+    package subscript(position: Int) -> Element {
+        precondition(position >= startIndex && position < endIndex)
+        return owner[range.lowerBound + position]
     }
 }

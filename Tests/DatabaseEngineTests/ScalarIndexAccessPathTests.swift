@@ -165,6 +165,46 @@ struct ScalarIndexAccessPathTests {
         #expect(count == 1)
     }
 
+    @Test("Index counts evaluate predicates not covered by the selected index")
+    func indexCountsApplyResidualPredicates() async throws {
+        let container = try await setupContainer()
+        try await resetStorage(in: container)
+        let context = container.testBaseContext()
+
+        try context.insert(ScalarAccessPathEntity(group: "alpha", rank: 1))
+        try context.insert(ScalarAccessPathEntity(group: "alpha", rank: 2))
+        try context.insert(ScalarAccessPathEntity(group: "alpha", rank: 3))
+        try context.insert(ScalarAccessPathEntity(group: "beta", rank: 4))
+        try await context.save()
+
+        let automaticCount = try await context.fetch(ScalarAccessPathEntity.self)
+            .where(ScalarAccessPathEntity.fields.group == "alpha")
+            .where(ScalarAccessPathEntity.fields.rank > Int64(1))
+            .count()
+        #expect(automaticCount == 2)
+
+        let windowedCount = try await context.fetch(ScalarAccessPathEntity.self)
+            .where(ScalarAccessPathEntity.fields.group == "alpha")
+            .where(ScalarAccessPathEntity.fields.rank > Int64(1))
+            .offset(1)
+            .limit(1)
+            .count()
+        #expect(windowedCount == 1)
+
+        var forcedQuery = Query<ScalarAccessPathEntity>()
+            .where(ScalarAccessPathEntity.fields.group == "alpha")
+            .where(ScalarAccessPathEntity.fields.rank > Int64(1))
+        forcedQuery.forcedIndex = IndexHint(
+            indexName: "scalar_access_path_group"
+        )
+
+        let forcedCount = try await QueryExecutor(
+            context: context,
+            query: forcedQuery
+        ).count()
+        #expect(forcedCount == 2)
+    }
+
     @Test("Execution plan reports the access path used by model queries")
     func executionPlanReportsSelectedAccessPath() async throws {
         let container = try await setupContainer()

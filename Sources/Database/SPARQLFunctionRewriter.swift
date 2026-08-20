@@ -8,6 +8,7 @@ import QueryAST
 import DatabaseEngine
 import DatabaseTypes
 import StorageKit
+import Synchronization
 
 /// Rewrites SelectQuery by executing SPARQL() subqueries
 ///
@@ -28,9 +29,48 @@ import StorageKit
 /// // Execute rewritten query through normal path
 /// ```
 internal struct SPARQLFunctionRewriter: Sendable {
+    private final class InliningStructureMeter: Sendable {
+        private let cumulativeCount = Mutex<UInt64>(0)
+
+        func admit(count: Int, limits: QueryStructuralLimits) throws {
+            guard let amount = UInt64(exactly: count) else {
+                throw QueryStructuralValidationError.resourceLimitExceeded(
+                    resource: .collectionElements,
+                    actual: UInt64.max,
+                    maximum: limits.maximumCollectionElements
+                )
+            }
+            guard amount <= limits.maximumCollectionElements else {
+                throw QueryStructuralValidationError.resourceLimitExceeded(
+                    resource: .collectionElements,
+                    actual: amount,
+                    maximum: limits.maximumCollectionElements
+                )
+            }
+            try cumulativeCount.withLock { current in
+                let addition = current.addingReportingOverflow(amount)
+                let actual = addition.overflow
+                    ? UInt64.max
+                    : addition.partialValue
+                guard !addition.overflow,
+                      actual <= limits.maximumTotalNodes else {
+                    throw QueryStructuralValidationError
+                        .resourceLimitExceeded(
+                            resource: .totalNodes,
+                            actual: actual,
+                            maximum: limits.maximumTotalNodes
+                        )
+                }
+                current = actual
+            }
+        }
+    }
+
     private let context: DatabaseContext
     private let workMeter: DatabaseWorkMeter
     private let transaction: any TransactionAccess
+    private let structuralLimits: QueryStructuralLimits
+    private let inliningStructureMeter = InliningStructureMeter()
 
     /// Initialize with DatabaseContext
     ///
@@ -38,31 +78,143 @@ internal struct SPARQLFunctionRewriter: Sendable {
     ///   - context: Context for schema and index access.
     ///   - workMeter: Shared resource budget for graph and SQL execution.
     ///   - transaction: Parent SQL read transaction.
+    ///   - structuralLimits: Limits shared by graph compilation and rewritten SQL.
     internal init(
         context: DatabaseContext,
         workMeter: DatabaseWorkMeter,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        structuralLimits: QueryStructuralLimits = .default
     ) {
         self.context = context
         self.workMeter = workMeter
         self.transaction = transaction
+        self.structuralLimits = structuralLimits
     }
 
-    /// Returns whether the filter tree contains a SPARQL SQL function that
-    /// requires transaction-bound rewriting before canonical query execution.
+    /// Returns whether any query expression contains a SPARQL SQL function
+    /// that requires transaction-bound rewriting before canonical execution.
     internal static func containsSPARQLFunction(
         in query: SelectQuery
     ) -> Bool {
-        guard let filter = query.filter else { return false }
-
-        var pending: [DatabaseKit.Expression] = [filter]
-        while let expression = pending.popLast() {
+        var pendingExpressions: [DatabaseKit.Expression] = []
+        var pendingQueries: [SelectQuery] = [query]
+        var pendingSources: [DataSource] = []
+        var pendingPatterns: [GraphPattern] = []
+        while !pendingExpressions.isEmpty
+                || !pendingQueries.isEmpty
+                || !pendingSources.isEmpty
+                || !pendingPatterns.isEmpty {
+            if let nestedQuery = pendingQueries.popLast() {
+                switch nestedQuery.projection {
+                case .items(let items), .distinctItems(let items):
+                    pendingExpressions.append(
+                        contentsOf: items.map(\.expression)
+                    )
+                case .all, .allFrom:
+                    break
+                }
+                if let filter = nestedQuery.filter {
+                    pendingExpressions.append(filter)
+                }
+                pendingExpressions.append(
+                    contentsOf: nestedQuery.groupBy ?? []
+                )
+                if let having = nestedQuery.having {
+                    pendingExpressions.append(having)
+                }
+                pendingExpressions.append(
+                    contentsOf: (nestedQuery.orderBy ?? []).map(\.expression)
+                )
+                for subquery in nestedQuery.subqueries ?? [] {
+                    pendingQueries.append(subquery.query)
+                }
+                pendingSources.append(nestedQuery.source)
+                continue
+            }
+            if let source = pendingSources.popLast() {
+                switch source {
+                case .subquery(let nestedQuery, _):
+                    pendingQueries.append(nestedQuery)
+                case .join(let join):
+                    pendingSources.append(join.left)
+                    pendingSources.append(join.right)
+                    if case .on(let expression) = join.condition {
+                        pendingExpressions.append(expression)
+                    }
+                case .union(let sources), .unionAll(let sources),
+                        .intersect(let sources):
+                    pendingSources.append(contentsOf: sources)
+                case .except(let lhs, let rhs):
+                    pendingSources.append(lhs)
+                    pendingSources.append(rhs)
+                case .graphTable(let graphTable):
+                    if let filter = graphTable.matchPattern.where {
+                        pendingExpressions.append(filter)
+                    }
+                    for column in graphTable.columns ?? [] {
+                        pendingExpressions.append(column.expression)
+                    }
+                #if DATABASE_MULTI_BASE
+                case .base(_, let nested):
+                    pendingSources.append(nested)
+                #endif
+                case .graphPattern(let pattern),
+                        .namedGraph(_, let pattern),
+                        .service(_, let pattern, _):
+                    pendingPatterns.append(pattern)
+                case .table, .logical, .values:
+                    break
+                }
+                continue
+            }
+            if let pattern = pendingPatterns.popLast() {
+                switch pattern {
+                case .join(let lhs, let rhs), .optional(let lhs, let rhs),
+                        .union(let lhs, let rhs), .minus(let lhs, let rhs),
+                        .lateral(let lhs, let rhs):
+                    pendingPatterns.append(lhs)
+                    pendingPatterns.append(rhs)
+                case .filter(let nested, let expression),
+                        .bind(let nested, _, let expression):
+                    pendingPatterns.append(nested)
+                    pendingExpressions.append(expression)
+                case .graph(_, let nested), .service(_, let nested, _):
+                    pendingPatterns.append(nested)
+                case .subquery(let query):
+                    pendingQueries.append(query)
+                case .groupBy(let nested, let expressions, let aggregates):
+                    pendingPatterns.append(nested)
+                    pendingExpressions.append(contentsOf: expressions)
+                    for aggregate in aggregates {
+                        switch aggregate.aggregate {
+                        case .count(let value, _):
+                            if let value { pendingExpressions.append(value) }
+                        case .sum(let value, _), .avg(let value, _),
+                                .min(let value), .max(let value),
+                                .groupConcat(let value, _, _),
+                                .sample(let value):
+                            pendingExpressions.append(value)
+                        case .arrayAgg(let value, let orderBy, _):
+                            pendingExpressions.append(value)
+                            pendingExpressions.append(
+                                contentsOf: (orderBy ?? []).map(\.expression)
+                            )
+                        }
+                    }
+                case .basic, .values:
+                    break
+                }
+                continue
+            }
+            guard let expression = pendingExpressions.popLast() else {
+                continue
+            }
             switch expression {
             case .function(let call):
                 if call.name.uppercased() == "SPARQL" {
                     return true
                 }
-                pending.append(contentsOf: call.arguments)
+                pendingExpressions.append(contentsOf: call.arguments)
 
             case .add(let left, let right),
                  .subtract(let left, let right),
@@ -78,8 +230,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
                  .and(let left, let right),
                  .or(let left, let right),
                  .nullIf(let left, let right):
-                pending.append(left)
-                pending.append(right)
+                pendingExpressions.append(left)
+                pendingExpressions.append(right)
 
             case .negate(let inner),
                  .not(let inner),
@@ -92,63 +244,59 @@ internal struct SPARQLFunctionRewriter: Sendable {
                  .subject(let inner),
                  .predicate(let inner),
                  .object(let inner):
-                pending.append(inner)
+                pendingExpressions.append(inner)
 
             case .between(let value, let low, let high):
-                pending.append(value)
-                pending.append(low)
-                pending.append(high)
+                pendingExpressions.append(value)
+                pendingExpressions.append(low)
+                pendingExpressions.append(high)
 
             case .inList(let value, let values),
                  .notInList(let value, let values):
-                pending.append(value)
-                pending.append(contentsOf: values)
+                pendingExpressions.append(value)
+                pendingExpressions.append(contentsOf: values)
 
             case .inSubquery(let value, let subquery):
-                pending.append(value)
-                if let filter = subquery.filter {
-                    pending.append(filter)
-                }
+                pendingExpressions.append(value)
+                pendingQueries.append(subquery)
 
             case .caseWhen(let cases, let elseResult):
                 for pair in cases {
-                    pending.append(pair.condition)
-                    pending.append(pair.result)
+                    pendingExpressions.append(pair.condition)
+                    pendingExpressions.append(pair.result)
                 }
                 if let elseResult {
-                    pending.append(elseResult)
+                    pendingExpressions.append(elseResult)
                 }
 
             case .coalesce(let expressions):
-                pending.append(contentsOf: expressions)
+                pendingExpressions.append(contentsOf: expressions)
 
             case .triple(let subject, let predicate, let object):
-                pending.append(subject)
-                pending.append(predicate)
-                pending.append(object)
+                pendingExpressions.append(subject)
+                pendingExpressions.append(predicate)
+                pendingExpressions.append(object)
 
             case .subquery(let subquery), .exists(let subquery):
-                if let filter = subquery.filter {
-                    pending.append(filter)
-                }
+                pendingQueries.append(subquery)
 
             case .aggregate(let aggregate):
                 switch aggregate {
                 case .count(let value, _):
-                    if let value { pending.append(value) }
+                    if let value { pendingExpressions.append(value) }
                 case .sum(let value, _),
                      .avg(let value, _),
                      .min(let value),
                      .max(let value),
                      .sample(let value):
-                    pending.append(value)
+                    pendingExpressions.append(value)
                 case .groupConcat(let value, _, _):
-                    pending.append(value)
+                    pendingExpressions.append(value)
                 case .arrayAgg(let value, let orderBy, _):
-                    pending.append(value)
+                    pendingExpressions.append(value)
                     if let orderBy {
                         for ordering in orderBy {
-                            pending.append(ordering.expression)
+                            pendingExpressions.append(ordering.expression)
                         }
                     }
                 }
@@ -164,30 +312,298 @@ internal struct SPARQLFunctionRewriter: Sendable {
 
     /// Rewrite SelectQuery by executing SPARQL subqueries
     ///
-    /// Recursively traverses the Expression tree in the filter clause,
-    /// executing SPARQL() functions and inlining their results.
+    /// Recursively traverses every expression-bearing query clause, executing
+    /// SPARQL() functions and inlining their results.
     ///
     /// - Parameter query: The SelectQuery to rewrite
     /// - Returns: Rewritten SelectQuery with SPARQL() calls replaced
     /// - Throws: `SPARQLFunctionError` for execution errors
     internal func rewrite(_ query: SelectQuery) async throws -> SelectQuery {
-        guard let filter = query.filter else { return query }
-        let rewrittenFilter = try await rewriteExpression(filter)
+        let rewrittenFilter: DatabaseKit.Expression?
+        if let filter = query.filter {
+            rewrittenFilter = try await rewriteExpression(filter)
+        } else {
+            rewrittenFilter = nil
+        }
+        var rewrittenSubqueries: [NamedSubquery] = []
+        rewrittenSubqueries.reserveCapacity(query.subqueries?.count ?? 0)
+        for subquery in query.subqueries ?? [] {
+            rewrittenSubqueries.append(
+                NamedSubquery(
+                    name: subquery.name,
+                    columns: subquery.columns,
+                    query: try await rewrite(subquery.query),
+                    materialized: subquery.materialized
+                )
+            )
+        }
 
         return SelectQuery(
-            projection: query.projection,
-            source: query.source,
+            projection: try await rewriteProjection(query.projection),
+            source: try await rewriteSource(query.source),
+            accessPath: query.accessPath,
             filter: rewrittenFilter,
-            groupBy: query.groupBy,
-            having: query.having,
-            orderBy: query.orderBy,
+            groupBy: try await rewriteOptionalExpressions(query.groupBy),
+            having: try await rewriteOptionalExpression(query.having),
+            orderBy: try await rewriteOptionalSortKeys(query.orderBy),
             limit: query.limit,
             offset: query.offset,
             distinct: query.distinct,
-            subqueries: query.subqueries,
+            subqueries: query.subqueries == nil ? nil : rewrittenSubqueries,
             reduced: query.reduced,
             dataset: query.dataset
         )
+    }
+
+    private func rewriteSource(_ source: DataSource) async throws -> DataSource {
+        switch source {
+        case .subquery(let query, let alias):
+            return .subquery(try await rewrite(query), alias: alias)
+        case .join(let join):
+            let condition: JoinCondition?
+            switch join.condition {
+            case .on(let expression):
+                condition = .on(try await rewriteExpression(expression))
+            case .using(let columns):
+                condition = .using(columns)
+            case nil:
+                condition = nil
+            }
+            return .join(
+                JoinClause(
+                    type: join.type,
+                    left: try await rewriteSource(join.left),
+                    right: try await rewriteSource(join.right),
+                    condition: condition
+                )
+            )
+        case .union(let sources):
+            return .union(try await rewriteSources(sources))
+        case .unionAll(let sources):
+            return .unionAll(try await rewriteSources(sources))
+        case .intersect(let sources):
+            return .intersect(try await rewriteSources(sources))
+        case .except(let lhs, let rhs):
+            return .except(
+                try await rewriteSource(lhs),
+                try await rewriteSource(rhs)
+            )
+        case .graphTable(let graphTable):
+            let rewrittenFilter: DatabaseKit.Expression?
+            if let filter = graphTable.matchPattern.where {
+                rewrittenFilter = try await rewriteExpression(filter)
+            } else {
+                rewrittenFilter = nil
+            }
+            var columns: [GraphTableColumn] = []
+            columns.reserveCapacity(graphTable.columns?.count ?? 0)
+            for column in graphTable.columns ?? [] {
+                columns.append(
+                    GraphTableColumn(
+                        expression: try await rewriteExpression(
+                            column.expression
+                        ),
+                        alias: column.alias
+                    )
+                )
+            }
+            return .graphTable(
+                GraphTableSource(
+                    graphName: graphTable.graphName,
+                    matchPattern: MatchPattern(
+                        paths: graphTable.matchPattern.paths,
+                        where: rewrittenFilter
+                    ),
+                    columns: graphTable.columns == nil ? nil : columns,
+                    alias: graphTable.alias
+                )
+            )
+        #if DATABASE_MULTI_BASE
+        case .base(let base, let nested):
+            return .base(base, try await rewriteSource(nested))
+        #endif
+        case .graphPattern(let pattern):
+            return .graphPattern(try await rewritePattern(pattern))
+        case .namedGraph(let name, let pattern):
+            return .namedGraph(
+                name: name,
+                pattern: try await rewritePattern(pattern)
+            )
+        case .service(let endpoint, let pattern, let silent):
+            return .service(
+                endpoint: endpoint,
+                pattern: try await rewritePattern(pattern),
+                silent: silent
+            )
+        case .table, .logical, .values:
+            return source
+        }
+    }
+
+    private func rewritePattern(
+        _ pattern: GraphPattern
+    ) async throws -> GraphPattern {
+        switch pattern {
+        case .basic, .values:
+            return pattern
+        case .join(let lhs, let rhs):
+            return .join(
+                try await rewritePattern(lhs),
+                try await rewritePattern(rhs)
+            )
+        case .optional(let lhs, let rhs):
+            return .optional(
+                try await rewritePattern(lhs),
+                try await rewritePattern(rhs)
+            )
+        case .union(let lhs, let rhs):
+            return .union(
+                try await rewritePattern(lhs),
+                try await rewritePattern(rhs)
+            )
+        case .minus(let lhs, let rhs):
+            return .minus(
+                try await rewritePattern(lhs),
+                try await rewritePattern(rhs)
+            )
+        case .lateral(let lhs, let rhs):
+            return .lateral(
+                try await rewritePattern(lhs),
+                try await rewritePattern(rhs)
+            )
+        case .filter(let nested, let expression):
+            return .filter(
+                try await rewritePattern(nested),
+                try await rewriteExpression(expression)
+            )
+        case .graph(let name, let nested):
+            return .graph(
+                name: name,
+                pattern: try await rewritePattern(nested)
+            )
+        case .service(let endpoint, let nested, let silent):
+            return .service(
+                endpoint: endpoint,
+                pattern: try await rewritePattern(nested),
+                silent: silent
+            )
+        case .bind(let nested, let variable, let expression):
+            return .bind(
+                try await rewritePattern(nested),
+                variable: variable,
+                expression: try await rewriteExpression(expression)
+            )
+        case .subquery(let query):
+            return .subquery(try await rewrite(query))
+        case .groupBy(let nested, let expressions, let aggregates):
+            var rewrittenAggregates: [AggregateBinding] = []
+            rewrittenAggregates.reserveCapacity(aggregates.count)
+            for binding in aggregates {
+                rewrittenAggregates.append(
+                    AggregateBinding(
+                        variable: binding.variable,
+                        aggregate: try await rewriteAggregate(
+                            binding.aggregate
+                        )
+                    )
+                )
+            }
+            return .groupBy(
+                try await rewritePattern(nested),
+                expressions: try await rewriteExpressions(expressions),
+                aggregates: rewrittenAggregates
+            )
+        }
+    }
+
+    private func rewriteExpressions(
+        _ expressions: [DatabaseKit.Expression]
+    ) async throws -> [DatabaseKit.Expression] {
+        var rewritten: [DatabaseKit.Expression] = []
+        rewritten.reserveCapacity(expressions.count)
+        for expression in expressions {
+            rewritten.append(try await rewriteExpression(expression))
+        }
+        return rewritten
+    }
+
+    private func rewriteSources(
+        _ sources: [DataSource]
+    ) async throws -> [DataSource] {
+        var rewritten: [DataSource] = []
+        rewritten.reserveCapacity(sources.count)
+        for source in sources {
+            rewritten.append(try await rewriteSource(source))
+        }
+        return rewritten
+    }
+
+    private func rewriteProjection(
+        _ projection: Projection
+    ) async throws -> Projection {
+        switch projection {
+        case .all:
+            return .all
+        case .allFrom(let sourceName):
+            return .allFrom(sourceName)
+        case .items(let items):
+            return .items(try await rewriteProjectionItems(items))
+        case .distinctItems(let items):
+            return .distinctItems(try await rewriteProjectionItems(items))
+        }
+    }
+
+    private func rewriteProjectionItems(
+        _ items: [ProjectionItem]
+    ) async throws -> [ProjectionItem] {
+        var rewritten: [ProjectionItem] = []
+        rewritten.reserveCapacity(items.count)
+        for item in items {
+            rewritten.append(
+                ProjectionItem(
+                    try await rewriteExpression(item.expression),
+                    alias: item.alias
+                )
+            )
+        }
+        return rewritten
+    }
+
+    private func rewriteOptionalExpressions(
+        _ expressions: [DatabaseKit.Expression]?
+    ) async throws -> [DatabaseKit.Expression]? {
+        guard let expressions else { return nil }
+        var rewritten: [DatabaseKit.Expression] = []
+        rewritten.reserveCapacity(expressions.count)
+        for expression in expressions {
+            rewritten.append(try await rewriteExpression(expression))
+        }
+        return rewritten
+    }
+
+    private func rewriteOptionalExpression(
+        _ expression: DatabaseKit.Expression?
+    ) async throws -> DatabaseKit.Expression? {
+        guard let expression else { return nil }
+        return try await rewriteExpression(expression)
+    }
+
+    private func rewriteOptionalSortKeys(
+        _ sortKeys: [SortKey]?
+    ) async throws -> [SortKey]? {
+        guard let sortKeys else { return nil }
+        var rewritten: [SortKey] = []
+        rewritten.reserveCapacity(sortKeys.count)
+        for sortKey in sortKeys {
+            rewritten.append(
+                SortKey(
+                    try await rewriteExpression(sortKey.expression),
+                    direction: sortKey.direction,
+                    nulls: sortKey.nulls
+                )
+            )
+        }
+        return rewritten
     }
 
     // MARK: - Expression Rewriting
@@ -210,8 +626,11 @@ internal struct SPARQLFunctionRewriter: Sendable {
             for value in values {
                 if case .function(let call) = value, call.name.uppercased() == "SPARQL" {
                     // Execute SPARQL and inline results
-                    let literals = try await executeSPARQLFunctionAsArray(call)
-                    rewrittenValues.append(contentsOf: literals.map { .literal($0) })
+                    rewrittenValues.append(
+                        contentsOf: try await executeSPARQLFunctionAsExpressions(
+                            call
+                        )
+                    )
                 } else {
                     rewrittenValues.append(try await rewriteExpression(value))
                 }
@@ -222,8 +641,11 @@ internal struct SPARQLFunctionRewriter: Sendable {
             var rewrittenValues: [DatabaseKit.Expression] = []
             for value in values {
                 if case .function(let call) = value, call.name.uppercased() == "SPARQL" {
-                    let literals = try await executeSPARQLFunctionAsArray(call)
-                    rewrittenValues.append(contentsOf: literals.map { .literal($0) })
+                    rewrittenValues.append(
+                        contentsOf: try await executeSPARQLFunctionAsExpressions(
+                            call
+                        )
+                    )
                 } else {
                     rewrittenValues.append(try await rewriteExpression(value))
                 }
@@ -331,7 +753,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
         case .function(let call):
             if call.name.uppercased() == "SPARQL" {
                 throw SPARQLFunctionError.invalidArguments(
-                    "SPARQL() must be used in IN predicate: WHERE column IN (SPARQL(...))"
+                    "SPARQL() must be used as an IN-list item"
                 )
             }
             // Other functions - recurse on arguments
@@ -341,13 +763,27 @@ internal struct SPARQLFunctionRewriter: Sendable {
             }
             return .function(FunctionCall(name: call.name, arguments: rewrittenArgs, distinct: call.distinct))
 
+        case .aggregate(let aggregate):
+            return .aggregate(try await rewriteAggregate(aggregate))
+
         // Terminal cases - no recursion needed
-        case .literal, .column, .variable, .parameter, .bound, .aggregate:
+        case .literal, .column, .variable, .parameter, .bound:
             return expr
 
-        // RDF/SPARQL-specific cases (no recursion needed for now)
-        case .triple, .isTriple, .subject, .predicate, .object:
-            return expr
+        case .triple(let subject, let predicate, let object):
+            return .triple(
+                subject: try await rewriteExpression(subject),
+                predicate: try await rewriteExpression(predicate),
+                object: try await rewriteExpression(object)
+            )
+        case .isTriple(let inner):
+            return .isTriple(try await rewriteExpression(inner))
+        case .subject(let inner):
+            return .subject(try await rewriteExpression(inner))
+        case .predicate(let inner):
+            return .predicate(try await rewriteExpression(inner))
+        case .object(let inner):
+            return .object(try await rewriteExpression(inner))
 
         // Subquery expression cases
         case .exists(let subquery):
@@ -358,14 +794,56 @@ internal struct SPARQLFunctionRewriter: Sendable {
         }
     }
 
+    private func rewriteAggregate(
+        _ aggregate: AggregateFunction
+    ) async throws -> AggregateFunction {
+        switch aggregate {
+        case .count(let expression, let distinct):
+            return .count(
+                try await rewriteOptionalExpression(expression),
+                distinct: distinct
+            )
+        case .sum(let expression, let distinct):
+            return .sum(
+                try await rewriteExpression(expression),
+                distinct: distinct
+            )
+        case .avg(let expression, let distinct):
+            return .avg(
+                try await rewriteExpression(expression),
+                distinct: distinct
+            )
+        case .min(let expression):
+            return .min(try await rewriteExpression(expression))
+        case .max(let expression):
+            return .max(try await rewriteExpression(expression))
+        case .groupConcat(let expression, let separator, let distinct):
+            return .groupConcat(
+                try await rewriteExpression(expression),
+                separator: separator,
+                distinct: distinct
+            )
+        case .sample(let expression):
+            return .sample(try await rewriteExpression(expression))
+        case .arrayAgg(let expression, let orderBy, let distinct):
+            return .arrayAgg(
+                try await rewriteExpression(expression),
+                orderBy: try await rewriteOptionalSortKeys(orderBy),
+                distinct: distinct
+            )
+        }
+    }
+
     // MARK: - SPARQL Execution
 
-    /// Execute SPARQL function and return scalar values
+    /// Execute a SPARQL function and return scalar literal expressions.
     ///
     /// - Parameter call: The SPARQL() function call
-    /// - Returns: Array of literals (single-variable projection)
+    /// - Returns: Literal expressions for a single-variable projection.
     /// - Throws: `SPARQLFunctionError` for invalid arguments or execution errors
-    private func executeSPARQLFunctionAsArray(_ call: FunctionCall) async throws -> [Literal] {
+    private func executeSPARQLFunctionAsExpressions(
+        _ call: FunctionCall
+    ) async throws -> [DatabaseKit.Expression] {
         // 1. Extract arguments (type name, query string, optional variable)
         let (typeName, sparqlQuery, extractVar) = try extractArguments(call)
 
@@ -381,6 +859,10 @@ internal struct SPARQLFunctionRewriter: Sendable {
             throw SPARQLFunctionError.invalidGraphIndex(entity.name)
         }
         let graphIndex = dataset.indexDescriptor
+        try context.authorizeIndexFieldRead(
+            entity: entity,
+            descriptor: graphIndex
+        )
 
         // 4. Admit and execute the schema-declared index in the parent read
         // transaction. The rewritten SQL query consumes the same snapshot.
@@ -391,6 +873,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             metadata: dataset.metadata,
             includedFieldNames: graphIndex.includedFieldNames
         )
+        try admitInlinedLiterals(result.bindings.count)
 
         // 5. Extract single-variable values
         let varToExtract = extractVar ?? result.projectedVariables.first
@@ -403,12 +886,13 @@ internal struct SPARQLFunctionRewriter: Sendable {
             throw SPARQLFunctionError.multipleVariablesNotSupported
         }
 
-        // Convert bindings to literals
+        // Convert directly to the rewritten representation so the graph result
+        // is not copied through a second temporary literal array.
         return try result.bindings.map { binding in
             guard let fieldValue = binding[variable] else {
                 throw SPARQLFunctionError.missingVariable(variable)
             }
-            return try fieldValueToLiteral(fieldValue)
+            return .literal(try fieldValueToLiteral(fieldValue))
         }
     }
 
@@ -513,8 +997,17 @@ internal struct SPARQLFunctionRewriter: Sendable {
             monotonicClock: context.container.monotonicClock,
             wallClock: context.container.wallClock,
             transaction: transaction,
-            compilationLimits: .default,
+            compilationLimits: SPARQLExpressionCompilationLimits(
+                structuralLimits: structuralLimits
+            ),
             workMeter: workMeter
+        )
+    }
+
+    private func admitInlinedLiterals(_ count: Int) throws {
+        try inliningStructureMeter.admit(
+            count: count,
+            limits: structuralLimits
         )
     }
 

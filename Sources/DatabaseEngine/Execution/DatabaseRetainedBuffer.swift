@@ -286,6 +286,26 @@ package struct DatabaseRetainedBuffer<Element: Sendable>: ~Copyable, Sendable {
         (elements, reservation)
     }
 
+    /// Moves this unique buffer into copyable immutable ownership while
+    /// keeping both the element storage and its request reservation alive.
+    ///
+    /// This is the normal hand-off for intermediate relational values that
+    /// must cross an operator boundary. Unlike `promoteToOutput()`, it does
+    /// not remove the element storage from the intermediate ledger.
+    package consuming func moveToSharedOwnership(
+        at stage: DatabaseWorkStage
+    ) throws -> DatabaseSharedRetainedArray<Element> {
+        let ownerReservation = try reservation.reserveChild(
+            bytes: layout.sharedOwnerByteCount,
+            at: stage
+        )
+        return DatabaseSharedRetainedArray(
+            elements: elements,
+            elementReservation: reservation,
+            ownerReservation: ownerReservation
+        )
+    }
+
     /// Reopens a unique retained buffer for additional admitted appends. The
     /// Array and reservation move into the builder without materialization.
     package consuming func resumeBuilding(

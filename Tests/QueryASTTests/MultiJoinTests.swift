@@ -695,6 +695,58 @@ struct MultiJoinTests {
         }
     }
 
+    @Test("Parse LEFT JOIN LATERAL subquery")
+    func testParseLeftLateralJoin() throws {
+        let parser = SQLParser()
+        let query = try parser.parseSelect(
+            "SELECT * FROM users u LEFT JOIN LATERAL (SELECT * FROM orders o WHERE o.user_id = u.id) recent ON TRUE"
+        )
+
+        guard case .join(let join) = query.source else {
+            Issue.record("Expected LATERAL join")
+            return
+        }
+        #expect(join.type == .leftLateral)
+        guard case .subquery(_, let alias) = join.right else {
+            Issue.record("Expected a LATERAL subquery")
+            return
+        }
+        #expect(alias == "recent")
+    }
+
+    @Test("Parse NATURAL LEFT JOIN")
+    func testParseNaturalLeftJoin() throws {
+        let parser = SQLParser()
+        let query = try parser.parseSelect(
+            "SELECT * FROM users NATURAL LEFT JOIN profiles"
+        )
+
+        guard case .join(let join) = query.source else {
+            Issue.record("Expected NATURAL join")
+            return
+        }
+        #expect(join.type == .naturalLeft)
+        #expect(join.condition == nil)
+    }
+
+    @Test("Reject NATURAL JOIN with an explicit condition")
+    func testNaturalJoinRejectsExplicitCondition() {
+        #expect(throws: SQLParser.ParseError.self) {
+            _ = try SQLParser().parseSelect(
+                "SELECT * FROM users NATURAL JOIN profiles ON users.id = profiles.id"
+            )
+        }
+    }
+
+    @Test("Reject CROSS JOIN with an explicit condition")
+    func testCrossJoinRejectsExplicitCondition() {
+        #expect(throws: SQLParser.ParseError.self) {
+            _ = try SQLParser().parseSelect(
+                "SELECT * FROM users CROSS JOIN profiles ON users.id = profiles.id"
+            )
+        }
+    }
+
     // MARK: - Edge Cases
 
     @Test("Empty alias handling")

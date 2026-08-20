@@ -3,9 +3,14 @@ import DatabaseKit
 
 package struct DatabaseExpressionEvaluator: Sendable {
     package let fields: [String: FieldValue]
+    package let ambiguousColumns: Set<String>
 
-    package init(fields: [String: FieldValue]) {
+    package init(
+        fields: [String: FieldValue],
+        ambiguousColumns: Set<String> = []
+    ) {
         self.fields = fields
+        self.ambiguousColumns = ambiguousColumns
     }
 
     package func predicate(_ expression: Expression) throws -> Bool {
@@ -17,7 +22,16 @@ package struct DatabaseExpressionEvaluator: Sendable {
         case .literal(let literal):
             return try value(literal)
         case .column(let column):
-            if let value = fields[column.displayName] ?? fields[column.column] {
+            if column.table == nil,
+               ambiguousColumns.contains(column.column) {
+                throw DatabaseExpressionEvaluationError.ambiguousColumn(
+                    column.column
+                )
+            }
+            let resolved = column.table == nil
+                ? fields[column.column]
+                : fields[column.displayName]
+            if let value = resolved {
                 return value
             }
             throw DatabaseExpressionEvaluationError.missingColumn(column.displayName)
@@ -103,7 +117,7 @@ package struct DatabaseExpressionEvaluator: Sendable {
         case .inSubquery, .aggregate, .triple, .isTriple, .subject, .predicate,
              .object, .subquery, .exists:
             throw DatabaseExpressionEvaluationError.unsupportedExpression(
-                "Expression kind is not supported in mutation evaluation"
+                "Expression kind requires a query-scoped evaluation context"
             )
         }
     }
@@ -207,12 +221,13 @@ package struct DatabaseExpressionEvaluator: Sendable {
     ) throws -> Bool? {
         let rhs = try rhs()
         if lhs.isNull || rhs.isNull { return nil }
-        if let ordering = exactNumericOrdering(lhs, rhs) { return ordering == .equal }
-        switch (lhs, rhs) {
-        case (.float64(let left), .float64(let right)):
-            return left == right
-        default:
-            return lhs == rhs
+        do {
+            return try FieldValueComparator.equal(lhs, rhs)
+        } catch let failure as FieldValueComparisonError {
+            throw expressionComparisonError(
+                failure,
+                operation: "equality"
+            )
         }
     }
 
@@ -231,54 +246,29 @@ package struct DatabaseExpressionEvaluator: Sendable {
         _ lhs: FieldValue,
         _ rhs: FieldValue
     ) throws -> Ordering {
-        if let value = exactNumericOrdering(lhs, rhs) { return value }
-        switch (lhs, rhs) {
-        case (.float64(let left), .float64(let right)):
-            return ordering(left, right)
-        case (.string(let left), .string(let right)):
-            return ordering(left, right)
-        case (.bool(let left), .bool(let right)):
-            return ordering(left ? 1 : 0, right ? 1 : 0)
-        case (.bytes(let left), .bytes(let right)):
-            return lexicographicOrdering(left, right)
-        case (.date(let left), .date(let right)):
-            return ordering(left, right)
-        case (.timestamp(let left), .timestamp(let right)):
-            return ordering(left, right)
-        case (.uuid(let left), .uuid(let right)):
-            return ordering(left, right)
-        default:
-            throw DatabaseExpressionEvaluationError.typeMismatch(operation: "ordering")
+        do {
+            switch try FieldValueComparator.compare(lhs, rhs) {
+            case .lessThan: return .less
+            case .equal: return .equal
+            case .greaterThan: return .greater
+            }
+        } catch let failure as FieldValueComparisonError {
+            throw expressionComparisonError(
+                failure,
+                operation: "ordering"
+            )
         }
     }
 
-    private func exactNumericOrdering(
-        _ lhs: FieldValue,
-        _ rhs: FieldValue
-    ) -> Ordering? {
-        guard let left = numericLiteral(lhs),
-              let right = numericLiteral(rhs),
-              let comparison = left.compareExactNumeric(to: right) else {
-            return nil
-        }
-        if comparison < 0 { return .less }
-        if comparison > 0 { return .greater }
-        return .equal
-    }
-
-    private func numericLiteral(_ value: FieldValue) -> Literal? {
-        switch value {
-        case .int8(let scalar): return .int(Int64(scalar))
-        case .int16(let scalar): return .int(Int64(scalar))
-        case .int32(let scalar): return .int(Int64(scalar))
-        case .int64(let scalar): return .int(scalar)
-        case .uint8(let scalar): return .uint(UInt64(scalar))
-        case .uint16(let scalar): return .uint(UInt64(scalar))
-        case .uint32(let scalar): return .uint(UInt64(scalar))
-        case .uint64(let scalar): return .uint(scalar)
-        case .decimal(let value):
-            return .decimal(value)
-        default: return nil
+    private func expressionComparisonError(
+        _ failure: FieldValueComparisonError,
+        operation: String
+    ) -> DatabaseExpressionEvaluationError {
+        switch failure {
+        case .incomparable:
+            return .typeMismatch(operation: operation)
+        case .unorderedFloatingPoint:
+            return .numericOverflow
         }
     }
 
@@ -321,12 +311,12 @@ package struct DatabaseExpressionEvaluator: Sendable {
         let right = try evaluate(rhs)
         if left.isNull || right.isNull { return .null }
 
-        switch (left, right) {
-        case let (left, right)
-            where left.isExactDecimal || right.isExactDecimal:
+        if left.isDecimal || right.isDecimal {
             guard let lhs = exactDecimal(left),
                   let rhs = exactDecimal(right) else {
-                throw DatabaseExpressionEvaluationError.numericOverflow
+                throw DatabaseExpressionEvaluationError.typeMismatch(
+                    operation: operation.name
+                )
             }
             let result = try performExactDecimalOperation {
                 () throws(ExactDecimalError) -> ExactDecimal in
@@ -339,43 +329,137 @@ package struct DatabaseExpressionEvaluator: Sendable {
                 }
             }
             return result.fieldValue
-        case (.int64(let lhs), .int64(let rhs)):
-            return .int64(try operation.apply(lhs, rhs))
-        case (.uint64(let lhs), .uint64(let rhs)):
-            return .uint64(try operation.apply(lhs, rhs))
-        case (.float64(let lhs), .float64(let rhs)):
+        }
+
+        if left.isFloatingPoint || right.isFloatingPoint {
+            let lhs = try floatingPointOperand(left)
+            let rhs = try floatingPointOperand(right)
             let result = try operation.apply(lhs, rhs)
             guard result.isFinite else {
                 throw DatabaseExpressionEvaluationError.numericOverflow
             }
             return .float64(result)
-        default:
-            throw DatabaseExpressionEvaluationError.typeMismatch(operation: operation.name)
         }
+
+        if let lhs = signedInteger(left),
+           let rhs = signedInteger(right) {
+            return .int64(try operation.apply(lhs, rhs))
+        }
+        if let lhs = unsignedInteger(left),
+           let rhs = unsignedInteger(right) {
+            return .uint64(try operation.apply(lhs, rhs))
+        }
+        if let lhs = exactDecimal(left),
+           let rhs = exactDecimal(right) {
+            let result = try performExactDecimalOperation {
+                () throws(ExactDecimalError) -> ExactDecimal in
+                switch operation {
+                case .add: try lhs.adding(rhs)
+                case .subtract: try lhs.subtracting(rhs)
+                case .multiply: try lhs.multiplying(by: rhs)
+                case .divide: try lhs.dividing(by: rhs)
+                case .modulo: try lhs.remainder(dividingBy: rhs)
+                }
+            }
+            return result.fieldValue
+        }
+        throw DatabaseExpressionEvaluationError.typeMismatch(
+            operation: operation.name
+        )
     }
 
     private func negate(_ value: FieldValue) throws -> FieldValue {
-        switch value {
-        case .null:
-            return .null
-        case .int64(let scalar):
+        if value.isNull { return .null }
+        if let scalar = signedInteger(value) {
             guard scalar != Int64.min else {
                 throw DatabaseExpressionEvaluationError.numericOverflow
             }
             return .int64(-scalar)
-        case .float64(let scalar):
-            return .float64(-scalar)
-        case .decimal:
-            guard let value = exactDecimal(value) else {
+        }
+        if value.isFloatingPoint {
+            let scalar = try floatingPointOperand(value)
+            let result = -scalar
+            guard result.isFinite else {
                 throw DatabaseExpressionEvaluationError.numericOverflow
+            }
+            return .float64(result)
+        }
+        if value.isDecimal || unsignedInteger(value) != nil {
+            guard let value = exactDecimal(value) else {
+                throw DatabaseExpressionEvaluationError.typeMismatch(
+                    operation: "negation"
+                )
             }
             return try performExactDecimalOperation {
                 () throws(ExactDecimalError) -> ExactDecimal in
                 try value.negated()
             }.fieldValue
-        default:
-            throw DatabaseExpressionEvaluationError.typeMismatch(operation: "negation")
         }
+        throw DatabaseExpressionEvaluationError.typeMismatch(
+            operation: "negation"
+        )
+    }
+
+    private func signedInteger(_ value: FieldValue) -> Int64? {
+        switch value {
+        case .int8(let value): return Int64(value)
+        case .int16(let value): return Int64(value)
+        case .int32(let value): return Int64(value)
+        case .int64(let value): return value
+        default: return nil
+        }
+    }
+
+    private func unsignedInteger(_ value: FieldValue) -> UInt64? {
+        switch value {
+        case .uint8(let value): return UInt64(value)
+        case .uint16(let value): return UInt64(value)
+        case .uint32(let value): return UInt64(value)
+        case .uint64(let value): return value
+        default: return nil
+        }
+    }
+
+    private func floatingPointOperand(
+        _ value: FieldValue
+    ) throws -> Double {
+        let result: Double
+        switch value {
+        case .float32(let value):
+            result = Double(value)
+        case .float64(let value):
+            result = value
+        case .int8(let value):
+            result = Double(value)
+        case .int16(let value):
+            result = Double(value)
+        case .int32(let value):
+            result = Double(value)
+        case .int64(let value):
+            guard let exact = Double(exactly: value) else {
+                throw DatabaseExpressionEvaluationError.numericOverflow
+            }
+            result = exact
+        case .uint8(let value):
+            result = Double(value)
+        case .uint16(let value):
+            result = Double(value)
+        case .uint32(let value):
+            result = Double(value)
+        case .uint64(let value):
+            guard let exact = Double(exactly: value) else {
+                throw DatabaseExpressionEvaluationError.numericOverflow
+            }
+            result = exact
+        default:
+            throw DatabaseExpressionEvaluationError.typeMismatch(
+                operation: "floating-point arithmetic"
+            )
+        }
+        guard result.isFinite else {
+            throw DatabaseExpressionEvaluationError.numericOverflow
+        }
+        return result
     }
 
     private func listMembership(
@@ -428,16 +512,24 @@ package struct DatabaseExpressionEvaluator: Sendable {
                 throw DatabaseExpressionEvaluationError.typeMismatch(operation: name)
             }
             let argument = try evaluate(function.arguments[0])
-            switch argument {
-            case .null: return .null
-            case .int64(let value):
+            if argument.isNull { return .null }
+            if let value = signedInteger(argument) {
                 guard value != Int64.min else {
                     throw DatabaseExpressionEvaluationError.numericOverflow
                 }
                 return .int64(value < 0 ? -value : value)
-            case .uint64: return argument
-            case .float64(let value): return .float64(value.magnitude)
-            case .decimal:
+            }
+            if let value = unsignedInteger(argument) {
+                return .uint64(value)
+            }
+            if argument.isFloatingPoint {
+                let magnitude = try floatingPointOperand(argument).magnitude
+                guard magnitude.isFinite else {
+                    throw DatabaseExpressionEvaluationError.numericOverflow
+                }
+                return .float64(magnitude)
+            }
+            if argument.isDecimal {
                 guard let value = exactDecimal(argument) else {
                     throw DatabaseExpressionEvaluationError.numericOverflow
                 }
@@ -445,9 +537,8 @@ package struct DatabaseExpressionEvaluator: Sendable {
                     () throws(ExactDecimalError) -> ExactDecimal in
                     try value.magnitude()
                 }.fieldValue
-            default:
-                throw DatabaseExpressionEvaluationError.typeMismatch(operation: name)
             }
+            throw DatabaseExpressionEvaluationError.typeMismatch(operation: name)
         default:
             throw DatabaseExpressionEvaluationError.unsupportedFunction(function.name)
         }
@@ -463,14 +554,19 @@ package struct DatabaseExpressionEvaluator: Sendable {
             guard case .bool = value else { throw invalidCast(target) }
             return value
         case .smallint, .integer, .bigint:
-            if case .int64 = value { return value }
-            if case .uint64(let scalar) = value, let signed = Int64(exactly: scalar) {
+            if let signed = signedInteger(value) {
+                return .int64(signed)
+            }
+            if let scalar = unsignedInteger(value),
+               let signed = Int64(exactly: scalar) {
                 return .int64(signed)
             }
             throw invalidCast(target)
         case .real, .doublePrecision:
-            guard case .float64 = value else { throw invalidCast(target) }
-            return value
+            guard value.isNumeric, !value.isDecimal else {
+                throw invalidCast(target)
+            }
+            return .float64(try floatingPointOperand(value))
         case .char, .varchar, .text:
             guard case .string = value else { throw invalidCast(target) }
             return value
@@ -554,27 +650,6 @@ package struct DatabaseExpressionEvaluator: Sendable {
         case .true: return .bool(true)
         case .false: return .bool(false)
         case .unknown: return .null
-        }
-    }
-
-    private func ordering<Value: Comparable>(_ lhs: Value, _ rhs: Value) -> Ordering {
-        if lhs < rhs { return .less }
-        if lhs > rhs { return .greater }
-        return .equal
-    }
-
-    private func lexicographicOrdering(
-        _ lhs: ByteString,
-        _ rhs: ByteString
-    ) -> Ordering {
-        lhs.withUnsafeBytes { lhsBytes in
-            rhs.withUnsafeBytes { rhsBytes in
-                for offset in 0..<min(lhsBytes.count, rhsBytes.count) {
-                    if lhsBytes[offset] < rhsBytes[offset] { return .less }
-                    if lhsBytes[offset] > rhsBytes[offset] { return .greater }
-                }
-                return ordering(lhsBytes.count, rhsBytes.count)
-            }
         }
     }
 
@@ -736,8 +811,15 @@ private extension FieldValue {
         return false
     }
 
-    var isExactDecimal: Bool {
+    var isDecimal: Bool {
         if case .decimal = self { return true }
         return false
+    }
+
+    var isFloatingPoint: Bool {
+        switch self {
+        case .float32, .float64: return true
+        default: return false
+        }
     }
 }

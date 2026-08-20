@@ -77,6 +77,45 @@ struct CompositionQueryExecutorTests {
         #expect(count == 2)
     }
 
+    @Test("Composition validates structure before opening a read snapshot")
+    func compositionValidatesStructureBeforeReadSnapshot() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        let source = fixture.container.session(
+            authorization: fixture.readerAuthorization
+        ).composition(fixture.compositionID)
+        let readContext = ReadExecutionContext(
+            options: .default,
+            monotonicClock: fixture.container.monotonicClock,
+            queryStructuralLimits: QueryStructuralLimits(
+                maximumTotalNodes: 0
+            )
+        )
+        let planner = CompositionQueryPlanner(
+            structuralLimits: readContext.queryStructuralLimits
+        )
+
+        await #expect(throws: QueryStructuralValidationError.self) {
+            try await planner.execute(
+                SelectQuery(
+                    projection: .all,
+                    source: .table(TableRef(Item.persistableType))
+                ),
+                source: source,
+                options: CompositionQueryExecutionOptions(
+                    pageSize: 1,
+                    readContext: readContext
+                )
+            ) { _ in
+                Issue.record("Invalid query reached event emission")
+                return false
+            }
+        }
+        #expect(readContext.workMeter.consumedRows == 0)
+        #expect(readContext.workMeter.retainedIntermediateRows == 0)
+        #expect(readContext.workMeter.retainedIntermediateBytes == 0)
+    }
+
     @Test("Equal logical IDs remain Base-qualified")
     func equalLogicalIDsRemainBaseQualified() async throws {
         let fixture = try await makeFixture(readerCanReadSecondary: true)
