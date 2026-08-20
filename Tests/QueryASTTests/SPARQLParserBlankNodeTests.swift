@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// SPARQLParserBlankNodeTests.swift
 /// Tests for Phase 2: Parser infrastructure (B3: BASE IRI, B1: Blank nodes, B2: Collections)
 
@@ -384,4 +383,3 @@ struct BaseEdgeCaseTests {
         #expect(triples[0].predicate == .iri("http://example.org/a/b/d"))
     }
 }
-#endif

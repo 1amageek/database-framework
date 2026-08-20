@@ -381,17 +381,16 @@ struct SPARQLPropertyFilterIntegrationTests {
         #expect(binding["?target"] == expectedTarget)
     }
 
-    // MARK: - Performance Tests
-
-    @Test("Performance - property filter reduces scan")
-    func testPerformancePropertyFilterReducesScan() async throws {
+    @Test("Property filter returns only matching values")
+    func propertyFilterReturnsOnlyMatchingValues() async throws {
         let container = try await setupContainer()
         let context = container.testBaseContext()
 
         let alice = uniqueID("alice")
 
-        // Insert 200 connections (only 2 with since = 2025)
-        for i in 0..<198 {
+        // Correctness uses a compact selective fixture. Scan cost belongs to
+        // the independent benchmark package.
+        for i in 0..<18 {
             let year = 2010 + (i % 10)  // Years 2010-2019
             try context.insert(try makeConnection(
                 from: alice,
@@ -406,7 +405,7 @@ struct SPARQLPropertyFilterIntegrationTests {
         try context.insert(try makeConnection(from: alice, to: uniqueID("recent-2"), relation: "knows", since: 2025, strength: 0.95))
         try await context.save()
 
-        // Filter to only 2025 (1% selectivity)
+        // Filter to only 2025.
         let pattern = ExecutionPattern.filter(
             .basic([
                 ExecutionTriple(
@@ -418,15 +417,12 @@ struct SPARQLPropertyFilterIntegrationTests {
             .equals("?since", .int64(2025))
         )
 
-        let startTime = Date()
         let result = try await context.executeSPARQLPattern(
             pattern,
             on: SocialConnection.self
         )
-        let duration = Date().timeIntervalSince(startTime)
 
         #expect(result.bindings.count == 2)
-        #expect(duration < 1.0)  // Should be fast with early filtering
     }
 
     @Test("Explicit projection excludes property variables")

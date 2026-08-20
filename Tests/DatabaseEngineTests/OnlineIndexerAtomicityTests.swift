@@ -98,7 +98,7 @@ struct OnlineIndexerAtomicityTests {
             )
             let ctx = try await AtomicIndexingContext(index: index)
 
-            let players = PlayerDatasetGenerator.generatePlayers(count: 100, nameLength: 50)
+            let players = PlayerDatasetGenerator.generatePlayers(count: 10, nameLength: 50)
             try await ctx.insertPlayers(players)
 
             let lifecycleStore = IndexLifecycleStore(
@@ -118,7 +118,7 @@ struct OnlineIndexerAtomicityTests {
                 index: index,
                 indexMaintainer: maintainer,
                 indexLifecycleStore: lifecycleStore,
-                batchSize: 15
+                batchSize: 3
             )
 
             try await indexer.buildIndex(clearFirst: true)
@@ -140,11 +140,11 @@ struct OnlineIndexerAtomicityTests {
             )
             let ctx = try await AtomicIndexingContext(index: index)
 
-            let batchSize = 10
+            let batchSize = 3
             let players = PlayerDatasetGenerator.generateForBatchTesting(
                 batchSize: batchSize,
-                batches: 5,
-                remainder: 3
+                batches: 3,
+                remainder: 1
             )
             try await ctx.insertPlayers(players)
 
@@ -189,7 +189,7 @@ struct OnlineIndexerAtomicityTests {
             )
             let ctx = try await AtomicIndexingContext(index: index)
 
-            let players = PlayerDatasetGenerator.generatePlayers(count: 25, nameLength: 50)
+            let players = PlayerDatasetGenerator.generatePlayers(count: 7, nameLength: 50)
             try await ctx.insertPlayers(players)
 
             let lifecycleStore = IndexLifecycleStore(
@@ -212,7 +212,7 @@ struct OnlineIndexerAtomicityTests {
                 index: index,
                 indexMaintainer: maintainer,
                 indexLifecycleStore: lifecycleStore,
-                batchSize: 5
+                batchSize: 3
             )
 
             try await indexer.buildIndex(clearFirst: true)

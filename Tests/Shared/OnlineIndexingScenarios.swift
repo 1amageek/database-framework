@@ -179,11 +179,7 @@ public final class BatchTrackingIndexMaintainer<Item: Persistable>: IndexMaintai
 
 // MARK: - PlayerDatasetGenerator
 
-/// Generates large datasets for testing transaction limits
-///
-/// FDB has a 10MB transaction size limit (5MB recommended).
-/// This generator creates datasets that exceed these limits
-/// to verify batch processing works correctly.
+/// Generates deterministic fixtures for online-index batching tests.
 public struct PlayerDatasetGenerator {
 
     /// Generate players with specified data size
@@ -203,20 +199,6 @@ public struct PlayerDatasetGenerator {
             player.id = String(format: "player_%06d", i)
             return player
         }
-    }
-
-    /// Generate a large dataset that exceeds 5MB when serialized
-    ///
-    /// Creates ~500 players with ~10KB names each = ~5MB total
-    public static func generateLargeDataset() -> [Player] {
-        generatePlayers(count: 500, nameLength: 10_000)
-    }
-
-    /// Generate a dataset that fits within a single transaction
-    ///
-    /// Creates ~50 players with small names = ~5KB total
-    public static func generateSmallDataset() -> [Player] {
-        generatePlayers(count: 50, nameLength: 50)
     }
 
     /// Generate dataset with exact count for batch boundary testing

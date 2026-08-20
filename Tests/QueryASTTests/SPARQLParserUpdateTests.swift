@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// SPARQLParserUpdateTests.swift
 /// Tests for Phase 5: CONSTRUCT improvements (B10, B11) + SPARQL Update (B12)
 
@@ -664,4 +663,3 @@ struct ConstructWhereEdgeCaseTests {
         #expect(query.modifiers.orderBy.count == 1)
     }
 }
-#endif

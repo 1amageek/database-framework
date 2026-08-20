@@ -236,44 +236,6 @@ struct TransactionComprehensiveTests {
         #expect(value != nil)
     }
 
-    // MARK: - Large Data Tests
-
-    @Test("Scan 1000 items with getRange")
-    func scanThousandItems() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
-
-        // Setup: Write 1000 items
-        try await runner.run(configuration: .default) { tx in
-            for i in 0..<1000 {
-                let key = [0, 8] + withUnsafeBytes(of: i.bigEndian) { Array($0) }
-                try tx.setValue([UInt8(i % 256)], for: ByteString(key))
-            }
-        }
-
-        // Test: Scan all 1000 items
-        let count = try await runner.run(configuration: .default) { tx in
-            var total = 0
-            var sequence = tx.rangeCursor(
-                from: .firstGreaterOrEqual([0, 8]),
-                to: .firstGreaterOrEqual([0, 9]),
-                limit: 0,
-                reverse: false,
-                snapshot: true,
-                streamingMode: .iterator
-            )
-
-            while try await sequence.next() != nil {
-                total += 1
-            }
-
-            return total
-        }
-
-        #expect(count == 1000)
-    }
-
     // MARK: - Nested getRange Tests
 
     @Test("Nested getRange iteration")

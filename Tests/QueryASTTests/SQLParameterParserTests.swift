@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 import Testing
 import TestHeartbeat
 @testable import QueryAST
@@ -78,4 +77,3 @@ struct SQLParameterParserTests {
         }
     }
 }
-#endif

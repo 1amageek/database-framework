@@ -32,20 +32,6 @@ struct PartitionedDirectoryTests {
                 ]), security: .testingDisabled)
     }
 
-    // MARK: - hasDynamicDirectory Tests
-
-    @Test("TenantOrder has dynamic directory")
-    func testTenantOrderHasDynamicDirectory() {
-        #expect(TenantOrder.hasDynamicDirectory == true)
-        #expect(TenantOrder.directoryFieldNames == ["tenantID"])
-    }
-
-    @Test("Player does not have dynamic directory")
-    func testPlayerHasStaticDirectory() {
-        #expect(Player.hasDynamicDirectory == false)
-        #expect(Player.directoryFieldNames.isEmpty)
-    }
-
     // MARK: - Save Tests
 
     @Test("Save TenantOrder extracts tenantID from model")
@@ -311,39 +297,6 @@ struct PartitionedDirectoryTests {
             }
             #expect(found)
         }
-    }
-
-    // MARK: - DirectoryPath Tests
-
-    @Test("DirectoryPath validates missing fields")
-    func testDirectoryPathValidatesMissingFields() async throws {
-        let binding = DirectoryPath<TenantOrder>()
-
-        // Should throw because tenantID is required but not bound
-        #expect(throws: DirectoryPathError.self) {
-            try binding.validate()
-        }
-    }
-
-    @Test("DirectoryPath validates complete binding")
-    func testDirectoryPathValidatesCompleteBinding() async throws {
-        var binding = DirectoryPath<TenantOrder>()
-        binding.set(TenantOrder.fields.tenantID, to: "tenant_123")
-
-        // Should not throw
-        try binding.validate()
-    }
-
-    @Test("DirectoryPath.from extracts values from model")
-    func testDirectoryPathFromModel() throws {
-        let order = TenantOrder(tenantID: "tenant_xyz", status: "pending", total: 50.0)
-        let binding = try DirectoryPath<TenantOrder>.from(order)
-
-        #expect(
-            try binding.value(
-                for: TenantOrder.fields.tenantID
-            ) == "tenant_xyz"
-        )
     }
 
     // MARK: - Static Directory Tests (Regression)

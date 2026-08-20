@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// QueryOptimizationTests.swift
 /// Tests for query optimization patterns and plan selection
 ///
@@ -511,4 +510,3 @@ public enum TripleIndex: Sendable, Equatable {
     case pso  // Predicate-Subject-Object
     case ops  // Object-Predicate-Subject
 }
-#endif

@@ -380,7 +380,7 @@ struct GraphTableExecutorTests {
         #expect(rows.isEmpty)
     }
 
-    // MARK: - Performance Validation
+    // MARK: - Filtering Semantics
 
     @Test("Property filter emits matching edges only")
     func testPropertyFilterEmitsMatchingEdgesOnly() async throws {
@@ -389,16 +389,16 @@ struct GraphTableExecutorTests {
 
         let alice = uniqueID("alice")
 
-        // Insert 100 edges with different years (1920-2019)
-        for i in 0..<100 {
-            let year = Int64(1920) + Int64(i)
+        // A small non-matching set is sufficient to prove selectivity.
+        for i in 0..<8 {
+            let year = Int64(2012) + Int64(i)
             try context.insert(makeEdge(from: alice, target: uniqueID("user-\(i)"), label: "KNOWS", since: year, status: "active", score: 0.5))
         }
         // Add one edge with year 2020
         try context.insert(makeEdge(from: alice, target: uniqueID("user-2020"), label: "KNOWS", since: 2020, status: "active", score: 0.5))
         try await context.save()
 
-        // Filter to only 2020 (1 edge out of 101)
+        // Filter to only 2020 (1 edge out of 9)
         let source = GraphTableSource(
             graphName: "SocialGraph",
             matchPattern: MatchPattern(paths: [

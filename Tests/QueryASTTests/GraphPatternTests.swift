@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// GraphPatternTests.swift
 /// Comprehensive tests for SPARQL GraphPattern types
 
@@ -633,4 +632,3 @@ struct SelectQuerySPARQLSerializationTests {
         #expect(sparql.contains("HAVING"))
     }
 }
-#endif

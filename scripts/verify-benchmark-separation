@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+package_root="$(cd "$script_directory/.." && pwd)"
+
+if rg -n 'BenchmarkFramework|PerformanceBenchmarks' \
+  "$package_root/Package.swift"; then
+  echo "error: benchmark products or targets are present in Package.swift" >&2
+  exit 1
+fi
+
+if find "$package_root/Tests" -type f \
+  \( -iname '*benchmark*' -o -iname '*performance*' -o -iname '*largedata*' \) \
+  -print -quit | rg -q .; then
+  echo "error: benchmark-named source is present under Tests" >&2
+  exit 1
+fi
+
+if rg -n -i \
+  '@(Test|Suite)\([^\n]*(benchmark|performance|large scale|large dataset|stress)' \
+  "$package_root/Tests"; then
+  echo "error: a scale or performance scenario is present under Tests" >&2
+  exit 1
+fi
+
+if rg -n \
+  'XCTApplicationLaunchMetric|XCTClockMetric|measure\(metrics:|BenchmarkRunner|measureBenchmark' \
+  "$package_root/Tests"; then
+  echo "error: a benchmark measurement API is present under Tests" >&2
+  exit 1
+fi
+
+echo "Benchmark separation is structurally valid."

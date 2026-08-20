@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 // SPARQLParserRDFStarTests.swift
 // Tests for RDF-star parsing in SPARQLParser
 
@@ -384,4 +383,3 @@ struct SPARQLParserRDFStarTests {
         }
     }
 }
-#endif

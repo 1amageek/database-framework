@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// SPARQLParserBugFixTests.swift
 /// Tests for Phase 1: Bug fixes and quick wins
 
@@ -403,4 +402,3 @@ struct DoubleNegationTests {
         }
     }
 }
-#endif

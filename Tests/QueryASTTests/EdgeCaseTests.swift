@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// EdgeCaseTests.swift
 /// Comprehensive tests for query edge cases and robustness
 ///
@@ -50,24 +49,6 @@ struct EdgeCaseTests {
         }
     }
 
-    @Test("Filter always false")
-    func testFilterAlwaysFalse() throws {
-        // WHERE 1 = 0 - always false
-
-        let query = SelectQuery(
-            projection: .all,
-            source: .table(TableRef("users")),
-            filter: .equal(.literal(.int(1)), .literal(.int(0)))
-        )
-
-        if case .equal(let left, let right) = query.filter {
-            if case .literal(.int(1)) = left,
-               case .literal(.int(0)) = right {
-                // Valid structure for always-false condition
-            }
-        }
-    }
-
     @Test("Filter always true")
     func testFilterAlwaysTrue() throws {
         // WHERE 1 = 1 - always true
@@ -83,22 +64,6 @@ struct EdgeCaseTests {
 
     // MARK: - NULL Handling Tests
 
-    @Test("NULL in equality comparison")
-    func testNullEquality() throws {
-        // WHERE col = NULL (incorrect way to check NULL)
-
-        let condition = Expression.equal(
-            .column(ColumnRef(column: "value")),
-            .literal(.null)
-        )
-
-        if case .equal(_, let right) = condition {
-            if case .literal(.null) = right {
-                // OK - this is valid AST, even though semantically != IS NULL
-            }
-        }
-    }
-
     @Test("IS NULL condition")
     func testIsNull() throws {
         // WHERE col IS NULL (correct way)
@@ -108,47 +73,6 @@ struct EdgeCaseTests {
         if case .isNull(let expr) = condition {
             if case .column(let ref) = expr {
                 #expect(ref.column == "value")
-            }
-        }
-    }
-
-    @Test("IS NOT NULL condition")
-    func testIsNotNull() throws {
-        // WHERE col IS NOT NULL
-
-        let condition = Expression.not(.isNull(.column(ColumnRef(column: "value"))))
-
-        if case .not(let inner) = condition {
-            if case .isNull(_) = inner {
-                // OK
-            }
-        }
-    }
-
-    @Test("NULL in aggregate functions")
-    func testNullInAggregates() throws {
-        // SUM/AVG/COUNT with NULL values
-
-        // COUNT(*) includes NULL rows
-        let countAll = AggregateFunction.count(nil, distinct: false)
-
-        // COUNT(col) excludes NULL values
-        let countCol = AggregateFunction.count(.column(ColumnRef(column: "value")), distinct: false)
-
-        // SUM ignores NULL
-        let sumCol = AggregateFunction.sum(.column(ColumnRef(column: "amount")), distinct: false)
-
-        if case .count(nil, _) = countAll {
-            // COUNT(*) - no column
-        }
-
-        if case .count(.some(_), _) = countCol {
-            // COUNT(col) - has column
-        }
-
-        if case .sum(let expr, _) = sumCol {
-            if case .column(_) = expr {
-                // OK
             }
         }
     }
@@ -186,11 +110,10 @@ struct EdgeCaseTests {
         }
     }
 
-    // MARK: - Large Dataset Tests
+    // MARK: - Limit and Projection Values
 
-    @Test("Large GROUP BY (many groups)")
-    func testLargeGroupBy() throws {
-        // Query structure for GROUP BY with many groups
+    @Test("GROUP BY query structure")
+    func testGroupByStructure() throws {
 
         let query = SelectQuery(
             projection: .items([
@@ -489,23 +412,6 @@ struct EdgeCaseTests {
         #expect(trueVal != falseVal)
     }
 
-    @Test("Nested NOT expressions")
-    func testNestedNot() throws {
-        // NOT NOT NOT condition
-
-        let base = Expression.equal(.column(ColumnRef(column: "a")), .literal(.int(1)))
-        let notOnce = Expression.not(base)
-        let notTwice = Expression.not(notOnce)
-        let notThrice = Expression.not(notTwice)
-
-        // Structure is valid even if semantically simplifiable
-        if case .not(let inner) = notThrice {
-            if case .not(_) = inner {
-                // OK - nested NOT
-            }
-        }
-    }
-
     // MARK: - Identifier Edge Cases
 
     @Test("Reserved word as identifier")
@@ -593,20 +499,6 @@ struct EdgeCaseTests {
 
     // MARK: - Complex Expression Edge Cases
 
-    @Test("Deeply nested expressions")
-    func testDeeplyNestedExpressions() throws {
-        // ((((a + b) * c) - d) / e)
-
-        var expr = Expression.column(ColumnRef(column: "a"))
-
-        for i in 0..<10 {
-            expr = .add(expr, .column(ColumnRef(column: "col\(i)")))
-        }
-
-        // Just verify structure doesn't break
-        #expect(true)
-    }
-
     @Test("Complex CASE expression")
     func testComplexCaseExpression() throws {
         // CASE WHEN a > 10 THEN 'high' WHEN a > 5 THEN 'medium' ELSE 'low' END
@@ -657,4 +549,3 @@ struct EdgeCaseTests {
         }
     }
 }
-#endif

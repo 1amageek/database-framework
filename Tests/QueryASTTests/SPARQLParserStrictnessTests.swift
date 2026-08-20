@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 import Testing
 import TestHeartbeat
 import DatabaseKit
@@ -651,4 +650,3 @@ struct SPARQLParserStrictnessTests {
         }
     }
 }
-#endif

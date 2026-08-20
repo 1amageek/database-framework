@@ -133,17 +133,18 @@ struct TDigestTests {
     func testExtremeQuantileAccuracy() async throws {
         var digest = try TDigest(compression: 200)  // Higher compression for better accuracy
 
-        // Add 100,000 values: mostly small, few large outliers
+        // Preserve the same distribution with the smallest fixture that still
+        // includes a 0.01% outlier. Scaling belongs to the benchmark package.
         var rng = SeededRandomNumberGenerator(seed: 42)
-        for _ in 0..<95000 {
+        for _ in 0..<9_500 {
             // 95% of values are between 0-100
             try digest.add(Double.random(in: 0..<100, using: &rng))
         }
-        for _ in 0..<4990 {
+        for _ in 0..<499 {
             // 4.99% are between 100-1000
             try digest.add(Double.random(in: 100..<1000, using: &rng))
         }
-        for _ in 0..<10 {
+        for _ in 0..<1 {
             // 0.01% are extreme outliers (10000+)
             try digest.add(Double.random(in: 10000..<20000, using: &rng))
         }
@@ -432,45 +433,6 @@ struct TDigestTests {
             #expect(value >= previous)
             previous = value
         }
-    }
-
-    @Test("Large dataset compression")
-    func testLargeDatasetCompression() async throws {
-        var digest = try TDigest(compression: 100)
-
-        // Add 1 million values
-        for i in 0..<1_000_000 {
-            try digest.add(Double(i % 10000))
-        }
-
-        // Should have compressed significantly
-        #expect(digest.centroidCount < 500, "Should compress to ~\(digest.centroidCount) centroids")
-
-        // Memory should be reasonable
-        #expect(digest.estimatedMemoryBytes < 20000, "Memory=\(digest.estimatedMemoryBytes) should be < 20KB")
-    }
-
-    // MARK: - Performance Characteristics
-
-    @Test("Memory usage stays bounded")
-    func retainedStateRemainsBounded() async throws {
-        var digest = try TDigest(compression: 100)
-
-        // Add values in batches, checking memory doesn't grow unbounded
-        for batch in 0..<100 {
-            for i in 0..<1000 {
-                try digest.add(Double(batch * 1000 + i))
-            }
-
-            // Force compression
-            _ = try digest.quantile(0.5)
-
-            // Memory should stay bounded regardless of data size
-            #expect(digest.estimatedMemoryBytes < 20000,
-                   "Batch \(batch): memory=\(digest.estimatedMemoryBytes) should be bounded")
-        }
-
-        #expect(digest.count == 100_000)
     }
 
     @Test("Quantile queries multiple times")

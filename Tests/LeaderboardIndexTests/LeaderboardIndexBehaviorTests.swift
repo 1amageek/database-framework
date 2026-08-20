@@ -710,37 +710,6 @@ struct LeaderboardIndexEdgeCasesTests {
         }
     }
 
-    @Test("Large number of entries")
-    func testLargeNumberOfEntries() async throws {
-        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let ctx = try await LeaderboardIndexContext()
-
-            // Insert 100 scores
-            try await ctx.database.withTransaction { transaction in
-                for i in 1...100 {
-                    let score = GameScore(id: "g\(i)", playerId: "player\(i)", score: Int64(i * 10))
-                    try await ctx.maintainer.updateIndex(
-                        oldItem: nil as GameScore?,
-                        newItem: score,
-                        transaction: transaction
-                    )
-                }
-            }
-
-            // Get top 10
-            let top10 = try await ctx.getTopK(k: 10)
-            #expect(top10.count == 10, "Should return exactly 10")
-            #expect(top10[0].score == 1000, "Top score should be 1000")
-            #expect(top10[9].score == 910, "10th score should be 910")
-
-            // Get top 100
-            let top100 = try await ctx.getTopK(k: 100)
-            #expect(top100.count == 100, "Should return all 100")
-
-            try await ctx.cleanup()
-        }
-    }
-
     @Test("computeIndexKeys returns expected keys")
     func testComputeIndexKeys() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {

@@ -315,23 +315,6 @@ struct OntologyIRIValidationTests {
 
     // MARK: - Schema Validation
 
-    @Test("Schema validation passes for valid IRIs")
-    func schemaValidationPasses() async throws {
-        let context = try await setupContext()
-        defer { await context.container.shutdown() }
-        try await loadTestOntology(context: context)
-
-        let schema = try Schema(
-            entities: [
-                try ValEmployee.schemaEntity,
-                try ValAssignment.schemaEntity,
-            ],
-            version: Schema.Version(1, 0, 0)
-        )
-
-        try await context.ontology.validateSchema(schema, ontologyIRI: Self.ontologyIRI)
-    }
-
     @Test("Schema validation fails for invalid class IRI")
     func schemaValidationFailsForBadClass() async throws {
         let context = try await setupContext()

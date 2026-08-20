@@ -656,7 +656,7 @@ struct GraphFusionIndexDiscoveryTests {
         #expect(matchingDescriptor != nil)
     }
 
-    @Test("Scalar index for efficient node lookup")
+    @Test("Scalar index is declared for node lookup")
     func testScalarIndexForNodeLookup() throws {
         let descriptors = try GraphFusionPerson.indexDescriptors
 

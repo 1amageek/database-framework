@@ -167,15 +167,6 @@ struct RoleHierarchyBasicTests {
         #expect(hierarchy.inverse(of: "ex:hasParent") == "ex:hasChild")
     }
 
-    @Test("Inverse is symmetric")
-    func inverseSymmetric() {
-        var hierarchy = RoleHierarchy()
-        hierarchy.setInverse("ex:hasChild", "ex:hasParent")
-
-        // Setting in one direction should set both
-        #expect(hierarchy.inverse(of: "ex:hasChild") == "ex:hasParent")
-        #expect(hierarchy.inverse(of: "ex:hasParent") == "ex:hasChild")
-    }
 }
 
 @Suite("RoleHierarchy Characteristics", .heartbeat)

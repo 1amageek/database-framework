@@ -278,15 +278,18 @@ struct PercentileIndexBehaviorTests {
 
     // MARK: - Query Tests
 
-    @Test("GetPercentiles returns multiple percentiles efficiently")
+    @Test("GetPercentiles returns every requested percentile")
     func testGetMultiplePercentiles() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await PercentileIndexContext()
 
-        // Insert 100 values (1 to 100)
+        // Ten ordered values are sufficient to validate the batched API.
         try await ctx.database.withTransaction { transaction in
-            for i in 1...100 {
-                let request = EndpointRequest(endpoint: "/api/users", latencyMs: Double(i))
+            for i in 1...10 {
+                let request = EndpointRequest(
+                    endpoint: "/api/users",
+                    latencyMs: Double(i * 10)
+                )
                 try await ctx.maintainer.updateIndex(
                     oldItem: nil as EndpointRequest?,
                     newItem: request,
@@ -408,11 +411,9 @@ struct PercentileIndexBehaviorTests {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await PercentileIndexContext()
 
-        // Insert 1000 values with heavy tail distribution
-        // Most values between 50-100, a few outliers at 500-1000
+        // Preserve a 95/5 heavy-tail distribution with a compact fixture.
         try await ctx.database.withTransaction { transaction in
-            // 950 fast requests (50-100ms)
-            for i in 0..<950 {
+            for i in 0..<95 {
                 let latency = 50.0 + Double(i % 50)
                 let request = EndpointRequest(endpoint: "/api/users", latencyMs: latency)
                 try await ctx.maintainer.updateIndex(
@@ -422,8 +423,7 @@ struct PercentileIndexBehaviorTests {
                 )
             }
 
-            // 50 slow requests (500-1000ms)
-            for i in 0..<50 {
+            for i in 0..<5 {
                 let latency = 500.0 + Double(i * 10)
                 let request = EndpointRequest(endpoint: "/api/users", latencyMs: latency)
                 try await ctx.maintainer.updateIndex(
@@ -435,7 +435,7 @@ struct PercentileIndexBehaviorTests {
         }
 
         let stats = try await ctx.getStatistics(for: "/api/users")
-        #expect(stats!.count == 1000)
+        #expect(stats!.count == 100)
 
         let percentiles = try await ctx.getPercentiles(
             percentiles: [0.50, 0.90, 0.95, 0.99],

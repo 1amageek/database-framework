@@ -825,10 +825,8 @@ struct PropertyPathAdvancedTests {
         #expect(targets.contains(target))  // One hop
     }
 
-    // MARK: - Performance Tests
-
-    @Test("Property path performance on moderate graph (100 nodes)")
-    func testPropertyPathPerformance100Nodes() async throws {
+    @Test("Property path traverses a branching graph without duplicates")
+    func propertyPathTraversesBranchingGraph() async throws {
         let container = try await setupContainer()
 
         let context = container.testBaseContext()
@@ -836,10 +834,10 @@ struct PropertyPathAdvancedTests {
         let linkPred = try uniquePredicate("link")
         let prefix = uniqueID("N")
 
-        // Create a graph with 100 nodes in a binary tree structure
-        // Each node i has children 2i+1 and 2i+2 (for i < 50)
+        // Build a compact binary tree. Scale measurements belong to the
+        // independent benchmark package.
         var edges: [AdvancedPathEdge] = []
-        for i in 0..<50 {
+        for i in 0..<7 {
             let parent = "\(prefix)-\(i)"
             let child1 = "\(prefix)-\(2*i + 1)"
             let child2 = "\(prefix)-\(2*i + 2)"
@@ -848,9 +846,6 @@ struct PropertyPathAdvancedTests {
         }
 
         try await insertEdges(edges, context: context)
-
-        // Query all descendants of root
-        let startTime = CFAbsoluteTimeGetCurrent()
 
         let result = try await context.sparql(AdvancedPathEdge.self)
             .defaultIndex()
@@ -861,15 +856,7 @@ struct PropertyPathAdvancedTests {
             )
             .execute()
 
-        let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-
-        // Should find 100 descendants (all except root)
-        // Binary tree: parents 0-49 have children 2i+1, 2i+2. Max child = 2*49+2 = 100.
-        // Total distinct nodes: 0-100 = 101 nodes. oneOrMore excludes root → 100 results.
-        #expect(result.count == 100)
-
-        // Performance sanity check (should complete in reasonable time)
-        #expect(elapsed < 30.0)  // 30 seconds max
+        #expect(result.count == 14)
     }
 
     @Test("Property path with branching factor")

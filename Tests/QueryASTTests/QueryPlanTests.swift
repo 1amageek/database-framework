@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// QueryPlanTests.swift
 /// Comprehensive tests for QueryPlan types
 
@@ -605,4 +604,3 @@ struct QueryPlanNodeEqualityTests {
         #expect(tableScan != indexScan)
     }
 }
-#endif

@@ -95,7 +95,7 @@ POSTGRES_TEST_DB=database_framework_test \
 scripts/xcode-test-harness \
   --traits PostgreSQL,AllRuntimeFeatures,MultiBase \
   --only-testing PostgreSQLTests \
-  --expected-count 72 \
+  --expected-count 67 \
   --require-zero-skips \
   --require-zero-expected-failures \
   --require-zero-runtime-warnings
@@ -103,9 +103,7 @@ scripts/xcode-test-harness \
 scripts/fdb-test-env run --clean -- \
   scripts/xcode-test-harness \
     --traits FoundationDB,AllRuntimeFeatures,MultiBase \
-    --skip-testing BenchmarkFrameworkTests \
-    --skip-testing PerformanceBenchmarks \
-    --expected-count 3608 \
+    --expected-count 3454 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings

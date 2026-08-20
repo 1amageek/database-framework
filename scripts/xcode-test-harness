@@ -428,6 +428,7 @@ rsync_arguments=(
   --exclude '.git'
   --exclude '.build'
   --exclude '.swiftpm'
+  --exclude '/Benchmarks'
   --exclude '.fdb-test'
   --exclude '.test-results'
   --exclude '*.xcresult'
@@ -543,7 +544,6 @@ build_fingerprint="$({
     find \
       "$source_copy/Sources" \
       "$source_copy/Tests" \
-      "$source_copy/Benchmarks" \
       "$source_copy/Package.swift" \
       "$source_copy/Package.resolved" \
       -type f -print0 2>/dev/null | sort -z

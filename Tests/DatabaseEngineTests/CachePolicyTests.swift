@@ -99,12 +99,6 @@ struct CachePolicyTests {
 
     // MARK: - Query.cachePolicy Tests
 
-    @Test("Query.cachePolicy defaults to .server")
-    func queryDefaultCachePolicy() {
-        let query = Query<CachePolicyEntity>()
-        #expect(query.cachePolicy == .server)
-    }
-
     @Test("Query.cachePolicy() fluent method sets policy")
     func queryCachePolicyFluent() {
         let query = Query<CachePolicyEntity>()

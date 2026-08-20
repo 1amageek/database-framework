@@ -305,22 +305,6 @@ struct RoaringBitmapUnitTests {
         #expect(orResult.cardinality == 1)
     }
 
-    @Test("Large cardinality bitmap")
-    func testLargeCardinality() {
-        var bitmap = RoaringBitmap()
-
-        // Add 10,000 values
-        for i: UInt32 in 0..<10000 {
-            bitmap.add(i)
-        }
-
-        #expect(bitmap.cardinality == 10000)
-        #expect(bitmap.contains(0))
-        #expect(bitmap.contains(5000))
-        #expect(bitmap.contains(9999))
-        #expect(!bitmap.contains(10000))
-    }
-
     @Test("Values across multiple containers")
     func testMultipleContainers() {
         var bitmap = RoaringBitmap()
@@ -856,32 +840,6 @@ struct BitmapIndexEdgeCasesTests {
         let bitmap = try await ctx.getBitmap(for: "electronics")
         let primaryKeys = try await ctx.getPrimaryKeys(from: bitmap)
         #expect(primaryKeys.count == 5, "Should retrieve all 5 primary keys")
-
-        try await ctx.cleanup()
-    }
-
-    @Test("Large number of entries")
-    func testLargeNumberOfEntries() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let ctx = try await BitmapIndexContext()
-
-        // Insert 100 products
-        try await ctx.database.withTransaction { transaction in
-            for i in 1...100 {
-                let product = BitmapIndexedProduct(id: "p\(i)", category: "electronics", brand: "Brand")
-                try await ctx.maintainer.updateIndex(
-                    oldItem: nil as BitmapIndexedProduct?,
-                    newItem: product,
-                    transaction: transaction
-                )
-            }
-        }
-
-        let count = try await ctx.getCount(for: "electronics")
-        #expect(count == 100, "Should have 100 entries")
-
-        let bitmap = try await ctx.getBitmap(for: "electronics")
-        #expect(bitmap.cardinality == 100)
 
         try await ctx.cleanup()
     }

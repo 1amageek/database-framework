@@ -63,7 +63,6 @@ let package = Package(
         // QueryIR is provided by database-kit
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
-        .library(name: "BenchmarkFramework", targets: ["BenchmarkFramework"]),
     ],
     traits: [
         .trait(name: "FoundationDB"),
@@ -523,15 +522,6 @@ let package = Package(
                 ),
             ]
         ),
-        // BenchmarkFramework - Performance benchmarking infrastructure
-        .target(
-            name: "BenchmarkFramework",
-            dependencies: [
-                "DatabaseEngine",
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
-            ]
-        ),
         // Test Support (shared test utilities)
         .target(
             name: "TestSupport",
@@ -821,11 +811,7 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
-            ],
-            swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"]))
-            ],
-            linkerSettings: foundationDBClientLinkerSettings
+            ]
         ),
         // QueryIR tests (SQL/SPARQL escape, Expression operators)
         .testTarget(
@@ -849,42 +835,6 @@ let package = Package(
                 .product(name: "DatabaseKitFoundation", package: "database-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
-            swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"]))
-            ],
-            linkerSettings: foundationDBClientLinkerSettings
-        ),
-        // BenchmarkFramework tests
-        .testTarget(
-            name: "BenchmarkFrameworkTests",
-            dependencies: [
-                "BenchmarkFramework",
-                "TestSupport",
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
-            ],
-            swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"]))
-            ],
-            linkerSettings: foundationDBClientLinkerSettings
-        ),
-        // Performance Benchmarks
-        .testTarget(
-            name: "PerformanceBenchmarks",
-            dependencies: [
-                "BenchmarkFramework",
-                "DatabaseEngine",
-                "DatabaseRuntime",
-                "TestSupport",
-                "ScalarIndex",
-                "RankIndex",
-                "AggregationIndex",
-                "BitmapIndex",
-                .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
-            ],
-            path: "Benchmarks",
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"]))
             ],

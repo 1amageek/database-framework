@@ -339,14 +339,12 @@ struct DistinctIndexBehaviorTests {
         try await ctx.cleanup()
     }
 
-    // MARK: - Large Scale Tests
-
-    @Test("HyperLogLog accuracy with large cardinality")
-    func testLargeCardinality() async throws {
+    @Test("HyperLogLog estimate stays within its declared error bound")
+    func estimateStaysWithinDeclaredErrorBound() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let ctx = try await DistinctIndexContext()
 
-        let uniqueUserCount = 1000
+        let uniqueUserCount = 100
 
         let pageViews = (1...uniqueUserCount).map { index in
             DistinctIndexedPageView(
@@ -365,8 +363,6 @@ struct DistinctIndexBehaviorTests {
 
         let (estimated, errorRate) = try await ctx.getDistinctCount(for: "popular-page")
 
-        // HyperLogLog++ with precision 14: ~0.81% standard error
-        // For 1000 values, expected error ~8
         let expectedMin = Int64(Double(uniqueUserCount) * 0.95)  // Allow 5% under
         let expectedMax = Int64(Double(uniqueUserCount) * 1.05)  // Allow 5% over
 

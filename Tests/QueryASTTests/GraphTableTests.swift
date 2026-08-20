@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// GraphTableTests.swift
 /// Comprehensive tests for SQL/PGQ GRAPH_TABLE types
 
@@ -389,4 +388,3 @@ struct GraphTableColumnTests {
         #expect(set.count == 2)
     }
 }
-#endif

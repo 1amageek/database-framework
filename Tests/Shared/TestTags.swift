@@ -28,6 +28,4 @@ extension Tag {
     /// Tag for tests that require a running FoundationDB instance (alias)
     @Tag public static var requiresFDB: Self
 
-    /// Tag for performance tests
-    @Tag public static var performance: Self
 }

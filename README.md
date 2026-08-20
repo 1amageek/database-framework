@@ -385,13 +385,21 @@ core engine dependency.
 | `FullTextIndexFoundation` | Foundation-specific full-text adaptation |
 | `SwiftLogDatabaseLogging` | Swift Log adapter |
 | `SwiftMetricsDatabaseMetrics` | Swift Metrics adapter |
-| `BenchmarkFramework` | Benchmark support utilities |
 
 Use `DatabaseRuntime` when a host adapter supplies storage and the application
 needs the framework's declarations and execution runtime. Use `Database` when
 the application also wants the storage and query-parser umbrella. Import
 individual products when a package intentionally needs a narrower dependency
 surface.
+
+## Benchmark ownership
+
+Performance measurement is not part of this package's product or test graph.
+The independent [`Benchmarks`](Benchmarks) Swift package owns FoundationDB
+workloads, while the sibling `database-framework-benchmark` repository owns
+`BenchmarkFramework`, reporters, and executable profiles. Changes under
+`Benchmarks` therefore do not make the framework test harness rebuild or run
+performance workloads.
 
 ## Platform Support
 

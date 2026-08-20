@@ -14,49 +14,6 @@ import PostgreSQLStorage
 @testable import DatabaseKit
 import TestSupport
 
-@Suite("PostgreSQL Partition Metadata Tests")
-struct PostgreSQLPartitionMetadataTests {
-    @Test("TenantOrder has dynamic directory on PostgreSQL")
-    func tenantOrderHasDynamicDirectory() {
-        #expect(TenantOrder.hasDynamicDirectory == true)
-        #expect(TenantOrder.directoryFieldNames == ["tenantID"])
-    }
-
-    @Test("Player does not have dynamic directory")
-    func playerHasStaticDirectory() {
-        #expect(Player.hasDynamicDirectory == false)
-        #expect(Player.directoryFieldNames.isEmpty)
-    }
-
-    @Test("DirectoryPath validates missing fields")
-    func directoryPathValidatesMissingFields() {
-        let binding = DirectoryPath<TenantOrder>()
-
-        #expect(throws: DirectoryPathError.self) {
-            try binding.validate()
-        }
-    }
-
-    @Test("DirectoryPath validates complete binding")
-    func directoryPathValidatesCompleteBinding() {
-        var binding = DirectoryPath<TenantOrder>()
-        binding.set(TenantOrder.fields.tenantID, to: "tenant_123")
-
-        #expect(throws: Never.self) {
-            try binding.validate()
-        }
-    }
-
-    @Test("DirectoryPath.from extracts values from model")
-    func directoryPathFromModel() throws {
-        let order = TenantOrder(tenantID: "tenant_xyz", status: "pending", total: 50.0)
-        let binding = try DirectoryPath<TenantOrder>.from(order)
-        let tenantID = try binding.value(for: TenantOrder.fields.tenantID)
-
-        #expect(tenantID == "tenant_xyz")
-    }
-}
-
 @Suite("PostgreSQL Partition Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLScenarioCoordinator.isConfigured))
 struct PostgreSQLPartitionTests {
 

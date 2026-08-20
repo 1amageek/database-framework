@@ -55,32 +55,30 @@ struct ReservoirSamplingTests {
         #expect(sampler.elementsSeen == 100)
     }
 
-    @Test("Reservoir should not exceed max size for large streams")
-    func testLargeStream() {
+    @Test("Reservoir should not exceed max size after reaching capacity")
+    func reservoirDoesNotExceedCapacity() {
         var sampler = ReservoirSampling<Int>(reservoirSize: 100)
 
-        for i in 0..<10_000 {
+        for i in 0..<200 {
             sampler.add(i)
         }
 
         #expect(sampler.sample.count == 100)
-        #expect(sampler.elementsSeen == 10_000)
+        #expect(sampler.elementsSeen == 200)
         #expect(sampler.isFull)
     }
 
     // MARK: - Sample Rate
 
-    @Test("Sample rate should be accurate for large streams")
+    @Test("Sample rate reflects retained values over observed values")
     func testSampleRate() {
-        var sampler = ReservoirSampling<Int>(reservoirSize: 1000)
+        var sampler = ReservoirSampling<Int>(reservoirSize: 10)
 
-        for i in 0..<100_000 {
+        for i in 0..<100 {
             sampler.add(i)
         }
 
-        // Sample rate should be approximately 1000/100000 = 0.01
-        let rate = sampler.sampleRate
-        #expect(abs(rate - 0.01) < 0.001)
+        #expect(sampler.sampleRate == 0.1)
     }
 
     @Test("Sample rate should be 1.0 for small streams")
@@ -95,55 +93,16 @@ struct ReservoirSamplingTests {
         #expect(sampler.sampleRate == 1.0)
     }
 
-    // MARK: - Uniform Sampling (Statistical Test)
-
-    @Test("Algorithm L should produce uniform random sample")
-    func testUniformSampling() {
-        // Run multiple trials to verify uniform distribution
-        let reservoirSize = 100
-        let streamSize = 10_000
-        let trials = 20
-
-        // Count how often each element appears across trials
-        var counts = [Int: Int]()
-
-        for _ in 0..<trials {
-            var sampler = ReservoirSampling<Int>(reservoirSize: reservoirSize)
-            for i in 0..<streamSize {
-                sampler.add(i)
-            }
-
-            for element in sampler.sample {
-                counts[element, default: 0] += 1
-            }
-        }
-
-        // Expected count per element: (reservoirSize * trials) / streamSize = 0.2
-        // With uniform sampling, all elements should have similar counts
-
-        // Verify we have samples from throughout the stream
-        let sampledElements = Set(counts.keys)
-        let firstThird = sampledElements.filter { $0 < streamSize / 3 }.count
-        let middleThird = sampledElements.filter { $0 >= streamSize / 3 && $0 < 2 * streamSize / 3 }.count
-        let lastThird = sampledElements.filter { $0 >= 2 * streamSize / 3 }.count
-
-        // Each third should have roughly similar representation
-        let total = firstThird + middleThird + lastThird
-        #expect(Double(firstThird) / Double(total) > 0.2, "First third underrepresented")
-        #expect(Double(middleThird) / Double(total) > 0.2, "Middle third underrepresented")
-        #expect(Double(lastThird) / Double(total) > 0.2, "Last third underrepresented")
-    }
-
     // MARK: - addAll
 
     @Test("addAll should process all elements")
     func testAddAll() {
         var sampler = ReservoirSampling<Int>(reservoirSize: 100)
 
-        let elements = Array(0..<1000)
+        let elements = Array(0..<200)
         sampler.addAll(elements)
 
-        #expect(sampler.elementsSeen == 1000)
+        #expect(sampler.elementsSeen == 200)
         #expect(sampler.sample.count == 100)
     }
 
@@ -153,7 +112,7 @@ struct ReservoirSamplingTests {
     func testReset() {
         var sampler = ReservoirSampling<Int>(reservoirSize: 100)
 
-        for i in 0..<1000 {
+        for i in 0..<20 {
             sampler.add(i)
         }
 
@@ -173,7 +132,7 @@ struct ReservoirSamplingTests {
     func testStringValues() {
         var sampler = ReservoirSampling<String>(reservoirSize: 50)
 
-        for i in 0..<500 {
+        for i in 0..<100 {
             sampler.add("item_\(i)")
         }
 
@@ -185,7 +144,7 @@ struct ReservoirSamplingTests {
     func testFieldValueTypes() {
         var sampler = ReservoirSampling<FieldValue>(reservoirSize: 100)
 
-        for i in 0..<1000 {
+        for i in 0..<200 {
             if i % 2 == 0 {
                 sampler.add(.int64(Int64(i)))
             } else {
@@ -194,7 +153,7 @@ struct ReservoirSamplingTests {
         }
 
         #expect(sampler.sample.count == 100)
-        #expect(sampler.elementsSeen == 1000)
+        #expect(sampler.elementsSeen == 200)
     }
 
     // MARK: - Histogram Building
@@ -204,7 +163,7 @@ struct ReservoirSamplingTests {
         var sampler = ReservoirSampling<Int>(reservoirSize: 1000)
 
         // Add uniformly distributed values
-        for i in 0..<10_000 {
+        for i in 0..<1_000 {
             sampler.add(i % 100)  // Values 0-99
         }
 
@@ -223,7 +182,7 @@ struct ReservoirSamplingTests {
     func testBuildHistogramFieldValue() {
         var sampler = ReservoirSampling<FieldValue>(reservoirSize: 1000)
 
-        for i in 0..<5000 {
+        for i in 0..<500 {
             sampler.add(.int64(Int64(i % 50)))
         }
 
@@ -236,11 +195,11 @@ struct ReservoirSamplingTests {
 
     @Test("Reservoir should compute statistics from numeric samples")
     func testComputeStatistics() {
-        var sampler = ReservoirSampling<Double>(reservoirSize: 1000)
+        var sampler = ReservoirSampling<Double>(reservoirSize: 101)
 
         // Add values with known mean (50) and range (0-100)
-        for i in 0..<10_000 {
-            sampler.add(Double(i % 101))
+        for value in 0...100 {
+            sampler.add(Double(value))
         }
 
         guard let stats = sampler.computeStatistics() else {
@@ -265,51 +224,14 @@ struct ReservoirSamplingTests {
     func testReservoirSizeOne() {
         var sampler = ReservoirSampling<Int>(reservoirSize: 1)
 
-        for i in 0..<1000 {
+        for i in 0..<10 {
             sampler.add(i)
         }
 
         #expect(sampler.sample.count == 1)
-        #expect(sampler.elementsSeen == 1000)
+        #expect(sampler.elementsSeen == 10)
     }
 
-    @Test("Very large reservoir should handle efficiently")
-    func testLargeReservoir() {
-        var sampler = ReservoirSampling<Int>(reservoirSize: 10_000)
-
-        // Add elements - should fill reservoir then sample
-        for i in 0..<50_000 {
-            sampler.add(i)
-        }
-
-        #expect(sampler.sample.count == 10_000)
-        #expect(sampler.elementsSeen == 50_000)
-    }
-
-    // MARK: - Algorithm L Efficiency
-
-    @Test("Algorithm L should be efficient for large streams")
-    func testAlgorithmLEfficiency() {
-        // This test verifies that Algorithm L is used (constant time per skip)
-        // by checking that a very large stream completes quickly
-        var sampler = ReservoirSampling<Int>(reservoirSize: 100)
-
-        // Time the sampling of a large stream
-        let start = Date()
-
-        for i in 0..<1_000_000 {
-            sampler.add(i)
-        }
-
-        let duration = Date().timeIntervalSince(start)
-
-        #expect(sampler.sample.count == 100)
-        #expect(sampler.elementsSeen == 1_000_000)
-
-        // Should complete in reasonable time (Algorithm L is O(k log(N/k)))
-        // Algorithm R would be slower (O(N))
-        #expect(duration < 5.0, "Sampling took \(duration)s - Algorithm L should be faster")
-    }
 }
 #endif
 

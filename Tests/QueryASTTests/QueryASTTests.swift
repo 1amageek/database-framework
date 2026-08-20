@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// QueryASTTests.swift
 /// Tests for the QueryAST module
 
@@ -541,18 +540,6 @@ struct SPARQLParserTests {
         #expect(query.projection == Projection.all)
     }
 
-    @Test("Parse SELECT with PREFIX")
-    func testParseSelectWithPrefix() throws {
-        let sparql = """
-            PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-            SELECT ?name WHERE { ?s foaf:name ?name }
-            """
-        let parser = SPARQLParser()
-        let query = try parser.parseSelect(sparql)
-
-        #expect(query.filter == nil || query.filter != nil)  // Just ensure parsing succeeds
-    }
-
     @Test("Parse SELECT with FILTER")
     func testParseSelectWithFilter() throws {
         print("[TEST] testParseSelectWithFilter START")
@@ -950,4 +937,3 @@ struct SPARQLParserTests {
         }
     }
 }
-#endif

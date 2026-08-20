@@ -51,8 +51,8 @@ struct TransactionAdvancedTests {
         let totalCount = try await runner.run(configuration: .default) { tx in
             var total = 0
 
-            // 50 empty getRange() calls
-            for i in 0..<50 {
+            // Repetition semantics need more than one call, not a scale load.
+            for i in 0..<3 {
                 var sequence = tx.rangeCursor(
                     from: .firstGreaterOrEqual([0xFE, UInt8(i)]),
                     to: .firstGreaterOrEqual([0xFE, UInt8(i), 0]),
@@ -71,48 +71,6 @@ struct TransactionAdvancedTests {
         }
 
         #expect(totalCount == 0)
-    }
-
-    @Test("Very large number of getRange calls (500)")
-    func fiveHundredGetRangeCalls() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
-
-        // Setup: 500 keys
-        try await runner.run(configuration: .default) { tx in
-            for i in 0..<500 {
-                let key = [0x11] + withUnsafeBytes(of: UInt16(i).bigEndian) { Array($0) }
-                try tx.setValue([UInt8(i % 256)], for: ByteString(key))
-            }
-        }
-
-        // Test: 500 getRange() calls (1 per key)
-        let count = try await runner.run(configuration: .default) { tx in
-            var total = 0
-
-            for i in 0..<500 {
-                let start = [0x11] + withUnsafeBytes(of: UInt16(i).bigEndian) { Array($0) }
-                let end = [0x11] + withUnsafeBytes(of: UInt16(i + 1).bigEndian) { Array($0) }
-
-                var sequence = tx.rangeCursor(
-                    from: .firstGreaterOrEqual(ByteString(start)),
-                    to: .firstGreaterOrEqual(ByteString(end)),
-                    limit: 0,
-                    reverse: false,
-                    snapshot: true,
-                    streamingMode: .iterator
-                )
-
-                while try await sequence.next() != nil {
-                    total += 1
-                }
-            }
-
-            return total
-        }
-
-        #expect(count == 500)
     }
 
     // MARK: - Mixed Read/Write Operations
@@ -293,50 +251,6 @@ struct TransactionAdvancedTests {
         #expect(count == 20)
     }
 
-    // MARK: - Extreme Cases
-
-    @Test("1000 getRange calls with 1000 items")
-    func thousandGetRangeWithThousandItems() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
-
-        // Setup: 1000 items
-        try await runner.run(configuration: .default) { tx in
-            for i in 0..<1000 {
-                let key = [0x26] + withUnsafeBytes(of: UInt16(i).bigEndian) { Array($0) }
-                try tx.setValue([UInt8(i % 256)], for: ByteString(key))
-            }
-        }
-
-        // Test: 1000 getRange calls
-        let count = try await runner.run(configuration: .default) { tx in
-            var total = 0
-
-            for i in 0..<1000 {
-                let start = [0x26] + withUnsafeBytes(of: UInt16(i).bigEndian) { Array($0) }
-                let end = [0x26] + withUnsafeBytes(of: UInt16(i + 1).bigEndian) { Array($0) }
-
-                var sequence = tx.rangeCursor(
-                    from: .firstGreaterOrEqual(ByteString(start)),
-                    to: .firstGreaterOrEqual(ByteString(end)),
-                    limit: 0,
-                    reverse: false,
-                    snapshot: true,
-                    streamingMode: .iterator
-                )
-
-                while try await sequence.next() != nil {
-                    total += 1
-                }
-            }
-
-            return total
-        }
-
-        #expect(count == 1000)
-    }
-
     @Test("Deeply nested getRange loops")
     func deeplyNestedGetRangeLoops() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
@@ -476,43 +390,6 @@ struct TransactionAdvancedTests {
         #expect(result == 3)
     }
 
-    // MARK: - Performance Characteristics
-
-    @Test("Large scan does not timeout")
-    func largeScanDoesNotTimeout() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
-
-        // Setup: 5000 items
-        try await runner.run(configuration: .default) { tx in
-            for i in 0..<5000 {
-                let key = [0x2A] + withUnsafeBytes(of: UInt16(i).bigEndian) { Array($0) }
-                try tx.setValue([UInt8(i % 256)], for: ByteString(key))
-            }
-        }
-
-        // Scan all 5000 items
-        let count = try await runner.run(configuration: .default) { tx in
-            var total = 0
-            var sequence = tx.rangeCursor(
-                from: .firstGreaterOrEqual([0x2A]),
-                to: .firstGreaterOrEqual([0x2B]),
-                limit: 0,
-                reverse: false,
-                snapshot: true,
-                streamingMode: .iterator
-            )
-
-            while try await sequence.next() != nil {
-                total += 1
-            }
-
-            return total
-        }
-
-        #expect(count == 5000)
-    }
 }
 #endif
 

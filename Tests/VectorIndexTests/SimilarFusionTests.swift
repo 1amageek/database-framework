@@ -89,14 +89,14 @@ struct SimilarFusionTests {
         await container.shutdown()
     }
 
-    @Test("Large candidate sets remain semantically restrictive")
-    func largeCandidateSetsDoNotDependOnGlobalNearestNeighbors() async throws {
+    @Test("Candidate sets remain semantically restrictive")
+    func candidateSetsDoNotDependOnGlobalNearestNeighbors() async throws {
         let container = try await makeContainer(algorithm: .flat)
         do {
             let context = container.testBaseContext()
             var candidateIDs: Set<String> = []
 
-            for index in 0...1_000 {
+            for index in 0..<3 {
                 let identifier = "candidate-\(index)"
                 candidateIDs.insert(identifier)
                 try context.insert(
@@ -107,7 +107,7 @@ struct SimilarFusionTests {
                     )
                 )
             }
-            for index in 0...1_000 {
+            for index in 0..<3 {
                 try context.insert(
                     SimilarFusionDocument(
                         id: "closer-outsider-\(index)",

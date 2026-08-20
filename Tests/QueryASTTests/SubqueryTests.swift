@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// SubqueryTests.swift
 /// Comprehensive tests for nested subquery operations
 ///
@@ -717,4 +716,3 @@ struct SubqueryTests {
         }
     }
 }
-#endif

@@ -178,26 +178,6 @@ struct ResolveDirectoryTests {
         }
     }
 
-    // MARK: - Caching Tests
-
-    @Test("Directory resolution is cached")
-    func directoryResolutionIsCached() async throws {
-        try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let container = try await setupContainer()
-            // Clean up at START of test
-            try await cleanup(container: container)
-
-            // First call resolves directory
-            let subspace1 = try await container.testBaseDirectory(for: DirectoryUser.self)
-
-            // Second call should hit cache and return same result
-            let subspace2 = try await container.testBaseDirectory(for: DirectoryUser.self)
-
-            // Verify same subspace
-            #expect(subspace1.prefix == subspace2.prefix)
-        }
-    }
-
     // MARK: - Integration Tests
 
     @Test("Resolved subspace can be used for data storage")

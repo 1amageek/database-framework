@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// SPARQLGroupPatternTests.swift
 /// Comprehensive tests for SPARQL 1.1 GroupGraphPattern parsing
 /// Validates rules [54]-[67] per W3C SPARQL 1.1 specification
@@ -835,4 +834,3 @@ struct SPARQLEdgeCaseTests {
         #expect(extractTriples(opt) != nil)
     }
 }
-#endif

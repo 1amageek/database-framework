@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// CreateGraphTests.swift
 /// Comprehensive tests for SQL/PGQ CREATE PROPERTY GRAPH types
 
@@ -497,4 +496,3 @@ struct GraphSchemaErrorTests {
         }
     }
 }
-#endif

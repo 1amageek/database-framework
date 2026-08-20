@@ -206,9 +206,9 @@ struct SPARQLValuesExecutionTests {
         #expect(bindings[0].isBound("?visible"))
     }
 
-    @Test("A large VALUES table compiles and executes without recursive UNION")
-    func largeValuesTableIsLinear() async throws {
-        let rowCount = 10_000
+    @Test("A VALUES table compiles and executes as a first-class node")
+    func valuesTableExecutesAsFirstClassNode() async throws {
+        let rowCount = 32
         var rows: [[Literal?]] = []
         rows.reserveCapacity(rowCount)
         for value in 0..<rowCount {
@@ -236,7 +236,7 @@ struct SPARQLValuesExecutionTests {
             workMeter: DatabaseWorkMeter(
                 budget: ExecutionBudget(
                     maximumRows: UInt32(rowCount),
-                    maximumWorkUnits: 100_000,
+                    maximumWorkUnits: 1_000,
                     timeoutMilliseconds: 30_000
                 ),
                 monotonicClock: TestProcessMonotonicClock()

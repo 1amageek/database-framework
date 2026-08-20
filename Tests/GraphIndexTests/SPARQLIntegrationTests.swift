@@ -785,17 +785,17 @@ struct SPARQLIntegrationTests {
         }
     }
 
-    @Test("Large dataset (100 edges)")
-    func testLargeDataset() async throws {
+    @Test("Multi-row graph supports full and selective queries")
+    func multiRowGraphSupportsFullAndSelectiveQueries() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
             let context = container.testBaseContext()
 
-            // Insert 100 edges: Person1 -> Person2 -> ... -> Person100
+            // A compact chain proves full and selective result behavior.
             var statements: [SPARQLQueryStatement] = []
-            for i in 1..<100 {
+            for i in 1..<10 {
                 statements.append(try makeStatement(
                     subject: "Person\(i)",
                     predicate: "knows",
@@ -810,18 +810,18 @@ struct SPARQLIntegrationTests {
                 .where(try Self.subjectTerm("?s"), try Self.predicateTerm("knows"), try Self.objectTerm("?o"))
                 .execute()
 
-            #expect(allResults.count == 99)
+            #expect(allResults.count == 9)
 
             // Query specific person's friends
-            let person50Friends = try await context.sparql(SPARQLQueryStatement.self)
+            let person5Friends = try await context.sparql(SPARQLQueryStatement.self)
                 .defaultIndex()
-                .where(try Self.subjectTerm("Person50"), try Self.predicateTerm("knows"), try Self.objectTerm("?friend"))
+                .where(try Self.subjectTerm("Person5"), try Self.predicateTerm("knows"), try Self.objectTerm("?friend"))
                 .execute()
 
-            #expect(person50Friends.count == 1)
+            #expect(person5Friends.count == 1)
             #expect(
-                Self.resourceIdentifier(person50Friends.first?["?friend"])
-                    == "Person51"
+                Self.resourceIdentifier(person5Friends.first?["?friend"])
+                    == "Person6"
             )
 
             try await cleanup(container: container)

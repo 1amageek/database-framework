@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 import DatabaseKit
 import TestHeartbeat
 import Testing
@@ -82,4 +81,3 @@ struct SPARQLParserBlankNodeScopeValidationTests {
         }
     }
 }
-#endif

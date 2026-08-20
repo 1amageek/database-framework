@@ -486,10 +486,10 @@ struct LargeValueStorageTests {
         let itemSubspace = testSubspace.subspace(SubspaceKey.items)
         let blobsSubspace = testSubspace.subspace(SubspaceKey.blobs)
 
-        // Insert a very large item (will create multiple blob chunks)
+        // Insert a payload large enough to create multiple blob chunks.
         // Use cryptographically random data which should NOT compress well
         let id = "verylarge"
-        var dataBytes = [UInt8](repeating: 0, count: 1_000_000)  // 1MB
+        var dataBytes = [UInt8](repeating: 0, count: 128_000)
         // Use arc4random for truly random bytes
         for i in 0..<dataBytes.count {
             dataBytes[i] = UInt8.random(in: 0...255)

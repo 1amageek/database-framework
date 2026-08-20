@@ -1,4 +1,3 @@
-#if FOUNDATION_DB
 /// SPARQLNotInAndPropertyPathTests.swift
 /// Tests for SPARQL NOT IN operator and Property Path parsing
 
@@ -532,4 +531,3 @@ struct SPARQLPropertyPathTests {
         #expect(propertyPathCount == 1)
     }
 }
-#endif

@@ -367,16 +367,17 @@ struct SPARQLFunctionIntegrationTests {
         #expect(users.isEmpty)
     }
 
-    // MARK: - Test 9: Performance - Large Result Set
+    // MARK: - Test 9: Bounded Multi-Row Result
 
-    @Test("Performance: Large result set")
-    func testPerformanceLargeResultSet() async throws {
+    @Test("SPARQL returns a bounded multi-row result set")
+    func boundedMultiRowResultSet() async throws {
         let container = try await setupContainer()
         let context = container.testBaseContext()
 
-        // Setup: Create 100 users and triples
+        // A small multi-row fixture verifies result mapping without measuring
+        // throughput in the correctness suite.
         var users: [SPARQLFunctionUser] = []
-        for i in 0..<100 {
+        for i in 0..<10 {
             var user = SPARQLFunctionUser(
                 name: "User\(i)",
                 age: Int64(20 + (i % 50))
@@ -397,16 +398,12 @@ struct SPARQLFunctionIntegrationTests {
         let sql = """
             SELECT * FROM SPARQLFunctionUser
             WHERE resource IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s <urn:predicate:status> "active" }'))
-            LIMIT 100
+            LIMIT 10
             """
 
-        let startTime = Date()
         let results = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
-        let duration = Date().timeIntervalSince(startTime)
 
-        // Verify
-        #expect(results.count == 100)
-        print("Performance: \(results.count) users fetched in \(String(format: "%.3f", duration))s")
+        #expect(results.count == 10)
     }
 
     // MARK: - Test 10: SPARQLFunctionRewriter preserves from/fromNamed
