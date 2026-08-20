@@ -79,6 +79,7 @@ jobs:
             xcodebuild build-for-testing \
               -scheme database-framework-benchmarks-Package \
               -destination 'platform=macOS,arch=arm64' \
+              -skipMacroValidation \
               -derivedDataPath "$result_directory/DerivedData" \
               -resultBundlePath "$result_bundle" \
               2>&1 | tee "$log_path"
