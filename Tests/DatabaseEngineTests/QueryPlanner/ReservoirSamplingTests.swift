@@ -10,6 +10,25 @@ import DatabaseTypes
 @testable import DatabaseEngine
 @testable import DatabaseKit
 
+private struct DeterministicReservoirSamplingRandomSource:
+    ReservoirSamplingRandomSource
+{
+    var unitRandomValues: [Double]
+    var replacementIndices: [Int]
+
+    mutating func nextUnitInterval() -> Double {
+        precondition(!unitRandomValues.isEmpty)
+        return unitRandomValues.removeFirst()
+    }
+
+    mutating func replacementIndex(in range: Range<Int>) -> Int {
+        precondition(!replacementIndices.isEmpty)
+        let index = replacementIndices.removeFirst()
+        precondition(range.contains(index))
+        return index
+    }
+}
+
 @Suite("Reservoir Sampling Tests", .heartbeat)
 struct ReservoirSamplingTests {
 
@@ -66,6 +85,22 @@ struct ReservoirSamplingTests {
         #expect(sampler.sample.count == 100)
         #expect(sampler.elementsSeen == 200)
         #expect(sampler.isFull)
+    }
+
+    @Test("Algorithm L replaces an accepted value after reaching capacity")
+    func algorithmLReplacesAcceptedValue() {
+        var randomSource = DeterministicReservoirSamplingRandomSource(
+            unitRandomValues: [0.25, 0.75, 0.25, 0.75, 0.25],
+            replacementIndices: [0]
+        )
+        var sampler = ReservoirSampling<Int>(reservoirSize: 2)
+
+        sampler.add(0, using: &randomSource)
+        sampler.add(1, using: &randomSource)
+        sampler.add(2, using: &randomSource)
+
+        #expect(sampler.sample == [2, 1])
+        #expect(sampler.elementsSeen == 3)
     }
 
     // MARK: - Sample Rate

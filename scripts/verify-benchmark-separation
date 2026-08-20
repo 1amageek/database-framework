@@ -4,14 +4,27 @@ set -euo pipefail
 
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 package_root="$(cd "$script_directory/.." && pwd)"
+tests_root="$package_root/Tests"
+benchmark_package="$package_root/Benchmarks/Package.swift"
 
-if rg -n 'BenchmarkFramework|PerformanceBenchmarks' \
+if [[ ! -f "$benchmark_package" ]]; then
+  echo "error: the independent benchmark package manifest is missing" >&2
+  exit 1
+fi
+
+if rg -n -i 'benchmark' \
   "$package_root/Package.swift"; then
   echo "error: benchmark products or targets are present in Package.swift" >&2
   exit 1
 fi
 
-if find "$package_root/Tests" -type f \
+if ! rg -q -- "--exclude '/Benchmarks'" \
+    "$package_root/scripts/xcode-test-harness"; then
+  echo "error: the correctness harness does not exclude the benchmark package" >&2
+  exit 1
+fi
+
+if find "$tests_root" -type f \
   \( -iname '*benchmark*' -o -iname '*performance*' -o -iname '*largedata*' \) \
   -print -quit | rg -q .; then
   echo "error: benchmark-named source is present under Tests" >&2
@@ -20,16 +33,32 @@ fi
 
 if rg -n -i \
   '@(Test|Suite)\([^\n]*(benchmark|performance|large scale|large dataset|stress)' \
-  "$package_root/Tests"; then
+  "$tests_root"; then
   echo "error: a scale or performance scenario is present under Tests" >&2
   exit 1
 fi
 
 if rg -n \
-  'XCTApplicationLaunchMetric|XCTClockMetric|measure\(metrics:|BenchmarkRunner|measureBenchmark' \
-  "$package_root/Tests"; then
+  'XCTApplicationLaunchMetric|XCTClockMetric|measure\(metrics:|BenchmarkRunner|measureBenchmark|\.tags\([^\n]*\.performance|BENCHMARK[_A-Z]*|"(ops/s|qps|values/s|items/s)"' \
+  "$tests_root"; then
   echo "error: a benchmark measurement API is present under Tests" >&2
   exit 1
 fi
+
+timing_pattern='ContinuousClock|DispatchTime\.now|Date\(\)\.(addingTimeInterval|timeIntervalSince)|XCTClockMetric|measure\(metrics:'
+while IFS= read -r test_file; do
+  if ! rg -q 'TEST_TIME_SEMANTICS: correctness' "$test_file"; then
+    echo "error: timing API lacks an explicit correctness contract: $test_file" >&2
+    exit 1
+  fi
+done < <(rg -l "$timing_pattern" "$tests_root" || true)
+
+scale_pattern='for[^\n]*\.\.<\s*(?:[0-9]_?){6,}|repeating:[^\n]*count:\s*(?:[0-9]_?){6,}'
+while IFS= read -r test_file; do
+  if ! rg -q 'TEST_SCALE_SEMANTICS: correctness' "$test_file"; then
+    echo "error: large fixture lacks an explicit correctness contract: $test_file" >&2
+    exit 1
+  fi
+done < <(rg -l -P "$scale_pattern" "$tests_root" || true)
 
 echo "Benchmark separation is structurally valid."

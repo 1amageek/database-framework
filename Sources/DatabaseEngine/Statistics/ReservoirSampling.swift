@@ -6,6 +6,23 @@ import DatabaseKit
 import DatabaseMath
 import StorageKit
 
+protocol ReservoirSamplingRandomSource {
+    mutating func nextUnitInterval() -> Double
+    mutating func replacementIndex(in range: Range<Int>) -> Int
+}
+
+private struct SystemReservoirSamplingRandomSource:
+    ReservoirSamplingRandomSource
+{
+    mutating func nextUnitInterval() -> Double {
+        Double.random(in: Double.leastNonzeroMagnitude..<1)
+    }
+
+    mutating func replacementIndex(in range: Range<Int>) -> Int {
+        Int.random(in: range)
+    }
+}
+
 /// Reservoir Sampling implementation using Algorithm L
 ///
 /// Maintains a fixed-size random sample from a stream of unknown length.
@@ -75,6 +92,14 @@ public struct ReservoirSampling<T: Sendable>: Sendable {
     ///
     /// - Parameter element: The element to potentially sample
     public mutating func add(_ element: T) {
+        var randomSource = SystemReservoirSamplingRandomSource()
+        add(element, using: &randomSource)
+    }
+
+    mutating func add<RandomSource: ReservoirSamplingRandomSource>(
+        _ element: T,
+        using randomSource: inout RandomSource
+    ) {
         elementsSeen += 1
 
         if reservoir.count < reservoirSize {
@@ -83,17 +108,24 @@ public struct ReservoirSampling<T: Sendable>: Sendable {
 
             // Initialize Algorithm L when reservoir is full
             if reservoir.count == reservoirSize {
-                initializeAlgorithmL()
+                initializeAlgorithmL(using: &randomSource)
             }
         } else {
             // Phase 2: Algorithm L sampling
             if elementsSeen == nextSampleIndex {
                 // Replace random element in reservoir
-                let replaceIndex = Int.random(in: 0..<reservoirSize)
+                let replacementRange = 0..<reservoirSize
+                let replaceIndex = randomSource.replacementIndex(
+                    in: replacementRange
+                )
+                precondition(
+                    replacementRange.contains(replaceIndex),
+                    "Replacement index must be inside the reservoir"
+                )
                 reservoir[replaceIndex] = element
 
                 // Calculate next sample index using Algorithm L
-                calculateNextSampleIndex()
+                calculateNextSampleIndex(using: &randomSource)
             }
         }
     }
@@ -102,12 +134,17 @@ public struct ReservoirSampling<T: Sendable>: Sendable {
     ///
     /// Formula: W = exp(log(random()) / k)
     /// This gives W an initial value following the correct distribution
-    private mutating func initializeAlgorithmL() {
+    private mutating func initializeAlgorithmL<
+        RandomSource: ReservoirSamplingRandomSource
+    >(using randomSource: inout RandomSource) {
         // W = random()^(1/k) = exp(log(random()) / k)
         w = DatabaseMath.exponential(
-            DatabaseMath.naturalLogarithm(Double.random(in: 0..<1)) / Double(reservoirSize)
+            DatabaseMath.naturalLogarithm(
+                nextUnitRandom(using: &randomSource)
+            )
+                / Double(reservoirSize)
         )
-        calculateNextSampleIndex()
+        calculateNextSampleIndex(using: &randomSource)
     }
 
     /// Calculate the next index to sample using Algorithm L
@@ -117,10 +154,12 @@ public struct ReservoirSampling<T: Sendable>: Sendable {
     ///
     /// Then update W for next iteration:
     /// W = W * exp(log(random()) / k)
-    private mutating func calculateNextSampleIndex() {
+    private mutating func calculateNextSampleIndex<
+        RandomSource: ReservoirSamplingRandomSource
+    >(using randomSource: inout RandomSource) {
         // Calculate skip distance
         // skip = floor(log(U) / log(1 - W)) where U ~ Uniform(0,1)
-        let u = Double.random(in: 0..<1)
+        let u = nextUnitRandom(using: &randomSource)
 
         // Use log1p(-w) = log(1-w) for numerical stability when w is small
         // Note: log1p(x) = log(1 + x), so log1p(-w) = log(1 - w)
@@ -133,8 +172,22 @@ public struct ReservoirSampling<T: Sendable>: Sendable {
 
         // Update W for next iteration: W = W * random()^(1/k)
         w *= DatabaseMath.exponential(
-            DatabaseMath.naturalLogarithm(Double.random(in: 0..<1)) / Double(reservoirSize)
+            DatabaseMath.naturalLogarithm(
+                nextUnitRandom(using: &randomSource)
+            )
+                / Double(reservoirSize)
         )
+    }
+
+    private func nextUnitRandom<
+        RandomSource: ReservoirSamplingRandomSource
+    >(using randomSource: inout RandomSource) -> Double {
+        let value = randomSource.nextUnitInterval()
+        precondition(
+            value > 0 && value < 1,
+            "Algorithm L random values must be inside the open interval (0, 1)"
+        )
+        return value
     }
 
     /// Add multiple elements

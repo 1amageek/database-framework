@@ -3,6 +3,9 @@ import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
+// TEST_TIME_SEMANTICS: correctness - supplies monotonic time to test runtime
+// dependencies.
+
 /// Process-local monotonic time used by tests that do not exercise time.
 public struct TestProcessMonotonicClock: StorageMonotonicClock {
     private static let clock = ContinuousClock()

@@ -45,7 +45,7 @@ placement without exposing backend credentials through the semantic API.
 scripts/fdb-test-env run --clean -- \
   scripts/xcode-test-harness \
     --traits FoundationDB,AllRuntimeFeatures,MultiBase \
-    --expected-count 3454 \
+    --expected-count 3420 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings
@@ -113,7 +113,7 @@ POSTGRES_TEST_USER=postgres \
 POSTGRES_TEST_PASSWORD=test \
 POSTGRES_TEST_DB=database_framework_test \
 scripts/xcode-test-harness \
-  --traits PostgreSQL,AllRuntimeFeatures \
+  --traits PostgreSQL,AllRuntimeFeatures,MultiBase \
   --only-testing PostgreSQLTests \
   --expected-count 67 \
   --require-zero-skips \

@@ -103,7 +103,7 @@ scripts/xcode-test-harness \
 scripts/fdb-test-env run --clean -- \
   scripts/xcode-test-harness \
     --traits FoundationDB,AllRuntimeFeatures,MultiBase \
-    --expected-count 3454 \
+    --expected-count 3420 \
     --require-zero-skips \
     --require-zero-expected-failures \
     --require-zero-runtime-warnings

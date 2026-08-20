@@ -3,6 +3,8 @@ import DatabaseRuntime
 import DatabaseTypes
 import StorageKit
 import TestSupport
+// TEST_SCALE_SEMANTICS: correctness - verifies the configured mutation-state byte limit.
+
 import Testing
 
 @_spi(DatabaseExecution) @testable import DatabaseEngine

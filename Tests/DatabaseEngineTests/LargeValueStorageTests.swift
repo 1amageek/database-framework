@@ -2,6 +2,7 @@
 #if FOUNDATION_DB
 // LargeValueStorageTests.swift
 // Tests for large value storage (>90KB) with automatic splitting
+// TEST_SCALE_SEMANTICS: correctness - crosses the persisted-value chunk boundary.
 
 import Testing
 import Foundation
@@ -534,7 +535,15 @@ struct LargeValueStorageTests {
             ).count
         }
 
-        #expect(blobsCount >= 5, "Blobs subspace should have multiple chunks (got \(blobsCount))")
+        let chunkByteCount = ItemStorageConfiguration.v1.chunkByteCount
+        let expectedBlobCount = (
+            serializedSize + chunkByteCount - 1
+        ) / chunkByteCount
+        #expect(expectedBlobCount > 1)
+        #expect(
+            blobsCount == expectedBlobCount,
+            "Blobs subspace should contain exactly \(expectedBlobCount) chunks, got \(blobsCount)"
+        )
 
         // Cleanup
         try await database.withTransaction { transaction in

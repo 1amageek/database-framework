@@ -16,6 +16,19 @@ env:
   SWIFT_SNAPSHOT_URL: https://download.swift.org/swift-6.4.x-branch/xcode/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a-osx.pkg
 
 jobs:
+  benchmark-separation:
+    name: Benchmark separation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install verification tools
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Verify benchmark separation
+        run: scripts/verify-benchmark-separation
+
   sqlite:
     name: SQLite trait (macOS)
     # macOS runner required: transitive deps (swift-hnsw → Accelerate,
@@ -60,7 +73,7 @@ jobs:
             scripts/xcode-test-harness \
               --traits SQLite,AllRuntimeFeatures \
               --only-testing SQLiteTests \
-              --expected-count 101 \
+              --expected-count 111 \
               --require-zero-skips \
               --require-zero-expected-failures \
               --require-zero-runtime-warnings
@@ -160,9 +173,9 @@ jobs:
         run: |
           perl -e 'alarm shift; exec @ARGV' 1800 \
             scripts/xcode-test-harness \
-              --traits PostgreSQL,AllRuntimeFeatures \
+              --traits PostgreSQL,AllRuntimeFeatures,MultiBase \
               --only-testing PostgreSQLTests \
-              --expected-count 71 \
+              --expected-count 67 \
               --require-zero-skips \
               --require-zero-expected-failures \
               --require-zero-runtime-warnings
@@ -240,10 +253,8 @@ jobs:
           scripts/fdb-test-env run --clean -- \
             perl -e 'alarm shift; exec @ARGV' 2400 \
               scripts/xcode-test-harness \
-                --traits FoundationDB,AllRuntimeFeatures \
-                --skip-testing BenchmarkFrameworkTests \
-                --skip-testing PerformanceBenchmarks \
-                --expected-count 3920 \
+                --traits FoundationDB,AllRuntimeFeatures,MultiBase \
+                --expected-count 3420 \
                 --require-zero-skips \
                 --require-zero-expected-failures \
                 --require-zero-runtime-warnings

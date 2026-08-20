@@ -1,14 +1,44 @@
 import DatabaseTypes
+import Darwin
 import FDBStorage
 import Foundation
 import FoundationDB
 import StorageKit
 
 enum FoundationDBBenchmarkEnvironmentError: Error, LocalizedError {
+    case missingClusterFile
+    case clusterFileDoesNotExist(path: String)
+    case clusterOwnershipMarkerMissing(path: String)
+    case clusterOwnershipMarkerInvalid(path: String)
+    case clusterOwnershipMarkerMismatch(
+        clusterFile: String,
+        markerClusterFile: String?
+    )
+    case clusterEndpointIsNotIsolated(clusterFile: String)
     case clusterHealthCheckFailed(clusterFile: String?, underlying: Error)
 
     var errorDescription: String? {
         switch self {
+        case .missingClusterFile:
+            return "FDB_CLUSTER_FILE must identify a cluster owned by "
+                + "scripts/fdb-test-env"
+        case .clusterFileDoesNotExist(let path):
+            return "FoundationDB benchmark cluster file does not exist: \(path)"
+        case .clusterOwnershipMarkerMissing(let path):
+            return "FoundationDB benchmark ownership marker is missing: \(path)"
+        case .clusterOwnershipMarkerInvalid(let path):
+            return "FoundationDB benchmark ownership marker is invalid: \(path)"
+        case .clusterOwnershipMarkerMismatch(
+            let clusterFile,
+            let markerClusterFile
+        ):
+            return "FoundationDB benchmark cluster \(clusterFile) does not "
+                + "match its ownership marker "
+                + "\(markerClusterFile ?? \"<missing>\")"
+        case .clusterEndpointIsNotIsolated(let clusterFile):
+            return "FoundationDB benchmark cluster must be the single "
+                + "loopback cluster created by scripts/fdb-test-env: "
+                + clusterFile
         case .clusterHealthCheckFailed(let clusterFile, let underlying):
             if let clusterFile {
                 return "FoundationDB benchmark cluster health check failed for \(clusterFile): \(underlying)"
@@ -101,59 +131,85 @@ actor FoundationDBBenchmarkEnvironment {
         }
     }
 
-    private func candidateClusterFilePaths() -> [String?] {
+    private func requiredOwnedClusterFilePath() throws -> String {
         let fileManager = FileManager.default
         let environment = ProcessInfo.processInfo.environment
-
-        if let configuredPath = environment["FDB_CLUSTER_FILE"],
-           fileManager.fileExists(atPath: configuredPath) {
-            return [configuredPath]
+        guard let configuredPath = environment["FDB_CLUSTER_FILE"],
+              !configuredPath.isEmpty else {
+            throw FoundationDBBenchmarkEnvironmentError.missingClusterFile
         }
 
-        var candidates: [String?] = []
-        func appendCandidate(_ path: String) {
-            guard !candidates.contains(where: { $0 == path }) else { return }
-            candidates.append(path)
+        let clusterFileURL = URL(fileURLWithPath: configuredPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(
+            atPath: clusterFileURL.path,
+            isDirectory: &isDirectory
+        ), !isDirectory.boolValue else {
+            throw FoundationDBBenchmarkEnvironmentError
+                .clusterFileDoesNotExist(path: clusterFileURL.path)
         }
 
-        var currentURL = URL(
-            fileURLWithPath: fileManager.currentDirectoryPath,
-            isDirectory: true
+        let stateDirectoryURL = clusterFileURL.deletingLastPathComponent()
+        let identityURL = stateDirectoryURL.appendingPathComponent(
+            "fdb.pid.identity"
         )
-        while true {
-            let candidate = currentURL
-                .appendingPathComponent(".database/fdb.cluster")
-                .path
-            if fileManager.fileExists(atPath: candidate) {
-                appendCandidate(candidate)
-            }
-            let parentURL = currentURL.deletingLastPathComponent()
-            guard parentURL.path != currentURL.path else { break }
-            currentURL = parentURL
+        let pidURL = stateDirectoryURL.appendingPathComponent("fdb.pid")
+        guard fileManager.fileExists(atPath: identityURL.path),
+              fileManager.fileExists(atPath: pidURL.path) else {
+            throw FoundationDBBenchmarkEnvironmentError
+                .clusterOwnershipMarkerMissing(path: identityURL.path)
         }
 
-        for path in [
-            "/usr/local/etc/foundationdb/fdb.cluster",
-            "/opt/homebrew/etc/foundationdb/fdb.cluster",
-            "/etc/foundationdb/fdb.cluster",
-        ] where fileManager.fileExists(atPath: path) {
-            appendCandidate(path)
+        let identity = try String(contentsOf: identityURL, encoding: .utf8)
+        let identityLines = identity.split(
+            whereSeparator: \.isNewline
+        )
+        let pidText = try String(
+            contentsOf: pidURL,
+            encoding: .utf8
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard identityLines.count == 4,
+              !identityLines[0].isEmpty,
+              !identityLines[1].isEmpty,
+              let pid = Int32(pidText),
+              pid > 0,
+              Darwin.kill(pid, 0) == 0,
+              let markerPort = UInt16(identityLines[3]),
+              markerPort > 0 else {
+            throw FoundationDBBenchmarkEnvironmentError
+                .clusterOwnershipMarkerInvalid(path: identityURL.path)
+        }
+        let markerClusterFile = String(identityLines[2])
+        let markerClusterFileURL = URL(fileURLWithPath: markerClusterFile)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard markerClusterFileURL.path == clusterFileURL.path else {
+            throw FoundationDBBenchmarkEnvironmentError
+                .clusterOwnershipMarkerMismatch(
+                    clusterFile: clusterFileURL.path,
+                    markerClusterFile: markerClusterFileURL.path
+                )
         }
 
-        if candidates.isEmpty {
-            candidates.append(nil)
+        let clusterDescription = try String(
+            contentsOf: clusterFileURL,
+            encoding: .utf8
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let coordinators = clusterDescription.split(
+            separator: "@",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        guard coordinators.count == 2,
+              coordinators[1] == "127.0.0.1:\(markerPort)" else {
+            throw FoundationDBBenchmarkEnvironmentError
+                .clusterEndpointIsNotIsolated(
+                    clusterFile: clusterFileURL.path
+                )
         }
-        return candidates
-    }
-
-    private func resolvedClusterFilePath() -> String? {
-        if let selectedClusterFilePath {
-            return selectedClusterFilePath
-        }
-        guard let firstCandidate = candidateClusterFilePaths().first else {
-            return nil
-        }
-        return firstCandidate
+        return clusterFileURL.path
     }
 
     private func openConfiguredDatabase(
@@ -162,7 +218,7 @@ actor FoundationDBBenchmarkEnvironment {
         let database = try FDBClient.openDatabase(
             clusterFilePath: clusterFilePath
                 ?? selectedClusterFilePath
-                ?? resolvedClusterFilePath()
+                ?? requiredOwnedClusterFilePath()
         )
         try database.setOption(
             to: Self.transactionTimeoutMilliseconds,
@@ -261,40 +317,26 @@ actor FoundationDBBenchmarkEnvironment {
     }
 
     private func verifyHealthyCluster() async throws {
-        let candidates = candidateClusterFilePaths()
-        var lastError: Error?
-
-        for candidate in candidates {
-            let engine: FDBStorageEngine
-            do {
-                engine = try await createConfiguredEngine(
-                    systemPriority: true,
-                    clusterFilePath: candidate
-                )
-            } catch {
-                lastError = error
-                continue
-            }
-
-            do {
-                try await verifyClusterHealth(
-                    using: engine,
-                    clusterFilePath: candidate
-                )
-                await engine.waitUntilShutdown()
-                selectedClusterFilePath = candidate
-                return
-            } catch {
-                await engine.waitUntilShutdown()
-                lastError = error
-            }
-        }
-
-        throw FoundationDBBenchmarkEnvironmentError
-            .clusterHealthCheckFailed(
-                clusterFile: candidates.compactMap { $0 }.last,
-                underlying: lastError ?? CancellationError()
+        let clusterFilePath = try requiredOwnedClusterFilePath()
+        let engine = try await createConfiguredEngine(
+            systemPriority: true,
+            clusterFilePath: clusterFilePath
+        )
+        do {
+            try await verifyClusterHealth(
+                using: engine,
+                clusterFilePath: clusterFilePath
             )
+            await engine.waitUntilShutdown()
+            selectedClusterFilePath = clusterFilePath
+        } catch {
+            await engine.waitUntilShutdown()
+            throw FoundationDBBenchmarkEnvironmentError
+                .clusterHealthCheckFailed(
+                    clusterFile: clusterFilePath,
+                    underlying: error
+                )
+        }
     }
 
     private func resetDatabaseConsistencyDomain() async throws {

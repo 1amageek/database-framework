@@ -1,5 +1,6 @@
 // FoundationDBScenarioCoordinator.swift
 // Coordinates FoundationDB initialization and serialized scenario access.
+// TEST_TIME_SEMANTICS: correctness - bounds real service readiness checks.
 
 #if FOUNDATION_DB
 import DatabaseTypes

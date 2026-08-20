@@ -8,6 +8,8 @@
 // - PostCommit protocol and registry
 // - TransactionListener and lifecycle tracking
 // - TransactionConfiguration (ID, logging, tags)
+// TEST_TIME_SEMANTICS: correctness - supplies time to transaction lifecycle
+// fixtures.
 
 import Testing
 import TestHeartbeat

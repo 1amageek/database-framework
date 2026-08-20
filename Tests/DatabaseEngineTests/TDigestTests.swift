@@ -127,6 +127,11 @@ struct TDigestTests {
         let p99 = try digest.quantile(0.99)
         // For normal dist, p99 ≈ mean + 2.33*stddev = 100 + 34.95 = 134.95
         #expect(abs(p99 - 135) < 15, "p99=\(p99) should be near 135")
+
+        // Retained state is a resource invariant, independent of ingestion
+        // throughput. Keep it in the correctness suite at no extra fixture cost.
+        #expect(digest.centroidCount < 500)
+        #expect(digest.estimatedMemoryBytes < 20_000)
     }
 
     @Test("Extreme quantile accuracy")
