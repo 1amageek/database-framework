@@ -5,7 +5,7 @@ import Foundation
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
-import DatabaseEngine
+@_spi(Benchmarking) import DatabaseEngine
 import DatabaseRuntime
 
 @Persistable
@@ -131,7 +131,11 @@ private struct CRUDBenchmarkContext: Sendable {
     }
 
     func dataStoreWrite(_ entity: CRUDBenchmarkEntity) async throws {
-        let store = try await container.store(for: CRUDBenchmarkEntity.self, path: path)
+        let store = try await DataStoreBenchmarkProbe.openDataStore(
+            for: CRUDBenchmarkEntity.self,
+            in: container,
+            path: path
+        )
         try await store.executeBatch(
             inserts: [try PersistedModel(entity)],
             deletes: []
@@ -139,7 +143,11 @@ private struct CRUDBenchmarkContext: Sendable {
     }
 
     func dataStoreRead(id: String) async throws -> CRUDBenchmarkEntity? {
-        let store = try await container.store(for: CRUDBenchmarkEntity.self, path: path)
+        let store = try await DataStoreBenchmarkProbe.openDataStore(
+            for: CRUDBenchmarkEntity.self,
+            in: container,
+            path: path
+        )
         return try await store.withTransaction(configuration: .readOnly) { transaction in
             try await transaction.fetch(
                 CRUDBenchmarkEntity.self,

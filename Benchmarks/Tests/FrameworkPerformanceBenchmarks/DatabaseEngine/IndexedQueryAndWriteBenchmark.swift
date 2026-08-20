@@ -5,7 +5,7 @@ import Foundation
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
-import DatabaseEngine
+@_spi(Benchmarking) import DatabaseEngine
 import DatabaseRuntime
 import ScalarIndex
 import AggregationIndex
@@ -185,7 +185,10 @@ private struct IndexedBenchmarkContext: Sendable {
     }
 
     func insertPlain(_ entity: PlainBenchmarkEntity) async throws {
-        let store = try await container.store(for: PlainBenchmarkEntity.self)
+        let store = try await DataStoreBenchmarkProbe.openDataStore(
+            for: PlainBenchmarkEntity.self,
+            in: container
+        )
         try await store.executeBatch(
             inserts: [try PersistedModel(entity)],
             deletes: []
@@ -193,7 +196,10 @@ private struct IndexedBenchmarkContext: Sendable {
     }
 
     func insertSingle(_ entity: SingleIndexBenchmarkEntity) async throws {
-        let store = try await container.store(for: SingleIndexBenchmarkEntity.self)
+        let store = try await DataStoreBenchmarkProbe.openDataStore(
+            for: SingleIndexBenchmarkEntity.self,
+            in: container
+        )
         try await store.executeBatch(
             inserts: [try PersistedModel(entity)],
             deletes: []
@@ -201,7 +207,10 @@ private struct IndexedBenchmarkContext: Sendable {
     }
 
     func insertTriple(_ entity: TripleIndexBenchmarkEntity) async throws {
-        let store = try await container.store(for: TripleIndexBenchmarkEntity.self)
+        let store = try await DataStoreBenchmarkProbe.openDataStore(
+            for: TripleIndexBenchmarkEntity.self,
+            in: container
+        )
         try await store.executeBatch(
             inserts: [try PersistedModel(entity)],
             deletes: []

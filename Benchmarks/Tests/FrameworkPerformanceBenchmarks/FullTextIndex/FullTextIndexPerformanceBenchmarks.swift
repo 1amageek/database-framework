@@ -37,7 +37,7 @@ private struct BenchmarkContext {
         let index = try ResolvedIndex(
             for: BenchmarkArticle.self,
             name: indexName,
-            definition: fullTextIndexDefinition(
+            definition: benchmarkFullTextIndexDefinition(
                 fieldName: "content",
                 fieldNumber: 3,
                 tokenizer: tokenizer,

@@ -1,4 +1,4 @@
-import DatabaseEngine
+@testable import DatabaseEngine
 import Foundation
 import Testing
 

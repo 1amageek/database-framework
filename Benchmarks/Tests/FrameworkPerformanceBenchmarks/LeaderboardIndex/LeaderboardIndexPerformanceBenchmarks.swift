@@ -40,7 +40,7 @@ private struct LeaderboardBenchmarkContext {
         let index = try ResolvedIndex(
             for: LeaderboardBenchmarkScore.self,
             name: indexName,
-            definition: timeWindowLeaderboardIndexDefinition(
+            definition: benchmarkTimeWindowLeaderboardIndexDefinition(
                 scoreFieldName: "score",
                 scoreFieldNumber: 3,
                 window: window,

@@ -75,7 +75,10 @@ private struct VersionIndexBenchmarkContext {
         let index = try ResolvedIndex(
             for: VersionedBenchmarkDocument.self,
             name: indexName,
-            definition: versionIndexDefinition(strategy: strategy),
+            definition: .history(
+                version: FieldIdentity(name: "id", number: 1),
+                retention: strategy
+            ),
             rootExpression: FieldKeyExpression(fieldName: "id"),
             itemTypes: Set(["VersionedBenchmarkDocument"])
         )

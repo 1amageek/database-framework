@@ -27,7 +27,7 @@ private struct BenchmarkContext {
         self.indexSubspace = subspace.subspace("I").subspace("edges")
         self.strategy = strategy
 
-        let definition = propertyGraphIndexDefinition(
+        let definition = benchmarkPropertyGraphIndexDefinition(
             source: BenchmarkEdge.fields.source.identity,
             label: BenchmarkEdge.fields.label.identity,
             target: BenchmarkEdge.fields.target.identity,

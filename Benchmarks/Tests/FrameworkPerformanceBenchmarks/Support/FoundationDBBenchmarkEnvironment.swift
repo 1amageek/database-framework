@@ -34,7 +34,7 @@ enum FoundationDBBenchmarkEnvironmentError: Error, LocalizedError {
         ):
             return "FoundationDB benchmark cluster \(clusterFile) does not "
                 + "match its ownership marker "
-                + "\(markerClusterFile ?? \"<missing>\")"
+                + (markerClusterFile ?? "<missing>")
         case .clusterEndpointIsNotIsolated(let clusterFile):
             return "FoundationDB benchmark cluster must be the single "
                 + "loopback cluster created by scripts/fdb-test-env: "
@@ -236,22 +236,15 @@ actor FoundationDBBenchmarkEnvironment {
     }
 
     private func createConfiguredEngine(
-        systemPriority: Bool = false,
         clusterFilePath: String? = nil
     ) async throws -> FDBStorageEngine {
         if !FDBClient.isInitialized {
             try await FDBClient.initialize()
         }
 
-        let baseDatabase = try openConfiguredDatabase(
+        let database = try openConfiguredDatabase(
             clusterFilePath: clusterFilePath
         )
-        let database: any DatabaseProtocol
-        if systemPriority {
-            database = FDBSystemPriorityDatabase(wrapping: baseDatabase)
-        } else {
-            database = baseDatabase
-        }
         return try await FDBStorageEngine(
             configuration: .init(database: database)
         )
@@ -319,7 +312,6 @@ actor FoundationDBBenchmarkEnvironment {
     private func verifyHealthyCluster() async throws {
         let clusterFilePath = try requiredOwnedClusterFilePath()
         let engine = try await createConfiguredEngine(
-            systemPriority: true,
             clusterFilePath: clusterFilePath
         )
         do {
@@ -340,9 +332,11 @@ actor FoundationDBBenchmarkEnvironment {
     }
 
     private func resetDatabaseConsistencyDomain() async throws {
-        let engine = try await createConfiguredEngine(systemPriority: true)
+        let engine = try await createConfiguredEngine()
         do {
             try await engine.withTransaction { transaction in
+                try transaction.setOption(forOption: .prioritySystemImmediate)
+                try transaction.setOption(forOption: .readPriorityHigh)
                 try transaction.clearRange(
                     beginKey: ByteString(),
                     endKey: ByteString([0xFF])

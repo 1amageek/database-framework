@@ -65,7 +65,6 @@ struct CoveringIndexBenchmark {
             ),
             security: .benchmarkingDisabled
         )
-        try await container.ensureIndexesReady()
         return container.benchmarkContext()
     }
 

@@ -29,6 +29,83 @@ jobs:
       - name: Verify benchmark separation
         run: scripts/verify-benchmark-separation
 
+  benchmark-build:
+    name: Benchmark package build
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - name: Checkout framework
+        uses: actions/checkout@v7
+        with:
+          path: database-framework
+
+      - name: Checkout benchmark support
+        uses: actions/checkout@v7
+        with:
+          repository: 1amageek/database-framework-benchmark
+          path: database-framework-benchmark
+
+      - name: Install pinned Swift toolchain
+        run: |
+          toolchain_package="$RUNNER_TEMP/${SWIFT_SNAPSHOT}-osx.pkg"
+          toolchain_root="$HOME/Library/Developer/Toolchains/${SWIFT_SNAPSHOT}.xctoolchain"
+          curl -fL --retry 3 -o "$toolchain_package" "$SWIFT_SNAPSHOT_URL"
+          installer -pkg "$toolchain_package" -target CurrentUserHomeDirectory
+          test -x "$toolchain_root/usr/bin/swift"
+          platform_linker="$(env -u TOOLCHAINS xcrun --find ld)"
+          ln -sf "$platform_linker" "$toolchain_root/usr/bin/ld"
+          test -x "$toolchain_root/usr/bin/ld"
+          echo "$toolchain_root/usr/bin" >> "$GITHUB_PATH"
+
+      - name: Install FoundationDB client
+        env:
+          FDB_VERSION: "7.3.69"
+        run: |
+          curl -fL --retry 3 -o "/tmp/FoundationDB-${FDB_VERSION}_arm64.pkg" \
+            "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/FoundationDB-${FDB_VERSION}_arm64.pkg"
+          sudo installer -pkg "/tmp/FoundationDB-${FDB_VERSION}_arm64.pkg" -target /
+          sudo launchctl unload /Library/LaunchDaemons/com.foundationdb.fdbmonitor.plist 2>/dev/null || true
+          test -f /usr/local/lib/libfdb_c.dylib
+
+      - name: Build benchmark package without executing workloads
+        working-directory: database-framework/Benchmarks
+        run: |
+          result_directory=/tmp/database-framework-benchmark-build
+          result_bundle="$result_directory/FrameworkPerformanceBenchmarks.xcresult"
+          log_path="$result_directory/FrameworkPerformanceBenchmarks.log"
+          mkdir -p "$result_directory"
+          set -o pipefail
+          perl -e 'alarm shift; exec @ARGV' 900 \
+            xcodebuild build-for-testing \
+              -scheme database-framework-benchmarks-Package \
+              -destination 'platform=macOS,arch=arm64' \
+              -derivedDataPath "$result_directory/DerivedData" \
+              -resultBundlePath "$result_bundle" \
+              2>&1 | tee "$log_path"
+
+      - name: Validate benchmark build result
+        run: |
+          summary="$(xcrun xcresulttool get build-results \
+            --path /tmp/database-framework-benchmark-build/FrameworkPerformanceBenchmarks.xcresult)"
+          jq -e '
+            .status == "succeeded"
+            and .errorCount == 0
+            and .warningCount == 0
+            and .analyzerWarningCount == 0
+          ' <<<"$summary"
+
+      - name: Upload benchmark build results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-build-xcresult
+          path: /tmp/database-framework-benchmark-build
+          if-no-files-found: error
+
+      - name: Stop FoundationDB service
+        if: always()
+        run: sudo launchctl unload /Library/LaunchDaemons/com.foundationdb.fdbmonitor.plist 2>/dev/null || true
+
   sqlite:
     name: SQLite trait (macOS)
     # macOS runner required: transitive deps (swift-hnsw → Accelerate,

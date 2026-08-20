@@ -15,4 +15,13 @@ public enum DataStoreBenchmarkProbe {
     ) async throws -> any DataStore {
         try await container.store(for: type)
     }
+
+    /// Opens the store for a dynamically partitioned model at one resolved path.
+    public static func openDataStore<Model: Persistable>(
+        for type: Model.Type,
+        in container: DBContainer,
+        path: DirectoryPath<Model>
+    ) async throws -> any DataStore {
+        try await container.store(for: type, path: path)
+    }
 }

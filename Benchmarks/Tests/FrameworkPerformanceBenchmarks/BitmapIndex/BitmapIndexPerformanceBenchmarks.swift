@@ -40,7 +40,7 @@ private struct BitmapBenchmarkContext {
         let index = try ResolvedIndex(
             for: BitmapBenchmarkProduct.self,
             name: indexName,
-            definition: bitmapIndexDefinition(
+            definition: benchmarkBitmapIndexDefinition(
                 fieldName: "category",
                 fieldNumber: 2
             ),
@@ -447,7 +447,7 @@ struct BitmapIndexFDBPerformanceBenchmarks {
             index: try ResolvedIndex(
                 for: BitmapBenchmarkProduct.self,
                 name: "category_idx",
-                definition: bitmapIndexDefinition(
+                definition: benchmarkBitmapIndexDefinition(
                     fieldName: "category",
                     fieldNumber: 2
                 ),
@@ -462,7 +462,7 @@ struct BitmapIndexFDBPerformanceBenchmarks {
             index: try ResolvedIndex(
                 for: BitmapBenchmarkProduct.self,
                 name: "brand_idx",
-                definition: bitmapIndexDefinition(
+                definition: benchmarkBitmapIndexDefinition(
                     fieldName: "brand",
                     fieldNumber: 3
                 ),

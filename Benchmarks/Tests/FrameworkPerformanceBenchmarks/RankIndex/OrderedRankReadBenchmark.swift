@@ -55,8 +55,6 @@ struct OrderedRankReadBenchmark {
             ),
             security: .benchmarkingDisabled
         )
-        try await container.ensureIndexesReady()
-
         let context = container.benchmarkContext()
         for index in 0..<playerCount {
             try context.insert(

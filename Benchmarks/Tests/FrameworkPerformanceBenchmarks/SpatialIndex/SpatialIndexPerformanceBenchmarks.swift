@@ -56,9 +56,8 @@ private struct BenchmarkContext {
         let index = try ResolvedIndex(
             for: BenchmarkLocation.self,
             name: indexName,
-            definition: spatialIndexDefinition(
-                fieldName: "location",
-                fieldNumber: 3,
+            definition: .spatial(
+                location: FieldIdentity(name: "location", number: 3),
                 encoding: encoding,
                 level: level
             ),

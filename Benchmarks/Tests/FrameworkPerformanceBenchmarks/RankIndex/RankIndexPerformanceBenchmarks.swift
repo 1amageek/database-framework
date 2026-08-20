@@ -28,7 +28,7 @@ private struct BenchmarkContext {
         let index = try ResolvedIndex(
             for: BenchmarkPlayer.self,
             name: "score_rank",
-            definition: rankIndexDefinition(fieldNumber: 3),
+            definition: benchmarkRankIndexDefinition(fieldNumber: 3),
             rootExpression: FieldKeyExpression(fieldName: "score"),
             itemTypes: Set(["BenchmarkPlayer"])
         )

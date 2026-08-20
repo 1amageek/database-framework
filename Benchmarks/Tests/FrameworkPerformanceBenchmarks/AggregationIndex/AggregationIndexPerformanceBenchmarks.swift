@@ -78,7 +78,7 @@ struct AggregationIndexPerformanceBenchmarks {
         let index = try ResolvedIndex(
             for: AggregationBenchmarkSale.self,
             name: "count_region",
-            definition: countIndexDefinition(
+            definition: benchmarkCountIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ]
@@ -152,7 +152,7 @@ struct AggregationIndexPerformanceBenchmarks {
         let index = try ResolvedIndex(
             for: AggregationBenchmarkSale.self,
             name: "count_region",
-            definition: countIndexDefinition(
+            definition: benchmarkCountIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ]
@@ -232,7 +232,7 @@ struct AggregationIndexPerformanceBenchmarks {
         let index = try ResolvedIndex(
             for: AggregationBenchmarkSale.self,
             name: "sum_region_amount",
-            definition: numericAggregationIndexDefinition(
+            definition: benchmarkNumericAggregationIndexDefinition(
                 .sum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
@@ -307,7 +307,7 @@ struct AggregationIndexPerformanceBenchmarks {
         let index = try ResolvedIndex(
             for: AggregationBenchmarkSale.self,
             name: "sum_region_amount",
-            definition: numericAggregationIndexDefinition(
+            definition: benchmarkNumericAggregationIndexDefinition(
                 .sum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
@@ -395,7 +395,7 @@ struct AggregationIndexPerformanceBenchmarks {
         let index = try ResolvedIndex(
             for: AggregationBenchmarkSale.self,
             name: "min_region_amount",
-            definition: numericAggregationIndexDefinition(
+            definition: benchmarkNumericAggregationIndexDefinition(
                 .minimum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
@@ -484,7 +484,7 @@ struct AggregationIndexPerformanceBenchmarks {
         let index = try ResolvedIndex(
             for: AggregationBenchmarkSale.self,
             name: "max_region_amount",
-            definition: numericAggregationIndexDefinition(
+            definition: benchmarkNumericAggregationIndexDefinition(
                 .maximum,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
@@ -569,7 +569,7 @@ struct AggregationIndexPerformanceBenchmarks {
         let index = try ResolvedIndex(
             for: AggregationBenchmarkSale.self,
             name: "avg_region_amount",
-            definition: numericAggregationIndexDefinition(
+            definition: benchmarkNumericAggregationIndexDefinition(
                 .average,
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
@@ -674,7 +674,7 @@ struct AggregationIndexPerformanceBenchmarks {
         let index = try ResolvedIndex(
             for: AggregationBenchmarkSale.self,
             name: "count_region_category",
-            definition: countIndexDefinition(
+            definition: benchmarkCountIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2),
                     FieldIdentity(name: "category", number: 3),
@@ -770,7 +770,7 @@ struct AggregationIndexPerformanceBenchmarks {
         let index = try ResolvedIndex(
             for: AggregationBenchmarkSale.self,
             name: "count_scale",
-            definition: countIndexDefinition(
+            definition: benchmarkCountIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ]
@@ -848,7 +848,7 @@ struct AggregationIndexPerformanceBenchmarks {
         let index = try ResolvedIndex(
             for: AggregationBenchmarkSale.self,
             name: "count_delete",
-            definition: countIndexDefinition(
+            definition: benchmarkCountIndexDefinition(
                 groupingFields: [
                     FieldIdentity(name: "region", number: 2)
                 ]

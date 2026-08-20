@@ -43,7 +43,8 @@ private struct BenchmarkContext {
         self.subspace = Subspace(prefix: Tuple("benchmark", "vector", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let definition = vectorIndexDefinition(
+        let definition = IndexDefinition<FieldIdentity>.vector(
+            embedding: FieldIdentity(name: "embedding", number: 3),
             dimensions: dimensions,
             metric: metric
         )
