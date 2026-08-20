@@ -65,6 +65,7 @@ jobs:
             "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/FoundationDB-${FDB_VERSION}_arm64.pkg"
           sudo installer -pkg "/tmp/FoundationDB-${FDB_VERSION}_arm64.pkg" -target /
           sudo launchctl unload /Library/LaunchDaemons/com.foundationdb.fdbmonitor.plist 2>/dev/null || true
+          test -f /usr/local/include/foundationdb/fdb_c.h
           test -f /usr/local/lib/libfdb_c.dylib
 
       - name: Build benchmark package without executing workloads
@@ -82,6 +83,8 @@ jobs:
               -skipMacroValidation \
               -derivedDataPath "$result_directory/DerivedData" \
               -resultBundlePath "$result_bundle" \
+              "HEADER_SEARCH_PATHS=\$(inherited) /usr/local/include" \
+              "LIBRARY_SEARCH_PATHS=\$(inherited) /usr/local/lib" \
               2>&1 | tee "$log_path"
 
       - name: Validate benchmark build result
