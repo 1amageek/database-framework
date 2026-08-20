@@ -11,12 +11,14 @@ rejected. Run the package explicitly with Xcode's test runner and an external
 timeout, for example:
 
 ```bash
-scripts/fdb-test-env run --clean -- \
-  perl -e 'alarm shift; exec @ARGV' 3600 \
-    xcodebuild test \
-      -packagePath Benchmarks \
-      -scheme database-framework-benchmarks-Package \
-      -destination 'platform=macOS,arch=arm64'
+(
+  cd Benchmarks
+  ../scripts/fdb-test-env run --clean -- \
+    perl -e 'alarm shift; exec @ARGV' 3600 \
+      xcodebuild test \
+        -scheme database-framework-benchmarks-Package \
+        -destination 'platform=macOS,arch=arm64'
+)
 ```
 
 Benchmark results are not correctness-test evidence and are never included in
