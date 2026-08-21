@@ -4,7 +4,7 @@
 
 import Testing
 import Foundation
-@testable import Database
+@_spi(DatabaseExecution) @testable import Database
 @testable import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
@@ -408,15 +408,53 @@ struct SPARQLFunctionIntegrationTests {
 
     // MARK: - Test 10: SPARQLFunctionRewriter preserves from/fromNamed
 
-    @Test("SPARQLFunctionRewriter preserves the dataset")
+    @Test("SPARQLFunctionRewriter preserves dataset failure and executable semantics")
     func testRewriterPreservesDatasetClauses() async throws {
         let container = try await setupContainer()
         let context = container.testBaseContext()
+        var user = SPARQLFunctionUser(name: "Alice", age: 30)
+        try user.assignIdentity(uniqueID("user"))
+        try context.insert(user)
+        try await context.save()
 
-        let query = SelectQuery(
+        func executeRewritten(_ query: SelectQuery) async throws -> QueryResponse {
+            let options = ReadExecutionOptions()
+            let workMeter = DatabaseWorkMeter(
+                budget: options.budget,
+                monotonicClock: container.monotonicClock
+            )
+            let execution = ReadExecutionContext(
+                options: options,
+                monotonicClock: container.monotonicClock,
+                workMeter: workMeter
+            )
+            return try await context.indexQueryContext.withTransaction {
+                transaction in
+                let retainedStorage = try DatabasePreparedSQLSelectStorage(
+                    workMeter: workMeter
+                )
+                let rewriter = SPARQLFunctionRewriter(
+                    context: context,
+                    workMeter: workMeter,
+                    transaction: transaction,
+                    retainedStorage: retainedStorage
+                )
+                let prepared = try await rewriter.rewritePrepared(query)
+                return try await prepared.execute(
+                    in: context,
+                    execution: execution,
+                    transaction: transaction
+                )
+            }
+        }
+
+        let explicitDatasetQuery = SelectQuery(
             projection: .all,
             source: .table(TableRef("SPARQLFunctionUser")),
-            filter: .greaterThan(.column(ColumnRef(column: "age")), .literal(.int(25))),
+            filter: .greaterThan(
+                .column(ColumnRef(column: "age")),
+                .literal(.int(25))
+            ),
             dataset: .explicit(
                 defaultGraphs: ["http://example.org/graph1"],
                 namedGraphs: [
@@ -426,26 +464,30 @@ struct SPARQLFunctionIntegrationTests {
             )
         )
 
-        // Pass through SPARQLFunctionRewriter (filter exists, so query is reconstructed)
-        let rewritten = try await context.indexQueryContext.withTransaction {
-            transaction in
-            let rewriter = SPARQLFunctionRewriter(
-                context: context,
-                workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget(),
-                    monotonicClock: container.monotonicClock
-                ),
-                transaction: transaction
+        do {
+            _ = try await executeRewritten(explicitDatasetQuery)
+            Issue.record("Rewriting silently removed the explicit dataset")
+        } catch let error as CanonicalReadError {
+            guard case .unsupportedSelectQuery(let reason) = error else {
+                Issue.record("Unexpected canonical read error: \(error)")
+                return
+            }
+            #expect(
+                reason == "Canonical relational execution does not support SPARQL dataset clauses"
             )
-            return try await rewriter.rewrite(query)
         }
 
-        #expect(rewritten.dataset == query.dataset)
-
-        // Verify other fields are also preserved
-        #expect(rewritten.projection == Projection.all)
-        #expect(rewritten.limit == nil)
-        #expect(rewritten.distinct == false)
+        let executableQuery = SelectQuery(
+            projection: .all,
+            source: .table(TableRef("SPARQLFunctionUser")),
+            filter: .greaterThan(
+                .column(ColumnRef(column: "age")),
+                .literal(.int(25))
+            )
+        )
+        let response = try await executeRewritten(executableQuery)
+        #expect(response.rows.count == 1)
+        #expect(response.rows[0].fields["name"] == .string("Alice"))
     }
 
     // MARK: - Test 11: Integration with ORDER BY and LIMIT

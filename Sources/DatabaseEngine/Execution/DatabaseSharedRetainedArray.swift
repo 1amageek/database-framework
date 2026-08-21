@@ -110,6 +110,7 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>:
     /// cannot outlive this call, so the Array never has an unaccounted
     /// lifetime across suspension.
     package func withElements<Result: Sendable>(
+        isolation actor: isolated (any Actor)? = #isolation,
         _ body: (borrowing [Element]) async throws -> Result
     ) async rethrows -> Result {
         try await body(storage.elements)
@@ -131,6 +132,7 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>:
     /// element is borrowed by an asynchronous consumer.
     package func withElement<Result, Failure: Error>(
         at index: Int,
+        isolation actor: isolated (any Actor)? = #isolation,
         _ body: (borrowing Element) async throws(Failure) -> Result
     ) async throws(Failure) -> Result {
         precondition(

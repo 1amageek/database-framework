@@ -189,6 +189,34 @@ enum SPARQLRetainedBindings: ~Copyable, Sendable {
         }
     }
 
+    /// Moves the current relation into immutable request-accounted ownership
+    /// for an intermediate consumer outside the graph execution pipeline.
+    /// Unlike public output promotion, the returned snapshot retains both the
+    /// element reservation and the shared-owner reservation until its last
+    /// copy is released.
+    consuming func moveToSharedSnapshot(
+        at stage: DatabaseWorkStage
+    ) throws -> SPARQLSharedBindingSnapshot {
+        switch consume self {
+        case .empty:
+            return .empty
+        case .unique(let storage):
+            let admission = try storage.prepareToShare(at: stage)
+            let sharedStorage = storage.share(using: admission)
+            return .shared(
+                sharedStorage,
+                visibleRange: 0..<sharedStorage.count
+            )
+        case .shared(let storage):
+            return .shared(
+                storage,
+                visibleRange: 0..<storage.count
+            )
+        case .sharedSlice(let storage, let range):
+            return .shared(storage, visibleRange: range)
+        }
+    }
+
     /// Applies OFFSET/LIMIT without allocating a second relation buffer.
     /// Unique input is compacted in place. Immutable shared input becomes a
     /// bounded owner view whose lifetime cannot outlast the shared storage.

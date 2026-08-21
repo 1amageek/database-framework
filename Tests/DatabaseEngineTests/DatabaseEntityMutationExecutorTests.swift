@@ -102,6 +102,55 @@ struct DatabaseEntityMutationExecutorTests {
         )
     }
 
+    @Test("prepared entity mutations reject a different request meter")
+    func rejectsPreparedMutationFromAnotherRequest() async throws {
+        let container = try await makeContainer()
+        let context = container.testBaseContext()
+        let executor = try makeExecutor(container: container)
+        let model = EntityMutationFixture(id: "meter-bound", title: "Owner")
+        let identity = try EntityReference(
+            entity: EntityMutationFixture.persistableType,
+            id: .string(model.id)
+        )
+        let ownerMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: container.monotonicClock
+        )
+        let prepared = try executor.prepare(
+            [
+                EntityMutationChange(
+                    kind: .insert,
+                    identity: identity,
+                    fields: try DatabaseEntityProjection.fieldObject(
+                        for: PersistedModel(model)
+                    )
+                )
+            ],
+            preconditions: [],
+            workMeter: ownerMeter
+        )
+
+        await #expect(throws: DatabaseEntityMutationError.workMeterMismatch) {
+            try await context.withTransaction { transaction in
+                try await executor.execute(
+                    prepared,
+                    workMeter: DatabaseWorkMeter(
+                        budget: ExecutionBudget(),
+                        monotonicClock: container.monotonicClock
+                    ),
+                    transaction: transaction
+                )
+            }
+        }
+
+        #expect(
+            try await context.model(
+                for: model.id,
+                as: EntityMutationFixture.self
+            ) == nil
+        )
+    }
+
     @Test("entity preconditions reject conflicting state")
     func rejectsConflictingPreconditions() async throws {
         let container = try await makeContainer()

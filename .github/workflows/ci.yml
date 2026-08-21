@@ -11,9 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TOOLCHAINS: org.swift.64202607231a
-  SWIFT_SNAPSHOT: swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a
-  SWIFT_SNAPSHOT_URL: https://download.swift.org/swift-6.4.x-branch/xcode/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a-osx.pkg
+  TOOLCHAINS: org.swift.64202608141a
+  SWIFT_SNAPSHOT: swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a
+  SWIFT_SNAPSHOT_URL: https://download.swift.org/swift-6.4.x-branch/xcode/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a-osx.pkg
 
 jobs:
   benchmark-separation:
@@ -22,9 +22,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Install verification tools
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       - name: Verify benchmark separation
         run: scripts/verify-benchmark-separation
@@ -57,16 +54,13 @@ jobs:
           test -x "$toolchain_root/usr/bin/ld"
           echo "$toolchain_root/usr/bin" >> "$GITHUB_PATH"
 
-      - name: Install FoundationDB client
-        env:
-          FDB_VERSION: "7.3.69"
+      - name: Prepare pinned FoundationDB client
         run: |
-          curl -fL --retry 3 -o "/tmp/FoundationDB-${FDB_VERSION}_arm64.pkg" \
-            "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/FoundationDB-${FDB_VERSION}_arm64.pkg"
-          sudo installer -pkg "/tmp/FoundationDB-${FDB_VERSION}_arm64.pkg" -target /
-          sudo launchctl unload /Library/LaunchDaemons/com.foundationdb.fdbmonitor.plist 2>/dev/null || true
-          test -f /usr/local/include/foundationdb/fdb_c.h
-          test -f /usr/local/lib/libfdb_c.dylib
+          client_directory="$(database-framework/scripts/apple-container-test-harness foundationdb-client)"
+          test -f "$client_directory/include/foundationdb/fdb_c.h"
+          test -f "$client_directory/lib/libfdb_c.dylib"
+          echo "FDB_CLIENT_INCLUDE_DIRECTORY=$client_directory/include" >> "$GITHUB_ENV"
+          echo "FDB_CLIENT_LIBRARY_DIRECTORY=$client_directory/lib" >> "$GITHUB_ENV"
 
       - name: Build benchmark package without executing workloads
         working-directory: database-framework/Benchmarks
@@ -83,20 +77,18 @@ jobs:
               -skipMacroValidation \
               -derivedDataPath "$result_directory/DerivedData" \
               -resultBundlePath "$result_bundle" \
-              "HEADER_SEARCH_PATHS=\$(inherited) /usr/local/include" \
-              "LIBRARY_SEARCH_PATHS=\$(inherited) /usr/local/lib" \
+              "HEADER_SEARCH_PATHS=\$(inherited) $FDB_CLIENT_INCLUDE_DIRECTORY" \
+              "LIBRARY_SEARCH_PATHS=\$(inherited) $FDB_CLIENT_LIBRARY_DIRECTORY" \
               2>&1 | tee "$log_path"
 
       - name: Validate benchmark build result
         run: |
           summary="$(xcrun xcresulttool get build-results \
             --path /tmp/database-framework-benchmark-build/FrameworkPerformanceBenchmarks.xcresult)"
-          jq -e '
-            .status == "succeeded"
-            and .errorCount == 0
-            and .warningCount == 0
-            and .analyzerWarningCount == 0
-          ' <<<"$summary"
+          test "$(printf '%s' "$summary" | plutil -extract status raw -)" = succeeded
+          test "$(printf '%s' "$summary" | plutil -extract errorCount raw -)" = 0
+          test "$(printf '%s' "$summary" | plutil -extract warningCount raw -)" = 0
+          test "$(printf '%s' "$summary" | plutil -extract analyzerWarningCount raw -)" = 0
 
       - name: Upload benchmark build results
         if: always()
@@ -106,28 +98,17 @@ jobs:
           path: /tmp/database-framework-benchmark-build
           if-no-files-found: error
 
-      - name: Stop FoundationDB service
-        if: always()
-        run: sudo launchctl unload /Library/LaunchDaemons/com.foundationdb.fdbmonitor.plist 2>/dev/null || true
-
   sqlite:
-    name: SQLite trait (macOS)
-    # macOS runner required: transitive deps (swift-hnsw → Accelerate,
-    # swift-testing-heartbeat → pthread_threadid_np) do not build on Linux.
-    # Xcode 27 supplies a SwiftPM manifest parser compatible with tools version
-    # 6.4; compilation still uses the pinned Swift 6.4 snapshot below.
+    name: SQLite (Apple Container and macOS)
+    # Xcode is the authoritative macOS gate. The Apple Container lane adds a
+    # Linux execution of the same target linked to the pinned stable SQLite.
     runs-on: xcode-27
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
-      XCODE_TEST_RESULT_DIRECTORY: /tmp/database-framework-xcode-results
+      APPLE_CONTAINER_RESULT_ROOT: /tmp/database-framework-apple-container-results
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Install verification tools
-        run: |
-          brew untap aws/tap 2>/dev/null || true
-          brew install ripgrep
 
       - name: Install pinned Swift toolchain
         run: |
@@ -147,48 +128,30 @@ jobs:
           swift --version
           xcrun --toolchain "$TOOLCHAINS" swiftc --version
 
+      - name: Verify pinned Apple Container runtime
+        run: scripts/apple-container-test-harness doctor
+
       - name: Test (SQLite)
-        timeout-minutes: 30
-        run: |
-          perl -e 'alarm shift; exec @ARGV' 1800 \
-            scripts/xcode-test-harness \
-              --traits SQLite,AllRuntimeFeatures \
-              --only-testing SQLiteTests \
-              --expected-count 111 \
-              --require-zero-skips \
-              --require-zero-expected-failures \
-              --require-zero-runtime-warnings
+        timeout-minutes: 75
+        run: scripts/apple-container-test-harness sqlite
 
       - name: Upload SQLite test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: sqlite-xcresults
-          path: /tmp/database-framework-xcode-results
+          path: /tmp/database-framework-apple-container-results
           if-no-files-found: error
 
   postgresql:
-    name: PostgreSQL trait (macOS)
-    # Same macOS runner constraint as SQLite job.
-    # Docker Desktop is not available on GitHub macOS runners, so PostgreSQL
-    # is installed via Homebrew and started as a service.
+    name: PostgreSQL (Apple Container)
     runs-on: xcode-27
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
-      XCODE_TEST_RESULT_DIRECTORY: /tmp/database-framework-xcode-results
-      POSTGRES_TEST_HOST: localhost
-      POSTGRES_TEST_PORT: "5432"
-      POSTGRES_TEST_USER: postgres
-      POSTGRES_TEST_PASSWORD: test
-      POSTGRES_TEST_DB: database_framework_test
+      APPLE_CONTAINER_RESULT_ROOT: /tmp/database-framework-apple-container-results
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Install verification tools
-        run: |
-          brew untap aws/tap 2>/dev/null || true
-          brew install ripgrep
 
       - name: Install pinned Swift toolchain
         run: |
@@ -208,90 +171,30 @@ jobs:
           swift --version
           xcrun --toolchain "$TOOLCHAINS" swiftc --version
 
-      - name: Install PostgreSQL 16
-        run: |
-          brew install postgresql@16
-          echo "/opt/homebrew/opt/postgresql@16/bin" >> "$GITHUB_PATH"
-
-      - name: Start PostgreSQL service
-        run: |
-          brew services start postgresql@16
-          for i in $(seq 1 30); do
-            if pg_isready -h localhost -p 5432 >/dev/null 2>&1; then
-              echo "PostgreSQL is ready"
-              exit 0
-            fi
-            echo "Waiting for PostgreSQL... ($i/30)"
-            sleep 1
-          done
-          echo "PostgreSQL failed to start within 30s" >&2
-          brew services info postgresql@16 || true
-          tail -200 "$(brew --prefix)/var/log/postgresql@16.log" || true
-          exit 1
-
-      - name: Provision postgres role and test database
-        # Homebrew's postgresql@16 creates a superuser matching $USER (e.g. "runner"),
-        # not "postgres". Create the "postgres" role expected by PostgreSQLScenarioCoordinator.
-        run: |
-          psql -d postgres -v ON_ERROR_STOP=1 <<'SQL'
-          DO $$
-          BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') THEN
-              CREATE ROLE postgres WITH SUPERUSER LOGIN PASSWORD 'test';
-            ELSE
-              ALTER ROLE postgres WITH SUPERUSER LOGIN PASSWORD 'test';
-            END IF;
-          END
-          $$;
-          SQL
-          # CREATE DATABASE cannot run inside a transaction / DO block, so gate it manually.
-          if ! psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'database_framework_test'" | grep -q 1; then
-            psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE database_framework_test OWNER postgres;"
-          fi
+      - name: Verify pinned Apple Container runtime
+        run: scripts/apple-container-test-harness doctor
 
       - name: Test (PostgreSQL)
-        timeout-minutes: 30
-        run: |
-          perl -e 'alarm shift; exec @ARGV' 1800 \
-            scripts/xcode-test-harness \
-              --traits PostgreSQL,AllRuntimeFeatures,MultiBase \
-              --only-testing PostgreSQLTests \
-              --expected-count 67 \
-              --require-zero-skips \
-              --require-zero-expected-failures \
-              --require-zero-runtime-warnings
+        timeout-minutes: 45
+        run: scripts/apple-container-test-harness postgresql
 
       - name: Upload PostgreSQL test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: postgresql-xcresults
-          path: /tmp/database-framework-xcode-results
+          path: /tmp/database-framework-apple-container-results
           if-no-files-found: error
 
-      - name: Stop PostgreSQL service
-        if: always()
-        run: brew services stop postgresql@16 || true
-
   foundationdb:
-    name: FoundationDB trait (macOS)
-    # Installs FoundationDB from the official .pkg installer for libfdb_c,
-    # fdbserver, and fdbcli. Tests run through scripts/fdb-test-env so they
-    # use an isolated cluster tied to the test command instead of the shared
-    # launchd-managed service.
+    name: FoundationDB (Apple Container)
     runs-on: xcode-27
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
-      FDB_VERSION: "7.3.69"
-      XCODE_TEST_RESULT_DIRECTORY: /tmp/database-framework-xcode-results
+      APPLE_CONTAINER_RESULT_ROOT: /tmp/database-framework-apple-container-results
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Install verification tools
-        run: |
-          brew untap aws/tap 2>/dev/null || true
-          brew install ripgrep
 
       - name: Install pinned Swift toolchain
         run: |
@@ -311,45 +214,17 @@ jobs:
           swift --version
           xcrun --toolchain "$TOOLCHAINS" swiftc --version
 
-      - name: Install FoundationDB
-        # Apple Silicon runner → arm64 installer. The .pkg drops:
-        #   fdbserver/fdbcli                    server and CLI binaries
-        #   /usr/local/lib/libfdb_c.dylib        client library (linker path)
-        #   /usr/local/etc/foundationdb/         fdb.cluster + foundationdb.conf
-        run: |
-          curl -fL --retry 3 -o "/tmp/FoundationDB-${FDB_VERSION}_arm64.pkg" \
-            "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/FoundationDB-${FDB_VERSION}_arm64.pkg"
-          sudo installer -pkg "/tmp/FoundationDB-${FDB_VERSION}_arm64.pkg" -target /
-          sudo launchctl unload /Library/LaunchDaemons/com.foundationdb.fdbmonitor.plist 2>/dev/null || true
-          command -v fdbcli
-          if command -v fdbserver >/dev/null 2>&1; then
-            command -v fdbserver
-          else
-            find /usr/local /opt/homebrew -path '*fdbserver' -type f -print 2>/dev/null | head
-          fi
+      - name: Verify pinned Apple Container runtime
+        run: scripts/apple-container-test-harness doctor
 
       - name: Test (FoundationDB)
-        timeout-minutes: 40
-        run: |
-          scripts/fdb-test-env run --clean -- \
-            perl -e 'alarm shift; exec @ARGV' 2400 \
-              scripts/xcode-test-harness \
-                --traits FoundationDB,AllRuntimeFeatures,MultiBase \
-                --expected-count 3434 \
-                --require-zero-skips \
-                --require-zero-expected-failures \
-                --require-zero-runtime-warnings
+        timeout-minutes: 75
+        run: scripts/apple-container-test-harness foundationdb
 
       - name: Upload FoundationDB test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: foundationdb-xcresults
-          path: /tmp/database-framework-xcode-results
+          path: /tmp/database-framework-apple-container-results
           if-no-files-found: error
-
-      - name: Stop FoundationDB service
-        if: always()
-        run: |
-          scripts/fdb-test-env stop --clean || true
-          sudo launchctl unload /Library/LaunchDaemons/com.foundationdb.fdbmonitor.plist 2>/dev/null || true

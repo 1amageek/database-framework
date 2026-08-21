@@ -379,7 +379,50 @@ extract_summary_number() {
   printf '%s' "$summary" | plutil -extract "$key" raw -
 }
 
-for command in cmp jq shasum swift xcodebuild xcrun plutil perl rg rsync tee; do
+write_normalized_pins() {
+  local resolved_path="$1"
+  local output_path="$2"
+  local index=0
+  local identity
+  local kind
+  local location
+  local version
+  local branch
+  local pin_count
+  local revision
+  : > "$output_path"
+  pin_count="$(plutil -extract pins raw -expect array "$resolved_path")"
+  if ! [[ "$pin_count" =~ ^[0-9]+$ ]]; then
+    echo "error: Package.resolved has an invalid pins array" >&2
+    return 1
+  fi
+  while (( index < pin_count )); do
+    identity="$(plutil -extract "pins.$index.identity" raw -expect string \
+      "$resolved_path")"
+    kind="$(plutil -extract "pins.$index.kind" raw -expect string \
+      "$resolved_path")"
+    location="$(plutil -extract "pins.$index.location" raw -expect string \
+      "$resolved_path")"
+    version="$(plutil -extract "pins.$index.state.version" raw -expect string \
+      "$resolved_path" 2>/dev/null || true)"
+    branch="$(plutil -extract "pins.$index.state.branch" raw -expect string \
+      "$resolved_path" 2>/dev/null || true)"
+    revision="$(plutil -extract "pins.$index.state.revision" raw -expect string \
+      "$resolved_path")"
+    if [[ "$identity$kind$location$version$branch$revision" == *$'\t'* \
+        || "$identity$kind$location$version$branch$revision" == *$'\n'* ]]; then
+      echo "error: dependency pin contains an unsupported control character" >&2
+      return 1
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$identity" "$kind" "$location" "$version" "$branch" "$revision" \
+      >> "$output_path"
+    index=$((index + 1))
+  done
+  LC_ALL=C sort -o "$output_path" "$output_path"
+}
+
+for command in cmp grep shasum swift xcodebuild xcrun plutil perl rsync tee; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "error: required command not found: $command" >&2
     exit 1
@@ -409,7 +452,8 @@ else
 fi
 source_copy="$XCODE_HARNESS_WORK_ROOT/source"
 derived_data="$XCODE_HARNESS_WORK_ROOT/DerivedData"
-mkdir -p "$source_copy" "$derived_data" "$RESULT_DIRECTORY"
+source_packages="$XCODE_HARNESS_WORK_ROOT/SourcePackages"
+mkdir -p "$source_copy" "$derived_data" "$source_packages" "$RESULT_DIRECTORY"
 
 normalized_package="$(mktemp "$XCODE_HARNESS_WORK_ROOT/Package.swift.XXXXXX")"
 cp "$ROOT_DIR/Package.swift" "$normalized_package"
@@ -465,10 +509,16 @@ if ! cmp -s "$normalized_package" "$source_copy/Package.swift"; then
 fi
 rm -f -- "$normalized_package"
 
-if rg -n '\.package\(path:\s*"\.\./database-kit"' \
+if grep -En '\.package\(path:' \
     "$source_copy/Package.swift" >/dev/null; then
   if [[ "${DATABASE_FRAMEWORK_ALLOW_LOCAL_DEPENDENCIES:-0}" != "1" ]]; then
     echo "error: release verification requires URL dependencies" >&2
+    exit 2
+  fi
+  if grep -En '\.package\(path:' "$source_copy/Package.swift" \
+      | grep -Ev '\.package\(path:[[:space:]]*"\.\./database-kit"' \
+      | grep -q .; then
+    echo "error: local dependency diagnosis supports only ../database-kit" >&2
     exit 2
   fi
   if [[ "$REUSE_BUILT_TESTS" == true ]]; then
@@ -489,11 +539,10 @@ if rg -n '\.package\(path:\s*"\.\./database-kit"' \
     "$database_kit_source/" "$database_kit_copy/"
 fi
 
-locked_pins="$XCODE_HARNESS_WORK_ROOT/locked-pins.json"
-resolved_pins="$XCODE_HARNESS_WORK_ROOT/resolved-pins.json"
+locked_pins="$XCODE_HARNESS_WORK_ROOT/locked-pins.tsv"
+resolved_pins="$XCODE_HARNESS_WORK_ROOT/resolved-pins.tsv"
 if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
-  jq -S '[.pins[] | {identity, kind, location, state}] | sort_by(.identity)' \
-    "$ROOT_DIR/Package.resolved" > "$locked_pins"
+  write_normalized_pins "$ROOT_DIR/Package.resolved" "$locked_pins"
 fi
 
 if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
@@ -505,23 +554,18 @@ else
       xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swift package resolve
   )
 fi
-jq -S '[.pins[] | {identity, kind, location, state}] | sort_by(.identity)' \
-  "$source_copy/Package.resolved" > "$resolved_pins"
-if [[ -f "$locked_pins" ]] && ! jq -e -n \
-    --slurpfile locked "$locked_pins" \
-    --slurpfile resolved "$resolved_pins" '
-      ($locked[0] | INDEX(.identity)) as $pinned
-      | all(
-          $resolved[0][];
-          ($pinned[.identity] == null) or ($pinned[.identity] == .)
-        )
-    ' >/dev/null; then
-  echo "error: trait resolution changed an existing dependency pin" >&2
-  diff -u "$locked_pins" "$resolved_pins" || true
-  exit 1
+write_normalized_pins "$source_copy/Package.resolved" "$resolved_pins"
+if [[ -f "$locked_pins" ]]; then
+  while IFS= read -r locked_pin; do
+    if ! grep -Fqx "$locked_pin" "$resolved_pins"; then
+      echo "error: trait resolution changed an existing dependency pin" >&2
+      diff -u "$locked_pins" "$resolved_pins" || true
+      exit 1
+    fi
+  done < "$locked_pins"
 fi
 echo "Resolved dependency pins:"
-jq -r '.[] | "  \(.identity) \(.state.version // .state.revision) \(.state.revision)"' \
+awk -F '\t' '{ selected = ($4 == "" ? $6 : $4); print "  " $1 " " selected " " $6 }' \
   "$resolved_pins"
 
 build_fingerprint="$({
@@ -574,7 +618,7 @@ test_log="$RESULT_DIRECTORY/Test-$run_identifier.log"
 
 reject_internal_tool_errors() {
   local log_path="$1"
-  if rg -n \
+  if grep -En \
       'Internal Error:|LLVM Profile Error:|warning: input verification failed' \
       "$log_path" >&2; then
     echo "error: internal tool failure detected in $log_path" >&2
@@ -587,6 +631,8 @@ build_arguments=(
   -scheme "$SCHEME"
   -destination "$DESTINATION"
   -derivedDataPath "$derived_data"
+  -clonedSourcePackagesDirPath "$source_packages"
+  -disablePackageRepositoryCache
   -resultBundlePath "$build_result"
   -enableCodeCoverage NO
   -onlyUsePackageVersionsFromResolvedFile
@@ -636,7 +682,7 @@ else
   build_status=$?
   set -e
   reject_internal_tool_errors "$build_log"
-  if ! rg -F "SWIFT_EXEC = $PINNED_SWIFTC" "$build_log" >/dev/null; then
+  if ! grep -F "SWIFT_EXEC = $PINNED_SWIFTC" "$build_log" >/dev/null; then
     echo "error: Xcode did not record the pinned Swift compiler" >&2
     exit 1
   fi
@@ -722,7 +768,7 @@ passed_count="$(extract_summary_number "$summary" passedTests)"
 failed_count="$(extract_summary_number "$summary" failedTests)"
 skipped_count="$(extract_summary_number "$summary" skippedTests)"
 expected_failure_count="$(extract_summary_number "$summary" expectedFailures)"
-runtime_warning_count="$(printf '%s' "$summary" | jq '.runtimeWarnings | length')"
+runtime_warning_count="$(extract_summary_number "$summary" runtimeWarnings)"
 
 if ! [[ "$total_count" =~ ^[0-9]+$ ]] || (( total_count == 0 )); then
   echo "error: xcodebuild executed zero tests" >&2

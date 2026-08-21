@@ -5,7 +5,7 @@
 import DatabaseKit
 import QueryAST
 @_spi(DatabaseExecution) import GraphIndex
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseTypes
 import StorageKit
 import Synchronization
@@ -16,17 +16,21 @@ import Synchronization
 /// - Finds SPARQL() function calls in Expression tree
 /// - Executes SPARQL queries within parent transaction
 /// - Inlines results as literal arrays
-/// - Returns rewritten SelectQuery for standard execution
+/// - Returns a prepared query that retains literal storage and reservations
 ///
 /// **Usage**:
 /// ```swift
+/// let retainedStorage = try DatabasePreparedSQLSelectStorage(
+///     workMeter: workMeter
+/// )
 /// let rewriter = SPARQLFunctionRewriter(
 ///     context: context,
 ///     workMeter: workMeter,
-///     transaction: transaction
+///     transaction: transaction,
+///     retainedStorage: retainedStorage
 /// )
-/// let rewritten = try await rewriter.rewrite(selectQuery)
-/// // Execute rewritten query through normal path
+/// let prepared = try await rewriter.rewritePrepared(selectQuery)
+/// // Execute through DatabasePreparedSQLSelect.execute.
 /// ```
 internal struct SPARQLFunctionRewriter: Sendable {
     private final class InliningStructureMeter: Sendable {
@@ -70,6 +74,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
     private let workMeter: DatabaseWorkMeter
     private let transaction: any TransactionAccess
     private let structuralLimits: QueryStructuralLimits
+    private let retainedStorage: DatabasePreparedSQLSelectStorage
     private let inliningStructureMeter = InliningStructureMeter()
 
     /// Initialize with DatabaseContext
@@ -78,16 +83,19 @@ internal struct SPARQLFunctionRewriter: Sendable {
     ///   - context: Context for schema and index access.
     ///   - workMeter: Shared resource budget for graph and SQL execution.
     ///   - transaction: Parent SQL read transaction.
+    ///   - retainedStorage: Owner for rewritten literal buffers.
     ///   - structuralLimits: Limits shared by graph compilation and rewritten SQL.
     internal init(
         context: DatabaseContext,
         workMeter: DatabaseWorkMeter,
         transaction: any TransactionAccess,
+        retainedStorage: DatabasePreparedSQLSelectStorage,
         structuralLimits: QueryStructuralLimits = .default
     ) {
         self.context = context
         self.workMeter = workMeter
         self.transaction = transaction
+        self.retainedStorage = retainedStorage
         self.structuralLimits = structuralLimits
     }
 
@@ -318,7 +326,17 @@ internal struct SPARQLFunctionRewriter: Sendable {
     /// - Parameter query: The SelectQuery to rewrite
     /// - Returns: Rewritten SelectQuery with SPARQL() calls replaced
     /// - Throws: `SPARQLFunctionError` for execution errors
-    internal func rewrite(_ query: SelectQuery) async throws -> SelectQuery {
+    internal func rewritePrepared(
+        _ query: SelectQuery
+    ) async throws -> DatabasePreparedSQLSelect {
+        DatabasePreparedSQLSelect(
+            query: try await rewrite(query),
+            workMeter: workMeter,
+            retainedStorage: retainedStorage
+        )
+    }
+
+    private func rewrite(_ query: SelectQuery) async throws -> SelectQuery {
         let rewrittenFilter: DatabaseKit.Expression?
         if let filter = query.filter {
             rewrittenFilter = try await rewriteExpression(filter)
@@ -621,36 +639,16 @@ internal struct SPARQLFunctionRewriter: Sendable {
     ) async throws -> DatabaseKit.Expression {
         switch expr {
         case .inList(let lhs, let values):
-            // Check if any value is a SPARQL() function
-            var rewrittenValues: [DatabaseKit.Expression] = []
-            for value in values {
-                if case .function(let call) = value, call.name.uppercased() == "SPARQL" {
-                    // Execute SPARQL and inline results
-                    rewrittenValues.append(
-                        contentsOf: try await executeSPARQLFunctionAsExpressions(
-                            call
-                        )
-                    )
-                } else {
-                    rewrittenValues.append(try await rewriteExpression(value))
-                }
-            }
-            return .inList(try await rewriteExpression(lhs), values: rewrittenValues)
+            return .inList(
+                try await rewriteExpression(lhs),
+                values: try await rewriteMembershipValues(values)
+            )
 
         case .notInList(let lhs, let values):
-            var rewrittenValues: [DatabaseKit.Expression] = []
-            for value in values {
-                if case .function(let call) = value, call.name.uppercased() == "SPARQL" {
-                    rewrittenValues.append(
-                        contentsOf: try await executeSPARQLFunctionAsExpressions(
-                            call
-                        )
-                    )
-                } else {
-                    rewrittenValues.append(try await rewriteExpression(value))
-                }
-            }
-            return .notInList(try await rewriteExpression(lhs), values: rewrittenValues)
+            return .notInList(
+                try await rewriteExpression(lhs),
+                values: try await rewriteMembershipValues(values)
+            )
 
         case .inSubquery(let lhs, let subquery):
             // Check if subquery contains SPARQL() - recursively rewrite
@@ -836,14 +834,60 @@ internal struct SPARQLFunctionRewriter: Sendable {
 
     // MARK: - SPARQL Execution
 
-    /// Execute a SPARQL function and return scalar literal expressions.
+    private func rewriteMembershipValues(
+        _ values: [DatabaseKit.Expression]
+    ) async throws -> [DatabaseKit.Expression] {
+        var rewritten = try DatabaseRetainedArrayBuilder<
+            DatabaseKit.Expression
+        >(
+            workMeter: workMeter,
+            stage: .expressionEvaluation,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: DatabaseKit.Expression.self),
+            expectedCount: values.count
+        )
+        for value in values {
+            if case .function(let call) = value,
+               call.name.uppercased() == "SPARQL" {
+                let inlinedValues = try await executeSPARQLFunctionValues(call)
+                for fieldValue in inlinedValues {
+                    try workMeter.consume(at: .expressionEvaluation)
+                    try rewritten.append(
+                        footprint: try CanonicalRelationalFootprintMeter
+                            .footprint(
+                                of: QueryRow(fields: ["value": fieldValue]),
+                                workMeter: workMeter
+                            ),
+                        make: {
+                            .literal(try fieldValueToLiteral(fieldValue))
+                        }
+                    )
+                }
+            } else {
+                let rewrittenValue = try await rewriteExpression(value)
+                try rewritten.append(
+                    footprint: DatabaseIntermediateFootprint(),
+                    make: { rewrittenValue }
+                )
+            }
+        }
+        let retained = rewritten.finish().moveRetainingReservation()
+        let queryElements = retained.elements
+        try retainedStorage.retain(
+            elements: retained.elements,
+            reservation: retained.reservation
+        )
+        return queryElements
+    }
+
+    /// Execute a SPARQL function and return retained canonical values.
     ///
     /// - Parameter call: The SPARQL() function call
-    /// - Returns: Literal expressions for a single-variable projection.
+    /// - Returns: Canonical values for a single-variable projection.
     /// - Throws: `SPARQLFunctionError` for invalid arguments or execution errors
-    private func executeSPARQLFunctionAsExpressions(
+    private func executeSPARQLFunctionValues(
         _ call: FunctionCall
-    ) async throws -> [DatabaseKit.Expression] {
+    ) async throws -> DatabaseSharedRetainedArray<FieldValue> {
         // 1. Extract arguments (type name, query string, optional variable)
         let (typeName, sparqlQuery, extractVar) = try extractArguments(call)
 
@@ -873,7 +917,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             metadata: dataset.metadata,
             includedFieldNames: graphIndex.includedFieldNames
         )
-        try admitInlinedLiterals(result.bindings.count)
+        try admitInlinedLiterals(result.count)
 
         // 5. Extract single-variable values
         let varToExtract = extractVar ?? result.projectedVariables.first
@@ -890,43 +934,33 @@ internal struct SPARQLFunctionRewriter: Sendable {
         // canonical value order keeps the rewritten query fingerprint stable
         // when a historical continuation repeats this rewrite at the same
         // read version without an explicit SPARQL ORDER BY.
-        var values = try DatabaseRetainedArrayBuilder<FieldValue>(
-            workMeter: workMeter,
-            stage: .expressionEvaluation,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: FieldValue.self),
-            expectedCount: result.bindings.count
-        )
-        for binding in result.bindings {
-            try workMeter.consume(at: .expressionEvaluation)
-            guard let fieldValue = binding[variable] else {
-                throw SPARQLFunctionError.missingVariable(variable)
-            }
-            try values.append(
-                footprint: try CanonicalRelationalFootprintMeter.footprint(
-                    of: QueryRow(fields: ["value": fieldValue]),
-                    workMeter: workMeter
-                ),
-                make: { fieldValue }
+        let values: DatabaseRetainedBuffer<FieldValue>
+        do {
+            values = try result.retainedValues(
+                for: variable,
+                workMeter: workMeter
             )
+        } catch let error as SPARQLRetainedResultError {
+            switch error {
+            case .missingVariable:
+                throw SPARQLFunctionError.missingVariable(variable)
+            case .workMeterMismatch:
+                throw DatabasePreparedSQLSelectError.workMeterMismatch
+            }
         }
-        let sortedValues = try values.finish().sortingElements { lhs, rhs in
+        let sortedValues = try values.sortingElements { lhs, rhs in
             try workMeter.consume(2, at: .sortComparison)
             return lhs < rhs
         }
-
-        var expressions: [DatabaseKit.Expression] = []
-        expressions.reserveCapacity(sortedValues.count)
-        try sortedValues.withSpan { values in
-            var previous: FieldValue?
-            for value in values {
-                guard value != previous else { continue }
-                try workMeter.consume(at: .expressionEvaluation)
-                expressions.append(.literal(try fieldValueToLiteral(value)))
-                previous = value
-            }
+        let uniqueValues = try sortedValues.removingAdjacentDuplicates {
+            lhs,
+            rhs in
+            try workMeter.consume(at: .expressionEvaluation)
+            return lhs == rhs
         }
-        return expressions
+        return try uniqueValues.moveToSharedOwnership(
+            at: .expressionEvaluation
+        )
     }
 
     // MARK: - Argument Extraction
@@ -1000,7 +1034,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
         indexDescriptor: IndexDescriptor,
         metadata: RDFDatasetIndexMetadata,
         includedFieldNames: [String]
-    ) async throws -> SPARQLResult {
+    ) async throws -> SPARQLRetainedResult {
         let readableIndex = try await context.indexQueryContext
             .readableIndex(
                 named: indexDescriptor.name,
@@ -1023,7 +1057,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
         } else {
             sources = []
         }
-        return try await _executeSPARQLString(
+        return try await _executeRetainedSPARQLString(
             sparqlQuery,
             database: context.container.engine,
             sources: sources,

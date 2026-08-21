@@ -330,26 +330,6 @@ struct QueryASTTests {
         #expect(ranged.toSPARQL() == "<http://example.org/forward>{2,4}")
     }
 
-    // MARK: - Query Plan Tests
-
-    @Test("QueryCost comparison")
-    func testQueryCostComparison() throws {
-        let cost1 = QueryCost(startup: 0, total: 100, rows: 1000, width: 50)
-        let cost2 = QueryCost(startup: 0, total: 200, rows: 2000, width: 50)
-
-        #expect(cost1.total < cost2.total)
-    }
-
-    @Test("QueryCost addition")
-    func testQueryCostAddition() throws {
-        let cost1 = QueryCost(startup: 10, total: 100, rows: 500, width: 50)
-        let cost2 = QueryCost(startup: 5, total: 50, rows: 500, width: 50)
-
-        let combined = cost1 + cost2
-        #expect(combined.startup == 15)
-        #expect(combined.total == 150)
-    }
-
     // MARK: - SQL Query Builder Tests
 
     @Test("SQLQueryBuilder basic query")

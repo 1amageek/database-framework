@@ -5,7 +5,7 @@ import Testing
 
 @Suite("Entity reference set")
 struct EntityReferenceSetTests {
-    @Test("membership remains correct across canonical insertion and removal")
+    @Test("membership remains correct across insertion and removal")
     func insertionAndRemoval() throws {
         let alpha = try reference(entity: "Document", id: "alpha")
         let nested = try reference(

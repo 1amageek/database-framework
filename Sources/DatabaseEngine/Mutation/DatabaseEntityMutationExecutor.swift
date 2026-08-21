@@ -164,7 +164,8 @@ public struct DatabaseEntityMutationExecutor: Sendable {
             preconditions: try preparePreconditions(
                 preconditions,
                 workMeter: workMeter
-            )
+            ),
+            workMeter: workMeter
         )
     }
 
@@ -191,120 +192,134 @@ public struct DatabaseEntityMutationExecutor: Sendable {
         workMeter: DatabaseWorkMeter,
         transaction: DatabaseTransaction
     ) async throws -> [EntityMutationEffect] {
-        var mutations = try DatabaseRetainedArrayBuilder<PersistableMutation>(
-            workMeter: workMeter,
-            stage: .mutationPlanning,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: PersistableMutation.self),
-            expectedCount: preparedMutation.changes.count
-        )
-
-        for prepared in preparedMutation.changes {
-            try workMeter.consume(at: .mutationPlanning)
-            let state = try await load(
-                prepared.resolved,
-                transaction: transaction,
-                workMeter: workMeter
-            )
-            try validatePreconditions(
-                for: prepared.key,
-                state: state,
-                in: preparedMutation.preconditions
-            )
-            try validate(
-                prepared.kind,
-                identity: prepared.identity,
-                state: state
+        guard preparedMutation.workMeter === workMeter else {
+            throw DatabaseEntityMutationError.workMeterMismatch
+        }
+        return try await transaction.withEntityMutationOperation(
+            workMeter: workMeter
+        ) { operationID in
+            var mutations = try DatabaseRetainedArrayBuilder<
+                PersistableMutation
+            >(
+                workMeter: workMeter,
+                stage: .mutationPlanning,
+                layout: try CanonicalRelationalFootprintMeter
+                    .retainedArrayLayout(for: PersistableMutation.self),
+                expectedCount: preparedMutation.changes.count
             )
 
-            let mutation: PersistableMutation
-            switch prepared.kind {
-            case .insert, .update, .upsert:
-                guard let model = prepared.model else {
-                    throw DatabaseEntityMutationError.fieldsRequired(
-                        prepared.identity
-                    )
-                }
-                mutation = .save(
-                    identity: prepared.identity,
-                    model: model,
-                    precondition: writePrecondition(
-                        for: prepared.kind,
-                        key: prepared.key,
-                        preconditions: preparedMutation.preconditions
-                    )
+            for prepared in preparedMutation.changes {
+                try workMeter.consume(at: .mutationPlanning)
+                let state = try await load(
+                    prepared.resolved,
+                    transaction: transaction,
+                    workMeter: workMeter,
+                    operationID: operationID
                 )
-            case .delete:
-                guard case .present(let model) = state else {
-                    throw DatabaseEntityMutationError.entityNotFound(
-                        prepared.identity
+                try validatePreconditions(
+                    for: prepared.key,
+                    state: state,
+                    in: preparedMutation.preconditions
+                )
+                try validate(
+                    prepared.kind,
+                    identity: prepared.identity,
+                    state: state
+                )
+
+                let mutation: PersistableMutation
+                switch prepared.kind {
+                case .insert, .update, .upsert:
+                    guard let model = prepared.model else {
+                        throw DatabaseEntityMutationError.fieldsRequired(
+                            prepared.identity
+                        )
+                    }
+                    mutation = .save(
+                        identity: prepared.identity,
+                        model: model,
+                        precondition: writePrecondition(
+                            for: prepared.kind,
+                            key: prepared.key,
+                            preconditions: preparedMutation.preconditions
+                        )
+                    )
+                case .delete:
+                    guard case .present(let model) = state else {
+                        throw DatabaseEntityMutationError.entityNotFound(
+                            prepared.identity
+                        )
+                    }
+                    mutation = .delete(
+                        identity: prepared.identity,
+                        model: model,
+                        precondition: writePrecondition(
+                            for: prepared.kind,
+                            key: prepared.key,
+                            preconditions: preparedMutation.preconditions
+                        )
                     )
                 }
-                mutation = .delete(
-                    identity: prepared.identity,
-                    model: model,
-                    precondition: writePrecondition(
-                        for: prepared.kind,
-                        key: prepared.key,
-                        preconditions: preparedMutation.preconditions
-                    )
+                try mutations.append(
+                    footprint: try DatabaseEntityMutationFootprintMeter
+                        .footprint(
+                            of: mutation,
+                            workMeter: workMeter
+                        ),
+                    make: { mutation }
                 )
             }
-            try mutations.append(
-                footprint: try DatabaseEntityMutationFootprintMeter.footprint(
-                    of: mutation,
-                    workMeter: workMeter
-                ),
-                make: { mutation }
-            )
-        }
 
-        try await validateUnchangedPreconditions(
-            preparedMutation,
-            transaction: transaction,
-            workMeter: workMeter
-        )
+            try await validateUnchangedPreconditions(
+                preparedMutation,
+                transaction: transaction,
+                workMeter: workMeter,
+                operationID: operationID
+            )
 
-        let retainedMutations = try mutations.finish().moveToSharedOwnership(
-            at: .mutationPlanning
-        )
-        try await retainedMutations.withElements { mutations in
-            try await transaction.apply(mutations)
-        }
+            let retainedMutations = try mutations.finish()
+                .moveToSharedOwnership(at: .mutationPlanning)
+            try await retainedMutations.withElements { mutations in
+                try await transaction.apply(
+                    mutations,
+                    within: operationID
+                )
+            }
 
-        let persistedEffectCount = try await transaction
-            .persistedMutationEffectCount()
-        guard persistedEffectCount <= limits.maximumChanges else {
-            throw DatabaseEntityMutationError.changeLimitExceeded(
-                actual: persistedEffectCount,
-                maximum: limits.maximumChanges
+            let persistedEffectCount = try await transaction
+                .persistedMutationEffectCount(within: operationID)
+            guard persistedEffectCount <= limits.maximumChanges else {
+                throw DatabaseEntityMutationError.changeLimitExceeded(
+                    actual: persistedEffectCount,
+                    maximum: limits.maximumChanges
+                )
+            }
+            guard let outputCount = UInt32(exactly: persistedEffectCount) else {
+                throw DatabaseWorkLimitError.maximumRows(
+                    stage: .resultMaterialization,
+                    consumed: workMeter.consumedRows,
+                    requested: UInt32.max,
+                    maximum: workMeter.budget.maximumRows
+                )
+            }
+            try workMeter.consume(
+                UInt64(outputCount),
+                at: .validation
             )
-        }
-        guard let outputCount = UInt32(exactly: persistedEffectCount) else {
-            throw DatabaseWorkLimitError.maximumRows(
-                stage: .resultMaterialization,
-                consumed: workMeter.consumedRows,
-                requested: UInt32.max,
-                maximum: workMeter.budget.maximumRows
+            try workMeter.recordOutputRows(
+                outputCount,
+                at: .resultMaterialization
             )
+            return try await transaction.mapPersistedMutationEffects(
+                within: operationID
+            ) { effect in
+                EntityMutationEffect(
+                    kind: mutationKind(effect.kind),
+                    identity: effect.identity,
+                    version: try effect.model.map(entityVersion)
+                )
+            }
         }
-        try workMeter.consume(
-            UInt64(outputCount),
-            at: .validation
-        )
-        try workMeter.recordOutputRows(
-            outputCount,
-            at: .resultMaterialization
-        )
-        let persistedEffects = try await transaction.persistedMutationEffects()
-        let effects = try persistedEffects.map { effect in
-            EntityMutationEffect(
-                kind: mutationKind(effect.kind),
-                identity: effect.identity,
-                version: try effect.model.map(entityVersion)
-            )
-        }
-        return effects
     }
 
     public func validate(
@@ -322,26 +337,32 @@ public struct DatabaseEntityMutationExecutor: Sendable {
             preconditions,
             workMeter: workMeter
         )
-        var index = prepared.startIndex
-        while index < prepared.endIndex {
-            let range = preconditionRange(
-                for: prepared[index].key,
-                in: prepared
-            )
-            let identity = prepared[index].value.identity
-            let resolved = try ResolvedEntityReference.resolve(
-                identity,
-                container: container
-            )
-            let state = try await load(
-                resolved,
-                transaction: transaction,
-                workMeter: workMeter
-            )
-            for preconditionIndex in range {
-                try validate(prepared[preconditionIndex].value, state: state)
+        try await transaction.withEntityValidationOperation { operationID in
+            var index = prepared.startIndex
+            while index < prepared.endIndex {
+                let range = preconditionRange(
+                    for: prepared[index].key,
+                    in: prepared
+                )
+                let identity = prepared[index].value.identity
+                let resolved = try ResolvedEntityReference.resolve(
+                    identity,
+                    container: container
+                )
+                let state = try await load(
+                    resolved,
+                    transaction: transaction,
+                    workMeter: workMeter,
+                    operationID: operationID
+                )
+                for preconditionIndex in range {
+                    try validate(
+                        prepared[preconditionIndex].value,
+                        state: state
+                    )
+                }
+                index = range.upperBound
             }
-            index = range.upperBound
         }
     }
 
@@ -443,7 +464,8 @@ public struct DatabaseEntityMutationExecutor: Sendable {
     private func validateUnchangedPreconditions(
         _ preparedMutation: DatabasePreparedEntityMutation,
         transaction: DatabaseTransaction,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        operationID: UInt64
     ) async throws {
         let preconditions = preparedMutation.preconditions
         var index = preconditions.startIndex
@@ -459,7 +481,8 @@ public struct DatabaseEntityMutationExecutor: Sendable {
                 let state = try await load(
                     resolved,
                     transaction: transaction,
-                    workMeter: workMeter
+                    workMeter: workMeter,
+                    operationID: operationID
                 )
                 for preconditionIndex in range {
                     try validate(
@@ -582,13 +605,15 @@ public struct DatabaseEntityMutationExecutor: Sendable {
     private func load(
         _ resolved: ResolvedEntityReference,
         transaction: DatabaseTransaction,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        operationID: UInt64
     ) async throws -> DatabaseEntityState {
         try workMeter.consume(at: .storageRow)
         if let model = try await transaction.loadPersistedModel(
             entity: resolved.identity.entity,
             id: resolved.id,
-            partition: resolved.partition
+            partition: resolved.partition,
+            within: operationID
         ) {
             return .present(model)
         }

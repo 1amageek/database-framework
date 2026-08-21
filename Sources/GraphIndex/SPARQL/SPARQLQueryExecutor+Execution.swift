@@ -176,4 +176,40 @@ extension SPARQLQueryExecutor {
         return (bindings, stats)
     }
 
+    /// Executes a SELECT plan for an intermediate database operator without
+    /// promoting its binding buffer outside request accounting.
+    package func executeRetainedInTransaction(
+        selectPlan: SPARQLSelectExecutionPlan,
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> SPARQLRetainedResult {
+        let executor = try scoped(to: selectPlan.ordered.dataset)
+            .requestScoped(by: workMeter)
+            .transactionAttemptScoped()
+        let evaluated = try await executor.evaluateSelectPlan(
+            selectPlan,
+            transaction: transaction,
+            activeGraph: executor.initialActiveGraph,
+            seed: VariableBinding()
+        )
+        let result = executor.includingNestedExpressionStatistics(
+            consume evaluated
+        )
+        let statistics = result.stats
+        let bindings = try (consume result.bindings).moveToSharedSnapshot(
+            at: .resultMaterialization
+        )
+        let reachedLimit = selectPlan.slice.limit.map {
+            bindings.count >= $0
+        } ?? false
+        return SPARQLRetainedResult(
+            bindings: bindings,
+            workMeter: workMeter,
+            projectedVariables: selectPlan.projectionVariables,
+            isComplete: !reachedLimit,
+            limitReason: reachedLimit ? .explicitLimit : nil,
+            statistics: statistics
+        )
+    }
+
 }

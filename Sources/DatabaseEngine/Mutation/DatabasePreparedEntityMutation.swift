@@ -18,16 +18,19 @@ public struct DatabasePreparedEntityMutation: Sendable {
         DatabaseSharedRetainedArray<DatabaseEntityMutationExecutor.PreparedChange>
     let identities: DatabaseSharedRetainedArray<Identity>
     let preconditions: DatabaseSharedRetainedArray<Precondition>
+    let workMeter: DatabaseWorkMeter
 
     init(
         changes: DatabaseSharedRetainedArray<
             DatabaseEntityMutationExecutor.PreparedChange
         >,
         identities: DatabaseSharedRetainedArray<Identity>,
-        preconditions: DatabaseSharedRetainedArray<Precondition>
+        preconditions: DatabaseSharedRetainedArray<Precondition>,
+        workMeter: DatabaseWorkMeter
     ) {
         self.changes = changes
         self.identities = identities
         self.preconditions = preconditions
+        self.workMeter = workMeter
     }
 }

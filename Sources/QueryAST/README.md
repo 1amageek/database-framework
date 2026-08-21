@@ -1,6 +1,8 @@
 # QueryAST
 
-Abstract Syntax Tree (AST) module for SQL/SPARQL queries. Provides query parsing, transformation, and serialization.
+SQL/SPARQL syntax adapter over the canonical query models owned by
+`DatabaseKit`. It provides parsing, construction, and serialization without
+owning execution plans or runtime semantics.
 
 ## Overview
 
@@ -27,7 +29,7 @@ QueryAST provides the following capabilities:
 │  ├── PathPattern           │  ├── PropertyPath                  │
 │  └── GraphTable            │  └── SPARQLTerm                    │
 ├────────────────────────────┴────────────────────────────────────┤
-│  Core Types                                                      │
+│  DatabaseKit query models (re-exported)                          │
 │  ├── Expression            ├── DataSource                       │
 │  ├── SelectQuery           ├── Literal                          │
 │  └── QueryStatement        └── Projection                       │
@@ -40,6 +42,9 @@ QueryAST provides the following capabilities:
 ## Key Types
 
 ### Query Representation
+
+These declarations are owned by `DatabaseKit` and re-exported for parser and
+builder users.
 
 | Type | Description |
 |------|-------------|
@@ -211,18 +216,8 @@ let vars = sparqlQuery.referencedVariables
 // ["name", "s"]
 ```
 
-## Query Optimization (Experimental)
-
-```swift
-// Generate query plan
-let plan = QueryPlan(query: query, indexes: availableIndexes)
-
-// Cost estimation
-print(plan.estimatedCost)
-
-// Get optimized plan
-let optimizedPlan = plan.optimized()
-```
+Execution planning and cost models are owned by `DatabaseEngine`; they are not
+part of the `QueryAST` syntax product.
 
 ## Supported SQL Features
 

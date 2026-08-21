@@ -42,14 +42,11 @@ placement without exposing backend credentials through the semantic API.
 ## SwiftPM Traits
 
 ~~~bash
-scripts/fdb-test-env run --clean -- \
-  scripts/xcode-test-harness \
-    --traits FoundationDB,AllRuntimeFeatures,MultiBase \
-    --expected-count 3434 \
-    --require-zero-skips \
-    --require-zero-expected-failures \
-    --require-zero-runtime-warnings
+scripts/apple-container-test-harness foundationdb
 ~~~
+
+Backend integration environments are owned by the pinned Apple Container
+harness described in [Apple Container Backend Verification](apple-container-testing.md).
 
 The framework package has no default traits. A consuming package selects each
 backend and runtime feature explicitly. The independent `database-server`
@@ -82,43 +79,20 @@ Enable the data-partitioning feature independently:
 ~~~
 
 ~~~bash
-scripts/xcode-test-harness \
-  --traits SQLite,AllRuntimeFeatures \
-  --only-testing SQLiteTests \
-  --expected-count 111 \
-  --require-zero-skips \
-  --require-zero-expected-failures \
-  --require-zero-runtime-warnings
+scripts/apple-container-test-harness sqlite
 ~~~
 
 Base isolation, persisted Grants, and Composition execution are present only
 when the optional trait is enabled:
 
 ~~~bash
-scripts/xcode-test-harness \
-  --traits SQLite,AllRuntimeFeatures,MultiBase \
-  --only-testing SQLiteTests \
-  --expected-count 114 \
-  --require-zero-skips \
-  --require-zero-expected-failures \
-  --require-zero-runtime-warnings
+scripts/apple-container-test-harness sqlite --multi-base
 ~~~
 
 SQLite builds do not link libfdb_c.
 
 ~~~bash
-POSTGRES_TEST_HOST=database.test \
-POSTGRES_TEST_PORT=5432 \
-POSTGRES_TEST_USER=postgres \
-POSTGRES_TEST_PASSWORD=test \
-POSTGRES_TEST_DB=database_framework_test \
-scripts/xcode-test-harness \
-  --traits PostgreSQL,AllRuntimeFeatures,MultiBase \
-  --only-testing PostgreSQLTests \
-  --expected-count 67 \
-  --require-zero-skips \
-  --require-zero-expected-failures \
-  --require-zero-runtime-warnings
+scripts/apple-container-test-harness postgresql
 ~~~
 
 PostgreSQL builds require the PostgreSQL dependency but not a running server

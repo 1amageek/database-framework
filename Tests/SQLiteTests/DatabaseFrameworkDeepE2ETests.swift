@@ -588,6 +588,9 @@ struct DatabaseFrameworkDeepE2ETests {
             ),
             security: .testingDisabled
         )
+        defer {
+            await verificationContainer.shutdown()
+        }
         let oldPartition = try await verificationContainer.testBaseContext()
             .fetch(DeepE2ESecureTenantDocument.self)
             .partition(DeepE2ESecureTenantDocument.fields.tenantID, equals: "tenant-secure-a")

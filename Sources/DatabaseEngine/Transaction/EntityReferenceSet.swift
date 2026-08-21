@@ -1,15 +1,15 @@
 import DatabaseTypes
 
-/// Maintains unique entity references in canonical order.
+/// Maintains unique entity references for transaction membership checks.
 ///
-/// Canonical ordering gives every supported runtime the same membership
-/// semantics without depending on platform hash-table specialization.
+/// Iteration order is intentionally not exposed. Every caller consumes only
+/// membership and insertion/removal results, allowing batch insertion to stay
+/// expected O(1) instead of shifting a canonically sorted Array.
 struct EntityReferenceSet: Sendable {
-    private var references: [EntityReference]
+    private var references: Set<EntityReference>
 
     init(minimumCapacity: Int = 0) {
-        references = []
-        references.reserveCapacity(minimumCapacity)
+        references = Set(minimumCapacity: minimumCapacity)
     }
 
     var count: Int {
@@ -17,50 +17,20 @@ struct EntityReferenceSet: Sendable {
     }
 
     func contains(_ reference: EntityReference) -> Bool {
-        location(for: reference).found
+        references.contains(reference)
     }
 
     @discardableResult
     mutating func insert(_ reference: EntityReference) -> Bool {
-        let location = location(for: reference)
-        guard !location.found else {
-            return false
-        }
-        references.insert(reference, at: location.index)
-        return true
+        references.insert(reference).inserted
     }
 
     @discardableResult
     mutating func remove(_ reference: EntityReference) -> Bool {
-        let location = location(for: reference)
-        guard location.found else {
-            return false
-        }
-        references.remove(at: location.index)
-        return true
+        references.remove(reference) != nil
     }
 
     mutating func removeAll(keepingCapacity: Bool = false) {
         references.removeAll(keepingCapacity: keepingCapacity)
-    }
-
-    private func location(
-        for reference: EntityReference
-    ) -> (index: Int, found: Bool) {
-        var lowerBound = 0
-        var upperBound = references.count
-        while lowerBound < upperBound {
-            let middle = lowerBound + (upperBound - lowerBound) / 2
-            if references[middle] < reference {
-                lowerBound = middle + 1
-            } else {
-                upperBound = middle
-            }
-        }
-        return (
-            index: lowerBound,
-            found: lowerBound < references.count
-                && references[lowerBound] == reference
-        )
     }
 }

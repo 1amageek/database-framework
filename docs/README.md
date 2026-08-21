@@ -12,6 +12,8 @@ reports are intentionally not part of the public documentation tree.
   indexes, and migrations.
 - [Backend Guide](backends.md) - FoundationDB, SQLite, PostgreSQL, custom
   engines, and Cloudflare composition.
+- [Apple Container Backend Verification](apple-container-testing.md) - pinned
+  backend environments, topology, lifecycle, and evidence.
 - [Production Readiness](production-readiness.md) - deployment and release
   checklist.
 

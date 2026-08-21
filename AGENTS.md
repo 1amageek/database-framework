@@ -26,12 +26,27 @@
 
 ## Verification
 
-- Native backend verification uses `scripts/xcode-test-harness` with the pinned
-  Swift snapshot. Do not replace it with direct package-wide
-  `xcodebuild test`; the harness selects traits in an isolated manifest,
-  injects the snapshot testing runtime and backend environment, enforces
-  timeouts and exact counts, and rejects skips, expected failures, runtime
-  warnings, and internal compiler, macro-plugin, or profiler errors.
+- Backend verification enters through `scripts/apple-container-test-harness`.
+  It verifies the pinned Apple Container runtime and owns PostgreSQL,
+  FoundationDB, SQLite, Swift, run-specific network creation, dedicated-IP
+  discovery, private Unix-socket or loopback forwarding, readiness, result
+  collection, stop, negative readiness, and exact container and network
+  deletion. It must
+  not install or update the host runtime, request administrator privileges,
+  change host DNS, start a Homebrew or launchd backend, use Docker Desktop,
+  publish a host port, or reuse a developer service.
+- The Apple Container harness delegates every macOS test execution to
+  `scripts/xcode-test-harness` with the pinned Swift snapshot. Do not replace
+  it with direct package-wide `xcodebuild test`; the Xcode harness selects
+  traits in an isolated manifest, injects the snapshot testing runtime and
+  backend environment, enforces timeouts and exact counts, and rejects skips,
+  expected failures, runtime warnings, and internal compiler, macro-plugin, or
+  profiler errors.
+- SQLite remains in-process. Its Apple Container command requires both the
+  authoritative macOS Xcode target and a Linux execution of the same target
+  linked to the stable SQLite release pinned in
+  `scripts/apple-container/versions.env`. A SQLite service sidecar is not valid
+  evidence for `SQLiteStorageEngine`.
 - The harness may skip Xcode's interactive macro approval only after verifying
   that every existing dependency pin, including macro packages, is unchanged.
 - When FoundationDB or PostgreSQL service variables are present, the harness
@@ -40,15 +55,17 @@
   share the same disposable service. Target compilation and Swift Testing
   inside each bundle retain their normal parallelism.
 - The strict SQLite contracts are 111 tests without `MultiBase` and 114
-  tests with it. The existing `MultiBase` backend contracts are 3,434
+  tests with it. The existing `MultiBase` backend contracts are 3,432
   FoundationDB tests and 67 PostgreSQL tests. PostgreSQL tests require an
   isolated real server.
 - `POSTGRES_TEST_UNIX_SOCKET` is the complete PostgreSQL socket file path, such
   as `<socket-directory>/.s.PGSQL.<port>`, not the containing directory. The
-  `psql -h` readiness probe still receives the containing directory.
-- FoundationDB verification requires the C SDK header and client library under
-  `/usr/local/include` and `/usr/local/lib`, or explicit
-  `FDB_CLIENT_INCLUDE_DIRECTORY` and `FDB_CLIENT_LIBRARY_DIRECTORY` values.
+  harness compiles its reviewed relay source with Xcode's `clang`; it must not
+  require a Homebrew forwarding or PostgreSQL client utility.
+- FoundationDB verification checksum-verifies and expands the pinned macOS C
+  client into the user cache. It passes explicit
+  `FDB_CLIENT_INCLUDE_DIRECTORY` and `FDB_CLIENT_LIBRARY_DIRECTORY` values and
+  never installs or starts the client package's system launch daemon.
 - Standard WASM, Embedded WASM, and static Musl Linux verification use the exact
   Swift 6.4 snapshot SDK identifiers and release commands in
   `docs/production-readiness.md`.

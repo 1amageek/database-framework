@@ -6,6 +6,7 @@
 
 # Swift Package Manager
 /.build/
+/Benchmarks/.build/
 /.build-*/
 /Packages/
 .swiftpm/configuration/registries.json

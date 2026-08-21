@@ -73,6 +73,22 @@ package enum DatabaseEntityMutationFootprintMeter {
         )
     }
 
+    package static func footprint(
+        of model: PersistedModel,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseIntermediateFootprint {
+        try CanonicalRelationalFootprintMeter.footprint(
+            of: QueryRow(
+                fields: [
+                    "model": .object(
+                        try DatabaseEntityProjection.fieldObject(for: model)
+                    )
+                ]
+            ),
+            workMeter: workMeter
+        )
+    }
+
     private static func footprint(
         identity: EntityReference,
         fields: FieldObject,

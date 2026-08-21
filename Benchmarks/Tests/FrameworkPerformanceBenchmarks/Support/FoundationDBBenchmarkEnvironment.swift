@@ -8,6 +8,7 @@ import StorageKit
 enum FoundationDBBenchmarkEnvironmentError: Error, LocalizedError {
     case missingClusterFile
     case clusterFileDoesNotExist(path: String)
+    case harnessIdentityEnvironmentMissing
     case clusterOwnershipMarkerMissing(path: String)
     case clusterOwnershipMarkerInvalid(path: String)
     case clusterOwnershipMarkerMismatch(
@@ -21,9 +22,12 @@ enum FoundationDBBenchmarkEnvironmentError: Error, LocalizedError {
         switch self {
         case .missingClusterFile:
             return "FDB_CLUSTER_FILE must identify a cluster owned by "
-                + "scripts/fdb-test-env"
+                + "scripts/apple-container-test-harness foundationdb-run"
         case .clusterFileDoesNotExist(let path):
             return "FoundationDB benchmark cluster file does not exist: \(path)"
+        case .harnessIdentityEnvironmentMissing:
+            return "FoundationDB benchmark requires the Apple Container "
+                + "harness identity path and token"
         case .clusterOwnershipMarkerMissing(let path):
             return "FoundationDB benchmark ownership marker is missing: \(path)"
         case .clusterOwnershipMarkerInvalid(let path):
@@ -37,7 +41,7 @@ enum FoundationDBBenchmarkEnvironmentError: Error, LocalizedError {
                 + (markerClusterFile ?? "<missing>")
         case .clusterEndpointIsNotIsolated(let clusterFile):
             return "FoundationDB benchmark cluster must be the single "
-                + "loopback cluster created by scripts/fdb-test-env: "
+                + "loopback cluster created by the Apple Container harness: "
                 + clusterFile
         case .clusterHealthCheckFailed(let clusterFile, let underlying):
             if let clusterFile {
@@ -151,38 +155,58 @@ actor FoundationDBBenchmarkEnvironment {
                 .clusterFileDoesNotExist(path: clusterFileURL.path)
         }
 
-        let stateDirectoryURL = clusterFileURL.deletingLastPathComponent()
-        let identityURL = stateDirectoryURL.appendingPathComponent(
-            "fdb.pid.identity"
-        )
-        let pidURL = stateDirectoryURL.appendingPathComponent("fdb.pid")
-        guard fileManager.fileExists(atPath: identityURL.path),
-              fileManager.fileExists(atPath: pidURL.path) else {
+        guard let identityPath = environment[
+            "DATABASE_FRAMEWORK_FDB_HARNESS_IDENTITY"
+        ], !identityPath.isEmpty,
+        let expectedToken = environment[
+            "DATABASE_FRAMEWORK_FDB_HARNESS_TOKEN"
+        ], !expectedToken.isEmpty else {
+            throw FoundationDBBenchmarkEnvironmentError
+                .harnessIdentityEnvironmentMissing
+        }
+        let identityURL = URL(fileURLWithPath: identityPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard fileManager.fileExists(atPath: identityURL.path) else {
             throw FoundationDBBenchmarkEnvironmentError
                 .clusterOwnershipMarkerMissing(path: identityURL.path)
         }
 
         let identity = try String(contentsOf: identityURL, encoding: .utf8)
-        let identityLines = identity.split(
-            whereSeparator: \.isNewline
-        )
-        let pidText = try String(
-            contentsOf: pidURL,
-            encoding: .utf8
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard identityLines.count == 4,
-              !identityLines[0].isEmpty,
-              !identityLines[1].isEmpty,
+        var fields: [Substring: Substring] = [:]
+        for line in identity.split(whereSeparator: \.isNewline) {
+            let components = line.split(
+                separator: "=",
+                maxSplits: 1,
+                omittingEmptySubsequences: false
+            )
+            guard components.count == 2,
+                  !components[0].isEmpty,
+                  !components[1].isEmpty,
+                  fields.updateValue(
+                    components[1],
+                    forKey: components[0]
+                  ) == nil else {
+                throw FoundationDBBenchmarkEnvironmentError
+                    .clusterOwnershipMarkerInvalid(path: identityURL.path)
+            }
+        }
+        guard fields["format"]
+                == "database-framework-apple-container-foundationdb-v1",
+              fields["token"] == Substring(expectedToken),
+              let markerClusterFile = fields["cluster_file"],
+              let pidText = fields["forwarder_pid"],
               let pid = Int32(pidText),
               pid > 0,
               Darwin.kill(pid, 0) == 0,
-              let markerPort = UInt16(identityLines[3]),
-              markerPort > 0 else {
+              let markerEndpoint = fields["endpoint"],
+              markerEndpoint.starts(with: "127.0.0.1:") else {
             throw FoundationDBBenchmarkEnvironmentError
                 .clusterOwnershipMarkerInvalid(path: identityURL.path)
         }
-        let markerClusterFile = String(identityLines[2])
-        let markerClusterFileURL = URL(fileURLWithPath: markerClusterFile)
+        let markerClusterFileURL = URL(
+            fileURLWithPath: String(markerClusterFile)
+        )
             .standardizedFileURL
             .resolvingSymlinksInPath()
         guard markerClusterFileURL.path == clusterFileURL.path else {
@@ -203,7 +227,7 @@ actor FoundationDBBenchmarkEnvironment {
             omittingEmptySubsequences: false
         )
         guard coordinators.count == 2,
-              coordinators[1] == "127.0.0.1:\(markerPort)" else {
+              coordinators[1] == markerEndpoint else {
             throw FoundationDBBenchmarkEnvironmentError
                 .clusterEndpointIsNotIsolated(
                     clusterFile: clusterFileURL.path

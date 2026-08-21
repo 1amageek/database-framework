@@ -4,22 +4,26 @@ This is an independent Swift package. Its benchmark suites are intentionally
 absent from the parent `database-framework` package test graph.
 
 The benchmarks require the isolated FoundationDB cluster owned by the parent
-package's `scripts/fdb-test-env` harness. The benchmark runtime verifies the
-harness identity marker and the single loopback coordinator before any
-destructive reset; a missing, system-default, or manually supplied cluster is
-rejected. Run the package explicitly with Xcode's test runner and an external
-timeout, for example:
+package's Apple Container harness. The benchmark runtime verifies the
+run-specific identity marker and loopback coordinator before any destructive
+reset; a missing, system-default, or manually supplied cluster is rejected.
+Run the package through the same version-pinned environment preparation used
+by correctness tests, for example:
 
 ```bash
 (
   cd Benchmarks
-  ../scripts/fdb-test-env run --clean -- \
+  ../scripts/apple-container-test-harness foundationdb-run -- \
     perl -e 'alarm shift; exec @ARGV' 3600 \
       xcodebuild test \
         -scheme database-framework-benchmarks-Package \
         -destination 'platform=macOS,arch=arm64'
 )
 ```
+
+The harness prepares the checksum-verified client, starts the pinned server,
+injects the cluster and client paths, preserves service evidence, proves
+negative readiness, and removes the disposable environment.
 
 Benchmark results are not correctness-test evidence and are never included in
 the parent package's expected test count.

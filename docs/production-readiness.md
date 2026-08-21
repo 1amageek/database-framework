@@ -69,44 +69,11 @@ database-framework service.
 ## Release Gate
 
 ~~~bash
-export TOOLCHAINS=org.swift.64202607231a
-
-scripts/xcode-test-harness \
-  --traits SQLite,AllRuntimeFeatures \
-  --only-testing SQLiteTests \
-  --expected-count 111 \
-  --require-zero-skips \
-  --require-zero-expected-failures \
-  --require-zero-runtime-warnings
-
-scripts/xcode-test-harness \
-  --traits SQLite,AllRuntimeFeatures,MultiBase \
-  --only-testing SQLiteTests \
-  --expected-count 114 \
-  --require-zero-skips \
-  --require-zero-expected-failures \
-  --require-zero-runtime-warnings
-
-POSTGRES_TEST_HOST=database.test \
-POSTGRES_TEST_PORT=5432 \
-POSTGRES_TEST_USER=postgres \
-POSTGRES_TEST_PASSWORD=test \
-POSTGRES_TEST_DB=database_framework_test \
-scripts/xcode-test-harness \
-  --traits PostgreSQL,AllRuntimeFeatures,MultiBase \
-  --only-testing PostgreSQLTests \
-  --expected-count 67 \
-  --require-zero-skips \
-  --require-zero-expected-failures \
-  --require-zero-runtime-warnings
-
-scripts/fdb-test-env run --clean -- \
-  scripts/xcode-test-harness \
-    --traits FoundationDB,AllRuntimeFeatures,MultiBase \
-    --expected-count 3434 \
-    --require-zero-skips \
-    --require-zero-expected-failures \
-    --require-zero-runtime-warnings
+scripts/apple-container-test-harness doctor
+scripts/apple-container-test-harness sqlite
+scripts/apple-container-test-harness sqlite --multi-base
+scripts/apple-container-test-harness postgresql
+scripts/apple-container-test-harness foundationdb
 
 export TOOLCHAINS=org.swift.64202608141a
 
@@ -144,6 +111,12 @@ for product in Database; do
 done
 
 ~~~
+
+The backend gate uses the immutable artifact manifest, topology, teardown
+contract, and evidence requirements in
+[Apple Container Backend Verification](apple-container-testing.md). The
+supplemental SQLite Linux run does not replace its macOS Xcode result; both are
+required.
 
 The Xcode harness keeps the source manifest unchanged, selects traits in an
 isolated copy, injects the pinned snapshot's testing runtime and backend

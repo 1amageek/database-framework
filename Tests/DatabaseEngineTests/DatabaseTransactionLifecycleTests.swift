@@ -6,7 +6,7 @@ import Synchronization
 import TestSupport
 import Testing
 
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Persistable
 private struct TransactionLifecycleParent: Equatable {
@@ -422,6 +422,138 @@ struct DatabaseTransactionLifecycleTests {
         )
     }
 
+    @Test("metered mutation admission failure rolls back and releases journal")
+    func meteredMutationAdmissionFailureRollsBack() async throws {
+        let container = try await makeContainer()
+        let context = container.testBaseContext()
+        let model = TransactionLifecycleParent(
+            id: "metered-rejection",
+            value: "must-not-commit"
+        )
+        let meter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateRows: 0,
+                maximumIntermediateBytes: 1_048_576
+            ),
+            monotonicClock: container.monotonicClock
+        )
+        let mutation = PersistableMutation.save(
+            identity: try EntityReferenceEncoder.encode(model),
+            model: try PersistedModel(model),
+            precondition: .notExists
+        )
+
+        do {
+            try await context.withTransaction { transaction in
+                try await transaction.apply([mutation], workMeter: meter)
+            }
+            Issue.record("Expected mutation journal admission to fail")
+        } catch let error as DatabaseWorkLimitError {
+            guard case .maximumIntermediateRows(
+                stage: .mutationPlanning,
+                consumed: 0,
+                requested: _,
+                maximum: 0
+            ) = error else {
+                Issue.record("Unexpected work-limit error: \(error)")
+                return
+            }
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+        #expect(
+            try await context.model(
+                for: model.id,
+                as: TransactionLifecycleParent.self
+            ) == nil
+        )
+    }
+
+    @Test(
+        "final validation keeps metered journal ownership across suspension",
+        .timeLimit(.minutes(1))
+    )
+    func finalValidationRetainsMeteredJournal() async throws {
+        let suspension = MutationSuspension()
+        let container = try await makeContainer(
+            maintainer: SuspendingFinalValidationMaintainer(
+                suspension: suspension
+            )
+        )
+        let context = container.testBaseContext()
+        let model = TransactionLifecycleParent(
+            id: "metered-final-validation",
+            value: String(repeating: "v", count: 4_096)
+        )
+        let meter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: container.monotonicClock
+        )
+        let mutation = PersistableMutation.save(
+            identity: try EntityReferenceEncoder.encode(model),
+            model: try PersistedModel(model),
+            precondition: .notExists
+        )
+
+        let operation = Task {
+            try await context.withTransaction { transaction in
+                try await transaction.apply([mutation], workMeter: meter)
+            }
+        }
+        await suspension.waitUntilEntered()
+        #expect(meter.retainedIntermediateRows > 0)
+        #expect(meter.retainedIntermediateBytes > 0)
+
+        await suspension.release()
+        try await operation.value
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+        #expect(
+            try await context.model(
+                for: model.id,
+                as: TransactionLifecycleParent.self
+            ) == model
+        )
+    }
+
+    @Test("failed final validation releases metered journal and rolls back")
+    func failedFinalValidationReleasesMeteredJournal() async throws {
+        let container = try await makeContainer(
+            maintainer: FailingFinalValidationMaintainer()
+        )
+        let context = container.testBaseContext()
+        let model = TransactionLifecycleParent(
+            id: "failed-final-validation",
+            value: "must-not-commit"
+        )
+        let meter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: container.monotonicClock
+        )
+        let mutation = PersistableMutation.save(
+            identity: try EntityReferenceEncoder.encode(model),
+            model: try PersistedModel(model),
+            precondition: .notExists
+        )
+
+        await #expect(throws: TransactionLifecycleFailure.expected) {
+            try await context.withTransaction { transaction in
+                try await transaction.apply([mutation], workMeter: meter)
+            }
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+        #expect(
+            try await context.model(
+                for: model.id,
+                as: TransactionLifecycleParent.self
+            ) == nil
+        )
+    }
+
     private func makeContainer() async throws -> DBContainer {
         try await makeContainer(maintainers: [])
     }
@@ -533,6 +665,59 @@ private struct DerivedChildMaintainer: PersistableMutationMaintainer {
         of models: [PersistedModel],
         context: borrowing PersistableValidationContext
     ) async throws {}
+}
+
+private struct SuspendingFinalValidationMaintainer:
+    PersistableMutationMaintainer {
+    let identifier = "test.transaction.final-validation-suspension"
+    let suspension: MutationSuspension
+
+    func validate(schema: Schema) throws {}
+
+    func update(
+        identity: EntityReference,
+        oldModel: PersistedModel?,
+        newModel: PersistedModel?,
+        context: borrowing PersistableMutationContext
+    ) async throws {}
+
+    func validateFinalState(
+        of models: [PersistedModel],
+        context: borrowing PersistableValidationContext
+    ) async throws {
+        guard models.contains(where: {
+            $0.entity == TransactionLifecycleParent.persistableType
+        }) else {
+            return
+        }
+        await suspension.suspendUntilReleased()
+    }
+}
+
+private struct FailingFinalValidationMaintainer:
+    PersistableMutationMaintainer {
+    let identifier = "test.transaction.final-validation-failure"
+
+    func validate(schema: Schema) throws {}
+
+    func update(
+        identity: EntityReference,
+        oldModel: PersistedModel?,
+        newModel: PersistedModel?,
+        context: borrowing PersistableMutationContext
+    ) async throws {}
+
+    func validateFinalState(
+        of models: [PersistedModel],
+        context: borrowing PersistableValidationContext
+    ) async throws {
+        guard models.contains(where: {
+            $0.entity == TransactionLifecycleParent.persistableType
+        }) else {
+            return
+        }
+        throw TransactionLifecycleFailure.expected
+    }
 }
 
 private final class FailingOncePersistableMaintainer:

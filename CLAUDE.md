@@ -246,7 +246,7 @@ callbacks.
 
 ## Build and Validation
 
-Use `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a` and the matching normal or
+Use `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a` and the matching normal or
 Embedded WASM SDK fixed by the workspace instructions. Do not mix snapshot
 dates or silently fall back to Swift 6.3.
 
@@ -270,8 +270,12 @@ perl -e 'alarm shift; exec @ARGV' 120 \
 ```
 
 Available focused schemes are maintained for the engine, runtime composition,
-server, graph, QueryAST, aggregation, benchmarks, and digest tests. FoundationDB
-tests run through the isolated `scripts/fdb-test-env` wrapper.
+server, graph, QueryAST, aggregation, benchmarks, and digest tests. Backend
+integration tests enter through `scripts/apple-container-test-harness`, which
+retains the Xcode harness for macOS execution and owns run-specific networks,
+isolated service containers, unprivileged connection endpoints, readiness,
+logs, negative readiness, and teardown without administrator privileges or
+host DNS changes.
 
 Validation must cover actual behavior:
 

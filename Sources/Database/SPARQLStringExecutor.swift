@@ -1,7 +1,7 @@
 #if DATABASE_GRAPH_INDEXES
 import DatabaseKit
 import DatabaseEngine
-import GraphIndex
+@_spi(DatabaseExecution) import GraphIndex
 import QueryAST
 import StorageKit
 
@@ -76,15 +76,9 @@ func _executeSPARQLString(
     compilationLimits: SPARQLExpressionCompilationLimits,
     workMeter: DatabaseWorkMeter
 ) async throws -> SPARQLResult {
-    let statement = try SPARQLParser(
-        structuralLimits: compilationLimits.structuralLimits
-    ).parse(sparql)
-    guard case .select(let query) = statement else {
-        throw SPARQLStringError.unsupportedQueryForm(statement)
-    }
-    let plan = try SPARQLSelectPlanCompiler.compile(
-        query,
-        expressionLimits: compilationLimits
+    let plan = try compileSPARQLSelectPlan(
+        sparql,
+        compilationLimits: compilationLimits
     )
     let executor = SPARQLQueryExecutor(
         database: database,
@@ -120,6 +114,58 @@ func _executeSPARQLString(
         isComplete: !reachedLimit,
         limitReason: reachedLimit ? .explicitLimit : nil,
         statistics: statistics
+    )
+}
+
+/// Executes SPARQL for another in-process database operator while retaining
+/// graph result storage in the shared request budget across suspension.
+func _executeRetainedSPARQLString(
+    _ sparql: String,
+    database: any StorageEngine,
+    sources: [RDFDatasetSource],
+    monotonicClock: any StorageMonotonicClock,
+    wallClock: any WallClock,
+    transaction: any TransactionAccess,
+    compilationLimits: SPARQLExpressionCompilationLimits,
+    workMeter: DatabaseWorkMeter
+) async throws -> SPARQLRetainedResult {
+    let plan = try compileSPARQLSelectPlan(
+        sparql,
+        compilationLimits: compilationLimits
+    )
+    let executor = SPARQLQueryExecutor(
+        database: database,
+        monotonicClock: monotonicClock,
+        wallClock: wallClock,
+        sources: sources
+    )
+    let startTime = monotonicClock.now
+    let result = try await executor.executeRetainedInTransaction(
+        selectPlan: plan,
+        transaction: transaction,
+        workMeter: workMeter
+    )
+    return result.recordingDuration(
+        nanoseconds: DatabaseMonotonicMeasurement.nanoseconds(
+            from: startTime,
+            to: monotonicClock.now
+        )
+    )
+}
+
+private func compileSPARQLSelectPlan(
+    _ sparql: String,
+    compilationLimits: SPARQLExpressionCompilationLimits
+) throws -> SPARQLSelectExecutionPlan {
+    let statement = try SPARQLParser(
+        structuralLimits: compilationLimits.structuralLimits
+    ).parse(sparql)
+    guard case .select(let query) = statement else {
+        throw SPARQLStringError.unsupportedQueryForm(statement)
+    }
+    return try SPARQLSelectPlanCompiler.compile(
+        query,
+        expressionLimits: compilationLimits
     )
 }
 

@@ -113,11 +113,14 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            from: "26.0807.0"
+            revision: "10e54969c9fb26b54d62d34dcfa407b5fcf6e0b5"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
-        .package(url: "https://github.com/1amageek/swift-testing-heartbeat.git", from: "0.1.0"),
+        .package(
+            url: "https://github.com/1amageek/swift-testing-heartbeat.git",
+            revision: "74b9288fd7f21f575c06fd8b3b4bb7416321e5b0"
+        ),
     ],
     targets: [
         .target(name: "DatabaseMath"),
@@ -394,7 +397,6 @@ let package = Package(
         .target(
             name: "QueryAST",
             dependencies: [
-                "DatabaseMath",
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseKit", package: "database-kit"),
             ],

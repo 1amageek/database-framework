@@ -86,7 +86,7 @@ struct FieldValueComparatorTests {
         }
     }
 
-    @Test("composite equality recursively uses relational numeric identity")
+    @Test("composite equality and byte ordering use relational identity")
     func compositeEqualityUsesRelationalIdentity() throws {
         let decimal = FieldValue.array([
             .decimal(ExactDecimal(coefficient: 15, scale: 1)),
@@ -140,6 +140,21 @@ struct FieldValueComparatorTests {
                 .array([.float64(.infinity)])
             )
         }
+
+        let emptyBytes = FieldValue.bytes(ByteString())
+        let prefixBytes = FieldValue.bytes(ByteString([0x00, 0x7F]))
+        let extendedBytes = FieldValue.bytes(ByteString([0x00, 0x7F, 0x00]))
+        let higherBytes = FieldValue.bytes(ByteString([0x00, 0xFF]))
+        #expect(try FieldValueComparator.compare(emptyBytes, prefixBytes) == .lessThan)
+        #expect(try FieldValueComparator.compare(prefixBytes, extendedBytes) == .lessThan)
+        #expect(try FieldValueComparator.compare(higherBytes, prefixBytes) == .greaterThan)
+        #expect(try FieldValueComparator.compare(prefixBytes, prefixBytes) == .equal)
+        #expect(
+            try FieldValueComparator.compare(
+                .array([prefixBytes]),
+                .array([higherBytes])
+            ) == .lessThan
+        )
     }
 
     @Test("Mixed numeric and nonnumeric equality fails explicitly")

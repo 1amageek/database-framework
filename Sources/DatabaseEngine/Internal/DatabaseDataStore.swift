@@ -1857,14 +1857,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
     }
 
-    /// Saves one persisted model through the complete security and maintenance
-    /// pipeline of the caller's logical transaction.
-    func save(
+    /// Resolves, validates, and encodes one write without mutating storage.
+    func prepareSave(
         _ model: PersistedModel,
         identity: EntityReference,
         precondition: WritePrecondition,
-        transaction: any TransactionAccess
-    ) async throws -> PersistableWriteResult {
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter?
+    ) async throws -> PersistablePreparedWrite {
         let persistableType = model.entity
         let runtime = try runtime(for: persistableType)
         let canonicalModel = try runtime.canonicalized(model)
@@ -1890,9 +1890,12 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 oldData,
                 expectedEntity: persistableType
             )
-            oldCanonicalModel = try runtime.canonicalized(previousCanonicalModel)
+            let persistedPreviousModel = try runtime.canonicalized(
+                previousCanonicalModel
+            )
+            oldCanonicalModel = persistedPreviousModel
             try securityDelegate?.evaluateUpdate(
-                previousCanonicalModel,
+                persistedPreviousModel,
                 newResource: canonicalModel
             )
             existingRowPresent = true
@@ -1911,22 +1914,56 @@ package final class DatabaseDataStore: DataStore, Sendable {
         )
 
         let data = try PersistableStorageCodec.encode(canonicalModel)
+        let transientReservation: DatabaseIntermediateReservation?
+        if let workMeter {
+            var footprint = try oldCanonicalModel.map {
+                try DatabaseEntityMutationFootprintMeter.footprint(
+                    of: $0,
+                    workMeter: workMeter
+                )
+            } ?? DatabaseIntermediateFootprint()
+            footprint = try footprint.adding(
+                DatabaseIntermediateFootprint(bytes: UInt64(data.count))
+            )
+            transientReservation = try workMeter.reserveIntermediate(
+                rows: footprint.rows,
+                bytes: footprint.bytes,
+                at: .mutationPlanning
+            )
+        } else {
+            transientReservation = nil
+        }
 
-        try await storage.write(data, for: key)
-
-        // Update indexes via IndexMaintenanceService (efficient diff-based update)
-        try await indexMaintenanceService.updateIndexesUntyped(
+        return PersistablePreparedWrite(
+            result: PersistableWriteResult(
+                canonicalModel: canonicalModel,
+                previousCanonicalModel: oldCanonicalModel,
+                encodedValue: data,
+                identifier: idTuple
+            ),
+            key: key,
+            storage: storage,
             runtime: runtime,
-            oldModel: oldCanonicalModel,
-            newModel: canonicalModel,
-            id: idTuple,
-            transaction: transaction
+            transientReservation: transientReservation
         )
-        return PersistableWriteResult(
-            canonicalModel: canonicalModel,
-            previousCanonicalModel: oldCanonicalModel,
-            encodedValue: data,
-            identifier: idTuple
+    }
+
+    /// Applies a prepared write after the transaction has admitted every
+    /// retained model and encoded byte owned across the mutation pipeline.
+    func commitPreparedWrite(
+        _ prepared: PersistablePreparedWrite,
+        transaction: any TransactionAccess
+    ) async throws {
+        try await prepared.storage.write(
+            prepared.result.encodedValue,
+            for: prepared.key
+        )
+        try await indexMaintenanceService.updateIndexesUntyped(
+            runtime: prepared.runtime,
+            oldModel: prepared.result.previousCanonicalModel,
+            newModel: prepared.result.canonicalModel,
+            id: prepared.result.identifier,
+            transaction: transaction
         )
     }
 
@@ -1998,12 +2035,13 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     /// Deletes the currently persisted value and its physical indexes.
     /// A missing value produces no mutation.
-    func delete(
+    func prepareDelete(
         _ model: PersistedModel,
         identity: EntityReference,
         precondition: WritePrecondition,
-        transaction: any TransactionAccess
-    ) async throws -> PersistedModel? {
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter?
+    ) async throws -> PersistablePreparedDelete? {
         let persistableType = model.entity
         let runtime = try runtime(for: persistableType)
         let idTuple = try PersistableIdentifierKeyCodec.tuple(
@@ -2035,16 +2073,44 @@ package final class DatabaseDataStore: DataStore, Sendable {
             currentVersion: try Self.entityVersionDigest(for: persistedModel),
             identity: identity
         )
-        try securityDelegate?.evaluateDelete(canonicalModel)
-        try await indexMaintenanceService.updateIndexesUntyped(
+        try securityDelegate?.evaluateDelete(persistedModel)
+        let transientReservation: DatabaseIntermediateReservation?
+        if let workMeter {
+            let footprint = try DatabaseEntityMutationFootprintMeter.footprint(
+                of: persistedModel,
+                workMeter: workMeter
+            )
+            transientReservation = try workMeter.reserveIntermediate(
+                rows: footprint.rows,
+                bytes: footprint.bytes,
+                at: .mutationPlanning
+            )
+        } else {
+            transientReservation = nil
+        }
+        return PersistablePreparedDelete(
+            persistedModel: persistedModel,
+            identifier: idTuple,
+            key: key,
+            storage: storage,
             runtime: runtime,
-            oldModel: canonicalModel,
+            transientReservation: transientReservation
+        )
+    }
+
+    /// Applies a prepared delete after mutation ownership admission succeeds.
+    func commitPreparedDelete(
+        _ prepared: PersistablePreparedDelete,
+        transaction: any TransactionAccess
+    ) async throws {
+        try await indexMaintenanceService.updateIndexesUntyped(
+            runtime: prepared.runtime,
+            oldModel: prepared.persistedModel,
             newModel: nil,
-            id: idTuple,
+            id: prepared.identifier,
             transaction: transaction
         )
-        try await storage.delete(for: key)
-        return persistedModel
+        try await prepared.storage.delete(for: prepared.key)
     }
 
     private func runtime(

@@ -192,7 +192,7 @@ struct DatabaseRetainedBufferTests {
 
     @Test("failed operator hand-off releases the consumed unique owner")
     func failedOperatorHandOffReleasesReservation() throws {
-        let meter = makeMeter(rows: 2, bytes: 12)
+        let meter = makeMeter(rows: 2, bytes: 14)
         let builder = try makeTwoElementBuilder(meter: meter)
 
         do {

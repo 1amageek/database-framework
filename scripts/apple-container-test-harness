@@ -1,0 +1,1746 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSIONS_FILE="$ROOT_DIR/scripts/apple-container/versions.env"
+
+if [[ ! -f "$VERSIONS_FILE" ]]; then
+  echo "error: version manifest not found: $VERSIONS_FILE" >&2
+  exit 1
+fi
+# shellcheck source=scripts/apple-container/versions.env
+source "$VERSIONS_FILE"
+
+CONTAINER_BIN="${APPLE_CONTAINER_BIN:-/usr/local/bin/container}"
+RESULT_ROOT="${APPLE_CONTAINER_RESULT_ROOT:-${TMPDIR:-/tmp}/database-framework-apple-container-results}"
+CACHE_ROOT="${APPLE_CONTAINER_CACHE_ROOT:-$HOME/Library/Caches/database-framework/apple-container}"
+STARTUP_TIMEOUT_SECONDS="${APPLE_CONTAINER_STARTUP_TIMEOUT_SECONDS:-120}"
+IMAGE_TIMEOUT_SECONDS="${APPLE_CONTAINER_IMAGE_TIMEOUT_SECONDS:-1800}"
+DOWNLOAD_TIMEOUT_SECONDS="${APPLE_CONTAINER_DOWNLOAD_TIMEOUT_SECONDS:-1800}"
+PROBE_TIMEOUT_SECONDS="${APPLE_CONTAINER_PROBE_TIMEOUT_SECONDS:-8}"
+SQLITE_TEST_TIMEOUT_SECONDS="${SQLITE_TEST_TIMEOUT_SECONDS:-1800}"
+SQLITE_CONTAINER_TIMEOUT_SECONDS="${SQLITE_CONTAINER_TIMEOUT_SECONDS:-3600}"
+SQLITE_LINUX_BUILD_HEADROOM_GIB="${SQLITE_LINUX_BUILD_HEADROOM_GIB:-8}"
+RUN_IDENTIFIER="$(date +%Y%m%d-%H%M%S)-$$"
+
+COMMAND=""
+RUN_COMMAND=()
+SQLITE_MULTI_BASE=false
+ACTIVE_CONTAINER=""
+ACTIVE_NETWORK=""
+ACTIVE_BACKEND=""
+ACTIVE_ENDPOINT=""
+ACTIVE_CLUSTER_FILE=""
+ACTIVE_FDB_CLI=""
+ACTIVE_FDB_LIBRARY_DIRECTORY=""
+ACTIVE_POSTGRES_DATABASE=""
+ACTIVE_FORWARDER_PID=""
+ACTIVE_FORWARDER_SOCKET=""
+ACTIVE_FORWARDER_DIRECTORY=""
+ACTIVE_FORWARDER_PORT=""
+ACTIVE_FORWARDER_COMMAND=""
+ACTIVE_HARNESS_IDENTITY=""
+ACTIVE_CACHE_LOCK=""
+ACTIVE_TEMPORARY_PATHS=("")
+PREPARED_FDB_CLIENT_DIRECTORY=""
+PREPARED_HOST_FORWARDER=""
+PREPARED_SQLITE_TEST_IMAGE=""
+PREPARED_SQLITE_TEST_IMAGE_FINGERPRINT=""
+PREPARED_SWIFT_TOOLCHAIN_DIRECTORY=""
+RUN_RESULT_DIRECTORY=""
+TEMPORARY_ROOT=""
+CLEANUP_FAILED=false
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/apple-container-test-harness foundationdb-client
+  scripts/apple-container-test-harness doctor
+  scripts/apple-container-test-harness sqlite [--multi-base] [--result-directory <path>]
+  scripts/apple-container-test-harness postgresql [--result-directory <path>]
+  scripts/apple-container-test-harness foundationdb [--result-directory <path>]
+  scripts/apple-container-test-harness foundationdb-run [--result-directory <path>] -- <command> [arguments...]
+  scripts/apple-container-test-harness all [--result-directory <path>]
+
+Commands:
+  foundationdb-client
+                Download, verify, and extract the pinned macOS FoundationDB C
+                client without modifying /usr/local or starting a service.
+  doctor        Validate Apple Container, host architecture, and the pinned
+                Darwin Swift toolchain without changing state.
+  sqlite        Run the macOS Xcode SQLite gate and the Linux Apple Container
+                gate linked to the pinned stable SQLite release.
+  postgresql    Run PostgreSQL in an isolated Apple Container and execute the
+                complete PostgreSQL Xcode integration target.
+  foundationdb Run FoundationDB in an isolated Apple Container and execute the
+                complete package Xcode integration suite.
+  foundationdb-run
+                Prepare the same isolated FoundationDB environment and run one
+                supplied command, including the independent benchmark package.
+  all           Run standard and MultiBase SQLite, PostgreSQL, and FoundationDB
+                verification sequentially.
+
+No backend publishes a host port or changes host DNS. Each service is reached
+through a run-specific, unprivileged Unix-socket or loopback relay.
+EOF
+}
+
+require_value() {
+  local option="$1"
+  local value="${2:-}"
+  if [[ -z "$value" ]]; then
+    echo "error: $option requires a value" >&2
+    exit 2
+  fi
+}
+
+if [[ $# -eq 0 ]]; then
+  usage >&2
+  exit 2
+fi
+
+COMMAND="$1"
+shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --multi-base)
+      SQLITE_MULTI_BASE=true
+      shift
+      ;;
+    --result-directory)
+      require_value "$1" "${2:-}"
+      RESULT_ROOT="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      RUN_COMMAND=("$@")
+      break
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$SQLITE_MULTI_BASE" == true && "$COMMAND" != "sqlite" ]]; then
+  echo "error: --multi-base is valid only for the sqlite command" >&2
+  exit 2
+fi
+if [[ "$COMMAND" == "foundationdb-run" && ${#RUN_COMMAND[@]} -eq 0 ]]; then
+  echo "error: foundationdb-run requires -- followed by a command" >&2
+  exit 2
+fi
+if [[ "$COMMAND" != "foundationdb-run" && ${#RUN_COMMAND[@]} -gt 0 ]]; then
+  echo "error: -- <command> is valid only for foundationdb-run" >&2
+  exit 2
+fi
+for timeout_variable in \
+    STARTUP_TIMEOUT_SECONDS \
+    IMAGE_TIMEOUT_SECONDS \
+    DOWNLOAD_TIMEOUT_SECONDS \
+    PROBE_TIMEOUT_SECONDS \
+    SQLITE_TEST_TIMEOUT_SECONDS \
+    SQLITE_CONTAINER_TIMEOUT_SECONDS \
+    SQLITE_LINUX_BUILD_HEADROOM_GIB; do
+  if ! [[ "${!timeout_variable}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: $timeout_variable must be a positive integer" >&2
+    exit 2
+  fi
+done
+
+timeout_command() {
+  local seconds="$1"
+  shift
+  perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+}
+
+require_host_commands() {
+  local command
+  for command in "$@"; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+      echo "error: required host command is unavailable: $command" >&2
+      return 1
+    fi
+  done
+}
+
+sha256_file() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+require_sqlite_linux_workspace_capacity() {
+  local path="$1"
+  local available_kib
+  local source_kib
+  local required_kib
+  available_kib="$(df -Pk "$path" | awk 'NR == 2 { print $4 }')"
+  if ! [[ "$available_kib" =~ ^[0-9]+$ ]]; then
+    echo "error: unable to determine free disk space for $path" >&2
+    return 1
+  fi
+  source_kib="$(du -sk \
+    -I '.git' \
+    -I '.build' \
+    -I '.swiftpm' \
+    -I '.fdb-test' \
+    "$ROOT_DIR" | awk '{ print $1 }')"
+  if ! [[ "$source_kib" =~ ^[0-9]+$ ]]; then
+    echo "error: unable to determine SQLite Linux source staging size" >&2
+    return 1
+  fi
+  required_kib=$((source_kib + SQLITE_LINUX_BUILD_HEADROOM_GIB * 1024 * 1024))
+  if (( available_kib < required_kib )); then
+    echo "error: SQLite Apple Container verification requires " \
+      "$((required_kib / 1024)) MiB free for the staged source and Linux build; " \
+      "$((available_kib / 1024)) MiB is available on the filesystem containing $path" >&2
+    return 1
+  fi
+}
+
+register_temporary_path() {
+  ACTIVE_TEMPORARY_PATHS+=("$1")
+}
+
+unregister_temporary_path() {
+  local target="$1"
+  local retained_paths=("")
+  local path
+  for path in "${ACTIVE_TEMPORARY_PATHS[@]}"; do
+    if [[ -n "$path" && "$path" != "$target" ]]; then
+      retained_paths+=("$path")
+    fi
+  done
+  ACTIVE_TEMPORARY_PATHS=("${retained_paths[@]}")
+}
+
+download_verified() {
+  local url="$1"
+  local expected_sha256="$2"
+  local destination="$3"
+  local parent_directory
+  local partial_path
+
+  parent_directory="$(dirname "$destination")"
+  mkdir -p "$parent_directory"
+  if [[ -f "$destination" && "$(sha256_file "$destination")" == "$expected_sha256" ]]; then
+    return
+  fi
+
+  partial_path="$destination.partial.$$"
+  rm -f -- "$partial_path"
+  register_temporary_path "$partial_path"
+  if ! timeout_command "$DOWNLOAD_TIMEOUT_SECONDS" \
+      curl -fL --retry 3 --output "$partial_path" "$url"; then
+    rm -f -- "$partial_path"
+    unregister_temporary_path "$partial_path"
+    echo "error: download failed or timed out: $url" >&2
+    return 1
+  fi
+  if [[ "$(sha256_file "$partial_path")" != "$expected_sha256" ]]; then
+    rm -f -- "$partial_path"
+    unregister_temporary_path "$partial_path"
+    echo "error: checksum mismatch for $url" >&2
+    return 1
+  fi
+  mv "$partial_path" "$destination"
+  unregister_temporary_path "$partial_path"
+}
+
+json_is_array() {
+  local json="$1"
+  local xml
+  if ! xml="$(printf '%s' "$json" | plutil -convert xml1 -o - -- - 2>/dev/null)"; then
+    return 1
+  fi
+  grep -Eq '<array[ />]' <<<"$xml"
+}
+
+json_array_index_for_id() {
+  local json="$1"
+  local expected_id="$2"
+  local index=0
+  local item_type
+  local item_id
+  if ! json_is_array "$json"; then
+    return 2
+  fi
+  while item_type="$(printf '%s' "$json" \
+      | plutil -type "$index" - 2>/dev/null)"; do
+    if [[ "$item_type" != "dictionary" ]] \
+        || ! item_id="$(printf '%s' "$json" \
+          | plutil -extract "$index.id" raw -expect string - 2>/dev/null)"; then
+      return 2
+    fi
+    if [[ "$item_id" == "$expected_id" ]]; then
+      printf '%s\n' "$index"
+      return
+    fi
+    index=$((index + 1))
+  done
+  return 1
+}
+
+container_presence() {
+  local container_name="$1"
+  local index
+  local list_json
+  if ! list_json="$("$CONTAINER_BIN" list --all --format json)"; then
+    echo "error: failed to list Apple Container containers" >&2
+    return 1
+  fi
+  if ! json_is_array "$list_json"; then
+    echo "error: Apple Container returned invalid container-list JSON" >&2
+    return 1
+  fi
+  if index="$(json_array_index_for_id "$list_json" "$container_name")"; then
+    printf 'present\n'
+  elif [[ $? -eq 1 ]]; then
+    printf 'absent\n'
+  else
+    echo "error: Apple Container returned malformed container-list JSON" >&2
+    return 1
+  fi
+}
+
+network_presence() {
+  local network_name="$1"
+  local index
+  local list_json
+  if ! list_json="$("$CONTAINER_BIN" network list --format json)"; then
+    echo "error: failed to list Apple Container networks" >&2
+    return 1
+  fi
+  if ! json_is_array "$list_json"; then
+    echo "error: Apple Container returned invalid network-list JSON" >&2
+    return 1
+  fi
+  if index="$(json_array_index_for_id "$list_json" "$network_name")"; then
+    printf 'present\n'
+  elif [[ $? -eq 1 ]]; then
+    printf 'absent\n'
+  else
+    echo "error: Apple Container returned malformed network-list JSON" >&2
+    return 1
+  fi
+}
+
+create_run_network() {
+  local backend="$1"
+  local presence
+  ACTIVE_NETWORK="df-$backend-network-$RUN_IDENTIFIER"
+  "$CONTAINER_BIN" network create "$ACTIVE_NETWORK"
+  if ! presence="$(network_presence "$ACTIVE_NETWORK")"; then
+    return 1
+  fi
+  if [[ "$presence" != "present" ]]; then
+    echo "error: Apple Container did not create network $ACTIVE_NETWORK" >&2
+    return 1
+  fi
+  "$CONTAINER_BIN" network inspect "$ACTIVE_NETWORK" \
+    > "$RUN_RESULT_DIRECTORY/$ACTIVE_NETWORK.inspect.json"
+}
+
+start_postgresql_forwarder() {
+  local endpoint_ip="$1"
+  local database_name="$2"
+
+  ACTIVE_FORWARDER_DIRECTORY="/tmp/df-postgresql-$RUN_IDENTIFIER"
+  ACTIVE_FORWARDER_SOCKET="$ACTIVE_FORWARDER_DIRECTORY/.s.PGSQL.5432"
+  if [[ -e "$ACTIVE_FORWARDER_DIRECTORY" ]]; then
+    echo "error: PostgreSQL forwarder path already exists: $ACTIVE_FORWARDER_DIRECTORY" >&2
+    return 1
+  fi
+  mkdir -m 0700 "$ACTIVE_FORWARDER_DIRECTORY"
+
+  "$PREPARED_HOST_FORWARDER" \
+    unix "$ACTIVE_FORWARDER_SOCKET" "$endpoint_ip" 5432 \
+    > "$RUN_RESULT_DIRECTORY/postgresql-forwarder.log" 2>&1 &
+  ACTIVE_FORWARDER_PID=$!
+  if ! ACTIVE_FORWARDER_COMMAND="$(ps -ww -p "$ACTIVE_FORWARDER_PID" -o command=)" \
+      || [[ -z "$ACTIVE_FORWARDER_COMMAND" ]]; then
+    echo "error: failed to record PostgreSQL forwarder process identity" >&2
+    return 1
+  fi
+
+  wait_for_command "PostgreSQL Unix socket" \
+    test -S "$ACTIVE_FORWARDER_SOCKET"
+  wait_for_command "PostgreSQL forwarder readiness" \
+    grep -Fq 'ready mode=unix' "$RUN_RESULT_DIRECTORY/postgresql-forwarder.log"
+  wait_for_command "PostgreSQL protocol through Unix socket" \
+    perl "$ROOT_DIR/scripts/apple-container/probe-postgresql.pl" \
+      "$ACTIVE_FORWARDER_SOCKET" postgres "$database_name"
+}
+
+process_matches_forwarder() {
+  local pid="$1"
+  local process_command
+  if ! process_command="$(ps -ww -p "$pid" -o command= 2>/dev/null)"; then
+    return 1
+  fi
+  [[ -n "$ACTIVE_FORWARDER_COMMAND" \
+      && "$process_command" == "$ACTIVE_FORWARDER_COMMAND" ]]
+}
+
+wait_for_process_exit() {
+  local pid="$1"
+  local attempt
+  local process_state
+  for attempt in {1..50}; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      return
+    fi
+    process_state="$(ps -p "$pid" -o state= 2>/dev/null || true)"
+    if [[ "$process_state" == Z* ]]; then
+      return
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+stop_host_forwarder() {
+  local forwarder_failed=false
+
+  if [[ -n "$ACTIVE_FORWARDER_PID" ]]; then
+    if kill -0 "$ACTIVE_FORWARDER_PID" >/dev/null 2>&1; then
+      if process_matches_forwarder "$ACTIVE_FORWARDER_PID"; then
+        kill -TERM "$ACTIVE_FORWARDER_PID" >/dev/null 2>&1 || true
+        if ! wait_for_process_exit "$ACTIVE_FORWARDER_PID"; then
+          if process_matches_forwarder "$ACTIVE_FORWARDER_PID"; then
+            kill -KILL "$ACTIVE_FORWARDER_PID" >/dev/null 2>&1 || true
+            if ! wait_for_process_exit "$ACTIVE_FORWARDER_PID"; then
+              echo "error: host forwarder process remained running: $ACTIVE_FORWARDER_PID" >&2
+              forwarder_failed=true
+            fi
+          else
+            echo "error: forwarder PID identity changed before escalation: $ACTIVE_FORWARDER_PID" >&2
+            forwarder_failed=true
+          fi
+        fi
+        wait "$ACTIVE_FORWARDER_PID" >/dev/null 2>&1 || true
+      else
+        echo "error: refusing to signal a reused forwarder PID: $ACTIVE_FORWARDER_PID" >&2
+        forwarder_failed=true
+      fi
+    fi
+  fi
+  ACTIVE_FORWARDER_PID=""
+  ACTIVE_FORWARDER_COMMAND=""
+
+  if [[ -n "$ACTIVE_FORWARDER_SOCKET" && -e "$ACTIVE_FORWARDER_SOCKET" ]]; then
+    rm -f -- "$ACTIVE_FORWARDER_SOCKET"
+  fi
+  ACTIVE_FORWARDER_SOCKET=""
+  if [[ -n "$ACTIVE_FORWARDER_DIRECTORY" ]]; then
+    if [[ "$ACTIVE_FORWARDER_DIRECTORY" != /tmp/df-postgresql-* ]]; then
+      echo "error: refusing to remove unexpected forwarder path: $ACTIVE_FORWARDER_DIRECTORY" >&2
+      forwarder_failed=true
+    elif ! rmdir "$ACTIVE_FORWARDER_DIRECTORY"; then
+      echo "error: PostgreSQL forwarder directory is not empty: $ACTIVE_FORWARDER_DIRECTORY" >&2
+      forwarder_failed=true
+    fi
+  fi
+  ACTIVE_FORWARDER_DIRECTORY=""
+
+  if [[ -n "$ACTIVE_FORWARDER_PORT" ]] \
+      && nc -G 1 -z 127.0.0.1 "$ACTIVE_FORWARDER_PORT" >/dev/null 2>&1; then
+    echo "error: host forwarder port remained reachable: $ACTIVE_FORWARDER_PORT" >&2
+    forwarder_failed=true
+  fi
+  ACTIVE_FORWARDER_PORT=""
+
+  [[ "$forwarder_failed" == false ]]
+}
+
+select_unused_loopback_port() {
+  local attempt
+  local candidate
+  for attempt in {1..100}; do
+    candidate=$((49152 + (((RANDOM << 15) | RANDOM) % 16000)))
+    if ! nc -G 1 -z 127.0.0.1 "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  echo "error: unable to select an unused loopback port" >&2
+  return 1
+}
+
+start_foundationdb_forwarder() {
+  local endpoint_ip="$1"
+  local endpoint_port="$2"
+
+  ACTIVE_FORWARDER_PORT="$endpoint_port"
+  "$PREPARED_HOST_FORWARDER" \
+    tcp "$endpoint_port" "$endpoint_ip" "$endpoint_port" \
+    > "$RUN_RESULT_DIRECTORY/foundationdb-forwarder.log" 2>&1 &
+  ACTIVE_FORWARDER_PID=$!
+  if ! ACTIVE_FORWARDER_COMMAND="$(ps -ww -p "$ACTIVE_FORWARDER_PID" -o command=)" \
+      || [[ -z "$ACTIVE_FORWARDER_COMMAND" ]]; then
+    echo "error: failed to record FoundationDB forwarder process identity" >&2
+    return 1
+  fi
+
+  wait_for_command "FoundationDB loopback forwarder" \
+    nc -G 1 -z 127.0.0.1 "$endpoint_port"
+}
+
+foundationdb_host_is_available() {
+  timeout_command "$PROBE_TIMEOUT_SECONDS" env \
+    DYLD_LIBRARY_PATH="$ACTIVE_FDB_LIBRARY_DIRECTORY" \
+    "$ACTIVE_FDB_CLI" -C "$ACTIVE_CLUSTER_FILE" --exec 'status minimal' \
+    | grep -Fx 'The database is available.'
+}
+
+container_state() {
+  local container_name="$1"
+  local index
+  local list_json
+  if ! list_json="$("$CONTAINER_BIN" list --all --format json)"; then
+    echo "error: failed to query state for container $container_name" >&2
+    return 1
+  fi
+  if ! index="$(json_array_index_for_id "$list_json" "$container_name")"; then
+    echo "error: container is absent or its identity is invalid: $container_name" >&2
+    return 1
+  fi
+  printf '%s' "$list_json" \
+    | plutil -extract "$index.status.state" raw -expect string -
+}
+
+container_ipv4_address() {
+  local container_name="$1"
+  local index
+  local list_json
+  local address
+  if ! list_json="$("$CONTAINER_BIN" list --format json)"; then
+    echo "error: failed to query network address for container $container_name" >&2
+    return 1
+  fi
+  if ! index="$(json_array_index_for_id "$list_json" "$container_name")" \
+      || ! address="$(printf '%s' "$list_json" \
+        | plutil -extract "$index.status.networks.0.ipv4Address" \
+          raw -expect string -)"; then
+    return 1
+  fi
+  printf '%s\n' "${address%%/*}"
+}
+
+require_container_ipv4_address() {
+  local container_name="$1"
+  local container_ip
+  container_ip="$(container_ipv4_address "$container_name")"
+  if [[ -z "$container_ip" \
+      || ! "$container_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    echo "error: Apple Container did not assign an IPv4 address to $container_name" >&2
+    return 1
+  fi
+  printf '%s\n' "$container_ip"
+}
+
+prepare_host_forwarder() {
+  local source_path="$ROOT_DIR/scripts/apple-container/host-port-forwarder.c"
+  local binary_path="$TEMPORARY_ROOT/host-port-forwarder"
+  if [[ ! -f "$source_path" ]]; then
+    echo "error: host forwarder source is unavailable: $source_path" >&2
+    return 1
+  fi
+
+  timeout_command "$STARTUP_TIMEOUT_SECONDS" \
+    xcrun clang \
+      -std=c11 \
+      -O2 \
+      -Wall \
+      -Wextra \
+      -Werror \
+      -pthread \
+      "$source_path" \
+      -o "$binary_path"
+  chmod 0500 "$binary_path"
+  {
+    printf 'format=database-framework-host-forwarder-v1\n'
+    printf 'source-sha256=%s\n' "$(sha256_file "$source_path")"
+    xcrun clang --version
+  } > "$RUN_RESULT_DIRECTORY/host-forwarder.environment"
+  PREPARED_HOST_FORWARDER="$binary_path"
+}
+
+verify_darwin_toolchain() {
+  local compiler_version
+  if ! compiler_version="$(xcrun --toolchain "$SWIFT_DARWIN_TOOLCHAIN" swiftc --version 2>/dev/null)"; then
+    echo "error: Swift toolchain $SWIFT_DARWIN_TOOLCHAIN is not installed" >&2
+    return 1
+  fi
+  if [[ "$compiler_version" != *"Swift version 6.4-dev"* \
+      || "$compiler_version" != *"Swift $SWIFT_COMPILER_COMMIT"* ]]; then
+    echo "error: unexpected compiler for $SWIFT_DARWIN_TOOLCHAIN" >&2
+    echo "$compiler_version" >&2
+    return 1
+  fi
+  printf '%s\n' "$compiler_version"
+}
+
+verify_apple_container() {
+  local cli_version
+  local system_status
+  local system_version
+
+  if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+    echo "error: Apple Container verification requires Apple silicon macOS" >&2
+    return 1
+  fi
+  if [[ ! -x "$CONTAINER_BIN" ]]; then
+    echo "error: Apple Container is not installed at $CONTAINER_BIN" >&2
+    echo "install the pinned runtime outside the test harness" >&2
+    return 1
+  fi
+
+  cli_version="$($CONTAINER_BIN --version)"
+  if [[ "$cli_version" != *"version $APPLE_CONTAINER_VERSION "* \
+      || "$cli_version" != *"commit: ${APPLE_CONTAINER_COMMIT:0:7}"* ]]; then
+    echo "error: Apple Container CLI does not match the pinned release" >&2
+    echo "$cli_version" >&2
+    return 1
+  fi
+
+  system_status="$($CONTAINER_BIN system status)"
+  if ! grep -Eq '^status[[:space:]]+running$' <<<"$system_status"; then
+    echo "error: Apple Container service is not running" >&2
+    return 1
+  fi
+  system_version="$($CONTAINER_BIN system version)"
+  if [[ "$system_version" != *"$APPLE_CONTAINER_VERSION"* \
+      || "$system_version" != *"$APPLE_CONTAINER_COMMIT"* ]]; then
+    echo "error: Apple Container API server does not match the pinned release" >&2
+    echo "$system_version" >&2
+    return 1
+  fi
+  printf 'Apple Container %s (%s)\n' \
+    "$APPLE_CONTAINER_VERSION" "$APPLE_CONTAINER_COMMIT"
+}
+
+image_contains_digest() {
+  local image_reference="$1"
+  local expected_digest="$2"
+  local image_json
+  local index=0
+  local item_type
+  local digest
+  local operating_system
+  local architecture
+  if ! image_json="$($CONTAINER_BIN image inspect "$image_reference" 2>/dev/null)" \
+      || ! json_is_array "$image_json"; then
+    return 1
+  fi
+  while item_type="$(printf '%s' "$image_json" \
+      | plutil -type "0.variants.$index" - 2>/dev/null)"; do
+    if [[ "$item_type" != "dictionary" ]] \
+        || ! digest="$(printf '%s' "$image_json" \
+          | plutil -extract "0.variants.$index.digest" raw -expect string - 2>/dev/null)" \
+        || ! operating_system="$(printf '%s' "$image_json" \
+          | plutil -extract "0.variants.$index.platform.os" raw -expect string - 2>/dev/null)" \
+        || ! architecture="$(printf '%s' "$image_json" \
+          | plutil -extract "0.variants.$index.platform.architecture" raw -expect string - 2>/dev/null)"; then
+      return 1
+    fi
+    if [[ "$digest" == "$expected_digest" \
+        && "$operating_system" == "linux" \
+        && "$architecture" == "arm64" ]]; then
+      return
+    fi
+    index=$((index + 1))
+  done
+  return 1
+}
+
+ensure_image() {
+  local image_reference="$1"
+  local expected_digest="$2"
+  if ! image_contains_digest "$image_reference" "$expected_digest"; then
+    timeout_command "$IMAGE_TIMEOUT_SECONDS" \
+      "$CONTAINER_BIN" image pull --platform linux/arm64 "$image_reference"
+  fi
+  if ! image_contains_digest "$image_reference" "$expected_digest"; then
+    echo "error: pulled image does not contain the expected arm64 digest: $image_reference" >&2
+    return 1
+  fi
+}
+
+sqlite_test_image_fingerprint() {
+  local containerfile="$ROOT_DIR/scripts/apple-container/SQLiteTest.Containerfile"
+  {
+    printf 'format=database-framework-sqlite-test-image-v1\n'
+    printf 'base-image=%s\n' "$SWIFT_LINUX_BASE_IMAGE"
+    printf 'base-image-digest=%s\n' "$SWIFT_LINUX_BASE_IMAGE_DIGEST"
+    printf 'swift-snapshot=%s\n' "$SWIFT_DARWIN_SNAPSHOT"
+    printf 'swift-compiler-commit=%s\n' "$SWIFT_COMPILER_COMMIT"
+    printf 'swift-toolchain-sha256=%s\n' "$SWIFT_LINUX_TOOLCHAIN_SHA256"
+    printf 'sqlite-version=%s\n' "$SQLITE_VERSION"
+    printf 'sqlite-amalgamation-sha256=%s\n' "$SQLITE_AMALGAMATION_SHA256"
+    printf 'containerfile-sha256=%s\n' "$(sha256_file "$containerfile")"
+  } | shasum -a 256 | awk '{print $1}'
+}
+
+sqlite_test_image_is_valid() {
+  local image_reference="$1"
+  local expected_fingerprint="$2"
+  local image_json
+  local index=0
+  local prefix
+  local item_type
+  local value
+  if ! image_json="$("$CONTAINER_BIN" image inspect "$image_reference" 2>/dev/null)" \
+      || ! json_is_array "$image_json"; then
+    return 1
+  fi
+  while item_type="$(printf '%s' "$image_json" \
+      | plutil -type "0.variants.$index" - 2>/dev/null)"; do
+    if [[ "$item_type" != "dictionary" ]]; then
+      return 1
+    fi
+    prefix="0.variants.$index"
+    if [[ "$(printf '%s' "$image_json" \
+          | plutil -extract "$prefix.platform.os" raw -expect string - 2>/dev/null)" == "linux" \
+        && "$(printf '%s' "$image_json" \
+          | plutil -extract "$prefix.platform.architecture" raw -expect string - 2>/dev/null)" == "arm64" ]]; then
+      local label_prefix="$prefix.config.config.Labels.database-framework\\."
+      local expected_pairs=(
+        "environment-format=sqlite-test-image-v1"
+        "environment-fingerprint=$expected_fingerprint"
+        "base-image-digest=$SWIFT_LINUX_BASE_IMAGE_DIGEST"
+        "swift-snapshot=$SWIFT_DARWIN_SNAPSHOT"
+        "swift-compiler-commit=$SWIFT_COMPILER_COMMIT"
+        "swift-toolchain-sha256=$SWIFT_LINUX_TOOLCHAIN_SHA256"
+        "sqlite-version=$SQLITE_VERSION"
+        "sqlite-amalgamation-sha256=$SQLITE_AMALGAMATION_SHA256"
+      )
+      local pair
+      local labels_match=true
+      for pair in "${expected_pairs[@]}"; do
+        if ! value="$(printf '%s' "$image_json" \
+            | plutil -extract "$label_prefix${pair%%=*}" raw -expect string - 2>/dev/null)" \
+            || [[ "$value" != "${pair#*=}" ]]; then
+          labels_match=false
+          break
+        fi
+      done
+      if [[ "$labels_match" == true ]]; then
+        return
+      fi
+    fi
+    index=$((index + 1))
+  done
+  return 1
+}
+
+prepare_sqlite_test_image() {
+  local containerfile="$ROOT_DIR/scripts/apple-container/SQLiteTest.Containerfile"
+  local context_directory="$ROOT_DIR/scripts/apple-container"
+  local fingerprint
+  local image_reference
+  local lock_directory="$CACHE_ROOT/image-locks"
+  local lock_path
+
+  fingerprint="$(sqlite_test_image_fingerprint)"
+  image_reference="database-framework-sqlite-test:${fingerprint:0:16}"
+  lock_path="$lock_directory/sqlite-$fingerprint.lock"
+  if sqlite_test_image_is_valid "$image_reference" "$fingerprint"; then
+    PREPARED_SQLITE_TEST_IMAGE="$image_reference"
+    PREPARED_SQLITE_TEST_IMAGE_FINGERPRINT="$fingerprint"
+    printf 'SQLite test image cache hit: %s\n' "$image_reference"
+    return
+  fi
+
+  mkdir -p "$lock_directory"
+  acquire_cache_lock "$lock_path"
+  if sqlite_test_image_is_valid "$image_reference" "$fingerprint"; then
+    release_cache_lock
+    PREPARED_SQLITE_TEST_IMAGE="$image_reference"
+    PREPARED_SQLITE_TEST_IMAGE_FINGERPRINT="$fingerprint"
+    printf 'SQLite test image cache hit: %s\n' "$image_reference"
+    return
+  fi
+
+  printf 'Building pinned SQLite test image: %s\n' "$image_reference"
+  timeout_command "$IMAGE_TIMEOUT_SECONDS" \
+    "$CONTAINER_BIN" build \
+      --platform linux/arm64 \
+      --cpus 6 \
+      --memory 10G \
+      --progress plain \
+      --file "$containerfile" \
+      --tag "$image_reference" \
+      --label 'database-framework.environment-format=sqlite-test-image-v1' \
+      --label "database-framework.environment-fingerprint=$fingerprint" \
+      --label "database-framework.base-image-digest=$SWIFT_LINUX_BASE_IMAGE_DIGEST" \
+      --label "database-framework.swift-snapshot=$SWIFT_DARWIN_SNAPSHOT" \
+      --label "database-framework.swift-compiler-commit=$SWIFT_COMPILER_COMMIT" \
+      --label "database-framework.swift-toolchain-sha256=$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+      --label "database-framework.sqlite-version=$SQLITE_VERSION" \
+      --label "database-framework.sqlite-amalgamation-sha256=$SQLITE_AMALGAMATION_SHA256" \
+      --build-arg "SWIFT_LINUX_BASE_IMAGE=$SWIFT_LINUX_BASE_IMAGE" \
+      --build-arg "SWIFT_LINUX_SNAPSHOT=$SWIFT_DARWIN_SNAPSHOT" \
+      --build-arg "SWIFT_COMPILER_COMMIT=$SWIFT_COMPILER_COMMIT" \
+      --build-arg "SWIFT_LINUX_TOOLCHAIN_SHA256=$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+      --build-arg "SQLITE_VERSION=$SQLITE_VERSION" \
+      --build-arg "SQLITE_AMALGAMATION_URL=$SQLITE_AMALGAMATION_URL" \
+      --build-arg "SQLITE_AMALGAMATION_SHA256=$SQLITE_AMALGAMATION_SHA256" \
+      "$context_directory"
+  if ! sqlite_test_image_is_valid "$image_reference" "$fingerprint"; then
+    echo "error: built SQLite test image failed identity validation" >&2
+    return 1
+  fi
+  release_cache_lock
+  PREPARED_SQLITE_TEST_IMAGE="$image_reference"
+  PREPARED_SQLITE_TEST_IMAGE_FINGERPRINT="$fingerprint"
+}
+
+initialize_run() {
+  local backend="$1"
+  local temporary_base="${TMPDIR:-/tmp}"
+  temporary_base="${temporary_base%/}"
+  RUN_RESULT_DIRECTORY="$RESULT_ROOT/$backend-$RUN_IDENTIFIER"
+  mkdir -p "$RUN_RESULT_DIRECTORY"
+  TEMPORARY_ROOT="$(mktemp -d "$temporary_base/database-framework-apple-container.XXXXXX")"
+  printf 'results=%s\n' "$RUN_RESULT_DIRECTORY"
+}
+
+collect_container_logs() {
+  local presence
+  local state
+  if [[ -z "$ACTIVE_CONTAINER" || -z "$RUN_RESULT_DIRECTORY" ]]; then
+    return
+  fi
+  if ! presence="$(container_presence "$ACTIVE_CONTAINER")"; then
+    CLEANUP_FAILED=true
+    return
+  fi
+  if [[ "$presence" == "absent" ]]; then
+    return
+  fi
+  if ! "$CONTAINER_BIN" logs "$ACTIVE_CONTAINER" \
+      > "$RUN_RESULT_DIRECTORY/$ACTIVE_CONTAINER.log" 2>&1; then
+    echo "error: failed to collect logs for $ACTIVE_CONTAINER" >&2
+    CLEANUP_FAILED=true
+  fi
+  if ! "$CONTAINER_BIN" inspect "$ACTIVE_CONTAINER" \
+      > "$RUN_RESULT_DIRECTORY/$ACTIVE_CONTAINER.inspect.json" 2>&1; then
+    echo "error: failed to collect inspection data for $ACTIVE_CONTAINER" >&2
+    CLEANUP_FAILED=true
+  fi
+  if [[ -n "$ACTIVE_NETWORK" ]]; then
+    if ! presence="$(network_presence "$ACTIVE_NETWORK")"; then
+      CLEANUP_FAILED=true
+    elif [[ "$presence" == "present" ]] \
+        && ! "$CONTAINER_BIN" network inspect "$ACTIVE_NETWORK" \
+          > "$RUN_RESULT_DIRECTORY/$ACTIVE_NETWORK.inspect.json" 2>&1; then
+      echo "error: failed to collect inspection data for $ACTIVE_NETWORK" >&2
+      CLEANUP_FAILED=true
+    fi
+  fi
+  if [[ "$ACTIVE_BACKEND" == "foundationdb" ]]; then
+    if ! state="$(container_state "$ACTIVE_CONTAINER")"; then
+      CLEANUP_FAILED=true
+    elif [[ "$state" == "running" ]] \
+        && ! "$CONTAINER_BIN" exec "$ACTIVE_CONTAINER" \
+          /bin/bash -lc \
+          'find /var/fdb -type f -name "trace*.xml" -print -exec tail -n 200 {} \;' \
+          > "$RUN_RESULT_DIRECTORY/$ACTIVE_CONTAINER.trace.log" 2>&1; then
+      echo "error: failed to collect FoundationDB traces" >&2
+      CLEANUP_FAILED=true
+    fi
+  fi
+}
+
+verify_negative_readiness() {
+  case "$ACTIVE_BACKEND" in
+    postgresql)
+      if [[ -n "$ACTIVE_FORWARDER_SOCKET" ]] \
+          && timeout_command "$PROBE_TIMEOUT_SECONDS" \
+            perl "$ROOT_DIR/scripts/apple-container/probe-postgresql.pl" \
+              "$ACTIVE_FORWARDER_SOCKET" postgres "$ACTIVE_POSTGRES_DATABASE" \
+            >/dev/null 2>&1; then
+        echo "error: PostgreSQL remained ready through the test Unix socket" >&2
+        return 1
+      fi
+      if nc -G 1 -z "$ACTIVE_ENDPOINT" 5432 >/dev/null 2>&1; then
+        echo "error: PostgreSQL remained reachable after container stop" >&2
+        return 1
+      fi
+      ;;
+    foundationdb)
+      local status_output
+      local probe_status
+      status_output="$RUN_RESULT_DIRECTORY/foundationdb-negative-readiness.log"
+      if [[ -n "$ACTIVE_ENDPOINT" && -n "$ACTIVE_FORWARDER_PORT" ]] \
+          && nc -G 1 -z "$ACTIVE_ENDPOINT" "$ACTIVE_FORWARDER_PORT" \
+            >/dev/null 2>&1; then
+        echo "error: FoundationDB container endpoint remained reachable after stop" >&2
+        return 1
+      fi
+      if ! verify_foundationdb_client_cache_directory \
+          "${ACTIVE_FDB_CLI%/bin/fdbcli}"; then
+        echo "error: FoundationDB client integrity failed before negative readiness" >&2
+        return 1
+      fi
+      if timeout_command "$PROBE_TIMEOUT_SECONDS" env \
+          DYLD_LIBRARY_PATH="$ACTIVE_FDB_LIBRARY_DIRECTORY" \
+          "$ACTIVE_FDB_CLI" -C "$ACTIVE_CLUSTER_FILE" --exec 'status minimal' \
+          >"$status_output" 2>&1; then
+        probe_status=0
+      else
+        probe_status=$?
+      fi
+      if (( probe_status == 0 )) \
+          && grep -Fxq 'The database is available.' "$status_output"; then
+        echo "error: FoundationDB remained available after container stop" >&2
+        return 1
+      fi
+      if (( probe_status == 0 )) \
+          && grep -Fxq "The database is unavailable; type \`status' for more information." \
+            "$status_output"; then
+        return
+      fi
+      if (( probe_status == 124 || probe_status == 126 || probe_status == 127 )) \
+          || ! grep -Eiq 'unable to connect|connection.*(failed|refused|closed)' \
+            "$status_output"; then
+        echo "error: FoundationDB negative-readiness probe was inconclusive (status $probe_status)" >&2
+        return 1
+      fi
+      ;;
+    sqlite)
+      if [[ "$(container_state "$ACTIVE_CONTAINER")" == "running" ]]; then
+        echo "error: SQLite test container remained running after test completion" >&2
+        return 1
+      fi
+      ;;
+  esac
+}
+
+cleanup() {
+  local original_status=$?
+  local presence
+  local state
+  local path
+  trap - EXIT
+  set +e
+
+  collect_container_logs
+  if [[ -n "$ACTIVE_CONTAINER" ]]; then
+    if ! presence="$(container_presence "$ACTIVE_CONTAINER")"; then
+      CLEANUP_FAILED=true
+      presence="unknown"
+    fi
+    if [[ "$presence" != "absent" ]]; then
+      if ! state="$(container_state "$ACTIVE_CONTAINER")"; then
+        CLEANUP_FAILED=true
+        state="unknown"
+      fi
+      if [[ "$state" == "running" || "$state" == "unknown" ]]; then
+        if ! "$CONTAINER_BIN" stop --time 20 "$ACTIVE_CONTAINER" >/dev/null 2>&1; then
+          echo "error: failed to stop container $ACTIVE_CONTAINER" >&2
+          CLEANUP_FAILED=true
+        fi
+      fi
+    fi
+    if ! verify_negative_readiness; then
+      CLEANUP_FAILED=true
+    fi
+    if [[ "$presence" != "absent" ]] \
+        && ! "$CONTAINER_BIN" delete "$ACTIVE_CONTAINER" >/dev/null 2>&1; then
+      echo "error: failed to delete container $ACTIVE_CONTAINER" >&2
+      CLEANUP_FAILED=true
+    fi
+    if ! presence="$(container_presence "$ACTIVE_CONTAINER")"; then
+      CLEANUP_FAILED=true
+    elif [[ "$presence" != "absent" ]]; then
+      echo "error: container still exists after deletion: $ACTIVE_CONTAINER" >&2
+      CLEANUP_FAILED=true
+    fi
+  fi
+  ACTIVE_CONTAINER=""
+
+  if ! stop_host_forwarder; then
+    CLEANUP_FAILED=true
+  fi
+
+  if [[ -n "$ACTIVE_NETWORK" ]]; then
+    if ! presence="$(network_presence "$ACTIVE_NETWORK")"; then
+      CLEANUP_FAILED=true
+      presence="unknown"
+    fi
+    if [[ "$presence" != "absent" ]] \
+        && ! "$CONTAINER_BIN" network delete "$ACTIVE_NETWORK" >/dev/null 2>&1; then
+      echo "error: failed to delete network $ACTIVE_NETWORK" >&2
+      CLEANUP_FAILED=true
+    fi
+    if ! presence="$(network_presence "$ACTIVE_NETWORK")"; then
+      CLEANUP_FAILED=true
+    elif [[ "$presence" != "absent" ]]; then
+      echo "error: network still exists after deletion: $ACTIVE_NETWORK" >&2
+      CLEANUP_FAILED=true
+    fi
+  fi
+  ACTIVE_NETWORK=""
+
+  if [[ -n "$TEMPORARY_ROOT" && -d "$TEMPORARY_ROOT" ]]; then
+    local temporary_prefix="${TMPDIR:-/tmp}"
+    temporary_prefix="${temporary_prefix%/}/database-framework-apple-container."
+    if [[ "$TEMPORARY_ROOT" == "$temporary_prefix"* ]]; then
+      rm -rf -- "$TEMPORARY_ROOT"
+    else
+      echo "error: refusing to remove unexpected temporary path: $TEMPORARY_ROOT" >&2
+      CLEANUP_FAILED=true
+    fi
+  fi
+  TEMPORARY_ROOT=""
+
+  if [[ -n "$ACTIVE_CACHE_LOCK" ]]; then
+    if [[ "$ACTIVE_CACHE_LOCK" == "$CACHE_ROOT/"* ]]; then
+      rmdir "$ACTIVE_CACHE_LOCK" >/dev/null 2>&1 || true
+    else
+      echo "error: refusing to remove unexpected cache lock: $ACTIVE_CACHE_LOCK" >&2
+      CLEANUP_FAILED=true
+    fi
+  fi
+  ACTIVE_CACHE_LOCK=""
+
+  for path in "${ACTIVE_TEMPORARY_PATHS[@]}"; do
+    if [[ -z "$path" ]]; then
+      continue
+    elif [[ "$path" == "$CACHE_ROOT/"* && "$path" != "$CACHE_ROOT" ]]; then
+      rm -rf -- "$path"
+    else
+      echo "error: refusing to remove unexpected temporary cache path: $path" >&2
+      CLEANUP_FAILED=true
+    fi
+  done
+  ACTIVE_TEMPORARY_PATHS=("")
+
+  if [[ "$CLEANUP_FAILED" == true ]]; then
+    exit 1
+  fi
+  exit "$original_status"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+verify_foundationdb_client_cache_directory() {
+  local cache_directory="$1"
+  local marker_path="$cache_directory/artifact.sha256"
+  local payload_manifest="$cache_directory/payload.sha256"
+
+  [[ -f "$marker_path" \
+      && "$(<"$marker_path")" == "$FOUNDATIONDB_CLIENT_INSTALLER_SHA256" \
+      && -f "$payload_manifest" \
+      && -x "$cache_directory/bin/fdbcli" \
+      && -f "$cache_directory/include/foundationdb/fdb_c.h" \
+      && -f "$cache_directory/lib/libfdb_c.dylib" ]] \
+    || return 1
+  (
+    cd "$cache_directory"
+    shasum -a 256 -c payload.sha256 >/dev/null 2>&1
+  )
+}
+
+find_verified_foundationdb_client_cache() {
+  local cache_root="$1"
+  local candidate
+  for candidate in "$cache_root"/client-*; do
+    if [[ -d "$candidate" ]] \
+        && verify_foundationdb_client_cache_directory "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  return 1
+}
+
+verify_swift_linux_toolchain_directory() {
+  local toolchain_directory="$1"
+  local marker_path="$toolchain_directory/artifact.sha256"
+  local payload_manifest="$toolchain_directory/payload.sha256"
+
+  [[ -f "$marker_path" \
+      && "$(<"$marker_path")" == "$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+      && -f "$payload_manifest" \
+      && -x "$toolchain_directory/usr/bin/clang" \
+      && -x "$toolchain_directory/usr/bin/swift" \
+      && -x "$toolchain_directory/usr/bin/swiftc" \
+      && -x "$toolchain_directory/usr/bin/swift-frontend" \
+      && -f "$toolchain_directory/usr/lib/swift/linux/libFoundation.so" \
+      && -f "$toolchain_directory/usr/lib/swift/linux/libswiftCore.so" ]] \
+    || return 1
+  (
+    cd "$toolchain_directory"
+    shasum -a 256 -c payload.sha256 >/dev/null 2>&1
+  )
+}
+
+find_verified_swift_linux_toolchain_cache() {
+  local cache_root="$1"
+  local candidate
+  for candidate in "$cache_root"/toolchain-*; do
+    if [[ -d "$candidate" ]] \
+        && verify_swift_linux_toolchain_directory "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  return 1
+}
+
+acquire_cache_lock() {
+  local lock_path="$1"
+  local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    if mkdir "$lock_path" 2>/dev/null; then
+      ACTIVE_CACHE_LOCK="$lock_path"
+      return
+    fi
+    sleep 1
+  done
+  echo "error: timed out waiting for cache lock $lock_path" >&2
+  return 1
+}
+
+release_cache_lock() {
+  if [[ -n "$ACTIVE_CACHE_LOCK" ]]; then
+    if ! rmdir "$ACTIVE_CACHE_LOCK"; then
+      echo "error: failed to release cache lock $ACTIVE_CACHE_LOCK" >&2
+      return 1
+    fi
+    ACTIVE_CACHE_LOCK=""
+  fi
+}
+
+prepare_foundationdb_client() {
+  local cache_root="$CACHE_ROOT/foundationdb/$FOUNDATIONDB_VERSION/$FOUNDATIONDB_CLIENT_INSTALLER_SHA256"
+  local installer_path="$CACHE_ROOT/installers/FoundationDB-${FOUNDATIONDB_VERSION}_arm64.pkg"
+  local cache_directory
+  local lock_path="$cache_root.prepare.lock"
+
+  require_host_commands curl pkgutil shasum
+  mkdir -p "$cache_root"
+  if cache_directory="$(find_verified_foundationdb_client_cache "$cache_root")"; then
+    PREPARED_FDB_CLIENT_DIRECTORY="$cache_directory"
+    return
+  fi
+
+  acquire_cache_lock "$lock_path"
+  if cache_directory="$(find_verified_foundationdb_client_cache "$cache_root")"; then
+    release_cache_lock
+    PREPARED_FDB_CLIENT_DIRECTORY="$cache_directory"
+    return
+  fi
+
+  download_verified \
+    "$FOUNDATIONDB_CLIENT_INSTALLER_URL" \
+    "$FOUNDATIONDB_CLIENT_INSTALLER_SHA256" \
+    "$installer_path"
+
+  local extraction_root
+  local packaged_cli
+  local payload_root
+  local staged_directory
+  local payload_identity
+  extraction_root="$(mktemp -d "$cache_root/.extract.XXXXXX")"
+  register_temporary_path "$extraction_root"
+  pkgutil --expand-full "$installer_path" "$extraction_root/expanded"
+  packaged_cli="$(find "$extraction_root/expanded" \
+    -type f -path '*/Payload/usr/local/bin/fdbcli' -print -quit)"
+  payload_root="${packaged_cli%/bin/fdbcli}"
+  if [[ -z "$payload_root" \
+      || ! -x "$payload_root/bin/fdbcli" \
+      || ! -f "$payload_root/include/foundationdb/fdb_c.h" \
+      || ! -f "$payload_root/lib/libfdb_c.dylib" ]]; then
+    echo "error: FoundationDB client package has an unexpected layout" >&2
+    return 1
+  fi
+
+  staged_directory="$(mktemp -d "$cache_root/.client-staged.XXXXXX")"
+  register_temporary_path "$staged_directory"
+  mkdir -p \
+    "$staged_directory/bin" \
+    "$staged_directory/include" \
+    "$staged_directory/lib"
+  cp "$payload_root/bin/fdbcli" "$staged_directory/bin/fdbcli"
+  cp -R "$payload_root/include/foundationdb" "$staged_directory/include/foundationdb"
+  cp "$payload_root/lib/libfdb_c.dylib" "$staged_directory/lib/libfdb_c.dylib"
+  printf '%s\n' "$FOUNDATIONDB_CLIENT_INSTALLER_SHA256" \
+    > "$staged_directory/artifact.sha256"
+  (
+    cd "$staged_directory"
+    shasum -a 256 \
+      bin/fdbcli \
+      include/foundationdb/fdb_c.h \
+      lib/libfdb_c.dylib \
+      > payload.sha256
+  )
+  if ! verify_foundationdb_client_cache_directory "$staged_directory"; then
+    echo "error: staged FoundationDB client failed payload verification" >&2
+    return 1
+  fi
+  payload_identity="$(sha256_file "$staged_directory/payload.sha256")"
+  cache_directory="$cache_root/client-$payload_identity"
+  if [[ -e "$cache_directory" ]]; then
+    if ! verify_foundationdb_client_cache_directory "$cache_directory"; then
+      cache_directory="$cache_root/client-$payload_identity-$RUN_IDENTIFIER"
+    fi
+  fi
+  if [[ ! -e "$cache_directory" ]]; then
+    mv "$staged_directory" "$cache_directory"
+    unregister_temporary_path "$staged_directory"
+  else
+    rm -rf -- "$staged_directory"
+    unregister_temporary_path "$staged_directory"
+  fi
+  rm -rf -- "$extraction_root"
+  unregister_temporary_path "$extraction_root"
+  if ! verify_foundationdb_client_cache_directory "$cache_directory"; then
+    echo "error: FoundationDB client cache failed final verification" >&2
+    return 1
+  fi
+  release_cache_lock
+  PREPARED_FDB_CLIENT_DIRECTORY="$cache_directory"
+}
+
+prepare_swift_linux_toolchain() {
+  local archive_directory="$CACHE_ROOT/swift/$SWIFT_DARWIN_SNAPSHOT"
+  local archive_path="$archive_directory/toolchain.tar.gz"
+  local cache_root="$archive_directory/$SWIFT_LINUX_TOOLCHAIN_SHA256"
+  local lock_path="$cache_root.prepare.lock"
+  local cache_directory
+  local staged_directory
+  local payload_identity
+
+  mkdir -p "$cache_root"
+  if cache_directory="$(find_verified_swift_linux_toolchain_cache "$cache_root")"; then
+    echo "Using verified Linux Swift toolchain cache: $cache_directory"
+    PREPARED_SWIFT_TOOLCHAIN_DIRECTORY="$cache_directory"
+    return
+  fi
+
+  acquire_cache_lock "$lock_path"
+  if cache_directory="$(find_verified_swift_linux_toolchain_cache "$cache_root")"; then
+    release_cache_lock
+    echo "Using verified Linux Swift toolchain cache: $cache_directory"
+    PREPARED_SWIFT_TOOLCHAIN_DIRECTORY="$cache_directory"
+    return
+  fi
+  download_verified \
+    "$SWIFT_LINUX_TOOLCHAIN_URL" \
+    "$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+    "$archive_path"
+
+  staged_directory="$(mktemp -d "$cache_root/.toolchain-staged.XXXXXX")"
+  register_temporary_path "$staged_directory"
+  tar -xzf "$archive_path" --directory "$staged_directory" --strip-components=1
+  chmod -R a+rX "$staged_directory"
+  printf '%s\n' "$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+    > "$staged_directory/artifact.sha256"
+  (
+    cd "$staged_directory"
+    shasum -a 256 \
+      usr/bin/clang \
+      usr/bin/swift \
+      usr/bin/swiftc \
+      usr/bin/swift-frontend \
+      usr/lib/swift/linux/libFoundation.so \
+      usr/lib/swift/linux/libswiftCore.so \
+      > payload.sha256
+  )
+  if ! verify_swift_linux_toolchain_directory "$staged_directory"; then
+    echo "error: staged Linux Swift toolchain failed payload verification" >&2
+    return 1
+  fi
+  payload_identity="$(sha256_file "$staged_directory/payload.sha256")"
+  cache_directory="$cache_root/toolchain-$payload_identity"
+  if [[ -e "$cache_directory" ]]; then
+    if ! verify_swift_linux_toolchain_directory "$cache_directory"; then
+      cache_directory="$cache_root/toolchain-$payload_identity-$RUN_IDENTIFIER"
+    fi
+  fi
+  if [[ ! -e "$cache_directory" ]]; then
+    mv "$staged_directory" "$cache_directory"
+    unregister_temporary_path "$staged_directory"
+  else
+    rm -rf -- "$staged_directory"
+    unregister_temporary_path "$staged_directory"
+  fi
+  if ! verify_swift_linux_toolchain_directory "$cache_directory"; then
+    echo "error: Linux Swift toolchain cache failed final verification" >&2
+    return 1
+  fi
+  release_cache_lock
+  PREPARED_SWIFT_TOOLCHAIN_DIRECTORY="$cache_directory"
+}
+
+wait_for_command() {
+  local description="$1"
+  shift
+  local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    if timeout_command "$PROBE_TIMEOUT_SECONDS" "$@" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+  echo "error: timed out waiting for $description" >&2
+  return 1
+}
+
+wait_for_bounded_probe() {
+  local description="$1"
+  shift
+  local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    if "$@" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+  echo "error: timed out waiting for $description" >&2
+  return 1
+}
+
+run_xcode_harness() {
+  local traits="$1"
+  local expected_count="$2"
+  shift 2
+  XCODE_TEST_RESULT_DIRECTORY="$RUN_RESULT_DIRECTORY/xcode" \
+    "$ROOT_DIR/scripts/xcode-test-harness" \
+      --traits "$traits" \
+      --expected-count "$expected_count" \
+      --require-zero-skips \
+      --require-zero-expected-failures \
+      --require-zero-runtime-warnings \
+      "$@"
+}
+
+run_postgresql() {
+  require_host_commands nc plutil xcrun
+  verify_apple_container
+  verify_darwin_toolchain
+  initialize_run postgresql
+  prepare_host_forwarder
+  ensure_image "$POSTGRESQL_IMAGE" "$POSTGRESQL_IMAGE_DIGEST"
+  create_run_network postgresql
+
+  local database_name="database_framework_test"
+  local password="database-framework-test"
+  local endpoint_ip
+  local identity
+  local server_release
+  local server_version
+  local identity_database
+  local identity_user
+  ACTIVE_BACKEND="postgresql"
+  ACTIVE_POSTGRES_DATABASE="$database_name"
+  ACTIVE_CONTAINER="df-postgresql-$RUN_IDENTIFIER"
+
+  $CONTAINER_BIN run --detach \
+    --name "$ACTIVE_CONTAINER" \
+    --network "$ACTIVE_NETWORK" \
+    --cpus 4 \
+    --memory 6G \
+    --env "POSTGRES_DB=$database_name" \
+    --env "POSTGRES_PASSWORD=$password" \
+    --env "POSTGRES_USER=postgres" \
+    "$POSTGRESQL_IMAGE"
+
+  wait_for_command "PostgreSQL readiness" \
+    "$CONTAINER_BIN" exec "$ACTIVE_CONTAINER" \
+      pg_isready --host 127.0.0.1 --port 5432 --username postgres --dbname "$database_name"
+
+  endpoint_ip="$(require_container_ipv4_address "$ACTIVE_CONTAINER")"
+  ACTIVE_ENDPOINT="$endpoint_ip"
+  wait_for_command "host access to PostgreSQL" nc -G 1 -z "$endpoint_ip" 5432
+  start_postgresql_forwarder "$endpoint_ip" "$database_name"
+
+  identity="$(timeout_command "$PROBE_TIMEOUT_SECONDS" \
+    "$CONTAINER_BIN" exec "$ACTIVE_CONTAINER" \
+      psql \
+        --host 127.0.0.1 \
+        --port 5432 \
+        --username postgres \
+        --dbname "$database_name" \
+        --tuples-only \
+        --no-align \
+        --set ON_ERROR_STOP=1 \
+        --command \
+          "SELECT split_part(current_setting('server_version'), ' ', 1), current_setting('server_version'), current_database(), current_user;")"
+  printf '%s\n' "$identity" | tee "$RUN_RESULT_DIRECTORY/postgresql-identity.log"
+  IFS='|' read -r server_release server_version identity_database identity_user <<<"$identity"
+  if [[ "$server_release" != "$POSTGRESQL_VERSION" \
+      || "$server_version" != "$POSTGRESQL_VERSION "* \
+      || "$identity_database" != "$database_name" \
+      || "$identity_user" != "postgres" ]]; then
+    echo "error: PostgreSQL identity does not match the pinned environment" >&2
+    return 1
+  fi
+
+  (
+    export POSTGRES_TEST_UNIX_SOCKET="$ACTIVE_FORWARDER_SOCKET"
+    export POSTGRES_TEST_USER="postgres"
+    export POSTGRES_TEST_PASSWORD="$password"
+    export POSTGRES_TEST_DB="$database_name"
+    unset POSTGRES_TEST_HOST POSTGRES_TEST_PORT
+    run_xcode_harness \
+      "PostgreSQL,AllRuntimeFeatures,MultiBase" \
+      "$POSTGRESQL_EXPECTED_TEST_COUNT" \
+      --only-testing PostgreSQLTests \
+      --build-timeout 1800 \
+      --test-timeout 1800
+  )
+}
+
+create_foundationdb_harness_identity() {
+  local client_directory="$1"
+  local token
+  local command_sha256
+  token="$(printf '%s:%s:%s:%s\n' \
+    "$RUN_IDENTIFIER" "$ACTIVE_CONTAINER" "$ACTIVE_FORWARDER_PID" "$RANDOM" \
+    | shasum -a 256 | awk '{print $1}')"
+  command_sha256="$(printf '%s' "$ACTIVE_FORWARDER_COMMAND" \
+    | shasum -a 256 | awk '{print $1}')"
+  ACTIVE_HARNESS_IDENTITY="$TEMPORARY_ROOT/foundationdb-harness.identity"
+  printf '%s\n' \
+    'format=database-framework-apple-container-foundationdb-v1' \
+    "token=$token" \
+    "cluster_file=$ACTIVE_CLUSTER_FILE" \
+    "forwarder_pid=$ACTIVE_FORWARDER_PID" \
+    "forwarder_command_sha256=$command_sha256" \
+    "endpoint=127.0.0.1:$ACTIVE_FORWARDER_PORT" \
+    "container=$ACTIVE_CONTAINER" \
+    "foundationdb_version=$FOUNDATIONDB_VERSION" \
+    "client_directory=$client_directory" \
+    > "$ACTIVE_HARNESS_IDENTITY"
+  chmod 0600 "$ACTIVE_HARNESS_IDENTITY"
+  printf '%s\n' "$token"
+}
+
+prepare_foundationdb_environment() {
+  require_host_commands curl nc pkgutil plutil shasum xcrun
+  verify_apple_container
+  verify_darwin_toolchain
+  initialize_run foundationdb
+  prepare_host_forwarder
+  ensure_image "$FOUNDATIONDB_IMAGE" "$FOUNDATIONDB_IMAGE_DIGEST"
+  create_run_network foundationdb
+
+  local client_directory
+  local container_cluster
+  local cluster_prefix
+  local endpoint_ip
+  local endpoint_port
+  local container_cli_version
+  local container_server_version
+  local host_cli_version
+  local minimal_status_output="$RUN_RESULT_DIRECTORY/foundationdb-status-minimal.log"
+  local status_output="$RUN_RESULT_DIRECTORY/foundationdb-status.log"
+  prepare_foundationdb_client
+  client_directory="$PREPARED_FDB_CLIENT_DIRECTORY"
+  ACTIVE_FDB_CLI="$client_directory/bin/fdbcli"
+  ACTIVE_FDB_LIBRARY_DIRECTORY="$client_directory/lib"
+  ACTIVE_CLUSTER_FILE="$TEMPORARY_ROOT/fdb.cluster"
+  ACTIVE_BACKEND="foundationdb"
+  ACTIVE_CONTAINER="df-foundationdb-$RUN_IDENTIFIER"
+  endpoint_port="$(select_unused_loopback_port)"
+
+  $CONTAINER_BIN run --detach \
+    --name "$ACTIVE_CONTAINER" \
+    --network "$ACTIVE_NETWORK" \
+    --cpus 4 \
+    --memory 6G \
+    --env "FDB_PORT=$endpoint_port" \
+    --env FDB_NETWORKING_MODE=host \
+    "$FOUNDATIONDB_IMAGE"
+
+  wait_for_command "FoundationDB cluster file" \
+    "$CONTAINER_BIN" exec "$ACTIVE_CONTAINER" test -s /var/fdb/fdb.cluster
+  endpoint_ip="$(require_container_ipv4_address "$ACTIVE_CONTAINER")"
+  ACTIVE_ENDPOINT="$endpoint_ip"
+  wait_for_command "direct FoundationDB endpoint" \
+    nc -G 1 -z "$endpoint_ip" "$endpoint_port"
+  start_foundationdb_forwarder "$endpoint_ip" "$endpoint_port"
+
+  container_cluster="$($CONTAINER_BIN exec "$ACTIVE_CONTAINER" \
+    /bin/bash -lc 'tr -d "\r\n" < /var/fdb/fdb.cluster')"
+  if [[ "$container_cluster" != *@*:* ]]; then
+    echo "error: FoundationDB generated an invalid cluster file" >&2
+    return 1
+  fi
+  cluster_prefix="${container_cluster%@*}"
+  printf '%s@127.0.0.1:%s\n' "$cluster_prefix" "$endpoint_port" > "$ACTIVE_CLUSTER_FILE"
+
+  local configure_deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+  local configured=false
+  while (( SECONDS < configure_deadline )); do
+    if timeout_command "$PROBE_TIMEOUT_SECONDS" \
+        "$CONTAINER_BIN" exec "$ACTIVE_CONTAINER" \
+        fdbcli -C /var/fdb/fdb.cluster --exec 'configure new single memory' \
+        > "$RUN_RESULT_DIRECTORY/foundationdb-configure.log" 2>&1; then
+      configured=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$configured" != true ]]; then
+    echo "error: timed out configuring the FoundationDB cluster" >&2
+    return 1
+  fi
+
+  wait_for_command "FoundationDB availability inside the container" \
+    "$CONTAINER_BIN" exec "$ACTIVE_CONTAINER" \
+      /bin/bash -lc \
+      "fdbcli -C /var/fdb/fdb.cluster --exec 'status minimal' | grep -Fx 'The database is available.'"
+  wait_for_bounded_probe "host access to FoundationDB" foundationdb_host_is_available
+
+  foundationdb_host_is_available | tee "$minimal_status_output"
+
+  timeout_command "$PROBE_TIMEOUT_SECONDS" env \
+    DYLD_LIBRARY_PATH="$ACTIVE_FDB_LIBRARY_DIRECTORY" \
+    "$ACTIVE_FDB_CLI" -C "$ACTIVE_CLUSTER_FILE" --exec 'status details' \
+    | tee "$status_output"
+
+  container_cli_version="$(timeout_command "$PROBE_TIMEOUT_SECONDS" \
+    "$CONTAINER_BIN" exec "$ACTIVE_CONTAINER" fdbcli --version)"
+  container_server_version="$(timeout_command "$PROBE_TIMEOUT_SECONDS" \
+    "$CONTAINER_BIN" exec "$ACTIVE_CONTAINER" fdbserver --version)"
+  host_cli_version="$(timeout_command "$PROBE_TIMEOUT_SECONDS" env \
+    DYLD_LIBRARY_PATH="$ACTIVE_FDB_LIBRARY_DIRECTORY" \
+    "$ACTIVE_FDB_CLI" --version)"
+  {
+    printf 'container-cli=%s\n' "$container_cli_version"
+    printf 'container-server=%s\n' "$container_server_version"
+    printf 'host-cli=%s\n' "$host_cli_version"
+  } | tee "$RUN_RESULT_DIRECTORY/foundationdb-version.log"
+  if [[ "$container_cli_version" != *"$FOUNDATIONDB_VERSION"* \
+      || "$container_server_version" != *"$FOUNDATIONDB_VERSION"* \
+      || "$host_cli_version" != *"$FOUNDATIONDB_VERSION"* ]]; then
+    echo "error: FoundationDB client or server does not match the pinned version" >&2
+    return 1
+  fi
+
+  create_foundationdb_harness_identity "$client_directory" >/dev/null
+}
+
+run_foundationdb() {
+  local client_directory
+  local harness_token
+  prepare_foundationdb_environment
+  client_directory="$PREPARED_FDB_CLIENT_DIRECTORY"
+  harness_token="$(awk -F= '$1 == "token" { print substr($0, index($0, "=") + 1) }' \
+    "$ACTIVE_HARNESS_IDENTITY")"
+
+  FDB_CLUSTER_FILE="$ACTIVE_CLUSTER_FILE" \
+  FDB_CLIENT_INCLUDE_DIRECTORY="$client_directory/include" \
+  FDB_CLIENT_LIBRARY_DIRECTORY="$client_directory/lib" \
+  DATABASE_FRAMEWORK_FDB_HARNESS_IDENTITY="$ACTIVE_HARNESS_IDENTITY" \
+  DATABASE_FRAMEWORK_FDB_HARNESS_TOKEN="$harness_token" \
+  DYLD_LIBRARY_PATH="$client_directory/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+    run_xcode_harness \
+      "FoundationDB,AllRuntimeFeatures,MultiBase" \
+      "$FOUNDATIONDB_EXPECTED_TEST_COUNT" \
+      --build-timeout 2400 \
+      --test-timeout 2400
+}
+
+run_foundationdb_command() {
+  local client_directory
+  local harness_token
+  prepare_foundationdb_environment
+  client_directory="$PREPARED_FDB_CLIENT_DIRECTORY"
+  harness_token="$(awk -F= '$1 == "token" { print substr($0, index($0, "=") + 1) }' \
+    "$ACTIVE_HARNESS_IDENTITY")"
+
+  env \
+    FDB_CLUSTER_FILE="$ACTIVE_CLUSTER_FILE" \
+    FDB_CLIENT_INCLUDE_DIRECTORY="$client_directory/include" \
+    FDB_CLIENT_LIBRARY_DIRECTORY="$client_directory/lib" \
+    DATABASE_FRAMEWORK_FDB_HARNESS_IDENTITY="$ACTIVE_HARNESS_IDENTITY" \
+    DATABASE_FRAMEWORK_FDB_HARNESS_TOKEN="$harness_token" \
+    DYLD_LIBRARY_PATH="$client_directory/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+    "${RUN_COMMAND[@]}"
+}
+
+copy_source_for_linux_test() {
+  local destination="$1"
+  mkdir -p "$destination"
+  rsync -a --delete \
+    --exclude '.git' \
+    --exclude '.build' \
+    --exclude '.swiftpm' \
+    --exclude '.fdb-test' \
+    "$ROOT_DIR/" "$destination/"
+  if grep -En '\.package\(path:' "$destination/Package.swift" >/dev/null; then
+    echo "error: SQLite Linux verification refuses local package dependencies" >&2
+    return 1
+  fi
+}
+
+run_sqlite() {
+  require_host_commands curl grep plutil rsync shasum tar
+  verify_apple_container
+  verify_darwin_toolchain
+
+  local suffix="standard"
+  local traits="SQLite,AllRuntimeFeatures"
+  local expected_count="$SQLITE_STANDARD_EXPECTED_TEST_COUNT"
+  if [[ "$SQLITE_MULTI_BASE" == true ]]; then
+    suffix="multi-base"
+    traits="$traits,MultiBase"
+    expected_count="$SQLITE_MULTI_BASE_EXPECTED_TEST_COUNT"
+  fi
+  initialize_run "sqlite-$suffix"
+  require_sqlite_linux_workspace_capacity "$TEMPORARY_ROOT"
+  ensure_image "$SWIFT_LINUX_BASE_IMAGE" "$SWIFT_LINUX_BASE_IMAGE_DIGEST"
+  prepare_sqlite_test_image
+  prepare_swift_linux_toolchain
+
+  run_xcode_harness \
+    "$traits" \
+    "$expected_count" \
+    --only-testing SQLiteTests \
+    --build-timeout 1800 \
+    --test-timeout 1800
+
+  local source_copy="$TEMPORARY_ROOT/source"
+  local linux_results="$RUN_RESULT_DIRECTORY/linux"
+  local swift_toolchain_directory="$PREPARED_SWIFT_TOOLCHAIN_DIRECTORY"
+  local workspace_identity
+  local runtime_cache_identity
+  local runtime_cache_root
+  local swiftpm_cache_directory
+  local build_cache_directory
+  require_sqlite_linux_workspace_capacity "$TEMPORARY_ROOT"
+  copy_source_for_linux_test "$source_copy"
+  mkdir -p "$linux_results"
+
+  workspace_identity="$(printf '%s' "$ROOT_DIR" | shasum -a 256 | awk '{ print $1 }')"
+  runtime_cache_identity="$({
+    printf 'format=database-framework-sqlite-runtime-cache-v1\n'
+    printf 'image-fingerprint=%s\n' "$PREPARED_SQLITE_TEST_IMAGE_FINGERPRINT"
+    printf 'package-manifest-sha256=%s\n' "$(sha256_file "$ROOT_DIR/Package.swift")"
+    printf 'package-resolved-sha256=%s\n' "$(sha256_file "$ROOT_DIR/Package.resolved")"
+  } | shasum -a 256 | awk '{ print $1 }')"
+  runtime_cache_root="$CACHE_ROOT/sqlite/runtime/${workspace_identity:0:16}/$runtime_cache_identity"
+  swiftpm_cache_directory="$runtime_cache_root/swiftpm"
+  build_cache_directory="$runtime_cache_root/build-$suffix"
+  mkdir -p "$swiftpm_cache_directory" "$build_cache_directory"
+  acquire_cache_lock "$runtime_cache_root/run.lock"
+  printf 'SQLite Linux runtime cache: %s\n' "$runtime_cache_root"
+
+  ACTIVE_BACKEND="sqlite"
+  ACTIVE_CONTAINER="df-sqlite-$suffix-$RUN_IDENTIFIER"
+  $CONTAINER_BIN run --detach \
+    --name "$ACTIVE_CONTAINER" \
+    --cpus 6 \
+    --memory 10G \
+    --mount "type=bind,source=$source_copy,target=/workspace" \
+    --mount "type=bind,source=$linux_results,target=/results" \
+    --mount "type=bind,source=$swift_toolchain_directory,target=/opt/swift-toolchain,readonly" \
+    --mount "type=bind,source=$swiftpm_cache_directory,target=/root/.cache/org.swift.swiftpm" \
+    --mount "type=bind,source=$build_cache_directory,target=/workspace/.build" \
+    --env "SQLITE_TEST_TRAITS=$traits" \
+    --env "SQLITE_TEST_EXPECTED_COUNT=$expected_count" \
+    --env "SQLITE_TEST_TIMEOUT_SECONDS=$SQLITE_TEST_TIMEOUT_SECONDS" \
+    --env SQLITE_TEST_RESULT_DIRECTORY=/results \
+    --env "SQLITE_VERSION=$SQLITE_VERSION" \
+    --env "SQLITE_AMALGAMATION_SHA256=$SQLITE_AMALGAMATION_SHA256" \
+    --env "SQLITE_TEST_IMAGE_REFERENCE=$PREPARED_SQLITE_TEST_IMAGE" \
+    --env "SQLITE_TEST_IMAGE_FINGERPRINT=$PREPARED_SQLITE_TEST_IMAGE_FINGERPRINT" \
+    --env "SQLITE_TEST_RUNTIME_CACHE_IDENTITY=$runtime_cache_identity" \
+    --env "SWIFT_LINUX_SNAPSHOT=$SWIFT_DARWIN_SNAPSHOT" \
+    --env "SWIFT_LINUX_COMPILER_COMMIT=$SWIFT_COMPILER_COMMIT" \
+    --env "SWIFT_LINUX_BASE_VERSION=$SWIFT_LINUX_BASE_VERSION" \
+    --env "SWIFT_LINUX_BASE_IMAGE_DIGEST=$SWIFT_LINUX_BASE_IMAGE_DIGEST" \
+    --env "SWIFT_LINUX_BASE_IMAGE_CREATED=$SWIFT_LINUX_BASE_IMAGE_CREATED" \
+    --env "SWIFT_LINUX_TOOLCHAIN_SHA256=$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+    --workdir /workspace \
+    "$PREPARED_SQLITE_TEST_IMAGE" \
+    sleep infinity
+
+  wait_for_command "SQLite source, toolchain, and image identity" \
+    "$CONTAINER_BIN" exec "$ACTIVE_CONTAINER" \
+      /bin/bash -lc \
+      'test -x /workspace/scripts/apple-container/run-sqlite-tests && test -x /opt/swift-toolchain/usr/bin/swift && test -f /usr/local/share/database-framework/sqlite-test-image.env'
+
+  timeout_command "$SQLITE_CONTAINER_TIMEOUT_SECONDS" \
+    "$CONTAINER_BIN" exec \
+    --env "SQLITE_TEST_TRAITS=$traits" \
+    --env "SQLITE_TEST_EXPECTED_COUNT=$expected_count" \
+    --env "SQLITE_TEST_TIMEOUT_SECONDS=$SQLITE_TEST_TIMEOUT_SECONDS" \
+    --env SQLITE_TEST_RESULT_DIRECTORY=/results \
+    --env "SQLITE_VERSION=$SQLITE_VERSION" \
+    --env "SQLITE_AMALGAMATION_SHA256=$SQLITE_AMALGAMATION_SHA256" \
+    --env "SQLITE_TEST_IMAGE_REFERENCE=$PREPARED_SQLITE_TEST_IMAGE" \
+    --env "SQLITE_TEST_IMAGE_FINGERPRINT=$PREPARED_SQLITE_TEST_IMAGE_FINGERPRINT" \
+    --env "SQLITE_TEST_RUNTIME_CACHE_IDENTITY=$runtime_cache_identity" \
+    --env "SWIFT_LINUX_SNAPSHOT=$SWIFT_DARWIN_SNAPSHOT" \
+    --env "SWIFT_LINUX_COMPILER_COMMIT=$SWIFT_COMPILER_COMMIT" \
+    --env "SWIFT_LINUX_BASE_VERSION=$SWIFT_LINUX_BASE_VERSION" \
+    --env "SWIFT_LINUX_BASE_IMAGE_DIGEST=$SWIFT_LINUX_BASE_IMAGE_DIGEST" \
+    --env "SWIFT_LINUX_BASE_IMAGE_CREATED=$SWIFT_LINUX_BASE_IMAGE_CREATED" \
+    --env "SWIFT_LINUX_TOOLCHAIN_SHA256=$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+    "$ACTIVE_CONTAINER" \
+    /bin/bash -lc \
+    'cd /workspace && exec /workspace/scripts/apple-container/run-sqlite-tests'
+}
+
+run_all() {
+  verify_apple_container
+  verify_darwin_toolchain
+  APPLE_CONTAINER_RESULT_ROOT="$RESULT_ROOT" \
+    "$ROOT_DIR/scripts/apple-container-test-harness" sqlite
+  APPLE_CONTAINER_RESULT_ROOT="$RESULT_ROOT" \
+    "$ROOT_DIR/scripts/apple-container-test-harness" sqlite --multi-base
+  APPLE_CONTAINER_RESULT_ROOT="$RESULT_ROOT" \
+    "$ROOT_DIR/scripts/apple-container-test-harness" postgresql
+  APPLE_CONTAINER_RESULT_ROOT="$RESULT_ROOT" \
+    "$ROOT_DIR/scripts/apple-container-test-harness" foundationdb
+}
+
+case "$COMMAND" in
+  foundationdb-client)
+    prepare_foundationdb_client
+    printf '%s\n' "$PREPARED_FDB_CLIENT_DIRECTORY"
+    ;;
+  doctor)
+    verify_apple_container
+    verify_darwin_toolchain
+    ;;
+  sqlite)
+    run_sqlite
+    ;;
+  postgresql)
+    run_postgresql
+    ;;
+  foundationdb)
+    run_foundationdb
+    ;;
+  foundationdb-run)
+    run_foundationdb_command
+    ;;
+  all)
+    run_all
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    echo "error: unknown command: $COMMAND" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

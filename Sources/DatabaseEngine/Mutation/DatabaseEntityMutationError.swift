@@ -26,6 +26,7 @@ public enum DatabaseEntityMutationError:
     case invalidCompiledSchema(entity: String, reason: String)
     case fieldsRequired(EntityReference)
     case fieldsMustBeEmptyForDelete(EntityReference)
+    case workMeterMismatch
 
     public var description: String {
         switch self {
@@ -69,6 +70,8 @@ public enum DatabaseEntityMutationError:
             return "Mutation fields are required for '\(identity)'"
         case .fieldsMustBeEmptyForDelete(let identity):
             return "Delete mutation fields must be empty for '\(identity)'"
+        case .workMeterMismatch:
+            return "Prepared entity mutation belongs to a different request work meter"
         }
     }
 }

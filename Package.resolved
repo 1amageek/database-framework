@@ -42,8 +42,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/storage-kit.git",
       "state" : {
-        "revision" : "8ee5376c3df7526ed21921a3e3d418fc5150a51f",
-        "version" : "26.807.0"
+        "revision" : "10e54969c9fb26b54d62d34dcfa407b5fcf6e0b5"
       }
     },
     {
@@ -177,8 +176,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-testing-heartbeat.git",
       "state" : {
-        "revision" : "6612cdd5c4327057258291a2c35b201b45da848f",
-        "version" : "0.1.0"
+        "revision" : "74b9288fd7f21f575c06fd8b3b4bb7416321e5b0"
       }
     }
   ],

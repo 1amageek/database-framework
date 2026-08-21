@@ -12,6 +12,31 @@ enum SPARQLSharedBindingSnapshot: Sendable {
         visibleRange: Range<Int>
     )
 
+    var count: Int {
+        switch self {
+        case .empty:
+            return 0
+        case .shared(_, let visibleRange):
+            return visibleRange.count
+        }
+    }
+
+    func withElement<Result, Failure: Error>(
+        at index: Int,
+        _ body: (borrowing VariableBinding) throws(Failure) -> Result
+    ) throws(Failure) -> Result {
+        precondition(index >= 0 && index < count)
+        switch self {
+        case .empty:
+            preconditionFailure("Cannot borrow an element from an empty relation")
+        case .shared(let storage, let visibleRange):
+            return try storage.withElement(
+                at: visibleRange.lowerBound + index,
+                body
+            )
+        }
+    }
+
     func retainedBindings() -> SPARQLRetainedBindings {
         switch self {
         case .empty:

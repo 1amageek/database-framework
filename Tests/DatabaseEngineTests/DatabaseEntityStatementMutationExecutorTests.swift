@@ -244,7 +244,7 @@ struct DatabaseEntityStatementMutationExecutorTests {
             budget: ExecutionBudget(
                 maximumRows: 16,
                 maximumWorkUnits: 1_000,
-                maximumIntermediateRows: 3,
+                maximumIntermediateRows: 5,
                 maximumIntermediateBytes: 1 * 1_024 * 1_024,
                 timeoutMilliseconds: 30_000
             )

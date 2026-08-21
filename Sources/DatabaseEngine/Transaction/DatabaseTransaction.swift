@@ -444,6 +444,38 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     @_spi(DatabaseExecution)
+    public func apply(
+        _ mutations: [PersistableMutation],
+        workMeter: DatabaseWorkMeter
+    ) async throws {
+        try await performOperation { operationID in
+            try mutationJournal.bind(to: workMeter)
+            try await apply(
+                mutations,
+                operationID: operationID
+            )
+        }
+    }
+
+    package func withEntityMutationOperation<Result: Sendable>(
+        workMeter: DatabaseWorkMeter,
+        _ operation: @Sendable @escaping (UInt64) async throws -> Result
+    ) async throws -> Result {
+        try await performOperation { operationID in
+            try mutationJournal.bind(to: workMeter)
+            return try await operation(operationID)
+        }
+    }
+
+    package func withEntityValidationOperation<Result: Sendable>(
+        _ operation: @Sendable @escaping (UInt64) async throws -> Result
+    ) async throws -> Result {
+        try await performOperation { operationID in
+            try await operation(operationID)
+        }
+    }
+
+    @_spi(DatabaseExecution)
     public func persistedMutationEffectCount() throws -> Int {
         guard state == .open else {
             throw lifecycleError(for: state)
@@ -460,6 +492,17 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         return mutationJournal.persistedEffects()
     }
 
+    package func mapPersistedMutationEffects<Output: Sendable>(
+        _ transform: @Sendable (
+            PersistableMutationEffect
+        ) throws -> Output
+    ) throws -> [Output] {
+        guard state == .open else {
+            throw lifecycleError(for: state)
+        }
+        return try mutationJournal.mapPersistedEffects(transform)
+    }
+
     package func fetchPersistedModel(
         identifiedBy identity: EntityReference,
         within operationID: UInt64
@@ -472,6 +515,65 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 id: resolved.id,
                 partition: resolved.partition
             )
+        } catch {
+            state = .closed
+            throw error
+        }
+    }
+
+    package func apply(
+        _ mutations: [PersistableMutation],
+        within operationID: UInt64
+    ) async throws {
+        do {
+            try ensureActive(operationID, permitsMutation: true)
+            try await apply(mutations, operationID: operationID)
+        } catch {
+            state = .closed
+            throw error
+        }
+    }
+
+    package func loadPersistedModel(
+        entity: String,
+        id: Tuple,
+        partition: AnyDirectoryPath?,
+        within operationID: UInt64
+    ) async throws -> PersistedModel? {
+        do {
+            try ensureActive(operationID, permitsMutation: false)
+            return try await loadPersistedModelUnchecked(
+                entity: entity,
+                id: id,
+                partition: partition
+            )
+        } catch {
+            state = .closed
+            throw error
+        }
+    }
+
+    package func persistedMutationEffectCount(
+        within operationID: UInt64
+    ) throws -> Int {
+        do {
+            try ensureActive(operationID, permitsMutation: false)
+            return mutationJournal.persistedEffectCount
+        } catch {
+            state = .closed
+            throw error
+        }
+    }
+
+    package func mapPersistedMutationEffects<Output: Sendable>(
+        within operationID: UInt64,
+        _ transform: @Sendable (
+            PersistableMutationEffect
+        ) throws -> Output
+    ) throws -> [Output] {
+        do {
+            try ensureActive(operationID, permitsMutation: false)
+            return try mutationJournal.mapPersistedEffects(transform)
         } catch {
             state = .closed
             throw error
@@ -546,19 +648,30 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             operationGate: validationGate
         )
         do {
-            try await mutationMaintenanceService.validateFinalState(
-                of: mutationJournal.currentModels(),
-                context: context
-            )
+            if let retainedModels = try mutationJournal.retainedCurrentModels() {
+                try await retainedModels.withElements { models in
+                    try await mutationMaintenanceService.validateFinalState(
+                        of: models,
+                        context: context
+                    )
+                }
+            } else {
+                try await mutationMaintenanceService.validateFinalState(
+                    of: mutationJournal.currentModels(),
+                    context: context
+                )
+            }
             await context.closeAndWait()
             guard state == .preparingCommit(operationID) else {
                 throw lifecycleError(for: state)
             }
             self.validationGate = nil
+            mutationJournal.removeAll()
             state = .closed
         } catch {
             await context.closeAndWait()
             self.validationGate = nil
+            mutationJournal.removeAll()
             state = .closed
             throw error
         }
@@ -568,6 +681,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         state = .closed
         await operationGate.closeAndWait()
         await validationGate?.closeAndWait()
+        mutationJournal.removeAll()
     }
 
     // MARK: - Persistence pipeline
@@ -648,24 +762,35 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             path: resolved.partition,
             transaction: storageAccess
         )
-        let write = try await store.save(
+        let preparedWrite = try await store.prepareSave(
             model,
             identity: identity,
             precondition: precondition,
+            transaction: storageAccess,
+            workMeter: mutationJournal.workMeter
+        )
+        defer { preparedWrite.transientReservation?.release() }
+        try updateMutationJournal(
+            identity: identity,
+            previousModel: preparedWrite.result.previousCanonicalModel,
+            currentModel: preparedWrite.result.canonicalModel
+        )
+        try await store.commitPreparedWrite(
+            preparedWrite,
             transaction: storageAccess
         )
         try await PolymorphicProjectionMaintainer(
             container: container
         ).update(
-            write,
+            preparedWrite.result,
             transaction: storageAccess
         )
         let mutationContext = try makeMutationContext(operationID: operationID)
         do {
             try await mutationMaintenanceService.update(
                 identity: identity,
-                oldModel: write.previousCanonicalModel,
-                newModel: write.canonicalModel,
+                oldModel: preparedWrite.result.previousCanonicalModel,
+                newModel: preparedWrite.result.canonicalModel,
                 context: mutationContext
             )
             await mutationContext.closeAndWait()
@@ -674,11 +799,6 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             throw error
         }
         try ensureActive(operationID, permitsMutation: true)
-        updateMutationJournal(
-            identity: identity,
-            previousModel: write.previousCanonicalModel,
-            currentModel: write.canonicalModel
-        )
     }
 
     private func remove(
@@ -708,31 +828,37 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             path: resolved.partition,
             transaction: storageAccess
         )
-        guard let persistedModel = try await store.delete(
+        guard let preparedDelete = try await store.prepareDelete(
             model,
             identity: identity,
             precondition: precondition,
-            transaction: storageAccess
+            transaction: storageAccess,
+            workMeter: mutationJournal.workMeter
         ) else {
             return
         }
+        defer { preparedDelete.transientReservation?.release() }
+        try updateMutationJournal(
+            identity: identity,
+            previousModel: preparedDelete.persistedModel,
+            currentModel: nil
+        )
+        try await store.commitPreparedDelete(
+            preparedDelete,
+            transaction: storageAccess
+        )
         try await PolymorphicProjectionMaintainer(
             container: container
         ).remove(
-            persistedModel,
-            identifier: try PersistableIdentifierKeyCodec.tuple(
-                for: identity,
-                expectedType: try entityRuntime(
-                    named: identity.entity
-                ).entity.identifierType
-            ),
+            preparedDelete.persistedModel,
+            identifier: preparedDelete.identifier,
             transaction: storageAccess
         )
         let mutationContext = try makeMutationContext(operationID: operationID)
         do {
             try await mutationMaintenanceService.update(
                 identity: identity,
-                oldModel: persistedModel,
+                oldModel: preparedDelete.persistedModel,
                 newModel: nil,
                 context: mutationContext
             )
@@ -742,19 +868,14 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             throw error
         }
         try ensureActive(operationID, permitsMutation: true)
-        updateMutationJournal(
-            identity: identity,
-            previousModel: persistedModel,
-            currentModel: nil
-        )
     }
 
     private func updateMutationJournal(
         identity: EntityReference,
         previousModel: PersistedModel?,
         currentModel: PersistedModel?
-    ) {
-        mutationJournal.record(
+    ) throws {
+        try mutationJournal.record(
             identity: identity,
             previousModel: previousModel,
             currentModel: currentModel

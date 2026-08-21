@@ -6,7 +6,7 @@ import StorageKit
 import Synchronization
 import TestSupport
 import Testing
-@testable import Database
+@_spi(DatabaseExecution) @testable import Database
 @testable import DatabaseEngine
 
 @Persistable(type: "SPARQLTransactionUser")
@@ -175,6 +175,106 @@ struct SPARQLFunctionTransactionTests {
         #expect(
             scenario.engine.transactionCount - transactionCountBeforeRead == 1
         )
+    }
+
+    @Test("prepared SPARQL literals stay reserved through SQL execution")
+    func retainsPreparedLiteralsThroughExecution() async throws {
+        let scenario = try await makeScenario()
+        let context = scenario.container.testBaseContext()
+        let userIRI = try RDFIRI("urn:user:retained")
+
+        var user = SPARQLTransactionUser()
+        user.id = userIRI.rawValue
+        user.resource = .iri(userIRI)
+        user.name = "Retained"
+
+        var statement = SPARQLTransactionStatement()
+        statement.id = "retained-statement"
+        statement.subject = .iri(userIRI)
+        statement.predicate = try .iri(validating: "urn:predicate:active")
+        statement.object = .literal(
+            RDFLiteral(lexicalForm: "true", datatype: .xsdString)
+        )
+
+        try context.insert(user)
+        try context.insert(statement)
+        try await context.save()
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(TableRef("SPARQLTransactionUser")),
+            filter: .inList(
+                .column(ColumnRef("resource")),
+                values: [
+                    .function(
+                        FunctionCall(
+                            name: "SPARQL",
+                            arguments: [
+                                .column(
+                                    ColumnRef("SPARQLTransactionStatement")
+                                ),
+                                .literal(
+                                    .string(
+                                        "SELECT ?s WHERE { ?s <urn:predicate:active> \"true\" }"
+                                    )
+                                ),
+                            ]
+                        )
+                    )
+                ]
+            )
+        )
+        let options = ReadExecutionOptions()
+        let workMeter = DatabaseWorkMeter(
+            budget: options.budget,
+            monotonicClock: scenario.container.monotonicClock
+        )
+        let execution = ReadExecutionContext(
+            options: options,
+            monotonicClock: scenario.container.monotonicClock,
+            workMeter: workMeter
+        )
+
+        let response = try await context.indexQueryContext.withTransaction {
+            transaction in
+            let prepared = try await context
+                .prepareSQLSelectForCanonicalExecution(
+                    query,
+                    workMeter: workMeter,
+                    transaction: transaction,
+                    structuralLimits: .default
+            )
+            #expect(workMeter.retainedIntermediateRows > 0)
+            #expect(workMeter.retainedIntermediateBytes > 0)
+            let foreignExecution = ReadExecutionContext(
+                options: options,
+                monotonicClock: scenario.container.monotonicClock,
+                workMeter: DatabaseWorkMeter(
+                    budget: options.budget,
+                    monotonicClock: scenario.container.monotonicClock
+                )
+            )
+            await #expect(
+                throws: DatabasePreparedSQLSelectError.workMeterMismatch
+            ) {
+                _ = try await prepared.execute(
+                    in: context,
+                    execution: foreignExecution,
+                    transaction: transaction
+                )
+            }
+            #expect(workMeter.retainedIntermediateRows > 0)
+            #expect(workMeter.retainedIntermediateBytes > 0)
+            return try await prepared.execute(
+                in: context,
+                execution: execution,
+                transaction: transaction
+            )
+        }
+
+        #expect(response.rows.count == 1)
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
     }
 
     @Test("SPARQL RDF terms are not silently coerced to SQL strings")

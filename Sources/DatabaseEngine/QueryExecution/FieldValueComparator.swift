@@ -48,6 +48,8 @@ enum FieldValueComparator {
             return .equal
         }
         switch (lhs, rhs) {
+        case (.bytes(let left), .bytes(let right)):
+            return compareBytes(left, right)
         case (.array(let left), .array(let right)):
             return try compareArrays(left, right)
         case (.object(let left), .object(let right)):
@@ -62,6 +64,24 @@ enum FieldValueComparator {
             throw .incomparable(left: kind(lhs), right: kind(rhs))
         }
         return result
+    }
+
+    private static func compareBytes(
+        _ lhs: ByteString,
+        _ rhs: ByteString
+    ) -> QueryComparison {
+        lhs.withUnsafeBytes { left in
+            rhs.withUnsafeBytes { right in
+                let sharedCount = min(left.count, right.count)
+                for offset in 0..<sharedCount {
+                    if left[offset] < right[offset] { return .lessThan }
+                    if left[offset] > right[offset] { return .greaterThan }
+                }
+                if left.count < right.count { return .lessThan }
+                if left.count > right.count { return .greaterThan }
+                return .equal
+            }
+        }
     }
 
     private static func compareArrays(
