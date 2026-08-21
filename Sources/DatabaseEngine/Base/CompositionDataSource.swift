@@ -332,10 +332,21 @@ public struct CompositionDataSource: Sendable {
             let context = container.session(
                 authorization: authorization
             ).base(member.baseID).newContext()
+            let executionBinding = DatabaseTransactionExecutionBinding(
+                transaction: transaction,
+                resource: context.resource,
+                authorization: authorization,
+                grantedAccess: .read,
+                databaseTransaction: nil
+            )
             return try await RequestAuthorization.$context.withValue(
                 authorization
             ) {
-                try await operation(context, transaction)
+                try await ActiveDatabaseTransactionContext.$binding.withValue(
+                    executionBinding
+                ) {
+                    try await operation(context, transaction)
+                }
             }
         }
     }
