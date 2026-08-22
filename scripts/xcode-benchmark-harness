@@ -189,7 +189,7 @@ reject_internal_tool_errors() {
 temporary_root="${TMPDIR:-/tmp}"
 temporary_root="${temporary_root%/}"
 WORK_ROOT="$(mktemp -d "$temporary_root/database-framework-benchmark.XXXXXX")"
-isolated_source="$WORK_ROOT/Source"
+isolated_source="$WORK_ROOT/database-framework"
 derived_data="$WORK_ROOT/DerivedData"
 source_packages="$WORK_ROOT/SourcePackages"
 mkdir -p "$isolated_source" "$derived_data" "$source_packages" "$RESULT_DIRECTORY"
