@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VALIDATOR="$ROOT_DIR/scripts/validate-benchmark-medians"
+TEMPORARY_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/benchmark-median-validator.XXXXXX")"
+
+cleanup() {
+  local temporary_prefix="${TMPDIR:-/tmp}"
+  temporary_prefix="${temporary_prefix%/}/benchmark-median-validator."
+  if [[ -n "$TEMPORARY_ROOT" && -d "$TEMPORARY_ROOT" \
+      && "$TEMPORARY_ROOT" == "$temporary_prefix"* ]]; then
+    rm -rf -- "$TEMPORARY_ROOT"
+  fi
+}
+
+trap cleanup EXIT
+
+reference_path="$TEMPORARY_ROOT/reference.tsv"
+valid_log="$TEMPORARY_ROOT/valid.log"
+
+write_reference() {
+  printf '%s\n' \
+    '# suite metric reference_median_us maximum_multiplier' \
+    'bitmap roaring.sparse.construct-ascending 427.625 2.0' \
+    'bitmap roaring.sparse.contains-missing 35.834 2.0' \
+    'bitmap roaring.sparse.intersection 328.083 2.0' \
+    'bitmap roaring.sparse.union 968.541 2.0' \
+    'bitmap roaring.sparse.difference 703.292 2.0' \
+    'fulltext fulltext.canonical.intersection 8577.000 2.0' \
+    'fulltext fulltext.canonical.union 5340.917 2.0' \
+    > "$reference_path"
+}
+
+write_valid_log() {
+  printf '%s\n' \
+    'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=8577.0' \
+    'BENCHMARK fulltext.canonical.union unit=us samples=15 median=5340.917' \
+    > "$valid_log"
+}
+
+expect_failure() {
+  local label="$1"
+  shift
+  if "$@" >"$TEMPORARY_ROOT/$label.stdout" \
+      2>"$TEMPORARY_ROOT/$label.stderr"; then
+    echo "error: validator accepted invalid fixture: $label" >&2
+    exit 1
+  fi
+}
+
+write_reference
+write_valid_log
+"$VALIDATOR" fulltext "$reference_path" "$valid_log"
+
+duplicate_log="$TEMPORARY_ROOT/duplicate.log"
+printf '%s\n' \
+  'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=8577.0' \
+  'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=8577.0' \
+  > "$duplicate_log"
+expect_failure duplicate-measurement \
+  "$VALIDATOR" fulltext "$reference_path" "$duplicate_log"
+
+for invalid_median in nan 0 -1; do
+  invalid_log="$TEMPORARY_ROOT/invalid-$invalid_median.log"
+  printf '%s\n' \
+    "BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=$invalid_median" \
+    'BENCHMARK fulltext.canonical.union unit=us samples=15 median=5340.917' \
+    > "$invalid_log"
+  expect_failure "invalid-$invalid_median" \
+    "$VALIDATOR" fulltext "$reference_path" "$invalid_log"
+done
+
+overflow_log="$TEMPORARY_ROOT/overflow.log"
+overflowing_median="$(printf '9%.0s' {1..400})"
+printf '%s\n' \
+  "BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=$overflowing_median" \
+  'BENCHMARK fulltext.canonical.union unit=us samples=15 median=5340.917' \
+  > "$overflow_log"
+expect_failure overflow \
+  "$VALIDATOR" fulltext "$reference_path" "$overflow_log"
+
+missing_log="$TEMPORARY_ROOT/missing.log"
+printf '%s\n' \
+  'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=8577.0' \
+  > "$missing_log"
+expect_failure missing-measurement \
+  "$VALIDATOR" fulltext "$reference_path" "$missing_log"
+
+duplicate_reference="$TEMPORARY_ROOT/duplicate-reference.tsv"
+cp "$reference_path" "$duplicate_reference"
+printf '%s\n' \
+  'fulltext fulltext.canonical.union 5340.917 2.0' \
+  >> "$duplicate_reference"
+expect_failure duplicate-reference \
+  "$VALIDATOR" fulltext "$duplicate_reference" "$valid_log"
+
+invalid_reference="$TEMPORARY_ROOT/invalid-reference.tsv"
+sed 's/fulltext\.canonical\.union 5340\.917/fulltext.canonical.union nan/' \
+  "$reference_path" > "$invalid_reference"
+expect_failure invalid-reference \
+  "$VALIDATOR" fulltext "$invalid_reference" "$valid_log"
+
+echo "benchmark median validator tests passed"

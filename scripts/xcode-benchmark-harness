@@ -15,9 +15,11 @@ usage() {
 Usage:
   scripts/xcode-benchmark-harness <bitmap|fulltext> [--result-directory <path>]
 
-The harness builds the selected benchmark package in Release mode with its
+The harness archives the clean committed source revision into an isolated
+working tree, builds the selected benchmark package in Release mode with its
 committed Package.resolved, injects the pinned Swift Testing runtime into the
-generated xctestrun, executes without rebuilding, and validates the result.
+generated xctestrun, executes without rebuilding, and validates correctness,
+warnings, and the reviewed median regression bounds.
 EOF
 }
 
@@ -40,13 +42,13 @@ shift
 
 case "$benchmark" in
   bitmap)
-    package_directory="$ROOT_DIR/Benchmarks/BitmapCore"
+    relative_package_directory="Benchmarks/BitmapCore"
     scheme="database-framework-bitmap-benchmarks-Package"
     expected_test_count=5
     expected_measurement_count=5
     ;;
   fulltext)
-    package_directory="$ROOT_DIR/Benchmarks/FullTextQuery"
+    relative_package_directory="Benchmarks/FullTextQuery"
     scheme="database-framework-fulltext-benchmarks-Package"
     expected_test_count=1
     expected_measurement_count=2
@@ -87,15 +89,15 @@ done
 require_positive_integer XCODE_BENCHMARK_BUILD_TIMEOUT_SECONDS "$BUILD_TIMEOUT_SECONDS"
 require_positive_integer XCODE_BENCHMARK_TEST_TIMEOUT_SECONDS "$TEST_TIMEOUT_SECONDS"
 
-for command in cp date find grep mkdir mktemp perl plutil rm sed shasum tee tr wc xcodebuild xcrun; do
+for command in awk cp date find git grep mkdir mktemp perl plutil rm sed shasum tar tee tr wc xcodebuild xcrun; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "error: required command not found: $command" >&2
     exit 1
   fi
 done
 
-if [[ ! -f "$package_directory/Package.resolved" ]]; then
-  echo "error: committed dependency pins are required: $package_directory/Package.resolved" >&2
+if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)" ]]; then
+  echo "error: benchmark evidence requires a clean committed source tree" >&2
   exit 1
 fi
 
@@ -187,9 +189,10 @@ reject_internal_tool_errors() {
 temporary_root="${TMPDIR:-/tmp}"
 temporary_root="${temporary_root%/}"
 WORK_ROOT="$(mktemp -d "$temporary_root/database-framework-benchmark.XXXXXX")"
+isolated_source="$WORK_ROOT/Source"
 derived_data="$WORK_ROOT/DerivedData"
 source_packages="$WORK_ROOT/SourcePackages"
-mkdir -p "$derived_data" "$source_packages" "$RESULT_DIRECTORY"
+mkdir -p "$isolated_source" "$derived_data" "$source_packages" "$RESULT_DIRECTORY"
 
 run_identifier="$(date +%Y%m%d-%H%M%S)-$$-$benchmark"
 build_result="$RESULT_DIRECTORY/Build-$run_identifier.xcresult"
@@ -197,6 +200,33 @@ test_result="$RESULT_DIRECTORY/Test-$run_identifier.xcresult"
 build_log="$RESULT_DIRECTORY/Build-$run_identifier.log"
 test_log="$RESULT_DIRECTORY/Test-$run_identifier.log"
 summary_path="$RESULT_DIRECTORY/Summary-$run_identifier.json"
+build_summary_path="$RESULT_DIRECTORY/BuildSummary-$run_identifier.json"
+source_evidence_path="$RESULT_DIRECTORY/Source-$run_identifier.txt"
+
+source_revision="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+source_tree="$(git -C "$ROOT_DIR" rev-parse 'HEAD^{tree}')"
+source_remote="$(git -C "$ROOT_DIR" remote get-url origin)"
+git -C "$ROOT_DIR" archive --format=tar "$source_revision" \
+  | tar -xf - -C "$isolated_source"
+package_directory="$isolated_source/$relative_package_directory"
+reference_path="$isolated_source/Benchmarks/reference-medians.tsv"
+
+if [[ ! -f "$package_directory/Package.resolved" ]]; then
+  echo "error: committed dependency pins are required: $package_directory/Package.resolved" >&2
+  exit 1
+fi
+if [[ ! -f "$reference_path" ]]; then
+  echo "error: benchmark median references are unavailable: $reference_path" >&2
+  exit 1
+fi
+
+{
+  printf 'repository=%s\n' "$source_remote"
+  printf 'revision=%s\n' "$source_revision"
+  printf 'tree=%s\n' "$source_tree"
+  printf 'source-clean=true\n'
+  printf 'package=%s\n' "$relative_package_directory"
+} | tee "$source_evidence_path"
 
 pinned_swiftc="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
 toolchain_root="$(cd "$(dirname "$pinned_swiftc")/../.." && pwd)"
@@ -241,6 +271,24 @@ if (( build_status != 0 )); then
 fi
 if ! grep -F "SWIFT_EXEC = $pinned_swiftc" "$build_log" >/dev/null; then
   echo "error: Xcode did not record the pinned Swift compiler" >&2
+  exit 1
+fi
+
+build_summary="$(
+  xcrun xcresulttool get build-results --path "$build_result"
+)"
+printf '%s\n' "$build_summary" | tee "$build_summary_path"
+build_status_value="$(extract_summary_number "$build_summary" status)"
+build_error_count="$(extract_summary_number "$build_summary" errorCount)"
+build_warning_count="$(extract_summary_number "$build_summary" warningCount)"
+analyzer_warning_count="$(
+  extract_summary_number "$build_summary" analyzerWarningCount
+)"
+if [[ "$build_status_value" != "succeeded" \
+    || "$build_error_count" != "0" \
+    || "$build_warning_count" != "0" \
+    || "$analyzer_warning_count" != "0" ]]; then
+  echo "error: benchmark build did not satisfy its zero-warning contract" >&2
   exit 1
 fi
 
@@ -312,12 +360,21 @@ if [[ "$measurement_count" != "$expected_measurement_count" ]]; then
   exit 1
 fi
 
+"$isolated_source/scripts/validate-benchmark-medians" \
+  "$benchmark" "$reference_path" "$test_log"
+
 grep '^BENCHMARK ' "$test_log"
 echo "Passed: $passed_count"
 echo "Failed: $failed_count"
 echo "Skipped: $skipped_count"
 echo "Expected failures: $expected_failure_count"
 echo "Runtime warnings: $runtime_warning_count"
+echo "Compiler warnings: $build_warning_count"
+echo "Analyzer warnings: $analyzer_warning_count"
+echo "Source revision: $source_revision"
+echo "Source tree: $source_tree"
 echo "Result bundle: $test_result"
 echo "Raw log: $test_log"
 echo "Summary: $summary_path"
+echo "Build summary: $build_summary_path"
+echo "Source evidence: $source_evidence_path"

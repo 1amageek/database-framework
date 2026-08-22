@@ -126,7 +126,7 @@ struct CompositionSnapshotAuthorizationIsolationTests {
         let ownerContext = fixture.container.session(
             authorization: fixture.ownerAuthorization
         ).base(fixture.firstBaseID).newContext()
-        try await ownerContext.withExecutionTransaction(
+        _ = try await ownerContext.withExecutionTransaction(
             requiredAccess: .all
         ) { _ in
             await #expect(throws: DatabaseReadTransactionError.self) {

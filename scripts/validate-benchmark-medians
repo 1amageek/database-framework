@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 3 )); then
+  echo "usage: validate-benchmark-medians <bitmap|fulltext> <reference.tsv> <benchmark.log>" >&2
+  exit 2
+fi
+
+suite="$1"
+reference_path="$2"
+measurement_log="$3"
+
+case "$suite" in
+  bitmap)
+    expected_names="roaring.sparse.construct-ascending|roaring.sparse.contains-missing|roaring.sparse.intersection|roaring.sparse.union|roaring.sparse.difference"
+    ;;
+  fulltext)
+    expected_names="fulltext.canonical.intersection|fulltext.canonical.union"
+    ;;
+  *)
+    echo "error: unsupported benchmark suite: $suite" >&2
+    exit 2
+    ;;
+esac
+
+for path in "$reference_path" "$measurement_log"; do
+  if [[ ! -f "$path" ]]; then
+    echo "error: benchmark validation input is unavailable: $path" >&2
+    exit 1
+  fi
+done
+
+awk -v selected_suite="$suite" -v expected_names="$expected_names" '
+  function reject(message) {
+    print "error: " message > "/dev/stderr"
+    invalid = 1
+  }
+
+  function is_positive_decimal(value, numeric_value) {
+    numeric_value = value + 0
+    return value ~ /^[0-9]+([.][0-9]+)?$/ \
+      && numeric_value > 0 \
+      && numeric_value < 1e308
+  }
+
+  BEGIN {
+    expected_count = split(expected_names, expected_order, "|")
+    for (expected_index = 1; expected_index <= expected_count; expected_index += 1) {
+      expected[expected_order[expected_index]] = 1
+    }
+  }
+
+  NR == FNR {
+    if ($0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/) {
+      next
+    }
+    if (NF != 4) {
+      reject("malformed benchmark reference row at line " FNR)
+      next
+    }
+
+    reference_key = $1 SUBSEP $2
+    if (++all_reference_occurrences[reference_key] != 1) {
+      reject("duplicate benchmark reference for " $1 "/" $2)
+    }
+    if (!is_positive_decimal($3)) {
+      reject("reference median must be a finite positive decimal for " $1 "/" $2)
+    }
+    if (!is_positive_decimal($4)) {
+      reject("maximum multiplier must be a finite positive decimal for " $1 "/" $2)
+    }
+
+    if ($1 != selected_suite) {
+      next
+    }
+    if (!($2 in expected)) {
+      reject("unexpected benchmark reference for " selected_suite "/" $2)
+      next
+    }
+    reference_occurrences[$2] += 1
+    reference_median[$2] = $3
+    maximum_multiplier[$2] = $4
+    next
+  }
+
+  $0 ~ /^BENCHMARK / {
+    name = $2
+    if (!(name in expected)) {
+      reject("unexpected benchmark measurement for " selected_suite "/" name)
+      next
+    }
+    if (++measurement_occurrences[name] != 1) {
+      reject("duplicate benchmark measurement for " selected_suite "/" name)
+    }
+
+    median = ""
+    median_fields = 0
+    for (field = 3; field <= NF; field += 1) {
+      if ($field ~ /^median=/) {
+        median_fields += 1
+        median = substr($field, 8)
+      }
+    }
+    if (median_fields != 1) {
+      reject("measurement must contain exactly one median for " selected_suite "/" name)
+      next
+    }
+    if (!is_positive_decimal(median)) {
+      reject("observed median must be a finite positive decimal for " selected_suite "/" name)
+      next
+    }
+    observed_median[name] = median
+  }
+
+  END {
+    for (expected_index = 1; expected_index <= expected_count; expected_index += 1) {
+      name = expected_order[expected_index]
+      if (reference_occurrences[name] != 1) {
+        reject("expected exactly one benchmark reference for " selected_suite "/" name)
+      }
+      if (measurement_occurrences[name] != 1) {
+        reject("expected exactly one benchmark measurement for " selected_suite "/" name)
+      }
+    }
+
+    if (invalid) {
+      exit 1
+    }
+
+    for (expected_index = 1; expected_index <= expected_count; expected_index += 1) {
+      name = expected_order[expected_index]
+      limit = reference_median[name] * maximum_multiplier[name]
+      if ((observed_median[name] + 0) > (limit + 0)) {
+        reject("median regression exceeded the reviewed bound for " name \
+          " (observed=" observed_median[name] \
+          ", reference=" reference_median[name] \
+          ", multiplier=" maximum_multiplier[name] ")")
+      }
+    }
+
+    exit invalid ? 1 : 0
+  }
+' "$reference_path" "$measurement_log"

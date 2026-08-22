@@ -27,9 +27,9 @@ jobs:
         run: scripts/verify-benchmark-separation
 
   benchmark-build:
-    name: Benchmark package build
+    name: Benchmark verification
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout framework
         uses: actions/checkout@v7
@@ -61,6 +61,16 @@ jobs:
           test -f "$client_directory/lib/libfdb_c.dylib"
           echo "FDB_CLIENT_INCLUDE_DIRECTORY=$client_directory/include" >> "$GITHUB_ENV"
           echo "FDB_CLIENT_LIBRARY_DIRECTORY=$client_directory/lib" >> "$GITHUB_ENV"
+
+      - name: Run optimization regression benchmarks
+        working-directory: database-framework
+        run: |
+          result_directory=/tmp/database-framework-optimization-benchmarks
+          scripts/test-benchmark-median-validator
+          scripts/xcode-benchmark-harness bitmap \
+            --result-directory "$result_directory/bitmap"
+          scripts/xcode-benchmark-harness fulltext \
+            --result-directory "$result_directory/fulltext"
 
       - name: Build benchmark package without executing workloads
         working-directory: database-framework/Benchmarks
@@ -107,7 +117,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: benchmark-build-xcresult
-          path: /tmp/database-framework-benchmark-build
+          path: |
+            /tmp/database-framework-benchmark-build
+            /tmp/database-framework-optimization-benchmarks
           if-no-files-found: error
 
   docker-backends:

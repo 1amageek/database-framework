@@ -42,10 +42,11 @@ algebra measurements do not own a FoundationDB lifecycle. Keeping it outside
 the FoundationDB benchmark package prevents unrelated backend, vector, graph,
 and macro targets from entering the measurement build graph.
 
-Run its release configuration through the benchmark harness. The harness uses
-the committed dependency graph, injects the pinned Swift Testing runtime into
-the generated `.xctestrun`, and retains the result bundle, summary, and raw
-logs:
+Run its release configuration through the benchmark harness. The harness
+requires a clean tree, archives the exact Git revision into an isolated source
+tree, uses the committed dependency graph, injects the pinned Swift Testing
+runtime into the generated `.xctestrun`, and retains the source identity,
+result bundle, summary, and raw logs:
 
 ```bash
 scripts/xcode-benchmark-harness bitmap
@@ -76,6 +77,12 @@ the implementation change on the same Apple M4 Max (14 cores, 36 GB) running
 macOS 27.0 and Swift snapshot 2026-08-14. Absolute timings are machine-specific;
 the paired ratios are the regression reference.
 
+`reference-medians.tsv` applies a 2x median ceiling to the fixed macOS runner.
+This deliberately wide bound detects material regressions without treating
+ordinary scheduler and filesystem noise as a failure. The harness also
+requires the exact reviewed metric-name set, one finite positive median per
+metric, and zero compiler, analyzer, and runtime warnings.
+
 | Benchmark | Baseline (us) | Optimized (us) | Speedup |
 |---|---:|---:|---:|
 | Roaring ascending sparse construction | 19,357.083 | 427.625 | 45.3x |
@@ -83,5 +90,5 @@ the paired ratios are the regression reference.
 | Roaring sparse intersection | 8,458.250 | 328.083 | 25.8x |
 | Roaring sparse union | 42,105.833 | 968.541 | 43.5x |
 | Roaring sparse difference | 7,834.542 | 703.292 | 11.1x |
-| Full-text canonical intersection | 10,584.584 | 7,977.250 | 1.33x |
-| Full-text canonical union | 19,298.667 | 4,932.959 | 3.91x |
+| Full-text canonical intersection | 10,584.584 | 8,577.000 | 1.23x |
+| Full-text canonical union | 19,298.667 | 5,340.917 | 3.61x |
