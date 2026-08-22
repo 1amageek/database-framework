@@ -287,6 +287,20 @@ public struct IndexQueryContext: Sendable {
         }
     }
 
+    /// Execute an index mutation within an explicitly write-authorized
+    /// transaction while withholding lifecycle authority.
+    package func withWriteTransaction<R: Sendable>(
+        configuration: TransactionConfiguration = .default,
+        _ body: @Sendable @escaping (any TransactionAccess) async throws -> R
+    ) async throws -> R {
+        try await context.withStorageAccess(
+            requiredAccess: .write,
+            configuration: configuration
+        ) { transaction in
+            try await body(transaction)
+        }
+    }
+
     // MARK: - Item Fetching
 
     /// Fetch items by their IDs

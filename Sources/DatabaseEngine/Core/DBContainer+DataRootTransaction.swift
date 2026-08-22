@@ -36,7 +36,10 @@ extension DBContainer {
                 transaction: transaction
             )
             #endif
-            return try await operation(transaction)
+            let admittedTransaction = requiredAccess == .read
+                ? ReadAuthorizedTransactionAccess.admitted(transaction)
+                : transaction
+            return try await operation(admittedTransaction)
         }
     }
 }

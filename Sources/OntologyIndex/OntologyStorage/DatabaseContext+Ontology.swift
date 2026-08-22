@@ -110,7 +110,7 @@ public struct OntologyContextAPI: Sendable {
         at timestamp: Timestamp
     ) async throws {
         try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
+            try await context.indexQueryContext.withWriteTransaction { transaction in
                 // loadOntology is idempotent — it clears existing data internally
                 try await store.loadOntology(
                     ontology,
@@ -132,7 +132,7 @@ public struct OntologyContextAPI: Sendable {
         at timestamp: Timestamp
     ) async throws {
         try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
+            try await context.indexQueryContext.withWriteTransaction { transaction in
                 for ontology in ontologies {
                     try await store.loadOntology(
                         ontology,
@@ -208,7 +208,7 @@ public struct OntologyContextAPI: Sendable {
     /// - Parameter iri: The ontology IRI to delete
     public func delete(iri: String) async throws {
         try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
+            try await context.indexQueryContext.withWriteTransaction { transaction in
                 try store.deleteOntology(iri, transaction: transaction)
             }
         }
@@ -218,12 +218,9 @@ public struct OntologyContextAPI: Sendable {
     ///
     /// **Warning**: This removes all stored ontology data.
     public func deleteAll() async throws {
-        let iris = try await list()
         try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
-                for iri in iris {
-                    try store.deleteOntology(iri, transaction: transaction)
-                }
+            try await context.indexQueryContext.withWriteTransaction { transaction in
+                try store.deleteAll(transaction: transaction)
             }
         }
     }

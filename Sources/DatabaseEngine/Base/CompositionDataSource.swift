@@ -38,6 +38,7 @@ public struct CompositionDataSource: Sendable {
     public let selection: CompositionSelection
     package let container: DBContainer
     package let authorization: AuthorizationContext
+    package let sourceIdentity: DatabaseCompositionSourceIdentity
 
     package init(
         selection: CompositionSelection,
@@ -47,6 +48,7 @@ public struct CompositionDataSource: Sendable {
         self.selection = selection
         self.container = container
         self.authorization = authorization
+        self.sourceIdentity = DatabaseCompositionSourceIdentity()
     }
 
     public func query<Model: Persistable>(
@@ -274,7 +276,11 @@ public struct CompositionDataSource: Sendable {
             let result = try await operation(
                 DatabaseCompositionReadSnapshot(
                     lease: lease,
-                    transactions: transactions,
+                    sourceIdentity: sourceIdentity,
+                    authorization: authorization,
+                    transactions: transactions.mapValues {
+                        ReadAuthorizedTransactionAccess.admitted($0)
+                    },
                     readPoints: readPoints
                 )
             )
@@ -323,19 +329,31 @@ public struct CompositionDataSource: Sendable {
             any TransactionAccess
         ) async throws -> Result
     ) async throws -> Result {
-        guard snapshot.lease.selection == selection,
+        guard snapshot.sourceIdentity === sourceIdentity,
+              snapshot.lease.selection == selection,
               snapshot.lease.members.contains(where: { $0 === member }) else {
             throw DatabaseCompositionAccessError.unavailable(selection)
         }
         let transaction = try snapshot.transaction(for: member)
         return try await container.withBaseLease(member) {
             let context = container.session(
-                authorization: authorization
+                authorization: snapshot.authorization
             ).base(member.baseID).newContext()
+            let executionBinding = DatabaseTransactionExecutionBinding(
+                transaction: transaction,
+                resource: context.resource,
+                authorization: snapshot.authorization,
+                grantedAccess: .read,
+                databaseTransaction: nil
+            )
             return try await RequestAuthorization.$context.withValue(
-                authorization
+                snapshot.authorization
             ) {
-                try await operation(context, transaction)
+                try await ActiveDatabaseTransactionContext.$binding.withValue(
+                    executionBinding
+                ) {
+                    try await operation(context, transaction)
+                }
             }
         }
     }
