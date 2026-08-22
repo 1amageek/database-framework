@@ -69,11 +69,11 @@ database-framework service.
 ## Release Gate
 
 ~~~bash
-scripts/apple-container-test-harness doctor
-scripts/apple-container-test-harness sqlite
-scripts/apple-container-test-harness sqlite --multi-base
-scripts/apple-container-test-harness postgresql
-scripts/apple-container-test-harness foundationdb
+scripts/docker-test-harness doctor
+scripts/docker-test-harness sqlite
+scripts/docker-test-harness sqlite --multi-base
+scripts/docker-test-harness postgresql
+scripts/docker-test-harness foundationdb
 
 export TOOLCHAINS=org.swift.64202608141a
 
@@ -114,9 +114,9 @@ done
 
 The backend gate uses the immutable artifact manifest, topology, teardown
 contract, and evidence requirements in
-[Apple Container Backend Verification](apple-container-testing.md). The
-supplemental SQLite Linux run does not replace its macOS Xcode result; both are
-required.
+[Docker Backend Verification](docker-testing.md). The canonical backend runs
+execute in the pinned Linux Docker runner. The separate macOS SQLite Xcode lane
+is required platform-parity evidence.
 
 The Xcode harness keeps the source manifest unchanged, selects traits in an
 isolated copy, injects the pinned snapshot's testing runtime and backend

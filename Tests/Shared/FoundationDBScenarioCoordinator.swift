@@ -5,16 +5,38 @@
 #if FOUNDATION_DB
 import DatabaseTypes
 import Foundation
-import FoundationDB
 import StorageKit
 import FDBStorage
-import DatabaseEngine
 
 public enum FoundationDBScenarioInitializationError: Error, LocalizedError {
+    case missingClusterFile
+    case clusterFileDoesNotExist(path: String)
+    case harnessIdentityEnvironmentMissing
+    case clusterOwnershipMarkerMissing(path: String)
+    case clusterOwnershipMarkerInvalid(path: String)
+    case clusterOwnershipMarkerMismatch(clusterFile: String, markerClusterFile: String?)
+    case clusterEndpointIsNotIsolated(clusterFile: String)
     case clusterHealthCheckFailed(clusterFile: String?, underlying: Error)
 
     public var errorDescription: String? {
         switch self {
+        case .missingClusterFile:
+            return "FDB_CLUSTER_FILE must identify a cluster owned by "
+                + "scripts/docker-test-harness foundationdb"
+        case .clusterFileDoesNotExist(let path):
+            return "FoundationDB test cluster file does not exist: \(path)"
+        case .harnessIdentityEnvironmentMissing:
+            return "FoundationDB tests require the Docker harness identity path and token"
+        case .clusterOwnershipMarkerMissing(let path):
+            return "FoundationDB test ownership marker is missing: \(path)"
+        case .clusterOwnershipMarkerInvalid(let path):
+            return "FoundationDB test ownership marker is invalid: \(path)"
+        case .clusterOwnershipMarkerMismatch(let clusterFile, let markerClusterFile):
+            return "FoundationDB test cluster \(clusterFile) does not match its ownership marker "
+                + (markerClusterFile ?? "<missing>")
+        case .clusterEndpointIsNotIsolated(let clusterFile):
+            return "FoundationDB tests require the private cluster created by the Docker harness: "
+                + clusterFile
         case .clusterHealthCheckFailed(let clusterFile, let underlying):
             if let clusterFile {
                 return "FoundationDB cluster health check failed for \(clusterFile): \(underlying)"
@@ -42,8 +64,6 @@ public actor FoundationDBScenarioCoordinator {
     public static let shared = FoundationDBScenarioCoordinator()
     @TaskLocal private static var holdsSerializedAccess = false
     private static let transactionTimeoutMs = 30_000
-    private static let transactionRetryLimit = 20
-    private static let transactionMaxRetryDelayMs = 1_000
     private static let healthCheckAttemptTimeoutMs = 2_000
     private static let clusterReadyTimeoutMs = 10_000
     private static let clusterReadyPollIntervalNs: UInt64 = 250_000_000
@@ -61,88 +81,119 @@ public actor FoundationDBScenarioCoordinator {
 
     private init() {}
 
-    private func candidateClusterFilePaths() -> [String?] {
+    private func requiredOwnedClusterFilePath() throws -> String {
         let fileManager = FileManager.default
         let environment = ProcessInfo.processInfo.environment
-
-        if let configuredPath = environment["FDB_CLUSTER_FILE"],
-           fileManager.fileExists(atPath: configuredPath) {
-            return [configuredPath]
+        guard let configuredPath = environment["FDB_CLUSTER_FILE"],
+              !configuredPath.isEmpty else {
+            throw FoundationDBScenarioInitializationError.missingClusterFile
         }
-
-        var candidates: [String?] = []
-        func appendCandidate(_ path: String) {
-            guard !candidates.contains(where: { $0 == path }) else {
-                return
+        let clusterFileURL = URL(fileURLWithPath: configuredPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(
+            atPath: clusterFileURL.path,
+            isDirectory: &isDirectory
+        ), !isDirectory.boolValue else {
+            throw FoundationDBScenarioInitializationError
+                .clusterFileDoesNotExist(path: clusterFileURL.path)
+        }
+        guard let identityPath = environment["DATABASE_FRAMEWORK_FDB_HARNESS_IDENTITY"],
+              !identityPath.isEmpty,
+              let expectedToken = environment["DATABASE_FRAMEWORK_FDB_HARNESS_TOKEN"],
+              !expectedToken.isEmpty else {
+            throw FoundationDBScenarioInitializationError
+                .harnessIdentityEnvironmentMissing
+        }
+        let identityURL = URL(fileURLWithPath: identityPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard fileManager.fileExists(atPath: identityURL.path) else {
+            throw FoundationDBScenarioInitializationError
+                .clusterOwnershipMarkerMissing(path: identityURL.path)
+        }
+        let identity = try String(contentsOf: identityURL, encoding: .utf8)
+        var fields: [Substring: Substring] = [:]
+        for line in identity.split(whereSeparator: \.isNewline) {
+            let components = line.split(
+                separator: "=",
+                maxSplits: 1,
+                omittingEmptySubsequences: false
+            )
+            guard components.count == 2,
+                  !components[0].isEmpty,
+                  !components[1].isEmpty,
+                  fields.updateValue(components[1], forKey: components[0]) == nil else {
+                throw FoundationDBScenarioInitializationError
+                    .clusterOwnershipMarkerInvalid(path: identityURL.path)
             }
-            candidates.append(path)
         }
-
-        var currentURL = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
-        while true {
-            let candidate = currentURL.appendingPathComponent(".database/fdb.cluster").path
-            if fileManager.fileExists(atPath: candidate) {
-                appendCandidate(candidate)
-            }
-
-            let parentURL = currentURL.deletingLastPathComponent()
-            guard parentURL.path != currentURL.path else { break }
-            currentURL = parentURL
+        guard fields["format"] == "database-framework-docker-foundationdb-v1",
+              fields["token"] == Substring(expectedToken),
+              let markerClusterFile = fields["cluster_file"],
+              let markerEndpoint = fields["endpoint"],
+              markerEndpoint.hasSuffix(":4500"),
+              !markerEndpoint.starts(with: "127."),
+              !markerEndpoint.starts(with: "localhost:"),
+              fields["network"] != nil,
+              fields["service_container"] != nil,
+              fields["server_version"] != nil else {
+            throw FoundationDBScenarioInitializationError
+                .clusterOwnershipMarkerInvalid(path: identityURL.path)
         }
-
-        let commonClusterFiles = [
-            "/usr/local/etc/foundationdb/fdb.cluster",
-            "/opt/homebrew/etc/foundationdb/fdb.cluster",
-            "/etc/foundationdb/fdb.cluster",
-        ]
-
-        for path in commonClusterFiles where fileManager.fileExists(atPath: path) {
-            appendCandidate(path)
+        let markerClusterFileURL = URL(fileURLWithPath: String(markerClusterFile))
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard markerClusterFileURL.path == clusterFileURL.path else {
+            throw FoundationDBScenarioInitializationError
+                .clusterOwnershipMarkerMismatch(
+                    clusterFile: clusterFileURL.path,
+                    markerClusterFile: markerClusterFileURL.path
+                )
         }
-
-        if candidates.isEmpty {
-            candidates.append(nil)
-        }
-        return candidates
-    }
-
-    private func resolvedClusterFilePath() -> String? {
-        if let selectedClusterFilePath {
-            return selectedClusterFilePath
-        }
-        let candidates = candidateClusterFilePaths()
-        guard let first = candidates.first else {
-            return nil
-        }
-        return first
-    }
-
-    private func openConfiguredDatabase(clusterFilePath: String? = nil) throws -> any DatabaseProtocol {
-        let database = try FDBClient.openDatabase(
-            clusterFilePath: clusterFilePath ?? selectedClusterFilePath ?? resolvedClusterFilePath()
+        let clusterDescription = try String(
+            contentsOf: clusterFileURL,
+            encoding: .utf8
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let coordinators = clusterDescription.split(
+            separator: "@",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
         )
-        try database.setOption(to: Self.transactionTimeoutMs, forOption: .transactionTimeout)
-        try database.setOption(to: Self.transactionRetryLimit, forOption: .transactionRetryLimit)
-        try database.setOption(to: Self.transactionMaxRetryDelayMs, forOption: .transactionMaxRetryDelay)
-        return database
+        guard coordinators.count == 2,
+              coordinators[1] == markerEndpoint else {
+            throw FoundationDBScenarioInitializationError
+                .clusterEndpointIsNotIsolated(clusterFile: clusterFileURL.path)
+        }
+        return clusterFileURL.path
     }
 
     private func createConfiguredEngine(
         systemPriority: Bool = false,
         clusterFilePath: String? = nil
     ) async throws -> FDBStorageEngine {
-        if !FDBClient.isInitialized {
-            try await FDBClient.initialize()
-        }
-
-        let baseDatabase = try openConfiguredDatabase(clusterFilePath: clusterFilePath)
-        let database: any DatabaseProtocol
-        if systemPriority {
-            database = FDBSystemPriorityDatabase(wrapping: baseDatabase)
+        let selectedPath: String
+        if let clusterFilePath {
+            selectedPath = clusterFilePath
+        } else if let selectedClusterFilePath {
+            selectedPath = selectedClusterFilePath
         } else {
-            database = baseDatabase
+            selectedPath = try requiredOwnedClusterFilePath()
         }
-        return try await FDBStorageEngine(configuration: .init(database: database))
+        var transactionOptions: [TransactionOption] = [
+            .timeout(milliseconds: Self.transactionTimeoutMs)
+        ]
+        if systemPriority {
+            transactionOptions.append(.prioritySystemImmediate)
+            transactionOptions.append(.readPriorityHigh)
+        }
+        return try await FDBStorageEngine(
+            configuration: .init(
+                clusterFilePath: selectedPath,
+                transactionOptions: transactionOptions
+            )
+        )
     }
 
     private func verifyClusterHealth(
@@ -196,28 +247,26 @@ public actor FoundationDBScenarioCoordinator {
         )
     }
 
-    private func createHealthyEngine() async throws -> FDBStorageEngine {
-        let candidates = candidateClusterFilePaths()
-        var lastError: Error?
-
-        for candidate in candidates {
-            do {
-                let engine = try await createConfiguredEngine(
-                    systemPriority: true,
-                    clusterFilePath: candidate
-                )
-                try await verifyClusterHealth(using: engine, clusterFilePath: candidate)
-                selectedClusterFilePath = candidate
-                return engine
-            } catch {
-                lastError = error
-            }
-        }
-
-        throw FoundationDBScenarioInitializationError.clusterHealthCheckFailed(
-            clusterFile: candidates.compactMap { $0 }.last,
-            underlying: lastError ?? CancellationError()
+    private func verifyHealthyCluster() async throws {
+        let clusterFilePath = try requiredOwnedClusterFilePath()
+        let engine = try await createConfiguredEngine(
+            systemPriority: true,
+            clusterFilePath: clusterFilePath
         )
+        do {
+            try await verifyClusterHealth(
+                using: engine,
+                clusterFilePath: clusterFilePath
+            )
+            await engine.waitUntilShutdown()
+            selectedClusterFilePath = clusterFilePath
+        } catch {
+            await engine.waitUntilShutdown()
+            throw FoundationDBScenarioInitializationError.clusterHealthCheckFailed(
+                clusterFile: clusterFilePath,
+                underlying: error
+            )
+        }
     }
 
     /// Initialize FDB client (called automatically by withSerializedAccess)
@@ -239,7 +288,7 @@ public actor FoundationDBScenarioCoordinator {
             initializationState = .initializing([])
 
             do {
-                _ = try await createHealthyEngine()
+                try await verifyHealthyCluster()
                 if case .initializing(let continuations) = initializationState {
                     initializationState = .initialized
                     for continuation in continuations {
@@ -267,6 +316,11 @@ public actor FoundationDBScenarioCoordinator {
         return try await createConfiguredEngine()
     }
 
+    public func makeSystemPriorityEngine() async throws -> FDBStorageEngine {
+        try await initialize()
+        return try await createConfiguredEngine(systemPriority: true)
+    }
+
     /// Clears the complete user keyspace owned by the isolated test cluster.
     ///
     /// Directory metadata, entities, indexes, the schema catalog, and the
@@ -276,11 +330,17 @@ public actor FoundationDBScenarioCoordinator {
     /// surface any failure before tests run.
     private func resetDatabaseConsistencyDomain() async throws {
         let engine = try await createConfiguredEngine(systemPriority: true)
-        try await engine.withTransaction { transaction in
-            try transaction.clearRange(
-                beginKey: ByteString(),
-                endKey: ByteString([0xFF])
-            )
+        do {
+            try await engine.withTransaction { transaction in
+                try transaction.clearRange(
+                    beginKey: ByteString(),
+                    endKey: ByteString([0xFF])
+                )
+            }
+            await engine.waitUntilShutdown()
+        } catch {
+            await engine.waitUntilShutdown()
+            throw error
         }
     }
 

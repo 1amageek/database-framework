@@ -5,7 +5,6 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
-import FoundationDB
 import DatabaseKit
 import TestSupport
 @testable import DatabaseEngine

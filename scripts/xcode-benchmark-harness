@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TOOLCHAIN_IDENTIFIER="org.swift.64202608141a"
+XCODE_TOOLCHAIN_IDENTIFIER="com.apple.dt.toolchain.XcodeDefault"
+DESTINATION="platform=macOS,arch=arm64"
+BUILD_TIMEOUT_SECONDS="${XCODE_BENCHMARK_BUILD_TIMEOUT_SECONDS:-1200}"
+TEST_TIMEOUT_SECONDS="${XCODE_BENCHMARK_TEST_TIMEOUT_SECONDS:-300}"
+RESULT_DIRECTORY="${XCODE_BENCHMARK_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-framework-benchmark-results}"
+WORK_ROOT=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/xcode-benchmark-harness <bitmap|fulltext> [--result-directory <path>]
+
+The harness builds the selected benchmark package in Release mode with its
+committed Package.resolved, injects the pinned Swift Testing runtime into the
+generated xctestrun, executes without rebuilding, and validates the result.
+EOF
+}
+
+require_positive_integer() {
+  local name="$1"
+  local value="$2"
+  if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: $name must be a positive integer" >&2
+    exit 2
+  fi
+}
+
+if (( $# == 0 )); then
+  usage >&2
+  exit 2
+fi
+
+benchmark="$1"
+shift
+
+case "$benchmark" in
+  bitmap)
+    package_directory="$ROOT_DIR/Benchmarks/BitmapCore"
+    scheme="database-framework-bitmap-benchmarks-Package"
+    expected_test_count=5
+    expected_measurement_count=5
+    ;;
+  fulltext)
+    package_directory="$ROOT_DIR/Benchmarks/FullTextQuery"
+    scheme="database-framework-fulltext-benchmarks-Package"
+    expected_test_count=1
+    expected_measurement_count=2
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "error: unsupported benchmark: $benchmark" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+while (( $# > 0 )); do
+  case "$1" in
+    --result-directory)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "error: --result-directory requires a path" >&2
+        exit 2
+      fi
+      RESULT_DIRECTORY="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+require_positive_integer XCODE_BENCHMARK_BUILD_TIMEOUT_SECONDS "$BUILD_TIMEOUT_SECONDS"
+require_positive_integer XCODE_BENCHMARK_TEST_TIMEOUT_SECONDS "$TEST_TIMEOUT_SECONDS"
+
+for command in cp date find grep mkdir mktemp perl plutil rm sed shasum tee tr wc xcodebuild xcrun; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "error: required command not found: $command" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -f "$package_directory/Package.resolved" ]]; then
+  echo "error: committed dependency pins are required: $package_directory/Package.resolved" >&2
+  exit 1
+fi
+
+timeout_command() {
+  local seconds="$1"
+  shift
+  perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+}
+
+cleanup() {
+  if [[ -z "$WORK_ROOT" || ! -d "$WORK_ROOT" ]]; then
+    return
+  fi
+  local temporary_root="${TMPDIR:-/tmp}"
+  temporary_root="${temporary_root%/}"
+  local expected_prefix="$temporary_root/database-framework-benchmark."
+  if [[ "$WORK_ROOT" != "$expected_prefix"* ]]; then
+    echo "error: refusing to remove unexpected harness path: $WORK_ROOT" >&2
+    return
+  fi
+  rm -rf -- "$WORK_ROOT"
+}
+
+trap cleanup EXIT
+
+prepend_testing_library_path() {
+  local plist="$1"
+  local dictionary_path="$2"
+  local library_path="$3"
+  local value_path="$dictionary_path.DYLD_LIBRARY_PATH"
+  local existing_value=""
+
+  if existing_value="$(plutil -extract "$value_path" raw "$plist" 2>/dev/null)"; then
+    plutil -replace "$value_path" \
+      -string "$library_path:$existing_value" "$plist"
+  else
+    if ! plutil -extract "$dictionary_path" xml1 -o /dev/null \
+        "$plist" >/dev/null 2>&1; then
+      plutil -insert "$dictionary_path" -xml '<dict/>' "$plist"
+    fi
+    plutil -insert "$value_path" -string "$library_path" "$plist"
+  fi
+}
+
+inject_testing_runtime() {
+  local plist="$1"
+  local library_path="$2"
+  local target_count=0
+  local configuration_index=0
+
+  while plutil -extract "TestConfigurations.$configuration_index.Name" raw \
+      "$plist" >/dev/null 2>&1; do
+    local target_index=0
+    while plutil -extract \
+        "TestConfigurations.$configuration_index.TestTargets.$target_index.BlueprintName" \
+        raw "$plist" >/dev/null 2>&1; do
+      prepend_testing_library_path \
+        "$plist" \
+        "TestConfigurations.$configuration_index.TestTargets.$target_index.TestingEnvironmentVariables" \
+        "$library_path"
+      target_count=$((target_count + 1))
+      target_index=$((target_index + 1))
+    done
+    configuration_index=$((configuration_index + 1))
+  done
+
+  if (( target_count == 0 )); then
+    echo "error: no test targets found in $plist" >&2
+    return 1
+  fi
+}
+
+extract_summary_number() {
+  local summary="$1"
+  local key="$2"
+  printf '%s' "$summary" | plutil -extract "$key" raw -
+}
+
+reject_internal_tool_errors() {
+  local log_path="$1"
+  if grep -En \
+      'Internal Error:|LLVM Profile Error:|warning: input verification failed|Testing failed:' \
+      "$log_path" >&2; then
+    echo "error: internal tool failure detected in $log_path" >&2
+    return 1
+  fi
+}
+
+temporary_root="${TMPDIR:-/tmp}"
+temporary_root="${temporary_root%/}"
+WORK_ROOT="$(mktemp -d "$temporary_root/database-framework-benchmark.XXXXXX")"
+derived_data="$WORK_ROOT/DerivedData"
+source_packages="$WORK_ROOT/SourcePackages"
+mkdir -p "$derived_data" "$source_packages" "$RESULT_DIRECTORY"
+
+run_identifier="$(date +%Y%m%d-%H%M%S)-$$-$benchmark"
+build_result="$RESULT_DIRECTORY/Build-$run_identifier.xcresult"
+test_result="$RESULT_DIRECTORY/Test-$run_identifier.xcresult"
+build_log="$RESULT_DIRECTORY/Build-$run_identifier.log"
+test_log="$RESULT_DIRECTORY/Test-$run_identifier.log"
+summary_path="$RESULT_DIRECTORY/Summary-$run_identifier.json"
+
+pinned_swiftc="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
+toolchain_root="$(cd "$(dirname "$pinned_swiftc")/../.." && pwd)"
+testing_library_path="$toolchain_root/usr/lib/swift/macosx/testing"
+if [[ ! -f "$testing_library_path/libTesting.dylib" ]]; then
+  echo "error: pinned Swift Testing runtime is unavailable: $testing_library_path" >&2
+  exit 1
+fi
+
+resolved_checksum_before="$(shasum -a 256 "$package_directory/Package.resolved")"
+
+echo "Benchmark: $benchmark"
+echo "Package: $package_directory"
+echo "Build result: $build_result"
+echo "Build log: $build_log"
+set +e
+(
+  cd "$package_directory"
+  timeout_command "$BUILD_TIMEOUT_SECONDS" env \
+    TOOLCHAINS="$XCODE_TOOLCHAIN_IDENTIFIER" \
+    xcodebuild build-for-testing \
+      -scheme "$scheme" \
+      -configuration Release \
+      -destination "$DESTINATION" \
+      -derivedDataPath "$derived_data" \
+      -clonedSourcePackagesDirPath "$source_packages" \
+      -disablePackageRepositoryCache \
+      -resultBundlePath "$build_result" \
+      -enableCodeCoverage NO \
+      -onlyUsePackageVersionsFromResolvedFile \
+      -skipPackageUpdates \
+      -skipMacroValidation \
+      SWIFT_EXEC="$pinned_swiftc" \
+      2>&1 | tee "$build_log"
+)
+build_status=$?
+set -e
+reject_internal_tool_errors "$build_log"
+if (( build_status != 0 )); then
+  echo "error: build-for-testing exited with status $build_status" >&2
+  exit "$build_status"
+fi
+if ! grep -F "SWIFT_EXEC = $pinned_swiftc" "$build_log" >/dev/null; then
+  echo "error: Xcode did not record the pinned Swift compiler" >&2
+  exit 1
+fi
+
+resolved_checksum_after="$(shasum -a 256 "$package_directory/Package.resolved")"
+if [[ "$resolved_checksum_before" != "$resolved_checksum_after" ]]; then
+  echo "error: Xcode changed the committed dependency graph" >&2
+  exit 1
+fi
+
+xctestrun_paths="$(
+  find "$derived_data/Build/Products" -maxdepth 1 \
+    -type f -name '*.xctestrun' ! -name '.environment-*' -print
+)"
+xctestrun_count="$(printf '%s\n' "$xctestrun_paths" | sed '/^$/d' | wc -l | tr -d ' ')"
+if [[ "$xctestrun_count" != "1" ]]; then
+  echo "error: expected one xctestrun file, found $xctestrun_count" >&2
+  printf '%s\n' "$xctestrun_paths" >&2
+  exit 1
+fi
+
+injected_xctestrun="$(dirname "$xctestrun_paths")/.environment-$run_identifier.xctestrun"
+cp "$xctestrun_paths" "$injected_xctestrun"
+inject_testing_runtime "$injected_xctestrun" "$testing_library_path"
+
+echo "Test result: $test_result"
+echo "Test log: $test_log"
+set +e
+timeout_command "$TEST_TIMEOUT_SECONDS" env \
+  TOOLCHAINS="$XCODE_TOOLCHAIN_IDENTIFIER" \
+  xcodebuild test-without-building \
+    -xctestrun "$injected_xctestrun" \
+    -destination "$DESTINATION" \
+    -resultBundlePath "$test_result" \
+    -enableCodeCoverage NO \
+    2>&1 | tee "$test_log"
+test_status=$?
+set -e
+reject_internal_tool_errors "$test_log"
+if (( test_status != 0 )); then
+  echo "error: test-without-building exited with status $test_status" >&2
+  exit "$test_status"
+fi
+
+summary="$(
+  xcrun xcresulttool get test-results summary \
+    --path "$test_result" --format json
+)"
+printf '%s\n' "$summary" | tee "$summary_path"
+
+total_count="$(extract_summary_number "$summary" totalTestCount)"
+passed_count="$(extract_summary_number "$summary" passedTests)"
+failed_count="$(extract_summary_number "$summary" failedTests)"
+skipped_count="$(extract_summary_number "$summary" skippedTests)"
+expected_failure_count="$(extract_summary_number "$summary" expectedFailures)"
+runtime_warning_count="$(extract_summary_number "$summary" runtimeWarnings)"
+measurement_count="$(grep -c '^BENCHMARK ' "$test_log" || true)"
+
+if [[ "$total_count" != "$expected_test_count" \
+    || "$passed_count" != "$expected_test_count" \
+    || "$failed_count" != "0" \
+    || "$skipped_count" != "0" \
+    || "$expected_failure_count" != "0" \
+    || "$runtime_warning_count" != "0" ]]; then
+  echo "error: benchmark result did not satisfy its reviewed count contract" >&2
+  exit 1
+fi
+if [[ "$measurement_count" != "$expected_measurement_count" ]]; then
+  echo "error: expected $expected_measurement_count measurements, observed $measurement_count" >&2
+  exit 1
+fi
+
+grep '^BENCHMARK ' "$test_log"
+echo "Passed: $passed_count"
+echo "Failed: $failed_count"
+echo "Skipped: $skipped_count"
+echo "Expected failures: $expected_failure_count"
+echo "Runtime warnings: $runtime_warning_count"
+echo "Result bundle: $test_result"
+echo "Raw log: $test_log"
+echo "Summary: $summary_path"

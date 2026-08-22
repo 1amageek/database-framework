@@ -316,9 +316,7 @@ enum FDBStageFailureMigrationPlan: SchemaMigrationPlan {
 @Suite("Migration Execution FDB Tests", .foundationDBScenario, .serialized, .heartbeat)
 struct MigrationExecutionFDBTests {
     private func makeSystemPriorityEngine() async throws -> any StorageEngine {
-        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
-        let database = try FDBSystemPriorityDatabase()
-        return try await FDBStorageEngine(configuration: .init(database: database))
+        try await FoundationDBScenarioCoordinator.shared.makeSystemPriorityEngine()
     }
 
     @Test("Multi-stage migration executes in order and persists stage boundaries on FDB")

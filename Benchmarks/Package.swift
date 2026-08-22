@@ -20,11 +20,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            revision: "10e54969c9fb26b54d62d34dcfa407b5fcf6e0b5"
-        ),
-        .package(
-            url: "https://github.com/1amageek/fdb-swift-bindings.git",
-            from: "0.3.3"
+            revision: "00d4c48e824f1055e02f51ebdffe5b8dc42645d3"
         ),
         .package(
             url: "https://github.com/1amageek/swift-testing-heartbeat.git",
@@ -69,7 +65,6 @@ let package = Package(
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "StorageKitSystemClock", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [.define("FOUNDATION_DB")],

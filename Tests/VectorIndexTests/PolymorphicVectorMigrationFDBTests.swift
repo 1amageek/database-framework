@@ -439,9 +439,7 @@ struct PolymorphicVectorMigrationFDBTests {
     }
 
     private static func makeSystemPriorityEngine() async throws -> any StorageEngine {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let database = try FDBSystemPriorityDatabase()
-        return try await FDBStorageEngine(configuration: .init(database: database))
+        try await FoundationDBScenarioCoordinator.shared.makeSystemPriorityEngine()
     }
 
     private static func clearState(in database: any StorageEngine) async throws {

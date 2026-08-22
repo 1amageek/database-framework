@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BACKEND="${DATABASE_FRAMEWORK_TEST_BACKEND:?DATABASE_FRAMEWORK_TEST_BACKEND is required}"
+TRAITS="${DATABASE_FRAMEWORK_TEST_TRAITS:?DATABASE_FRAMEWORK_TEST_TRAITS is required}"
+EXPECTED_TEST_COUNT="${DATABASE_FRAMEWORK_TEST_EXPECTED_COUNT:?DATABASE_FRAMEWORK_TEST_EXPECTED_COUNT is required}"
+TEST_FILTER="${DATABASE_FRAMEWORK_TEST_FILTER:-}"
+RESULT_DIRECTORY="${DATABASE_FRAMEWORK_TEST_RESULT_DIRECTORY:-/results}"
+TIMEOUT_SECONDS="${DATABASE_FRAMEWORK_TEST_TIMEOUT_SECONDS:-3600}"
+TEST_IMAGE_REFERENCE="${DATABASE_FRAMEWORK_TEST_IMAGE_REFERENCE:?DATABASE_FRAMEWORK_TEST_IMAGE_REFERENCE is required}"
+TEST_IMAGE_FINGERPRINT="${DATABASE_FRAMEWORK_TEST_IMAGE_FINGERPRINT:?DATABASE_FRAMEWORK_TEST_IMAGE_FINGERPRINT is required}"
+SWIFT_SNAPSHOT="${SWIFT_SNAPSHOT:?SWIFT_SNAPSHOT is required}"
+SWIFT_COMPILER_COMMIT="${SWIFT_COMPILER_COMMIT:?SWIFT_COMPILER_COMMIT is required}"
+SWIFT_LINUX_BASE_VERSION="${SWIFT_LINUX_BASE_VERSION:?SWIFT_LINUX_BASE_VERSION is required}"
+SWIFT_LINUX_BASE_IMAGE_DIGEST="${SWIFT_LINUX_BASE_IMAGE_DIGEST:?SWIFT_LINUX_BASE_IMAGE_DIGEST is required}"
+SWIFT_LINUX_TOOLCHAIN_SHA256="${SWIFT_LINUX_TOOLCHAIN_SHA256:?SWIFT_LINUX_TOOLCHAIN_SHA256 is required}"
+UBUNTU_PACKAGE_LOCK_SHA256="${UBUNTU_PACKAGE_LOCK_SHA256:?UBUNTU_PACKAGE_LOCK_SHA256 is required}"
+FOUNDATIONDB_VERSION="${FOUNDATIONDB_VERSION:?FOUNDATIONDB_VERSION is required}"
+FOUNDATIONDB_LINUX_CLIENT_SHA256="${FOUNDATIONDB_LINUX_CLIENT_SHA256:?FOUNDATIONDB_LINUX_CLIENT_SHA256 is required}"
+POSTGRESQL_VERSION="${POSTGRESQL_VERSION:?POSTGRESQL_VERSION is required}"
+SQLITE_VERSION="${SQLITE_VERSION:?SQLITE_VERSION is required}"
+SQLITE_AMALGAMATION_SHA256="${SQLITE_AMALGAMATION_SHA256:?SQLITE_AMALGAMATION_SHA256 is required}"
+
+IMAGE_IDENTITY_PATH=/usr/local/share/database-framework/backend-test-image.env
+SWIFT_TOOLCHAIN_ROOT=/opt/swift-toolchain/usr
+
+export PATH="$SWIFT_TOOLCHAIN_ROOT/bin:$PATH"
+export LD_LIBRARY_PATH="$SWIFT_TOOLCHAIN_ROOT/lib/swift/linux:/usr/local/lib:/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export FDB_CLIENT_INCLUDE_DIRECTORY=/usr/include
+export FDB_CLIENT_LIBRARY_DIRECTORY=/usr/lib
+
+if [[ ! "$EXPECTED_TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: DATABASE_FRAMEWORK_TEST_EXPECTED_COUNT must be a positive integer" >&2
+  exit 2
+fi
+if [[ ! "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: DATABASE_FRAMEWORK_TEST_TIMEOUT_SECONDS must be a positive integer" >&2
+  exit 2
+fi
+case "$BACKEND" in
+  sqlite|postgresql|foundationdb) ;;
+  *)
+    echo "error: unsupported backend: $BACKEND" >&2
+    exit 2
+    ;;
+esac
+
+if [[ ! -f "$IMAGE_IDENTITY_PATH" ]]; then
+  echo "error: test image identity is missing: $IMAGE_IDENTITY_PATH" >&2
+  exit 1
+fi
+if [[ ! -x "$SWIFT_TOOLCHAIN_ROOT/bin/swift" ]]; then
+  echo "error: mounted Linux Swift toolchain is missing" >&2
+  exit 1
+fi
+if [[ "$(sha256sum /usr/local/share/database-framework/ubuntu-packages.lock | awk '{ print $1 }')" \
+    != "$UBUNTU_PACKAGE_LOCK_SHA256" ]]; then
+  echo "error: Ubuntu package lock payload does not match its reviewed identity" >&2
+  exit 1
+fi
+
+# shellcheck source=/etc/os-release
+source /etc/os-release
+if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "24.04" ]]; then
+  echo "error: container OS does not match $SWIFT_LINUX_BASE_VERSION" >&2
+  exit 1
+fi
+for expected_identity in \
+    'format=database-framework-backend-test-image-v1' \
+    "fingerprint=$TEST_IMAGE_FINGERPRINT" \
+    "swift_snapshot=$SWIFT_SNAPSHOT" \
+    "swift_compiler_commit=$SWIFT_COMPILER_COMMIT" \
+    "swift_toolchain_sha256=$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+    "ubuntu_package_lock_sha256=$UBUNTU_PACKAGE_LOCK_SHA256" \
+    "foundationdb_version=$FOUNDATIONDB_VERSION" \
+    "foundationdb_client_sha256=$FOUNDATIONDB_LINUX_CLIENT_SHA256" \
+    "sqlite_version=$SQLITE_VERSION" \
+    "sqlite_amalgamation_sha256=$SQLITE_AMALGAMATION_SHA256"; do
+  if ! grep -Fxq "$expected_identity" "$IMAGE_IDENTITY_PATH"; then
+    echo "error: test image identity mismatch: $expected_identity" >&2
+    exit 1
+  fi
+done
+
+for command in perl swift xmllint; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "error: required command not found in test image: $command" >&2
+    exit 1
+  fi
+done
+
+compiler_version="$(swift --version)"
+if [[ "$compiler_version" != *"Swift version 6.4-dev"* \
+    || "$compiler_version" != *"Swift $SWIFT_COMPILER_COMMIT"* ]]; then
+  echo "error: Linux Swift compiler does not match $SWIFT_SNAPSHOT" >&2
+  echo "$compiler_version" >&2
+  exit 1
+fi
+
+backend_identity=""
+case "$BACKEND" in
+  sqlite)
+    runtime_version="$(sqlite3 ':memory:' 'select sqlite_version();')"
+    if [[ "$runtime_version" != "$SQLITE_VERSION" ]]; then
+      echo "error: SQLite runtime version $runtime_version does not match $SQLITE_VERSION" >&2
+      exit 1
+    fi
+    backend_identity="sqlite=$runtime_version"
+    ;;
+  postgresql)
+    for variable in POSTGRES_TEST_HOST POSTGRES_TEST_PORT POSTGRES_TEST_USER POSTGRES_TEST_PASSWORD POSTGRES_TEST_DB; do
+      if [[ -z "${!variable:-}" ]]; then
+        echo "error: $variable is required for PostgreSQL integration" >&2
+        exit 1
+      fi
+    done
+    export PGPASSWORD="$POSTGRES_TEST_PASSWORD"
+    expected_server_version_number="$(awk -F. '{ printf "%d%04d\n", $1, $2 }' <<< "$POSTGRESQL_VERSION")"
+    server_version_number="$(psql \
+      --host "$POSTGRES_TEST_HOST" \
+      --port "$POSTGRES_TEST_PORT" \
+      --username "$POSTGRES_TEST_USER" \
+      --dbname "$POSTGRES_TEST_DB" \
+      --no-align --tuples-only \
+      --command 'SHOW server_version_num;' | tr -d '[:space:]')"
+    if [[ "$server_version_number" != "$expected_server_version_number" ]]; then
+      echo "error: PostgreSQL server version number $server_version_number does not match $expected_server_version_number ($POSTGRESQL_VERSION)" >&2
+      exit 1
+    fi
+    backend_identity="postgresql=$POSTGRESQL_VERSION;server_version_num=$server_version_number"
+    ;;
+  foundationdb)
+    if [[ -z "${FDB_CLUSTER_FILE:-}" || ! -f "$FDB_CLUSTER_FILE" ]]; then
+      echo "error: FDB_CLUSTER_FILE is required for FoundationDB integration" >&2
+      exit 1
+    fi
+    client_version="$(fdbcli --version \
+      | sed -nE 's/.*\(v([0-9.]+)\).*/\1/p' | head -n 1)"
+    if [[ "$client_version" != "$FOUNDATIONDB_VERSION" ]]; then
+      echo "error: FoundationDB client version $client_version does not match $FOUNDATIONDB_VERSION" >&2
+      exit 1
+    fi
+    status_json="$(perl -e 'alarm shift; exec @ARGV' 10 \
+      fdbcli -C "$FDB_CLUSTER_FILE" --exec 'status json')"
+    if ! jq -e '.client.database_status.available == true and .cluster.database_available == true' \
+        >/dev/null <<< "$status_json"; then
+      echo "error: FoundationDB database is not available" >&2
+      exit 1
+    fi
+    backend_identity="foundationdb=$client_version"
+    ;;
+esac
+
+mkdir -p "$RESULT_DIRECTORY"
+run_identifier="$(date +%Y%m%d-%H%M%S)-$$"
+name="$(tr '[:lower:]' '[:upper:]' <<< "${BACKEND:0:1}")${BACKEND:1}Linux-$run_identifier"
+test_log="$RESULT_DIRECTORY/$name.log"
+xunit_output_path="$RESULT_DIRECTORY/$name.xml"
+xunit_path="${xunit_output_path%.xml}-swift-testing.xml"
+environment_path="$RESULT_DIRECTORY/$name.environment"
+
+{
+  swift --version
+  printf 'swift-snapshot=%s\n' "$SWIFT_SNAPSHOT"
+  printf 'swift-compiler-commit=%s\n' "$SWIFT_COMPILER_COMMIT"
+  printf 'swift-toolchain-sha256=%s\n' "$SWIFT_LINUX_TOOLCHAIN_SHA256"
+  printf 'linux-base-version=%s\n' "$SWIFT_LINUX_BASE_VERSION"
+  printf 'linux-base-image-digest=%s\n' "$SWIFT_LINUX_BASE_IMAGE_DIGEST"
+  printf 'ubuntu-package-lock-sha256=%s\n' "$UBUNTU_PACKAGE_LOCK_SHA256"
+  printf 'linux-os-release=%s\n' "${PRETTY_NAME:-unknown}"
+  printf 'test-image-reference=%s\n' "$TEST_IMAGE_REFERENCE"
+  printf 'test-image-fingerprint=%s\n' "$TEST_IMAGE_FINGERPRINT"
+  printf 'backend=%s\n' "$BACKEND"
+  printf 'backend-identity=%s\n' "$backend_identity"
+  printf 'traits=%s\n' "$TRAITS"
+  printf 'filter=%s\n' "${TEST_FILTER:-<all>}"
+  printf 'target=%s\n' "$(uname -m)-unknown-linux-gnu"
+} | tee "$environment_path"
+
+test_arguments=(
+  test
+  -debug-info-format none
+  --disable-default-traits
+  --traits "$TRAITS"
+  --xunit-output "$xunit_output_path"
+  --only-use-versions-from-resolved-file
+)
+if [[ -n "$TEST_FILTER" ]]; then
+  test_arguments+=(--filter "$TEST_FILTER")
+fi
+
+set +e
+set -o pipefail
+perl -e 'alarm shift; exec @ARGV' "$TIMEOUT_SECONDS" \
+  swift "${test_arguments[@]}" 2>&1 | tee "$test_log"
+test_status=$?
+set -e
+
+if (( test_status != 0 )); then
+  echo "error: Swift $BACKEND tests exited with status $test_status" >&2
+  exit "$test_status"
+fi
+if [[ ! -s "$xunit_path" ]]; then
+  echo "error: Swift Testing did not produce $xunit_path" >&2
+  exit 1
+fi
+
+test_count="$(xmllint --xpath 'sum(/testsuites/testsuite/@tests | /testsuite/@tests)' "$xunit_path" 2>/dev/null)"
+failure_count="$(xmllint --xpath 'sum(/testsuites/testsuite/@failures | /testsuite/@failures)' "$xunit_path" 2>/dev/null)"
+error_count="$(xmllint --xpath 'sum(/testsuites/testsuite/@errors | /testsuite/@errors)' "$xunit_path" 2>/dev/null)"
+skipped_count="$(xmllint --xpath 'sum(/testsuites/testsuite/@skipped | /testsuite/@skipped)' "$xunit_path" 2>/dev/null)"
+compiler_warning_count="$(
+  perl -pe 's/\e\[[0-9;]*[[:alpha:]]//g' "$test_log" \
+    | grep -Ec '(^|[[:space:]])warning:' \
+    || true
+)"
+runtime_warning_count="$(
+  perl -pe 's/\e\[[0-9;]*[[:alpha:]]//g' "$test_log" \
+    | grep -Eic 'runtime warning|warning:.*(leak|data race|unowned task|continuation)' \
+    || true
+)"
+
+printf '%s Linux results: tests=%s failures=%s errors=%s skipped=%s compiler-warnings=%s runtime-warnings=%s\n' \
+  "$BACKEND" "$test_count" "$failure_count" "$error_count" "$skipped_count" \
+  "$compiler_warning_count" "$runtime_warning_count"
+
+if [[ "$test_count" != "$EXPECTED_TEST_COUNT" ]]; then
+  echo "error: expected $EXPECTED_TEST_COUNT $BACKEND tests, found $test_count" >&2
+  exit 1
+fi
+if [[ "$failure_count" != "0" || "$error_count" != "0" || "$skipped_count" != "0" ]]; then
+  echo "error: $BACKEND verification requires zero failures, errors, and skips" >&2
+  exit 1
+fi
+if [[ "$compiler_warning_count" != "0" || "$runtime_warning_count" != "0" ]]; then
+  echo "error: $BACKEND verification requires zero compiler and runtime warnings" >&2
+  exit 1
+fi

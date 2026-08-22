@@ -165,9 +165,7 @@ struct MigrationTests {
     // MARK: - Helper Methods
 
     private func makeSystemPriorityEngine() async throws -> any StorageEngine {
-        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
-        let database = try FDBSystemPriorityDatabase()
-        return try await FDBStorageEngine(configuration: .init(database: database))
+        try await FoundationDBScenarioCoordinator.shared.makeSystemPriorityEngine()
     }
 
     private func setupContainer(

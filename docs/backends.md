@@ -42,11 +42,11 @@ placement without exposing backend credentials through the semantic API.
 ## SwiftPM Traits
 
 ~~~bash
-scripts/apple-container-test-harness foundationdb
+scripts/docker-test-harness foundationdb
 ~~~
 
-Backend integration environments are owned by the pinned Apple Container
-harness described in [Apple Container Backend Verification](apple-container-testing.md).
+Backend integration environments are owned by the pinned Docker harness
+described in [Docker Backend Verification](docker-testing.md).
 
 The framework package has no default traits. A consuming package selects each
 backend and runtime feature explicitly. The independent `database-server`
@@ -79,20 +79,20 @@ Enable the data-partitioning feature independently:
 ~~~
 
 ~~~bash
-scripts/apple-container-test-harness sqlite
+scripts/docker-test-harness sqlite
 ~~~
 
 Base isolation, persisted Grants, and Composition execution are present only
 when the optional trait is enabled:
 
 ~~~bash
-scripts/apple-container-test-harness sqlite --multi-base
+scripts/docker-test-harness sqlite --multi-base
 ~~~
 
 SQLite builds do not link libfdb_c.
 
 ~~~bash
-scripts/apple-container-test-harness postgresql
+scripts/docker-test-harness postgresql
 ~~~
 
 PostgreSQL builds require the PostgreSQL dependency but not a running server

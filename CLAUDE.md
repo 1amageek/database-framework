@@ -259,8 +259,8 @@ swift build --disable-default-traits --traits PostgreSQL --product Database
 swift build --swift-sdk <matching-wasi-sdk> --disable-default-traits -c release
 ```
 
-Run tests through `xcodebuild test`, with an external timeout and the narrowest
-focused scheme or test target that covers the change:
+Run macOS parity tests through `xcodebuild test`, with an external timeout and
+the narrowest focused scheme or test target that covers the change:
 
 ```bash
 perl -e 'alarm shift; exec @ARGV' 120 \
@@ -270,12 +270,13 @@ perl -e 'alarm shift; exec @ARGV' 120 \
 ```
 
 Available focused schemes are maintained for the engine, runtime composition,
-server, graph, QueryAST, aggregation, benchmarks, and digest tests. Backend
-integration tests enter through `scripts/apple-container-test-harness`, which
-retains the Xcode harness for macOS execution and owns run-specific networks,
-isolated service containers, unprivileged connection endpoints, readiness,
-logs, negative readiness, and teardown without administrator privileges or
-host DNS changes.
+server, graph, QueryAST, aggregation, benchmarks, and digest tests. Canonical
+backend integration tests enter through `scripts/docker-test-harness`. The same
+pinned `linux/arm64` runner is used locally and in CI and owns run-specific
+networks, isolated service containers, private endpoints, readiness, logs,
+negative readiness, and teardown without administrator privileges, published
+host ports, or host DNS changes. `macos-sqlite` remains the separate Xcode
+parity lane.
 
 Validation must cover actual behavior:
 

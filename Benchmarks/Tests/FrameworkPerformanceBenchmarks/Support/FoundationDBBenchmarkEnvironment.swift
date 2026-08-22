@@ -1,8 +1,6 @@
 import DatabaseTypes
-import Darwin
 import FDBStorage
 import Foundation
-import FoundationDB
 import StorageKit
 
 enum FoundationDBBenchmarkEnvironmentError: Error, LocalizedError {
@@ -22,11 +20,11 @@ enum FoundationDBBenchmarkEnvironmentError: Error, LocalizedError {
         switch self {
         case .missingClusterFile:
             return "FDB_CLUSTER_FILE must identify a cluster owned by "
-                + "scripts/apple-container-test-harness foundationdb-run"
+                + "scripts/docker-test-harness foundationdb-run"
         case .clusterFileDoesNotExist(let path):
             return "FoundationDB benchmark cluster file does not exist: \(path)"
         case .harnessIdentityEnvironmentMissing:
-            return "FoundationDB benchmark requires the Apple Container "
+            return "FoundationDB benchmark requires the Docker "
                 + "harness identity path and token"
         case .clusterOwnershipMarkerMissing(let path):
             return "FoundationDB benchmark ownership marker is missing: \(path)"
@@ -41,7 +39,7 @@ enum FoundationDBBenchmarkEnvironmentError: Error, LocalizedError {
                 + (markerClusterFile ?? "<missing>")
         case .clusterEndpointIsNotIsolated(let clusterFile):
             return "FoundationDB benchmark cluster must be the single "
-                + "loopback cluster created by the Apple Container harness: "
+                + "private cluster created by the Docker harness: "
                 + clusterFile
         case .clusterHealthCheckFailed(let clusterFile, let underlying):
             if let clusterFile {
@@ -58,8 +56,6 @@ actor FoundationDBBenchmarkEnvironment {
     @TaskLocal private static var holdsExclusiveAccess = false
 
     private static let transactionTimeoutMilliseconds = 30_000
-    private static let transactionRetryLimit = 20
-    private static let transactionMaximumRetryDelayMilliseconds = 1_000
     private static let healthCheckAttemptTimeoutMilliseconds = 2_000
     private static let readinessTimeoutMilliseconds = 10_000
     private static let readinessPollIntervalNanoseconds: UInt64 = 250_000_000
@@ -192,15 +188,16 @@ actor FoundationDBBenchmarkEnvironment {
             }
         }
         guard fields["format"]
-                == "database-framework-apple-container-foundationdb-v1",
+                == "database-framework-docker-foundationdb-v1",
               fields["token"] == Substring(expectedToken),
               let markerClusterFile = fields["cluster_file"],
-              let pidText = fields["forwarder_pid"],
-              let pid = Int32(pidText),
-              pid > 0,
-              Darwin.kill(pid, 0) == 0,
               let markerEndpoint = fields["endpoint"],
-              markerEndpoint.starts(with: "127.0.0.1:") else {
+              markerEndpoint.hasSuffix(":4500"),
+              !markerEndpoint.starts(with: "127."),
+              !markerEndpoint.starts(with: "localhost:"),
+              fields["network"] != nil,
+              fields["service_container"] != nil,
+              fields["server_version"] != nil else {
             throw FoundationDBBenchmarkEnvironmentError
                 .clusterOwnershipMarkerInvalid(path: identityURL.path)
         }
@@ -236,41 +233,28 @@ actor FoundationDBBenchmarkEnvironment {
         return clusterFileURL.path
     }
 
-    private func openConfiguredDatabase(
-        clusterFilePath: String? = nil
-    ) throws -> any DatabaseProtocol {
-        let database = try FDBClient.openDatabase(
-            clusterFilePath: clusterFilePath
-                ?? selectedClusterFilePath
-                ?? requiredOwnedClusterFilePath()
-        )
-        try database.setOption(
-            to: Self.transactionTimeoutMilliseconds,
-            forOption: .transactionTimeout
-        )
-        try database.setOption(
-            to: Self.transactionRetryLimit,
-            forOption: .transactionRetryLimit
-        )
-        try database.setOption(
-            to: Self.transactionMaximumRetryDelayMilliseconds,
-            forOption: .transactionMaxRetryDelay
-        )
-        return database
-    }
-
     private func createConfiguredEngine(
-        clusterFilePath: String? = nil
+        clusterFilePath: String? = nil,
+        transactionOptions: [TransactionOption] = []
     ) async throws -> FDBStorageEngine {
-        if !FDBClient.isInitialized {
-            try await FDBClient.initialize()
+        let selectedPath: String
+        if let clusterFilePath {
+            selectedPath = clusterFilePath
+        } else if let selectedClusterFilePath {
+            selectedPath = selectedClusterFilePath
+        } else {
+            selectedPath = try requiredOwnedClusterFilePath()
         }
-
-        let database = try openConfiguredDatabase(
-            clusterFilePath: clusterFilePath
-        )
+        let options = [
+            TransactionOption.timeout(
+                milliseconds: Self.transactionTimeoutMilliseconds
+            )
+        ] + transactionOptions
         return try await FDBStorageEngine(
-            configuration: .init(database: database)
+            configuration: .init(
+                clusterFilePath: selectedPath,
+                transactionOptions: options
+            )
         )
     }
 
@@ -356,11 +340,14 @@ actor FoundationDBBenchmarkEnvironment {
     }
 
     private func resetDatabaseConsistencyDomain() async throws {
-        let engine = try await createConfiguredEngine()
+        let engine = try await createConfiguredEngine(
+            transactionOptions: [
+                .prioritySystemImmediate,
+                .readPriorityHigh,
+            ]
+        )
         do {
             try await engine.withTransaction { transaction in
-                try transaction.setOption(forOption: .prioritySystemImmediate)
-                try transaction.setOption(forOption: .readPriorityHigh)
                 try transaction.clearRange(
                     beginKey: ByteString(),
                     endKey: ByteString([0xFF])

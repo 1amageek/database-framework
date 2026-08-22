@@ -56,7 +56,7 @@ jobs:
 
       - name: Prepare pinned FoundationDB client
         run: |
-          client_directory="$(database-framework/scripts/apple-container-test-harness foundationdb-client)"
+          client_directory="$(database-framework/scripts/docker-test-harness foundationdb-client)"
           test -f "$client_directory/include/foundationdb/fdb_c.h"
           test -f "$client_directory/lib/libfdb_c.dylib"
           echo "FDB_CLIENT_INCLUDE_DIRECTORY=$client_directory/include" >> "$GITHUB_ENV"
@@ -68,18 +68,30 @@ jobs:
           result_directory=/tmp/database-framework-benchmark-build
           result_bundle="$result_directory/FrameworkPerformanceBenchmarks.xcresult"
           log_path="$result_directory/FrameworkPerformanceBenchmarks.log"
-          mkdir -p "$result_directory"
+          source_packages="$result_directory/SourcePackages"
+          pinned_swiftc="$(xcrun --toolchain "$TOOLCHAINS" --find swiftc)"
+          resolved_checksum_before="$(shasum -a 256 Package.resolved)"
+          mkdir -p "$result_directory" "$source_packages"
           set -o pipefail
           perl -e 'alarm shift; exec @ARGV' 900 \
+            env TOOLCHAINS=com.apple.dt.toolchain.XcodeDefault \
             xcodebuild build-for-testing \
               -scheme database-framework-benchmarks-Package \
               -destination 'platform=macOS,arch=arm64' \
-              -skipMacroValidation \
               -derivedDataPath "$result_directory/DerivedData" \
+              -clonedSourcePackagesDirPath "$source_packages" \
+              -disablePackageRepositoryCache \
               -resultBundlePath "$result_bundle" \
+              -enableCodeCoverage NO \
+              -onlyUsePackageVersionsFromResolvedFile \
+              -skipPackageUpdates \
+              -skipMacroValidation \
               "HEADER_SEARCH_PATHS=\$(inherited) $FDB_CLIENT_INCLUDE_DIRECTORY" \
               "LIBRARY_SEARCH_PATHS=\$(inherited) $FDB_CLIENT_LIBRARY_DIRECTORY" \
+              SWIFT_EXEC="$pinned_swiftc" \
               2>&1 | tee "$log_path"
+          test "$resolved_checksum_before" = "$(shasum -a 256 Package.resolved)"
+          grep -F "SWIFT_EXEC = $pinned_swiftc" "$log_path"
 
       - name: Validate benchmark build result
         run: |
@@ -98,100 +110,75 @@ jobs:
           path: /tmp/database-framework-benchmark-build
           if-no-files-found: error
 
-  sqlite:
-    name: SQLite (Apple Container and macOS)
-    # Xcode is the authoritative macOS gate. The Apple Container lane adds a
-    # Linux execution of the same target linked to the pinned stable SQLite.
-    runs-on: xcode-27
-    timeout-minutes: 90
+  docker-backends:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: SQLite Linux (standard)
+            command: sqlite
+            arguments: ""
+            artifact: sqlite-linux-standard
+          - name: SQLite Linux (MultiBase)
+            command: sqlite
+            arguments: --multi-base
+            artifact: sqlite-linux-multi-base
+          - name: PostgreSQL Linux
+            command: postgresql
+            arguments: ""
+            artifact: postgresql-linux
+          - name: FoundationDB Linux
+            command: foundationdb
+            arguments: ""
+            artifact: foundationdb-linux
     env:
-      APPLE_CONTAINER_RESULT_ROOT: /tmp/database-framework-apple-container-results
+      DATABASE_FRAMEWORK_DOCKER_RESULT_ROOT: /tmp/database-framework-docker-results
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install pinned Swift toolchain
-        run: |
-          toolchain_package="$RUNNER_TEMP/${SWIFT_SNAPSHOT}-osx.pkg"
-          toolchain_root="$HOME/Library/Developer/Toolchains/${SWIFT_SNAPSHOT}.xctoolchain"
-          curl -fL --retry 3 -o "$toolchain_package" "$SWIFT_SNAPSHOT_URL"
-          installer -pkg "$toolchain_package" -target CurrentUserHomeDirectory
-          test -x "$toolchain_root/usr/bin/swift"
-          # The snapshot supplies clang but delegates Darwin linking to Xcode.
-          platform_linker="$(env -u TOOLCHAINS xcrun --find ld)"
-          ln -sf "$platform_linker" "$toolchain_root/usr/bin/ld"
-          test -x "$toolchain_root/usr/bin/ld"
-          echo "$toolchain_root/usr/bin" >> "$GITHUB_PATH"
+      - name: Restore verified toolchain cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/database-framework/docker/downloads
+            ~/.cache/database-framework/docker/swift
+          key: database-framework-docker-arm64-${{ hashFiles('scripts/docker/versions.env') }}
 
-      - name: Report Swift version
-        run: |
-          swift --version
-          xcrun --toolchain "$TOOLCHAINS" swiftc --version
+      - name: Report Docker capability
+        run: scripts/docker-test-harness doctor
 
-      - name: Verify pinned Apple Container runtime
-        run: scripts/apple-container-test-harness doctor
+      - name: Run backend verification
+        timeout-minutes: 110
+        run: scripts/docker-test-harness ${{ matrix.command }} ${{ matrix.arguments }}
 
-      - name: Test (SQLite)
-        timeout-minutes: 75
-        run: scripts/apple-container-test-harness sqlite
-
-      - name: Upload SQLite test results
+      - name: Upload backend evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: sqlite-xcresults
-          path: /tmp/database-framework-apple-container-results
+          name: ${{ matrix.artifact }}
+          path: /tmp/database-framework-docker-results
           if-no-files-found: error
 
-  postgresql:
-    name: PostgreSQL (Apple Container)
-    runs-on: xcode-27
-    timeout-minutes: 60
-    env:
-      APPLE_CONTAINER_RESULT_ROOT: /tmp/database-framework-apple-container-results
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install pinned Swift toolchain
-        run: |
-          toolchain_package="$RUNNER_TEMP/${SWIFT_SNAPSHOT}-osx.pkg"
-          toolchain_root="$HOME/Library/Developer/Toolchains/${SWIFT_SNAPSHOT}.xctoolchain"
-          curl -fL --retry 3 -o "$toolchain_package" "$SWIFT_SNAPSHOT_URL"
-          installer -pkg "$toolchain_package" -target CurrentUserHomeDirectory
-          test -x "$toolchain_root/usr/bin/swift"
-          # The snapshot supplies clang but delegates Darwin linking to Xcode.
-          platform_linker="$(env -u TOOLCHAINS xcrun --find ld)"
-          ln -sf "$platform_linker" "$toolchain_root/usr/bin/ld"
-          test -x "$toolchain_root/usr/bin/ld"
-          echo "$toolchain_root/usr/bin" >> "$GITHUB_PATH"
-
-      - name: Report Swift version
-        run: |
-          swift --version
-          xcrun --toolchain "$TOOLCHAINS" swiftc --version
-
-      - name: Verify pinned Apple Container runtime
-        run: scripts/apple-container-test-harness doctor
-
-      - name: Test (PostgreSQL)
-        timeout-minutes: 45
-        run: scripts/apple-container-test-harness postgresql
-
-      - name: Upload PostgreSQL test results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: postgresql-xcresults
-          path: /tmp/database-framework-apple-container-results
-          if-no-files-found: error
-
-  foundationdb:
-    name: FoundationDB (Apple Container)
+  macos-sqlite-parity:
+    name: SQLite macOS parity (${{ matrix.name }})
     runs-on: xcode-27
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: standard
+            arguments: ""
+            artifact: sqlite-macos-standard
+          - name: MultiBase
+            arguments: --multi-base
+            artifact: sqlite-macos-multi-base
     env:
-      APPLE_CONTAINER_RESULT_ROOT: /tmp/database-framework-apple-container-results
+      DATABASE_FRAMEWORK_DOCKER_RESULT_ROOT: /tmp/database-framework-docker-results
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -203,7 +190,6 @@ jobs:
           curl -fL --retry 3 -o "$toolchain_package" "$SWIFT_SNAPSHOT_URL"
           installer -pkg "$toolchain_package" -target CurrentUserHomeDirectory
           test -x "$toolchain_root/usr/bin/swift"
-          # The snapshot supplies clang but delegates Darwin linking to Xcode.
           platform_linker="$(env -u TOOLCHAINS xcrun --find ld)"
           ln -sf "$platform_linker" "$toolchain_root/usr/bin/ld"
           test -x "$toolchain_root/usr/bin/ld"
@@ -214,17 +200,14 @@ jobs:
           swift --version
           xcrun --toolchain "$TOOLCHAINS" swiftc --version
 
-      - name: Verify pinned Apple Container runtime
-        run: scripts/apple-container-test-harness doctor
-
-      - name: Test (FoundationDB)
+      - name: Run SQLite parity verification
         timeout-minutes: 75
-        run: scripts/apple-container-test-harness foundationdb
+        run: scripts/docker-test-harness macos-sqlite ${{ matrix.arguments }}
 
-      - name: Upload FoundationDB test results
+      - name: Upload SQLite parity evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: foundationdb-xcresults
-          path: /tmp/database-framework-apple-container-results
+          name: ${{ matrix.artifact }}
+          path: /tmp/database-framework-docker-results
           if-no-files-found: error

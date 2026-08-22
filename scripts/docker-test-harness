@@ -1,0 +1,1155 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSIONS_FILE="$ROOT_DIR/scripts/docker/versions.env"
+
+if [[ ! -f "$VERSIONS_FILE" ]]; then
+  echo "error: version manifest not found: $VERSIONS_FILE" >&2
+  exit 1
+fi
+# shellcheck source=scripts/docker/versions.env
+source "$VERSIONS_FILE"
+
+DOCKER_BIN="${DOCKER_BIN:-docker}"
+RESULT_ROOT="${DATABASE_FRAMEWORK_DOCKER_RESULT_ROOT:-${TMPDIR:-/tmp}/database-framework-docker-results}"
+if [[ -n "${DATABASE_FRAMEWORK_DOCKER_CACHE_ROOT:-}" ]]; then
+  CACHE_ROOT="$DATABASE_FRAMEWORK_DOCKER_CACHE_ROOT"
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+  CACHE_ROOT="$HOME/Library/Caches/database-framework/docker"
+else
+  CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/database-framework/docker"
+fi
+
+STARTUP_TIMEOUT_SECONDS="${DATABASE_FRAMEWORK_DOCKER_STARTUP_TIMEOUT_SECONDS:-120}"
+IMAGE_TIMEOUT_SECONDS="${DATABASE_FRAMEWORK_DOCKER_IMAGE_TIMEOUT_SECONDS:-1800}"
+DOWNLOAD_TIMEOUT_SECONDS="${DATABASE_FRAMEWORK_DOCKER_DOWNLOAD_TIMEOUT_SECONDS:-1800}"
+TEST_TIMEOUT_SECONDS="${DATABASE_FRAMEWORK_DOCKER_TEST_TIMEOUT_SECONDS:-5400}"
+RUN_IDENTIFIER="$(date +%Y%m%d-%H%M%S)-$$"
+
+COMMAND=""
+RUN_COMMAND=()
+MULTI_BASE=false
+REQUESTED_RESULT_DIRECTORY=""
+ACTIVE_BACKEND=""
+ACTIVE_NETWORK=""
+ACTIVE_SERVICE_CONTAINER=""
+ACTIVE_RUNNER_CONTAINER=""
+ACTIVE_CLUSTER_FILE=""
+ACTIVE_HARNESS_IDENTITY=""
+ACTIVE_CACHE_LOCK=""
+RUN_RESULT_DIRECTORY=""
+TEMPORARY_ROOT=""
+SOURCE_COPY=""
+PREPARED_TEST_IMAGE=""
+PREPARED_TEST_IMAGE_FINGERPRINT=""
+PREPARED_SWIFT_TOOLCHAIN=""
+PREPARED_DARWIN_FDB_CLIENT=""
+EVIDENCE_COLLECTED=false
+CLEANUP_FAILED=false
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/docker-test-harness doctor
+  scripts/docker-test-harness foundationdb-client
+  scripts/docker-test-harness sqlite [--multi-base] [--result-directory <path>]
+  scripts/docker-test-harness postgresql [--result-directory <path>]
+  scripts/docker-test-harness foundationdb [--result-directory <path>]
+  scripts/docker-test-harness foundationdb-run [--result-directory <path>] -- <command> [arguments...]
+  scripts/docker-test-harness macos-sqlite [--multi-base] [--result-directory <path>]
+  scripts/docker-test-harness all [--result-directory <path>]
+
+The Linux commands use one pinned linux/arm64 Docker test runner locally and in
+CI. PostgreSQL and FoundationDB run on a unique Docker network with no published
+host ports. macos-sqlite is the separate Xcode parity gate.
+EOF
+}
+
+require_value() {
+  local option="$1"
+  local value="${2:-}"
+  if [[ -z "$value" ]]; then
+    echo "error: $option requires a value" >&2
+    exit 2
+  fi
+}
+
+if [[ $# -eq 0 ]]; then
+  usage >&2
+  exit 2
+fi
+
+COMMAND="$1"
+shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --multi-base)
+      MULTI_BASE=true
+      shift
+      ;;
+    --result-directory)
+      require_value "$1" "${2:-}"
+      REQUESTED_RESULT_DIRECTORY="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      RUN_COMMAND=("$@")
+      break
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$COMMAND" in
+  doctor|foundationdb-client|sqlite|postgresql|foundationdb|foundationdb-run|macos-sqlite|all) ;;
+  *)
+    echo "error: unknown command: $COMMAND" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+if [[ "$COMMAND" == "foundationdb-run" && ${#RUN_COMMAND[@]} -eq 0 ]]; then
+  echo "error: foundationdb-run requires a command after --" >&2
+  exit 2
+fi
+if [[ "$MULTI_BASE" == true && "$COMMAND" != "sqlite" && "$COMMAND" != "macos-sqlite" ]]; then
+  echo "error: --multi-base is supported only by sqlite and macos-sqlite" >&2
+  exit 2
+fi
+
+require_commands() {
+  local command
+  for command in "$@"; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+      echo "error: required command not found: $command" >&2
+      return 1
+    fi
+  done
+}
+
+timeout_command() {
+  local seconds="$1"
+  shift
+  perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+}
+
+sha256_file() {
+  local path="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{ print $1 }'
+  else
+    sha256sum "$path" | awk '{ print $1 }'
+  fi
+}
+
+sha256_text() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{ print $1 }'
+  else
+    sha256sum | awk '{ print $1 }'
+  fi
+}
+
+write_payload_manifest() {
+  local directory="$1"
+  shift
+  (
+    cd "$directory"
+    if command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 "$@" > payload.sha256
+    else
+      sha256sum "$@" > payload.sha256
+    fi
+  )
+}
+
+verify_payload_manifest() {
+  local directory="$1"
+  (
+    cd "$directory"
+    if command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 -c payload.sha256 >/dev/null 2>&1
+    else
+      sha256sum -c payload.sha256 >/dev/null 2>&1
+    fi
+  )
+}
+
+download_verified() {
+  local url="$1"
+  local expected_sha256="$2"
+  local destination="$3"
+  local partial="$destination.partial.$$"
+
+  mkdir -p "$(dirname "$destination")"
+  if [[ -f "$destination" && "$(sha256_file "$destination")" == "$expected_sha256" ]]; then
+    return
+  fi
+  rm -f -- "$partial"
+  if ! timeout_command "$DOWNLOAD_TIMEOUT_SECONDS" \
+      curl --connect-timeout 30 --max-time "$DOWNLOAD_TIMEOUT_SECONDS" \
+        -fL --retry 3 --output "$partial" "$url"; then
+    rm -f -- "$partial"
+    return 1
+  fi
+  if [[ "$(sha256_file "$partial")" != "$expected_sha256" ]]; then
+    echo "error: checksum mismatch for $url" >&2
+    rm -f -- "$partial"
+    return 1
+  fi
+  mv "$partial" "$destination"
+}
+
+acquire_cache_lock() {
+  local lock_path="$1"
+  local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+  mkdir -p "$(dirname "$lock_path")"
+  while (( SECONDS < deadline )); do
+    if mkdir "$lock_path" 2>/dev/null; then
+      ACTIVE_CACHE_LOCK="$lock_path"
+      return
+    fi
+    sleep 1
+  done
+  echo "error: timed out waiting for cache lock: $lock_path" >&2
+  return 1
+}
+
+release_cache_lock() {
+  if [[ -z "$ACTIVE_CACHE_LOCK" ]]; then
+    return
+  fi
+  if [[ "$ACTIVE_CACHE_LOCK" != "$CACHE_ROOT/"* ]]; then
+    echo "error: refusing to release unexpected cache lock: $ACTIVE_CACHE_LOCK" >&2
+    return 1
+  fi
+  rmdir "$ACTIVE_CACHE_LOCK"
+  ACTIVE_CACHE_LOCK=""
+}
+
+docker_doctor() {
+  require_commands "$DOCKER_BIN" perl
+  local identity
+  identity="$(timeout_command 30 "$DOCKER_BIN" version \
+    --format '{{.Client.Version}}|{{.Server.Version}}|{{.Server.Os}}|{{.Server.Arch}}')"
+  IFS='|' read -r client_version server_version server_os server_arch <<< "$identity"
+  if [[ -z "$client_version" || -z "$server_version" || "$server_os" != "linux" ]]; then
+    echo "error: Docker must provide a reachable Linux engine" >&2
+    return 1
+  fi
+  printf 'docker-client=%s\n' "$client_version"
+  printf 'docker-server=%s\n' "$server_version"
+  printf 'docker-server-platform=%s/%s\n' "$server_os" "$server_arch"
+  printf 'test-platform=%s\n' "$DOCKER_TEST_PLATFORM"
+  printf 'note=all test image build and run operations explicitly select %s\n' "$DOCKER_TEST_PLATFORM"
+}
+
+container_presence() {
+  local name="$1"
+  local output
+  if ! output="$(timeout_command 30 "$DOCKER_BIN" container ls --all \
+      --filter "name=^/${name}$" --format '{{.Names}}')"; then
+    echo "error: failed to query Docker container presence: $name" >&2
+    return 1
+  fi
+  if [[ -z "$output" ]]; then
+    printf 'absent\n'
+  elif [[ "$output" == "$name" ]]; then
+    printf 'present\n'
+  else
+    echo "error: ambiguous Docker container query for $name: $output" >&2
+    return 1
+  fi
+}
+
+network_presence() {
+  local name="$1"
+  local output
+  if ! output="$(timeout_command 30 "$DOCKER_BIN" network ls \
+      --filter "name=^${name}$" --format '{{.Name}}')"; then
+    echo "error: failed to query Docker network presence: $name" >&2
+    return 1
+  fi
+  if [[ -z "$output" ]]; then
+    printf 'absent\n'
+  elif [[ "$output" == "$name" ]]; then
+    printf 'present\n'
+  else
+    echo "error: ambiguous Docker network query for $name: $output" >&2
+    return 1
+  fi
+}
+
+ensure_service_image() {
+  local reference="$1"
+  local digest="$2"
+  if ! "$DOCKER_BIN" image inspect "$reference" >/dev/null 2>&1; then
+    timeout_command "$IMAGE_TIMEOUT_SECONDS" "$DOCKER_BIN" pull \
+      --platform "$DOCKER_TEST_PLATFORM" "$reference"
+  fi
+  local identity
+  identity="$("$DOCKER_BIN" image inspect \
+    --format '{{.Os}}|{{.Architecture}}|{{json .RepoDigests}}' "$reference")"
+  if [[ "$identity" != "linux|arm64|"* || "$identity" != *"$digest"* ]]; then
+    echo "error: Docker image identity mismatch for $reference: $identity" >&2
+    return 1
+  fi
+}
+
+test_image_fingerprint() {
+  {
+    sha256_file "$ROOT_DIR/scripts/docker/BackendTest.Dockerfile"
+    sha256_file "$ROOT_DIR/scripts/docker/ubuntu-packages.lock"
+    printf '%s\n' \
+      "$DOCKER_TEST_PLATFORM" \
+      "$SWIFT_LINUX_BASE_IMAGE_DIGEST" \
+      "$SWIFT_SNAPSHOT" \
+      "$SWIFT_COMPILER_COMMIT" \
+      "$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+      "$FOUNDATIONDB_VERSION" \
+      "$FOUNDATIONDB_LINUX_CLIENT_SHA256" \
+      "$SQLITE_VERSION" \
+      "$SQLITE_AMALGAMATION_SHA256"
+  } | sha256_text
+}
+
+verify_test_image() {
+  local reference="$1"
+  local fingerprint="$2"
+  local identity
+  if ! identity="$("$DOCKER_BIN" image inspect --format \
+      '{{.Os}}|{{.Architecture}}|{{index .Config.Labels "database-framework.test-image.fingerprint"}}' \
+      "$reference" 2>/dev/null)"; then
+    return 1
+  fi
+  [[ "$identity" == "linux|arm64|$fingerprint" ]]
+}
+
+prepare_test_image() {
+  local fingerprint
+  local reference
+  fingerprint="$(test_image_fingerprint)"
+  reference="database-framework-backend-test:$fingerprint"
+  if ! verify_test_image "$reference" "$fingerprint"; then
+    mkdir -p "$RESULT_ROOT/image-builds"
+    local build_log="$RESULT_ROOT/image-builds/$fingerprint.log"
+    set +e
+    set -o pipefail
+    timeout_command "$IMAGE_TIMEOUT_SECONDS" "$DOCKER_BIN" build \
+      --platform "$DOCKER_TEST_PLATFORM" \
+      --file "$ROOT_DIR/scripts/docker/BackendTest.Dockerfile" \
+      --tag "$reference" \
+      --build-arg "SWIFT_LINUX_BASE_IMAGE=$SWIFT_LINUX_BASE_IMAGE" \
+      --build-arg "TEST_IMAGE_FINGERPRINT=$fingerprint" \
+      --build-arg "SWIFT_SNAPSHOT=$SWIFT_SNAPSHOT" \
+      --build-arg "SWIFT_COMPILER_COMMIT=$SWIFT_COMPILER_COMMIT" \
+      --build-arg "SWIFT_LINUX_TOOLCHAIN_SHA256=$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+      --build-arg "UBUNTU_PACKAGE_LOCK_SHA256=$(sha256_file "$ROOT_DIR/scripts/docker/ubuntu-packages.lock")" \
+      --build-arg "FOUNDATIONDB_VERSION=$FOUNDATIONDB_VERSION" \
+      --build-arg "FOUNDATIONDB_LINUX_CLIENT_URL=$FOUNDATIONDB_LINUX_CLIENT_URL" \
+      --build-arg "FOUNDATIONDB_LINUX_CLIENT_SHA256=$FOUNDATIONDB_LINUX_CLIENT_SHA256" \
+      --build-arg "SQLITE_VERSION=$SQLITE_VERSION" \
+      --build-arg "SQLITE_AMALGAMATION_URL=$SQLITE_AMALGAMATION_URL" \
+      --build-arg "SQLITE_AMALGAMATION_SHA256=$SQLITE_AMALGAMATION_SHA256" \
+      "$ROOT_DIR/scripts/docker" 2>&1 | tee "$build_log"
+    local build_status=$?
+    set -e
+    if (( build_status != 0 )); then
+      echo "error: Docker test image build failed with status $build_status" >&2
+      return "$build_status"
+    fi
+  fi
+  if ! verify_test_image "$reference" "$fingerprint"; then
+    echo "error: built Docker test image failed identity verification" >&2
+    return 1
+  fi
+  PREPARED_TEST_IMAGE="$reference"
+  PREPARED_TEST_IMAGE_FINGERPRINT="$fingerprint"
+}
+
+verify_swift_toolchain() {
+  local directory="$1"
+  [[ -f "$directory/artifact.sha256" \
+      && "$(<"$directory/artifact.sha256")" == "$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+      && -f "$directory/payload.sha256" \
+      && -x "$directory/usr/bin/swift" \
+      && -x "$directory/usr/bin/swiftc" \
+      && -f "$directory/usr/lib/swift/linux/libFoundation.so" \
+      && -f "$directory/usr/lib/swift/linux/libswiftCore.so" ]] \
+    && verify_payload_manifest "$directory"
+}
+
+find_verified_swift_toolchain() {
+  local root="$1"
+  local candidate
+  for candidate in "$root"/toolchain-*; do
+    if [[ -d "$candidate" ]] && verify_swift_toolchain "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  return 1
+}
+
+prepare_swift_toolchain() {
+  require_commands curl perl tar
+  local root="$CACHE_ROOT/swift/$SWIFT_SNAPSHOT/$SWIFT_LINUX_TOOLCHAIN_SHA256"
+  local archive="$CACHE_ROOT/downloads/$SWIFT_SNAPSHOT-linux-arm64.tar.gz"
+  local lock="$root.prepare.lock"
+  local directory
+  mkdir -p "$root"
+  if directory="$(find_verified_swift_toolchain "$root")"; then
+    PREPARED_SWIFT_TOOLCHAIN="$directory"
+    return
+  fi
+  acquire_cache_lock "$lock"
+  if directory="$(find_verified_swift_toolchain "$root")"; then
+    release_cache_lock
+    PREPARED_SWIFT_TOOLCHAIN="$directory"
+    return
+  fi
+  download_verified "$SWIFT_LINUX_TOOLCHAIN_URL" "$SWIFT_LINUX_TOOLCHAIN_SHA256" "$archive"
+  local stage
+  stage="$(mktemp -d "$root/.toolchain-staged.XXXXXX")"
+  if ! tar -xzf "$archive" --directory "$stage" --strip-components=1; then
+    rm -rf -- "$stage"
+    return 1
+  fi
+  chmod -R a+rX "$stage"
+  printf '%s\n' "$SWIFT_LINUX_TOOLCHAIN_SHA256" > "$stage/artifact.sha256"
+  write_payload_manifest "$stage" \
+    usr/bin/swift usr/bin/swiftc usr/bin/swift-frontend \
+    usr/lib/swift/linux/libFoundation.so usr/lib/swift/linux/libswiftCore.so
+  if ! verify_swift_toolchain "$stage"; then
+    echo "error: extracted Swift toolchain failed payload verification" >&2
+    rm -rf -- "$stage"
+    return 1
+  fi
+  local payload_identity
+  payload_identity="$(sha256_file "$stage/payload.sha256")"
+  directory="$root/toolchain-$payload_identity"
+  if [[ -e "$directory" ]]; then
+    if ! verify_swift_toolchain "$directory"; then
+      echo "error: immutable Swift toolchain cache is corrupt: $directory" >&2
+      rm -rf -- "$stage"
+      return 1
+    fi
+    rm -rf -- "$stage"
+  else
+    mv "$stage" "$directory"
+  fi
+  release_cache_lock
+  PREPARED_SWIFT_TOOLCHAIN="$directory"
+}
+
+verify_darwin_fdb_client() {
+  local directory="$1"
+  [[ -f "$directory/artifact.sha256" \
+      && "$(<"$directory/artifact.sha256")" == "$FOUNDATIONDB_DARWIN_CLIENT_SHA256" \
+      && -f "$directory/payload.sha256" \
+      && -x "$directory/bin/fdbcli" \
+      && -f "$directory/include/foundationdb/fdb_c.h" \
+      && -f "$directory/lib/libfdb_c.dylib" ]] \
+    && verify_payload_manifest "$directory"
+}
+
+find_verified_darwin_fdb_client() {
+  local root="$1"
+  local candidate
+  for candidate in "$root"/client-*; do
+    if [[ -d "$candidate" ]] && verify_darwin_fdb_client "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  return 1
+}
+
+prepare_darwin_fdb_client() {
+  if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+    echo "error: foundationdb-client requires Apple silicon macOS" >&2
+    return 1
+  fi
+  require_commands curl perl pkgutil
+  local root="$CACHE_ROOT/foundationdb-darwin/$FOUNDATIONDB_VERSION/$FOUNDATIONDB_DARWIN_CLIENT_SHA256"
+  local installer="$CACHE_ROOT/downloads/FoundationDB-${FOUNDATIONDB_VERSION}_arm64.pkg"
+  local lock="$root.prepare.lock"
+  local directory
+  mkdir -p "$root"
+  if directory="$(find_verified_darwin_fdb_client "$root")"; then
+    PREPARED_DARWIN_FDB_CLIENT="$directory"
+    return
+  fi
+  acquire_cache_lock "$lock"
+  if directory="$(find_verified_darwin_fdb_client "$root")"; then
+    release_cache_lock
+    PREPARED_DARWIN_FDB_CLIENT="$directory"
+    return
+  fi
+  download_verified "$FOUNDATIONDB_DARWIN_CLIENT_URL" "$FOUNDATIONDB_DARWIN_CLIENT_SHA256" "$installer"
+  local extraction
+  extraction="$(mktemp -d "$root/.extract.XXXXXX")"
+  if ! pkgutil --expand-full "$installer" "$extraction/expanded"; then
+    rm -rf -- "$extraction"
+    return 1
+  fi
+  local packaged_cli payload_root stage
+  packaged_cli="$(find "$extraction/expanded" -type f -path '*/Payload/usr/local/bin/fdbcli' -print -quit)"
+  payload_root="${packaged_cli%/bin/fdbcli}"
+  if [[ -z "$payload_root" \
+      || ! -x "$payload_root/bin/fdbcli" \
+      || ! -f "$payload_root/include/foundationdb/fdb_c.h" \
+      || ! -f "$payload_root/lib/libfdb_c.dylib" ]]; then
+    echo "error: FoundationDB client package has an unexpected layout" >&2
+    rm -rf -- "$extraction"
+    return 1
+  fi
+  stage="$(mktemp -d "$root/.client-staged.XXXXXX")"
+  mkdir -p "$stage/bin" "$stage/include/foundationdb" "$stage/lib"
+  cp "$payload_root/bin/fdbcli" "$stage/bin/fdbcli"
+  cp -R "$payload_root/include/foundationdb/." "$stage/include/foundationdb/"
+  cp "$payload_root/lib/libfdb_c.dylib" "$stage/lib/libfdb_c.dylib"
+  printf '%s\n' "$FOUNDATIONDB_DARWIN_CLIENT_SHA256" > "$stage/artifact.sha256"
+  write_payload_manifest "$stage" bin/fdbcli include/foundationdb/fdb_c.h lib/libfdb_c.dylib
+  rm -rf -- "$extraction"
+  if ! verify_darwin_fdb_client "$stage"; then
+    echo "error: extracted FoundationDB client failed payload verification" >&2
+    rm -rf -- "$stage"
+    return 1
+  fi
+  local payload_identity
+  payload_identity="$(sha256_file "$stage/payload.sha256")"
+  directory="$root/client-$payload_identity"
+  if [[ -e "$directory" ]]; then
+    if ! verify_darwin_fdb_client "$directory"; then
+      echo "error: immutable FoundationDB client cache is corrupt: $directory" >&2
+      rm -rf -- "$stage"
+      return 1
+    fi
+    rm -rf -- "$stage"
+  else
+    mv "$stage" "$directory"
+  fi
+  release_cache_lock
+  PREPARED_DARWIN_FDB_CLIENT="$directory"
+}
+
+initialize_run() {
+  local backend="$1"
+  require_commands rsync
+  if [[ -n "$REQUESTED_RESULT_DIRECTORY" ]]; then
+    RUN_RESULT_DIRECTORY="$REQUESTED_RESULT_DIRECTORY"
+  else
+    RUN_RESULT_DIRECTORY="$RESULT_ROOT/$backend-$RUN_IDENTIFIER"
+  fi
+  mkdir -p "$RUN_RESULT_DIRECTORY"
+  TEMPORARY_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/database-framework-docker.XXXXXX")"
+  SOURCE_COPY="$TEMPORARY_ROOT/source"
+  mkdir -p "$SOURCE_COPY"
+  rsync -a \
+    --exclude '/.git' \
+    --exclude '/.build' \
+    --exclude '/Benchmarks/.build' \
+    "$ROOT_DIR/" "$SOURCE_COPY/"
+  ACTIVE_BACKEND="$backend"
+  ACTIVE_NETWORK="df-$backend-$RUN_IDENTIFIER"
+  "$DOCKER_BIN" network create \
+    --label database-framework.test-run="$RUN_IDENTIFIER" \
+    "$ACTIVE_NETWORK" > "$RUN_RESULT_DIRECTORY/network-create.txt"
+}
+
+wait_for_probe() {
+  local description="$1"
+  shift
+  local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    if timeout_command 10 "$@" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+  echo "error: timed out waiting for $description" >&2
+  return 1
+}
+
+start_postgresql() {
+  ensure_service_image "$POSTGRESQL_IMAGE" "$POSTGRESQL_IMAGE_DIGEST"
+  ACTIVE_SERVICE_CONTAINER="df-postgresql-service-$RUN_IDENTIFIER"
+  "$DOCKER_BIN" run --detach \
+    --platform "$DOCKER_TEST_PLATFORM" \
+    --name "$ACTIVE_SERVICE_CONTAINER" \
+    --network "$ACTIVE_NETWORK" \
+    --network-alias postgresql \
+    --label database-framework.test-run="$RUN_IDENTIFIER" \
+    --env POSTGRES_DB=database_framework_test \
+    --env POSTGRES_USER=postgres \
+    --env POSTGRES_PASSWORD=database-framework-test \
+    "$POSTGRESQL_IMAGE" > "$RUN_RESULT_DIRECTORY/service-create.txt"
+  wait_for_probe "PostgreSQL readiness" \
+    "$DOCKER_BIN" exec "$ACTIVE_SERVICE_CONTAINER" \
+      pg_isready --host 127.0.0.1 --port 5432 \
+        --username postgres --dbname database_framework_test
+  local expected_version_number version_number
+  expected_version_number="$(awk -F. '{ printf "%d%04d\n", $1, $2 }' <<< "$POSTGRESQL_VERSION")"
+  version_number="$("$DOCKER_BIN" exec --env PGPASSWORD=database-framework-test \
+    "$ACTIVE_SERVICE_CONTAINER" psql \
+      --host 127.0.0.1 --port 5432 --username postgres \
+      --dbname database_framework_test --no-align --tuples-only \
+      --command 'SHOW server_version_num;' | tr -d '[:space:]')"
+  if [[ "$version_number" != "$expected_version_number" ]]; then
+    echo "error: PostgreSQL service version number $version_number does not match $expected_version_number ($POSTGRESQL_VERSION)" >&2
+    return 1
+  fi
+  printf 'server-version=%s\nserver-version-number=%s\nservice-container=%s\nnetwork=%s\n' \
+    "$POSTGRESQL_VERSION" "$version_number" "$ACTIVE_SERVICE_CONTAINER" "$ACTIVE_NETWORK" \
+    > "$RUN_RESULT_DIRECTORY/service-identity.txt"
+}
+
+start_foundationdb() {
+  require_commands jq
+  ensure_service_image "$FOUNDATIONDB_IMAGE" "$FOUNDATIONDB_IMAGE_DIGEST"
+  ACTIVE_SERVICE_CONTAINER="df-foundationdb-service-$RUN_IDENTIFIER"
+  "$DOCKER_BIN" run --detach \
+    --platform "$DOCKER_TEST_PLATFORM" \
+    --name "$ACTIVE_SERVICE_CONTAINER" \
+    --network "$ACTIVE_NETWORK" \
+    --network-alias foundationdb \
+    --label database-framework.test-run="$RUN_IDENTIFIER" \
+    --env FDB_NETWORKING_MODE=container \
+    --env FDB_PORT=4500 \
+    "$FOUNDATIONDB_IMAGE" > "$RUN_RESULT_DIRECTORY/service-create.txt"
+  wait_for_probe "FoundationDB coordinator port" \
+    "$DOCKER_BIN" run --rm \
+      --platform "$DOCKER_TEST_PLATFORM" \
+      --network "$ACTIVE_NETWORK" \
+      "$PREPARED_TEST_IMAGE" nc -z -w 3 foundationdb 4500
+  local configure_output
+  if ! configure_output="$(timeout_command 30 "$DOCKER_BIN" exec \
+      "$ACTIVE_SERVICE_CONTAINER" fdbcli -C /var/fdb/fdb.cluster \
+        --exec 'configure new single memory')"; then
+    echo "error: failed to configure the disposable FoundationDB database" >&2
+    return 1
+  fi
+  printf '%s\n' "$configure_output" > "$RUN_RESULT_DIRECTORY/foundationdb-configure.log"
+  if [[ "$configure_output" != *"Database created"* ]]; then
+    echo "error: FoundationDB did not report creation of the disposable database: $configure_output" >&2
+    return 1
+  fi
+  local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+  local status_json=""
+  while (( SECONDS < deadline )); do
+    if status_json="$(timeout_command 10 "$DOCKER_BIN" exec \
+        "$ACTIVE_SERVICE_CONTAINER" fdbcli -C /var/fdb/fdb.cluster \
+          --exec 'status json' 2>/dev/null)" \
+        && jq -e '.client.database_status.available == true and .cluster.database_available == true' \
+          >/dev/null <<< "$status_json"; then
+      break
+    fi
+    status_json=""
+    sleep 1
+  done
+  if [[ -z "$status_json" ]]; then
+    echo "error: timed out waiting for the configured FoundationDB database" >&2
+    return 1
+  fi
+  printf '%s\n' "$status_json" > "$RUN_RESULT_DIRECTORY/foundationdb-status.json"
+  local cli_version server_version
+  cli_version="$("$DOCKER_BIN" exec "$ACTIVE_SERVICE_CONTAINER" fdbcli --version \
+    | sed -nE 's/.*\(v([0-9.]+)\).*/\1/p' | head -n 1)"
+  server_version="$("$DOCKER_BIN" exec "$ACTIVE_SERVICE_CONTAINER" fdbserver --version \
+    | sed -nE 's/.*\(v([0-9.]+)\).*/\1/p' | head -n 1)"
+  if [[ "$cli_version" != "$FOUNDATIONDB_VERSION" || "$server_version" != "$FOUNDATIONDB_VERSION" ]]; then
+    echo "error: FoundationDB service identity mismatch: cli=$cli_version server=$server_version" >&2
+    return 1
+  fi
+  ACTIVE_CLUSTER_FILE="$TEMPORARY_ROOT/fdb.cluster"
+  "$DOCKER_BIN" cp "$ACTIVE_SERVICE_CONTAINER:/var/fdb/fdb.cluster" "$ACTIVE_CLUSTER_FILE"
+  chmod 0644 "$ACTIVE_CLUSTER_FILE"
+  local cluster_description endpoint
+  cluster_description="$(tr -d '[:space:]' < "$ACTIVE_CLUSTER_FILE")"
+  endpoint="${cluster_description#*@}"
+  if [[ "$endpoint" == "$cluster_description" || "$endpoint" != *:4500 ]]; then
+    echo "error: FoundationDB generated an invalid cluster file: $cluster_description" >&2
+    return 1
+  fi
+  printf 'server-version=%s\nclient-version=%s\ncluster=%s\nservice-container=%s\nnetwork=%s\n' \
+    "$server_version" "$cli_version" "$cluster_description" \
+    "$ACTIVE_SERVICE_CONTAINER" "$ACTIVE_NETWORK" \
+    > "$RUN_RESULT_DIRECTORY/service-identity.txt"
+}
+
+runner_common_arguments() {
+  local cache_key="$1"
+  local worktree_identity
+  worktree_identity="$(printf '%s' "$ROOT_DIR" | sha256_text)"
+  local cache_base="$CACHE_ROOT/runtime/$worktree_identity/$PREPARED_TEST_IMAGE_FINGERPRINT"
+  local build_cache="$cache_base/build/$cache_key"
+  local swiftpm_cache="$cache_base/swiftpm"
+  mkdir -p "$build_cache" "$swiftpm_cache"
+  acquire_cache_lock "$cache_base/runtime.lock"
+
+  RUNNER_ARGUMENTS=(
+    run
+    --platform "$DOCKER_TEST_PLATFORM"
+    --name "$ACTIVE_RUNNER_CONTAINER"
+    --network "$ACTIVE_NETWORK"
+    --label "database-framework.test-run=$RUN_IDENTIFIER"
+    --workdir /workspace
+    --mount "type=bind,src=$SOURCE_COPY,dst=/workspace"
+    --mount "type=bind,src=$build_cache,dst=/workspace/.build"
+    --mount "type=bind,src=$swiftpm_cache,dst=/root/.cache/org.swift.swiftpm"
+    --mount "type=bind,src=$PREPARED_SWIFT_TOOLCHAIN,dst=/opt/swift-toolchain,readonly"
+    --mount "type=bind,src=$RUN_RESULT_DIRECTORY,dst=/results"
+    --env "PATH=/opt/swift-toolchain/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    --env "LD_LIBRARY_PATH=/opt/swift-toolchain/usr/lib/swift/linux:/usr/local/lib:/usr/lib"
+    --env "FDB_CLIENT_INCLUDE_DIRECTORY=/usr/include"
+    --env "FDB_CLIENT_LIBRARY_DIRECTORY=/usr/lib"
+  )
+}
+
+append_manifest_environment() {
+  RUNNER_ARGUMENTS+=(
+    --env "DATABASE_FRAMEWORK_TEST_IMAGE_REFERENCE=$PREPARED_TEST_IMAGE"
+    --env "DATABASE_FRAMEWORK_TEST_IMAGE_FINGERPRINT=$PREPARED_TEST_IMAGE_FINGERPRINT"
+    --env "SWIFT_SNAPSHOT=$SWIFT_SNAPSHOT"
+    --env "SWIFT_COMPILER_COMMIT=$SWIFT_COMPILER_COMMIT"
+    --env "SWIFT_LINUX_BASE_VERSION=$SWIFT_LINUX_BASE_VERSION"
+    --env "SWIFT_LINUX_BASE_IMAGE_DIGEST=$SWIFT_LINUX_BASE_IMAGE_DIGEST"
+    --env "SWIFT_LINUX_TOOLCHAIN_SHA256=$SWIFT_LINUX_TOOLCHAIN_SHA256"
+    --env "UBUNTU_PACKAGE_LOCK_SHA256=$(sha256_file "$ROOT_DIR/scripts/docker/ubuntu-packages.lock")"
+    --env "FOUNDATIONDB_VERSION=$FOUNDATIONDB_VERSION"
+    --env "FOUNDATIONDB_LINUX_CLIENT_SHA256=$FOUNDATIONDB_LINUX_CLIENT_SHA256"
+    --env "POSTGRESQL_VERSION=$POSTGRESQL_VERSION"
+    --env "SQLITE_VERSION=$SQLITE_VERSION"
+    --env "SQLITE_AMALGAMATION_SHA256=$SQLITE_AMALGAMATION_SHA256"
+  )
+}
+
+append_backend_environment() {
+  case "$ACTIVE_BACKEND" in
+    postgresql)
+      RUNNER_ARGUMENTS+=(
+        --env POSTGRES_TEST_HOST=postgresql
+        --env POSTGRES_TEST_PORT=5432
+        --env POSTGRES_TEST_USER=postgres
+        --env POSTGRES_TEST_PASSWORD=database-framework-test
+        --env POSTGRES_TEST_DB=database_framework_test
+      )
+      ;;
+    foundationdb)
+      RUNNER_ARGUMENTS+=(
+        --mount "type=bind,src=$ACTIVE_CLUSTER_FILE,dst=/run/database-framework/fdb.cluster,readonly"
+        --env FDB_CLUSTER_FILE=/run/database-framework/fdb.cluster
+      )
+      if [[ -n "$ACTIVE_HARNESS_IDENTITY" ]]; then
+        RUNNER_ARGUMENTS+=(
+          --mount "type=bind,src=$ACTIVE_HARNESS_IDENTITY,dst=/run/database-framework/foundationdb-harness.env,readonly"
+          --env DATABASE_FRAMEWORK_FDB_HARNESS_IDENTITY=/run/database-framework/foundationdb-harness.env
+          --env "DATABASE_FRAMEWORK_FDB_HARNESS_TOKEN=$DATABASE_FRAMEWORK_FDB_HARNESS_TOKEN"
+        )
+      fi
+      ;;
+  esac
+}
+
+run_backend_tests() {
+  local backend="$1"
+  local traits="$2"
+  local expected_count="$3"
+  local filter="$4"
+  ACTIVE_RUNNER_CONTAINER="df-$backend-runner-$RUN_IDENTIFIER"
+  runner_common_arguments "$(tr ',' '-' <<< "$traits")"
+  append_manifest_environment
+  append_backend_environment
+  RUNNER_ARGUMENTS+=(
+    --env "DATABASE_FRAMEWORK_TEST_BACKEND=$backend"
+    --env "DATABASE_FRAMEWORK_TEST_TRAITS=$traits"
+    --env "DATABASE_FRAMEWORK_TEST_EXPECTED_COUNT=$expected_count"
+    --env "DATABASE_FRAMEWORK_TEST_FILTER=$filter"
+    --env DATABASE_FRAMEWORK_TEST_RESULT_DIRECTORY=/results
+    --env "DATABASE_FRAMEWORK_TEST_TIMEOUT_SECONDS=$TEST_TIMEOUT_SECONDS"
+    "$PREPARED_TEST_IMAGE"
+    /workspace/scripts/docker/run-backend-tests
+  )
+  set +e
+  set -o pipefail
+  timeout_command "$((TEST_TIMEOUT_SECONDS + 120))" \
+    "$DOCKER_BIN" "${RUNNER_ARGUMENTS[@]}" 2>&1 \
+    | tee "$RUN_RESULT_DIRECTORY/docker-run.log"
+  local status=$?
+  set -e
+  release_cache_lock
+  return "$status"
+}
+
+write_foundationdb_harness_identity() {
+  local token="$1"
+  local cluster_description endpoint
+  cluster_description="$(tr -d '[:space:]' < "$ACTIVE_CLUSTER_FILE")"
+  endpoint="${cluster_description#*@}"
+  ACTIVE_HARNESS_IDENTITY="$TEMPORARY_ROOT/foundationdb-harness.env"
+  printf '%s\n' \
+    'format=database-framework-docker-foundationdb-v1' \
+    "token=$token" \
+    'cluster_file=/run/database-framework/fdb.cluster' \
+    "endpoint=$endpoint" \
+    "network=$ACTIVE_NETWORK" \
+    "service_container=$ACTIVE_SERVICE_CONTAINER" \
+    "server_version=$FOUNDATIONDB_VERSION" \
+    > "$ACTIVE_HARNESS_IDENTITY"
+  chmod 0400 "$ACTIVE_HARNESS_IDENTITY"
+}
+
+run_foundationdb_command() {
+  local token
+  token="$(printf '%s-%s-%s' "$RUN_IDENTIFIER" "$RANDOM" "$RANDOM" | sha256_text)"
+  DATABASE_FRAMEWORK_FDB_HARNESS_TOKEN="$token"
+  write_foundationdb_harness_identity "$token"
+  ACTIVE_RUNNER_CONTAINER="df-foundationdb-command-$RUN_IDENTIFIER"
+  runner_common_arguments benchmark
+  append_backend_environment
+  local benchmark_support="$ROOT_DIR/../database-framework-benchmark"
+  if [[ -d "$benchmark_support" ]]; then
+    benchmark_support="$(cd "$benchmark_support" && pwd)"
+    local benchmark_cache="$CACHE_ROOT/runtime/benchmark/$PREPARED_TEST_IMAGE_FINGERPRINT"
+    mkdir -p "$benchmark_cache"
+    RUNNER_ARGUMENTS+=(
+      --mount "type=bind,src=$benchmark_support,dst=/database-framework-benchmark,readonly"
+      --mount "type=bind,src=$benchmark_cache,dst=/workspace/Benchmarks/.build"
+    )
+  fi
+  RUNNER_ARGUMENTS+=("$PREPARED_TEST_IMAGE" "${RUN_COMMAND[@]}")
+  set +e
+  set -o pipefail
+  timeout_command "$TEST_TIMEOUT_SECONDS" \
+    "$DOCKER_BIN" "${RUNNER_ARGUMENTS[@]}" 2>&1 \
+    | tee "$RUN_RESULT_DIRECTORY/docker-command.log"
+  local status=$?
+  set -e
+  release_cache_lock
+  return "$status"
+}
+
+collect_evidence() {
+  if [[ "$EVIDENCE_COLLECTED" == true || -z "$RUN_RESULT_DIRECTORY" ]]; then
+    return
+  fi
+  EVIDENCE_COLLECTED=true
+  local presence
+  if [[ -n "$ACTIVE_NETWORK" ]]; then
+    if ! presence="$(network_presence "$ACTIVE_NETWORK")"; then
+      CLEANUP_FAILED=true
+    elif [[ "$presence" == present ]]; then
+      if ! "$DOCKER_BIN" network inspect "$ACTIVE_NETWORK" \
+          > "$RUN_RESULT_DIRECTORY/network-inspect.json"; then
+        echo "error: failed to collect Docker network inspection" >&2
+        CLEANUP_FAILED=true
+      fi
+    elif [[ "$presence" != absent ]]; then
+      CLEANUP_FAILED=true
+    fi
+  fi
+  local name role
+  for role in service runner; do
+    if [[ "$role" == service ]]; then
+      name="$ACTIVE_SERVICE_CONTAINER"
+    else
+      name="$ACTIVE_RUNNER_CONTAINER"
+    fi
+    [[ -n "$name" ]] || continue
+    if ! presence="$(container_presence "$name")"; then
+      CLEANUP_FAILED=true
+    elif [[ "$presence" == present ]]; then
+      if ! "$DOCKER_BIN" container inspect "$name" \
+          > "$RUN_RESULT_DIRECTORY/$role-container-inspect.json"; then
+        echo "error: failed to collect $role container inspection" >&2
+        CLEANUP_FAILED=true
+      fi
+      if ! "$DOCKER_BIN" container logs --timestamps "$name" \
+          > "$RUN_RESULT_DIRECTORY/$role-container.log" 2>&1; then
+        echo "error: failed to collect $role container logs" >&2
+        CLEANUP_FAILED=true
+      fi
+      if [[ "$role" == service && "$ACTIVE_BACKEND" == foundationdb ]]; then
+        mkdir -p "$RUN_RESULT_DIRECTORY/foundationdb-traces"
+        if ! "$DOCKER_BIN" cp "$name:/var/fdb/logs/." \
+            "$RUN_RESULT_DIRECTORY/foundationdb-traces/" >/dev/null; then
+          echo "error: failed to collect FoundationDB trace files" >&2
+          CLEANUP_FAILED=true
+        fi
+      fi
+    elif [[ "$presence" != absent ]]; then
+      CLEANUP_FAILED=true
+    fi
+  done
+}
+
+verify_negative_readiness() {
+  [[ -n "$ACTIVE_SERVICE_CONTAINER" ]] || return 0
+  local status
+  case "$ACTIVE_BACKEND" in
+    postgresql)
+      set +e
+      timeout_command 15 "$DOCKER_BIN" run --rm \
+        --platform "$DOCKER_TEST_PLATFORM" \
+        --network "$ACTIVE_NETWORK" \
+        "$PREPARED_TEST_IMAGE" nc -z -w 3 postgresql 5432 >/dev/null 2>&1
+      status=$?
+      set -e
+      ;;
+    foundationdb)
+      if [[ -z "$ACTIVE_CLUSTER_FILE" ]]; then
+        echo "error: FoundationDB cluster file is unavailable for negative readiness" >&2
+        return 1
+      fi
+      local cluster_description endpoint host port
+      cluster_description="$(tr -d '[:space:]' < "$ACTIVE_CLUSTER_FILE")"
+      endpoint="${cluster_description#*@}"
+      host="${endpoint%:*}"
+      port="${endpoint##*:}"
+      if [[ -z "$host" || "$port" != 4500 ]]; then
+        echo "error: FoundationDB cluster endpoint is invalid for negative readiness: $endpoint" >&2
+        return 1
+      fi
+      set +e
+      timeout_command 15 "$DOCKER_BIN" run --rm \
+        --platform "$DOCKER_TEST_PLATFORM" \
+        --network "$ACTIVE_NETWORK" \
+        "$PREPARED_TEST_IMAGE" nc -z -w 3 "$host" "$port" >/dev/null 2>&1
+      status=$?
+      set -e
+      ;;
+    *) return 0 ;;
+  esac
+  if (( status == 0 )); then
+    echo "error: $ACTIVE_BACKEND remained reachable after service stop" >&2
+    return 1
+  fi
+  if (( status != 1 )); then
+    echo "error: $ACTIVE_BACKEND negative-readiness probe failed to produce the reviewed unreachable result: $status" >&2
+    return 1
+  fi
+  printf 'negative-readiness=confirmed\nprobe-exit-status=%s\n' "$status" \
+    > "$RUN_RESULT_DIRECTORY/negative-readiness.txt"
+}
+
+remove_container() {
+  local name="$1"
+  local presence
+  [[ -n "$name" ]] || return 0
+  if ! presence="$(container_presence "$name")"; then
+    return 1
+  fi
+  if [[ "$presence" == absent ]]; then
+    return 0
+  fi
+  local running
+  running="$("$DOCKER_BIN" container inspect --format '{{.State.Running}}' "$name")"
+  if [[ "$running" == true ]]; then
+    timeout_command 30 "$DOCKER_BIN" stop --time 20 "$name" >/dev/null
+  fi
+  timeout_command 30 "$DOCKER_BIN" rm --volumes "$name" >/dev/null
+  [[ "$(container_presence "$name")" == absent ]]
+}
+
+cleanup() {
+  local original_status=$?
+  trap - EXIT
+  set +e
+  collect_evidence
+
+  if ! remove_container "$ACTIVE_RUNNER_CONTAINER"; then
+    echo "error: failed to remove runner container: $ACTIVE_RUNNER_CONTAINER" >&2
+    CLEANUP_FAILED=true
+  fi
+  ACTIVE_RUNNER_CONTAINER=""
+
+  if [[ -n "$ACTIVE_SERVICE_CONTAINER" ]]; then
+    local presence running
+    if ! presence="$(container_presence "$ACTIVE_SERVICE_CONTAINER")"; then
+      CLEANUP_FAILED=true
+    elif [[ "$presence" == present ]]; then
+      running="$("$DOCKER_BIN" container inspect --format '{{.State.Running}}' "$ACTIVE_SERVICE_CONTAINER" 2>/dev/null)"
+      if [[ "$running" == true ]] \
+          && ! timeout_command 30 "$DOCKER_BIN" stop --time 20 "$ACTIVE_SERVICE_CONTAINER" >/dev/null; then
+        echo "error: failed to stop service container: $ACTIVE_SERVICE_CONTAINER" >&2
+        CLEANUP_FAILED=true
+      fi
+    elif [[ "$presence" != absent ]]; then
+      CLEANUP_FAILED=true
+    fi
+    if ! verify_negative_readiness; then
+      CLEANUP_FAILED=true
+    fi
+    if ! remove_container "$ACTIVE_SERVICE_CONTAINER"; then
+      echo "error: failed to remove service container: $ACTIVE_SERVICE_CONTAINER" >&2
+      CLEANUP_FAILED=true
+    fi
+  fi
+  ACTIVE_SERVICE_CONTAINER=""
+
+  if [[ -n "$ACTIVE_NETWORK" ]]; then
+    local presence
+    if ! presence="$(network_presence "$ACTIVE_NETWORK")"; then
+      CLEANUP_FAILED=true
+    elif [[ "$presence" == present ]]; then
+      if ! timeout_command 30 "$DOCKER_BIN" network rm "$ACTIVE_NETWORK" >/dev/null; then
+        echo "error: failed to remove Docker network: $ACTIVE_NETWORK" >&2
+        CLEANUP_FAILED=true
+      fi
+    elif [[ "$presence" != absent ]]; then
+      CLEANUP_FAILED=true
+    fi
+    if [[ "$(network_presence "$ACTIVE_NETWORK" 2>/dev/null)" != absent ]]; then
+      echo "error: Docker network remains after cleanup: $ACTIVE_NETWORK" >&2
+      CLEANUP_FAILED=true
+    fi
+  fi
+  ACTIVE_NETWORK=""
+
+  if [[ -n "$TEMPORARY_ROOT" && -d "$TEMPORARY_ROOT" ]]; then
+    local expected_prefix="${TMPDIR:-/tmp}/database-framework-docker."
+    if [[ "$TEMPORARY_ROOT" == "$expected_prefix"* ]]; then
+      rm -rf -- "$TEMPORARY_ROOT"
+    else
+      echo "error: refusing to remove unexpected temporary path: $TEMPORARY_ROOT" >&2
+      CLEANUP_FAILED=true
+    fi
+  fi
+  TEMPORARY_ROOT=""
+
+  if ! release_cache_lock; then
+    CLEANUP_FAILED=true
+  fi
+  if [[ "$CLEANUP_FAILED" == true ]]; then
+    exit 1
+  fi
+  exit "$original_status"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+run_linux_sqlite() {
+  docker_doctor
+  prepare_test_image
+  prepare_swift_toolchain
+  initialize_run sqlite
+  local traits="SQLite,AllRuntimeFeatures"
+  local expected="$SQLITE_STANDARD_EXPECTED_TEST_COUNT"
+  if [[ "$MULTI_BASE" == true ]]; then
+    traits="$traits,MultiBase"
+    expected="$SQLITE_MULTI_BASE_EXPECTED_TEST_COUNT"
+  fi
+  run_backend_tests sqlite "$traits" "$expected" SQLiteTests
+}
+
+run_linux_postgresql() {
+  docker_doctor
+  prepare_test_image
+  prepare_swift_toolchain
+  initialize_run postgresql
+  start_postgresql
+  run_backend_tests postgresql "PostgreSQL,AllRuntimeFeatures,MultiBase" \
+    "$POSTGRESQL_EXPECTED_TEST_COUNT" PostgreSQLTests
+}
+
+run_linux_foundationdb() {
+  docker_doctor
+  prepare_test_image
+  prepare_swift_toolchain
+  initialize_run foundationdb
+  start_foundationdb
+  local token
+  token="$(printf '%s-%s-%s' "$RUN_IDENTIFIER" "$RANDOM" "$RANDOM" | sha256_text)"
+  DATABASE_FRAMEWORK_FDB_HARNESS_TOKEN="$token"
+  write_foundationdb_harness_identity "$token"
+  run_backend_tests foundationdb "FoundationDB,AllRuntimeFeatures,MultiBase" \
+    "$FOUNDATIONDB_EXPECTED_TEST_COUNT" ""
+}
+
+run_macos_sqlite() {
+  if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
+    echo "error: macos-sqlite requires Apple silicon macOS" >&2
+    return 1
+  fi
+  require_commands xcrun
+  if [[ -n "$REQUESTED_RESULT_DIRECTORY" ]]; then
+    RUN_RESULT_DIRECTORY="$REQUESTED_RESULT_DIRECTORY"
+  else
+    RUN_RESULT_DIRECTORY="$RESULT_ROOT/macos-sqlite-$RUN_IDENTIFIER"
+  fi
+  mkdir -p "$RUN_RESULT_DIRECTORY"
+  local traits="SQLite,AllRuntimeFeatures"
+  local expected="$SQLITE_STANDARD_EXPECTED_TEST_COUNT"
+  if [[ "$MULTI_BASE" == true ]]; then
+    traits="$traits,MultiBase"
+    expected="$SQLITE_MULTI_BASE_EXPECTED_TEST_COUNT"
+  fi
+  XCODE_TEST_RESULT_DIRECTORY="$RUN_RESULT_DIRECTORY/xcode" \
+    "$ROOT_DIR/scripts/xcode-test-harness" \
+      --traits "$traits" \
+      --expected-count "$expected" \
+      --require-zero-skips \
+      --require-zero-expected-failures \
+      --require-zero-runtime-warnings \
+      --only-testing SQLiteTests
+}
+
+run_all() {
+  local base="$REQUESTED_RESULT_DIRECTORY"
+  if [[ -z "$base" ]]; then
+    base="$RESULT_ROOT/all-$RUN_IDENTIFIER"
+  fi
+  mkdir -p "$base"
+  "$ROOT_DIR/scripts/docker-test-harness" sqlite --result-directory "$base/sqlite-standard"
+  "$ROOT_DIR/scripts/docker-test-harness" sqlite --multi-base --result-directory "$base/sqlite-multi-base"
+  "$ROOT_DIR/scripts/docker-test-harness" postgresql --result-directory "$base/postgresql"
+  "$ROOT_DIR/scripts/docker-test-harness" foundationdb --result-directory "$base/foundationdb"
+}
+
+case "$COMMAND" in
+  doctor)
+    docker_doctor
+    ;;
+  foundationdb-client)
+    prepare_darwin_fdb_client
+    printf '%s\n' "$PREPARED_DARWIN_FDB_CLIENT"
+    ;;
+  sqlite)
+    run_linux_sqlite
+    ;;
+  postgresql)
+    run_linux_postgresql
+    ;;
+  foundationdb)
+    run_linux_foundationdb
+    ;;
+  foundationdb-run)
+    docker_doctor
+    prepare_test_image
+    prepare_swift_toolchain
+    initialize_run foundationdb-command
+    ACTIVE_BACKEND=foundationdb
+    start_foundationdb
+    run_foundationdb_command
+    ;;
+  macos-sqlite)
+    run_macos_sqlite
+    ;;
+  all)
+    trap - EXIT
+    run_all
+    ;;
+esac
