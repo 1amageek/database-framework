@@ -116,7 +116,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                 switch nestedQuery.projection {
                 case .items(let items), .distinctItems(let items):
                     pendingExpressions.append(
-                        contentsOf: items.map(\.expression)
+                        contentsOf: items.map { $0.expression }
                     )
                 case .all, .allFrom:
                     break
@@ -131,7 +131,9 @@ internal struct SPARQLFunctionRewriter: Sendable {
                     pendingExpressions.append(having)
                 }
                 pendingExpressions.append(
-                    contentsOf: (nestedQuery.orderBy ?? []).map(\.expression)
+                    contentsOf: (nestedQuery.orderBy ?? []).map {
+                        $0.expression
+                    }
                 )
                 for subquery in nestedQuery.subqueries ?? [] {
                     pendingQueries.append(subquery.query)
@@ -205,7 +207,9 @@ internal struct SPARQLFunctionRewriter: Sendable {
                         case .arrayAgg(let value, let orderBy, _):
                             pendingExpressions.append(value)
                             pendingExpressions.append(
-                                contentsOf: (orderBy ?? []).map(\.expression)
+                                contentsOf: (orderBy ?? []).map {
+                                    $0.expression
+                                }
                             )
                         }
                     }

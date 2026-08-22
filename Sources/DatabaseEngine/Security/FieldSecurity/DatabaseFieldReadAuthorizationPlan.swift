@@ -517,7 +517,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
 
         func fieldNames(in bindings: [SourceBinding]) -> Set<String> {
             bindings.reduce(into: Set<String>()) { result, binding in
-                result.formUnion(binding.fields.map(\.visibleName))
+                result.formUnion(binding.fields.map { $0.visibleName })
             }
         }
 
@@ -582,7 +582,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             switch source {
             case .table, .logical:
                 guard bindings.count == 1 else { return nil }
-                return bindings[0].fields.map(\.visibleName)
+                return bindings[0].fields.map { $0.visibleName }
             case .values(let rows, let columnNames):
                 return columnNames
                     ?? rows.first?.indices.map { "column\($0)" }
@@ -602,7 +602,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             case .except(let left, _):
                 return sourceColumnNames(left, bindings: bindings)
             case .graphTable(let source):
-                return source.columns?.map(\.alias)
+                return source.columns?.map { $0.alias }
             #if DATABASE_MULTI_BASE
             case .base(_, let source):
                 return sourceColumnNames(source, bindings: bindings)
