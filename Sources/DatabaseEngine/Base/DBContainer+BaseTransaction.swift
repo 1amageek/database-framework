@@ -28,8 +28,11 @@ extension DBContainer {
                 authorization: authorization,
                 transaction: storageAccess
             )
+            let admittedStorageAccess = requiredAccess == .read
+                ? ReadAuthorizedTransactionAccess.admitted(storageAccess)
+                : storageAccess
             let transaction = DatabaseTransaction(
-                storageAccess: storageAccess,
+                storageAccess: admittedStorageAccess,
                 container: self
             )
             return try await RequestAuthorization.$context.withValue(

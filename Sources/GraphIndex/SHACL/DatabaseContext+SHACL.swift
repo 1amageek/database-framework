@@ -102,7 +102,7 @@ public struct SHACLContextAPI: Sendable {
     /// ```
     public func loadShapes(_ graph: SHACLShapesGraph) async throws {
         try await withStore { store in
-            try await self.context.indexQueryContext.withTransaction {
+            try await self.context.indexQueryContext.withWriteTransaction {
                 transaction in
                 // Delete existing if present
                 try store.delete(iri: graph.iri, transaction: transaction)
@@ -328,7 +328,7 @@ public struct SHACLContextAPI: Sendable {
     /// - Parameter iri: The shapes graph IRI to delete
     public func deleteShapesGraph(iri: String) async throws {
         try await withStore { store in
-            try await self.context.indexQueryContext.withTransaction {
+            try await self.context.indexQueryContext.withWriteTransaction {
                 transaction in
                 try store.delete(iri: iri, transaction: transaction)
             }
@@ -338,7 +338,7 @@ public struct SHACLContextAPI: Sendable {
     /// Delete all shapes graphs
     public func deleteAllShapesGraphs() async throws {
         try await withStore { store in
-            try await self.context.indexQueryContext.withTransaction {
+            try await self.context.indexQueryContext.withWriteTransaction {
                 transaction in
                 try store.deleteAll(transaction: transaction)
             }

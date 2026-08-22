@@ -218,12 +218,9 @@ public struct OntologyContextAPI: Sendable {
     ///
     /// **Warning**: This removes all stored ontology data.
     public func deleteAll() async throws {
-        let iris = try await list()
         try await withStore { store in
             try await context.indexQueryContext.withWriteTransaction { transaction in
-                for iri in iris {
-                    try store.deleteOntology(iri, transaction: transaction)
-                }
+                try store.deleteAll(transaction: transaction)
             }
         }
     }

@@ -875,6 +875,14 @@ public struct OntologyStore: Sendable {
         try transaction.clearRange(beginKey: beginKey, endKey: endKey)
     }
 
+    /// Delete every ontology in this store within the caller's transaction.
+    public func deleteAll(
+        transaction: any TransactionAccess
+    ) throws {
+        let (beginKey, endKey) = subspace.base.range()
+        try transaction.clearRange(beginKey: beginKey, endKey: endKey)
+    }
+
     // MARK: - Additional Query Operations (for OWL2 RL Materialization)
 
     /// Get equivalent classes

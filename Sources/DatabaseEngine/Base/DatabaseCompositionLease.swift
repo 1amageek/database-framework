@@ -49,15 +49,21 @@ public final class DatabaseCompositionLease: Sendable {
 @_spi(DatabaseExecution)
 public struct DatabaseCompositionReadSnapshot: Sendable {
     public let lease: DatabaseCompositionLease
+    package let sourceIdentity: DatabaseCompositionSourceIdentity
+    package let authorization: AuthorizationContext
     private let transactions: [String: any TransactionAccess]
     private let capturedReadPoints: [DomainReadPoint]
 
     package init(
         lease: DatabaseCompositionLease,
+        sourceIdentity: DatabaseCompositionSourceIdentity,
+        authorization: AuthorizationContext,
         transactions: [String: any TransactionAccess],
         readPoints: [DomainReadPoint]
     ) {
         self.lease = lease
+        self.sourceIdentity = sourceIdentity
+        self.authorization = authorization
         self.transactions = transactions
         self.capturedReadPoints = readPoints
     }
@@ -65,7 +71,8 @@ public struct DatabaseCompositionReadSnapshot: Sendable {
     public func transaction(
         for member: DatabaseBaseLease
     ) throws -> any TransactionAccess {
-        guard let transaction = transactions[member.domainID] else {
+        guard lease.members.contains(where: { $0 === member }),
+              let transaction = transactions[member.domainID] else {
             throw DatabaseCompositionAccessError.unavailable(
                 lease.selection
             )

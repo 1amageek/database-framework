@@ -124,7 +124,8 @@ final class ContainerStorageEngine:
         transaction: any TransactionAccess
     ) async throws -> Subspace {
         let borrow = try namespaceTransactionBorrow(
-            for: transaction
+            for: transaction,
+            requiresMutation: true
         )
         defer { borrow.end(for: lifecycle) }
         return try await lifecycle.underlyingStorageEngine.namespaceResolver
@@ -139,7 +140,8 @@ final class ContainerStorageEngine:
         transaction: any TransactionAccess
     ) async throws -> Subspace {
         let borrow = try namespaceTransactionBorrow(
-            for: transaction
+            for: transaction,
+            requiresMutation: false
         )
         defer { borrow.end(for: lifecycle) }
         return try await lifecycle.underlyingStorageEngine.namespaceResolver
@@ -154,7 +156,8 @@ final class ContainerStorageEngine:
         transaction: any TransactionAccess
     ) async throws -> Bool {
         let borrow = try namespaceTransactionBorrow(
-            for: transaction
+            for: transaction,
+            requiresMutation: false
         )
         defer { borrow.end(for: lifecycle) }
         return try await lifecycle.underlyingStorageEngine.namespaceResolver
@@ -175,7 +178,8 @@ final class ContainerStorageEngine:
             )
         }
         let borrow = try namespaceTransactionBorrow(
-            for: transaction
+            for: transaction,
+            requiresMutation: false
         )
         defer { borrow.end(for: lifecycle) }
         return try await catalog.listNamespaces(
@@ -195,7 +199,8 @@ final class ContainerStorageEngine:
             )
         }
         let borrow = try namespaceTransactionBorrow(
-            for: transaction
+            for: transaction,
+            requiresMutation: true
         )
         defer { borrow.end(for: lifecycle) }
         try await catalog.removeNamespace(
@@ -205,8 +210,15 @@ final class ContainerStorageEngine:
     }
 
     private func namespaceTransactionBorrow(
-        for transaction: any TransactionAccess
+        for transaction: any TransactionAccess,
+        requiresMutation: Bool
     ) throws -> ContainerNamespaceTransactionBorrow {
+        if let transaction = transaction as? ReadAuthorizedTransactionAccess {
+            guard !requiresMutation else {
+                throw DatabaseReadTransactionError.mutationRequiresWriteAccess
+            }
+            return try transaction.namespaceTransactionBorrow(for: lifecycle)
+        }
         if let transaction = transaction as? ContainerTransactionAccess {
             return try transaction.namespaceTransactionBorrow(for: lifecycle)
         }

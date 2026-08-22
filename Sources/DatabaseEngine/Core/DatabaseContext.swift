@@ -1656,24 +1656,30 @@ extension DatabaseContext {
                     )
                 }
                 #endif
-                if let databaseTransaction = binding.databaseTransaction {
+                if requiredAccess != .read,
+                   let databaseTransaction = binding.databaseTransaction {
                     return try await operation(databaseTransaction)
                 }
+                let admittedStorageAccess = requiredAccess == .read
+                    ? ReadAuthorizedTransactionAccess.admitted(
+                        binding.transaction
+                    )
+                    : binding.transaction
                 let databaseTransaction = DatabaseTransaction(
-                    storageAccess: binding.transaction,
+                    storageAccess: admittedStorageAccess,
                     container: self.container
                 )
                 #if DATABASE_MULTI_BASE
                 let nestedBinding = DatabaseTransactionExecutionBinding(
-                    transaction: binding.transaction,
+                    transaction: admittedStorageAccess,
                     resource: binding.resource,
                     authorization: binding.authorization,
-                    grantedAccess: binding.grantedAccess,
+                    grantedAccess: requiredAccess,
                     databaseTransaction: databaseTransaction
                 )
                 #else
                 let nestedBinding = DatabaseTransactionExecutionBinding(
-                    transaction: binding.transaction,
+                    transaction: admittedStorageAccess,
                     databaseTransaction: databaseTransaction
                 )
                 #endif
@@ -1719,13 +1725,16 @@ extension DatabaseContext {
                     transaction: storageAccess
                 )
                 #endif
+                let admittedStorageAccess = requiredAccess == .read
+                    ? ReadAuthorizedTransactionAccess.admitted(storageAccess)
+                    : storageAccess
                 let transaction = DatabaseTransaction(
-                    storageAccess: storageAccess,
+                    storageAccess: admittedStorageAccess,
                     container: self.container
                 )
                 #if DATABASE_MULTI_BASE
                 let executionBinding = DatabaseTransactionExecutionBinding(
-                    transaction: storageAccess,
+                    transaction: admittedStorageAccess,
                     resource: self.resource,
                     authorization: self.authorization,
                     grantedAccess: requiredAccess,
@@ -1733,7 +1742,7 @@ extension DatabaseContext {
                 )
                 #else
                 let executionBinding = DatabaseTransactionExecutionBinding(
-                    transaction: storageAccess,
+                    transaction: admittedStorageAccess,
                     databaseTransaction: transaction
                 )
                 #endif
@@ -1833,7 +1842,12 @@ extension DatabaseContext {
                     )
                 }
                 #endif
-                return try await operation(binding.transaction)
+                let admittedTransaction = requiredAccess == .read
+                    ? ReadAuthorizedTransactionAccess.admitted(
+                        binding.transaction
+                    )
+                    : binding.transaction
+                return try await operation(admittedTransaction)
             }
             #if DATABASE_MULTI_BASE
             let lease = try self.requireOperationDataRoot()
@@ -1863,9 +1877,12 @@ extension DatabaseContext {
                     transaction: transaction
                 )
                 #endif
+                let admittedTransaction = requiredAccess == .read
+                    ? ReadAuthorizedTransactionAccess.admitted(transaction)
+                    : transaction
                 #if DATABASE_MULTI_BASE
                 let executionBinding = DatabaseTransactionExecutionBinding(
-                    transaction: transaction,
+                    transaction: admittedTransaction,
                     resource: self.resource,
                     authorization: self.authorization,
                     grantedAccess: requiredAccess,
@@ -1873,13 +1890,13 @@ extension DatabaseContext {
                 )
                 #else
                 let executionBinding = DatabaseTransactionExecutionBinding(
-                    transaction: transaction,
+                    transaction: admittedTransaction,
                     databaseTransaction: nil
                 )
                 #endif
                 return try await ActiveDatabaseTransactionContext.$binding
                     .withValue(executionBinding) {
-                        try await operation(transaction)
+                        try await operation(admittedTransaction)
                     }
             }
         }

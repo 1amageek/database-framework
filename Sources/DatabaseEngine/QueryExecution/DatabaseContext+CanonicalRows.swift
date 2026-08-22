@@ -665,34 +665,53 @@ extension DatabaseContext {
         )
     }
 
-    /// Executes a Base-local read through a caller-owned storage transaction.
-    /// Relational sources and admitted index readers reuse exactly that
-    /// transaction so callers cannot accidentally create a mixed snapshot.
+    /// Executes a Base-local read through the active storage transaction.
+    ///
+    /// The transaction argument preserves the source-executor API shape, but
+    /// it is not an authority boundary. The TaskLocal execution binding is the
+    /// only transaction admitted below, so an unrelated argument cannot create
+    /// a mixed snapshot or rebind the read to another Base.
     @_spi(DatabaseExecution)
     public func query(
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
         graphPartitions: FieldObject = FieldObject(),
-        transaction: any TransactionAccess
+        transaction _: any TransactionAccess
     ) async throws -> QueryResponse {
         try QueryStructuralValidator.validate(
             selectQuery,
             limits: execution.queryStructuralLimits
+        )
+        guard let binding = ActiveDatabaseTransactionContext.binding else {
+            throw DatabaseTransactionError.invalidOperationContext
+        }
+        #if DATABASE_MULTI_BASE
+        guard binding.resource == self.resource,
+              binding.authorization == self.authorization,
+              binding.grantedAccess.isSuperset(of: .read) else {
+            throw DatabaseGrantAuthorizationError.denied(
+                resource: self.resource,
+                required: .read
+            )
+        }
+        #endif
+        let admittedTransaction = ReadAuthorizedTransactionAccess.admitted(
+            binding.transaction
         )
         return try await withDataOperation { [self] in
             try await withFieldReadAuthorization(for: selectQuery) {
                 #if DATABASE_MULTI_BASE
                 _ = try requireOperationDataRoot()
                 let executionBinding = DatabaseTransactionExecutionBinding(
-                    transaction: transaction,
-                    resource: self.resource,
-                    authorization: self.authorization,
+                    transaction: admittedTransaction,
+                    resource: binding.resource,
+                    authorization: binding.authorization,
                     grantedAccess: .read,
                     databaseTransaction: nil
                 )
                 #else
                 let executionBinding = DatabaseTransactionExecutionBinding(
-                    transaction: transaction,
+                    transaction: admittedTransaction,
                     databaseTransaction: nil
                 )
                 #endif
@@ -702,7 +721,7 @@ extension DatabaseContext {
                             selectQuery,
                             options: execution,
                             graphPartitions: graphPartitions,
-                            transaction: transaction
+                            transaction: admittedTransaction
                         )
                     }
             }
