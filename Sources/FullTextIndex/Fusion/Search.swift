@@ -266,18 +266,16 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 transaction: transaction
             )
         case .any:
-            var idToElements: [ByteString: [any TupleElement]] = [:]
+            var union: [[any TupleElement]] = []
             for group in termGroups {
                 let matches = try await searchTermsAND(
                     group,
                     termsSubspace: termsSubspace,
                     transaction: transaction
                 )
-                for elements in matches {
-                    idToElements[elementsToStableKey(elements)] = elements
-                }
+                union = try FullTextPostingListAlgebra.union(union, matches)
             }
-            matchingIds = Array(idToElements.values)
+            matchingIds = union
         case .phrase:
             // Position-verified phrase search via FullTextIndexMaintainer.searchPhrase()
             matchingIds = try await searchPhraseIds(
@@ -362,8 +360,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<ByteString>? = nil
-        var idToElements: [ByteString: [any TupleElement]] = [:]
+        var intersection: [[any TupleElement]]?
 
         for term in terms {
             let results = try await searchTerm(
@@ -371,55 +368,21 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 termsSubspace: termsSubspace,
                 transaction: transaction
             )
-            var currentSet: Set<ByteString> = []
-
-            for elements in results {
-                let idKey = elementsToStableKey(elements)
-                currentSet.insert(idKey)
-
-                if intersection == nil || intersection!.contains(idKey) {
-                    idToElements[idKey] = elements
-                }
-            }
-
-            if let prev = intersection {
-                intersection = prev.intersection(currentSet)
-                if intersection!.isEmpty {
+            if let existing = intersection {
+                let reduced = try FullTextPostingListAlgebra.intersection(
+                    existing,
+                    results
+                )
+                if reduced.isEmpty {
                     return []
                 }
+                intersection = reduced
             } else {
-                intersection = currentSet
+                intersection = results
             }
         }
 
-        guard let finalIntersection = intersection else { return [] }
-        return finalIntersection.compactMap { idToElements[$0] }
-    }
-
-    /// Search for documents containing any term (OR query)
-    private func searchTermsOR(
-        _ terms: [String],
-        termsSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
-        guard !terms.isEmpty else { return [] }
-
-        var idToElements: [ByteString: [any TupleElement]] = [:]
-
-        for term in terms {
-            let results = try await searchTerm(
-                term,
-                termsSubspace: termsSubspace,
-                transaction: transaction
-            )
-
-            for elements in results {
-                let idKey = elementsToStableKey(elements)
-                idToElements[idKey] = elements
-            }
-        }
-
-        return Array(idToElements.values)
+        return intersection ?? []
     }
 
     /// Search for documents containing a term
@@ -586,12 +549,6 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     }
 
     // MARK: - Helpers
-
-    private func elementsToStableKey(
-        _ elements: [any TupleElement]
-    ) -> ByteString {
-        Tuple(elements).pack()
-    }
 
     private func normalizeQueryTermGroups(
         _ terms: [String],

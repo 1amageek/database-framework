@@ -67,49 +67,6 @@ private func reserveFullTextCandidates(
     )
 }
 
-private func reserveFullTextMapValues(
-    _ valuesByKey: [ByteString: [any TupleElement]],
-    keys: some Sequence<ByteString>,
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = DatabaseIntermediateFootprint(
-        bytes: UInt64(MemoryLayout<[[any TupleElement]]>.stride)
-    )
-    for key in keys {
-        guard let elements = valuesByKey[key] else { continue }
-        let elementStorage = try DatabaseIntermediateFootprint(
-            bytes: UInt64(
-                max(1, MemoryLayout<any TupleElement>.stride + 16)
-            )
-        ).multiplied(by: UInt64(elements.count))
-        footprint = try footprint.adding(
-            DatabaseIntermediateFootprint(
-                rows: 1,
-                bytes: UInt64(key.count) + 64
-            ).adding(elementStorage)
-        )
-    }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
-}
-
-private func reserveFullTextKeyArray(
-    count: Int,
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    let slots = try DatabaseIntermediateFootprint(
-        bytes: UInt64(max(1, MemoryLayout<ByteString>.stride + 16))
-    ).multiplied(by: UInt64(count))
-    return try workMeter.reserveIntermediate(
-        rows: UInt64(count),
-        bytes: slots.bytes,
-        at: .indexScan
-    )
-}
-
 private func reserveFullTextTuples(
     _ tuples: [Tuple],
     workMeter: DatabaseWorkMeter
@@ -357,17 +314,6 @@ private func reserveFullTextMapEntry(
         ).adding(
             DatabaseIntermediateFootprint(bytes: elementBytes)
         ).bytes,
-        at: .indexScan
-    )
-}
-
-private func reserveFullTextKey(
-    _ key: ByteString,
-    in reservation: DatabaseIntermediateReservation
-) throws {
-    try reservation.reserveAdditional(
-        rows: 1,
-        bytes: UInt64(key.count) + 64,
         at: .indexScan
     )
 }
@@ -1967,52 +1913,69 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 workMeter: workMeter
             )
         case .any:
-            var idToElements: [ByteString: [any TupleElement]] = [:]
-            let unionReservation = try workMeter.reserveIntermediate(
-                bytes: UInt64(
-                    MemoryLayout<[ByteString: [any TupleElement]]>.stride
-                ),
-                at: .indexScan
-            )
-            defer { unionReservation.release() }
-            for group in termGroups {
-                let matches = try await searchTermsAND(
-                    group,
-                    termsSubspace: termsSubspace,
-                    transaction: transaction,
-                    workMeter: workMeter
-                )
-                let matchReservation = try reserveFullTextCandidates(
-                    matches,
-                    workMeter: workMeter
-                )
-                defer { matchReservation.release() }
-                for elements in matches {
-                    let key = stableKey(Tuple(elements))
-                    if idToElements[key] == nil {
+            do {
+                var union: [[any TupleElement]] = []
+                var unionReservation: DatabaseIntermediateReservation?
+                defer { unionReservation?.release() }
+
+                for group in termGroups {
+                    let matches = try await searchTermsAND(
+                        group,
+                        termsSubspace: termsSubspace,
+                        transaction: transaction,
+                        workMeter: workMeter
+                    )
+                    let matchReservation = try reserveFullTextCandidates(
+                        matches,
+                        workMeter: workMeter
+                    )
+                    var transferredMatchReservation = false
+                    defer {
+                        if !transferredMatchReservation {
+                            matchReservation.release()
+                        }
+                    }
+
+                    guard !matches.isEmpty else { continue }
+                    guard !union.isEmpty else {
+                        union = matches
+                        unionReservation = matchReservation
+                        transferredMatchReservation = true
+                        continue
+                    }
+
+                    let mergedReservation = try workMeter.reserveIntermediate(
+                        bytes: UInt64(
+                            MemoryLayout<[[any TupleElement]]>.stride
+                        ),
+                        at: .indexScan
+                    )
+                    var transferredMergedReservation = false
+                    defer {
+                        if !transferredMergedReservation {
+                            mergedReservation.release()
+                        }
+                    }
+                    let merged = try FullTextPostingListAlgebra.union(
+                        union,
+                        matches,
+                        reservingCapacity: false
+                    ) { elements, key in
                         try reserveFullTextMapEntry(
                             key: key,
                             elements: elements,
-                            in: unionReservation
+                            in: mergedReservation
                         )
                     }
-                    idToElements[key] = elements
+                    unionReservation?.release()
+                    union = merged
+                    unionReservation = mergedReservation
+                    transferredMergedReservation = true
                 }
+                matchingAdmission = unionReservation
+                matchingIDs = union
+                unionReservation = nil
             }
-            let keyAdmission = try reserveFullTextKeyArray(
-                count: idToElements.count,
-                workMeter: workMeter
-            )
-            defer { keyAdmission.release() }
-            let orderedKeys = idToElements.keys.sorted { lhs, rhs in
-                lhs.lexicographicallyPrecedes(rhs)
-            }
-            matchingAdmission = try reserveFullTextMapValues(
-                idToElements,
-                keys: orderedKeys,
-                workMeter: workMeter
-            )
-            matchingIDs = orderedKeys.compactMap { idToElements[$0] }
         case .phrase:
             throw FullTextReadError.invalidExecutionPath(
                 "Phrase matching must use the position-aware search path"
@@ -2068,16 +2031,9 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<ByteString>? = nil
+        var intersection: [[any TupleElement]]?
         var intersectionReservation: DatabaseIntermediateReservation?
-        var idToElements: [ByteString: [any TupleElement]] = [:]
-        let mapReservation = try workMeter.reserveIntermediate(
-            bytes: UInt64(
-                MemoryLayout<[ByteString: [any TupleElement]]>.stride
-            ),
-            at: .indexScan
-        )
-        defer { mapReservation.release() }
+        defer { intersectionReservation?.release() }
 
         for term in terms {
             let results = try await searchTerm(
@@ -2090,132 +2046,51 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 results,
                 workMeter: workMeter
             )
-            defer { resultReservation.release() }
-            var currentSet: Set<ByteString> = []
-            let currentReservation = try workMeter.reserveIntermediate(
-                bytes: UInt64(MemoryLayout<Set<ByteString>>.stride),
-                at: .indexScan
-            )
-
-            for elements in results {
-                let idKey = stableKey(Tuple(elements))
-                if !currentSet.contains(idKey) {
-                    try reserveFullTextKey(
-                        idKey,
-                        in: currentReservation
-                    )
-                    currentSet.insert(idKey)
-                }
-                if idToElements[idKey] == nil {
-                    try reserveFullTextMapEntry(
-                        key: idKey,
-                        elements: elements,
-                        in: mapReservation
-                    )
-                    idToElements[idKey] = elements
+            var transferredResultReservation = false
+            defer {
+                if !transferredResultReservation {
+                    resultReservation.release()
                 }
             }
-
             if let existing = intersection {
-                var reduced: Set<ByteString> = []
                 let reducedReservation = try workMeter.reserveIntermediate(
-                    bytes: UInt64(MemoryLayout<Set<ByteString>>.stride),
+                    bytes: UInt64(
+                        MemoryLayout<[[any TupleElement]]>.stride
+                    ),
                     at: .indexScan
                 )
-                for key in existing where currentSet.contains(key) {
-                    try reserveFullTextKey(
-                        key,
+                var transferredReducedReservation = false
+                defer {
+                    if !transferredReducedReservation {
+                        reducedReservation.release()
+                    }
+                }
+                let reduced = try FullTextPostingListAlgebra.intersection(
+                    existing,
+                    results,
+                    reservingCapacity: false
+                ) { elements, key in
+                    try reserveFullTextMapEntry(
+                        key: key,
+                        elements: elements,
                         in: reducedReservation
                     )
-                    reduced.insert(key)
                 }
+                intersectionReservation?.release()
                 if reduced.isEmpty {
                     return []
                 }
                 intersection = reduced
                 intersectionReservation = reducedReservation
+                transferredReducedReservation = true
             } else {
-                intersection = currentSet
-                intersectionReservation = currentReservation
+                intersection = results
+                intersectionReservation = resultReservation
+                transferredResultReservation = true
             }
         }
 
-        guard let intersection else { return [] }
-        _ = intersectionReservation
-        let keyReservation = try reserveFullTextKeyArray(
-            count: intersection.count,
-            workMeter: workMeter
-        )
-        defer { keyReservation.release() }
-        let orderedKeys = intersection.sorted { lhs, rhs in
-            lhs.lexicographicallyPrecedes(rhs)
-        }
-        let outputReservation = try reserveFullTextMapValues(
-            idToElements,
-            keys: orderedKeys,
-            workMeter: workMeter
-        )
-        defer { outputReservation.release() }
-        let output = orderedKeys.compactMap { idToElements[$0] }
-        return output
-    }
-
-    private func searchTermsOR(
-        _ terms: [String],
-        termsSubspace: Subspace,
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter
-    ) async throws -> [[any TupleElement]] {
-        guard !terms.isEmpty else { return [] }
-
-        var idToElements: [ByteString: [any TupleElement]] = [:]
-        let unionReservation = try workMeter.reserveIntermediate(
-            bytes: UInt64(
-                MemoryLayout<[ByteString: [any TupleElement]]>.stride
-            ),
-            at: .indexScan
-        )
-        defer { unionReservation.release() }
-        for term in terms {
-            let results = try await searchTerm(
-                term,
-                termsSubspace: termsSubspace,
-                transaction: transaction,
-                workMeter: workMeter
-            )
-            let resultReservation = try reserveFullTextCandidates(
-                results,
-                workMeter: workMeter
-            )
-            defer { resultReservation.release() }
-            for elements in results {
-                let key = stableKey(Tuple(elements))
-                if idToElements[key] == nil {
-                    try reserveFullTextMapEntry(
-                        key: key,
-                        elements: elements,
-                        in: unionReservation
-                    )
-                }
-                idToElements[key] = elements
-            }
-        }
-        let keyReservation = try reserveFullTextKeyArray(
-            count: idToElements.count,
-            workMeter: workMeter
-        )
-        defer { keyReservation.release() }
-        let orderedKeys = idToElements.keys.sorted { lhs, rhs in
-            lhs.lexicographicallyPrecedes(rhs)
-        }
-        let outputReservation = try reserveFullTextMapValues(
-            idToElements,
-            keys: orderedKeys,
-            workMeter: workMeter
-        )
-        defer { outputReservation.release() }
-        let output = orderedKeys.compactMap { idToElements[$0] }
-        return output
+        return intersection ?? []
     }
 
     private func searchTerm(

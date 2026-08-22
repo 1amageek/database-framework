@@ -1,16 +1,17 @@
-#if FOUNDATION_DB
 // BitmapIndexBehaviorTests.swift
 // Comprehensive tests for BitmapIndex behavior with FDB
 
 import Testing
+import DatabaseTypes
+import TestSupport
+@testable import BitmapIndex
+
+#if FOUNDATION_DB
 import Foundation
 import StorageKit
 import FDBStorage
 import DatabaseKit
-import DatabaseTypes
-import TestSupport
 @testable import DatabaseEngine
-@testable import BitmapIndex
 
 // MARK: - Test Model
 
@@ -114,6 +115,8 @@ private struct BitmapIndexContext {
         }
     }
 }
+
+#endif
 
 // MARK: - RoaringBitmap Unit Tests
 
@@ -331,7 +334,86 @@ struct RoaringBitmapUnitTests {
 
         #expect(bitmap.cardinality == 1)
     }
+
+    @Test("Sequence initialization sorts and deduplicates every container")
+    func sequenceInitializationSortsAndDeduplicates() {
+        let values: [UInt32] = [
+            131_072, 65_537, 2, 65_536, 1, 2, 131_072, 0,
+        ]
+
+        let bitmap = RoaringBitmap(values)
+
+        #expect(bitmap.toArray() == [0, 1, 2, 65_536, 65_537, 131_072])
+    }
+
+    @Test("Set operations match the reference algebra across containers")
+    func setOperationsMatchReferenceAlgebra() {
+        let leftValues = (0..<12_000).compactMap { index -> UInt32? in
+            index.isMultiple(of: 2) || index.isMultiple(of: 11)
+                ? UInt32(index * 17)
+                : nil
+        }
+        let rightValues = (0..<13_000).compactMap { index -> UInt32? in
+            index.isMultiple(of: 3) || index.isMultiple(of: 7)
+                ? UInt32(index * 19)
+                : nil
+        }
+        let leftReference = Set(leftValues)
+        let rightReference = Set(rightValues)
+        let left = RoaringBitmap(leftValues.reversed())
+        let right = RoaringBitmap(rightValues + Array(rightValues.prefix(64)))
+
+        #expect(
+            (left && right).toArray()
+                == leftReference.intersection(rightReference).sorted()
+        )
+        #expect(
+            (left || right).toArray()
+                == leftReference.union(rightReference).sorted()
+        )
+        #expect(
+            (left - right).toArray()
+                == leftReference.subtracting(rightReference).sorted()
+        )
+        #expect(
+            (left ^ right).toArray()
+                == leftReference.symmetricDifference(rightReference).sorted()
+        )
+    }
+
+    @Test("Run containers preserve membership while splitting and merging")
+    func runContainersSplitAndMerge() {
+        var bitmap = RoaringBitmap.range(0..<65_536)
+
+        bitmap.remove(0)
+        bitmap.remove(32_768)
+        bitmap.remove(65_535)
+
+        #expect(bitmap.cardinality == 65_533)
+        #expect(!bitmap.contains(0))
+        #expect(!bitmap.contains(32_768))
+        #expect(!bitmap.contains(65_535))
+        #expect(bitmap.contains(1))
+        #expect(bitmap.contains(32_767))
+        #expect(bitmap.contains(32_769))
+        #expect(bitmap.contains(65_534))
+
+        bitmap.add(32_768)
+        bitmap.add(0)
+        bitmap.add(65_535)
+
+        #expect(bitmap == RoaringBitmap.range(0..<65_536))
+    }
+
+    @Test("Complement respects an exclusive universe boundary")
+    func complementRespectsUniverseBoundary() {
+        let bitmap = RoaringBitmap([0, 2, 5, 9, 10] as [UInt32])
+
+        #expect(bitmap.complement(universeSize: 10).toArray() == [1, 3, 4, 6, 7, 8])
+    }
 }
+
+#if FOUNDATION_DB
 
 // MARK: - BitmapIndexMaintainer Behavior Tests
 

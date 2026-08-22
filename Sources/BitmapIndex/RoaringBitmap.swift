@@ -23,7 +23,7 @@ import StorageKit
 /// **Performance**:
 /// - AND: O(n) where n is smaller bitmap
 /// - OR: O(n + m)
-/// - Cardinality: O(containers) with cached counts
+/// - Cardinality: O(array values + bitmap words + runs)
 /// - Memory: Adaptive based on density
 public struct RoaringBitmap: Sendable, Equatable, Sequence {
     /// Container threshold: switch from array to bitmap at 4096 elements
@@ -82,22 +82,49 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
             }
         }
 
+        @inline(__always)
+        private static func lowerBound(
+            of value: UInt16,
+            in values: [UInt16]
+        ) -> Int {
+            var lower = 0
+            var upper = values.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                if values[middle] < value {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            return lower
+        }
+
         /// Check if value is in container
         func contains(_ value: UInt16) -> Bool {
             switch self {
             case .array(let arr):
-                return arr.contains(value)
+                let index = Container.lowerBound(of: value, in: arr)
+                return index < arr.count && arr[index] == value
             case .bitmap(let bits):
                 let wordIndex = Int(value) / 64
                 let bitIndex = Int(value) % 64
                 return (bits[wordIndex] & (1 << bitIndex)) != 0
             case .run(let runs):
-                for (start, length) in runs {
-                    if value >= start && value <= start &+ length {
+                var lower = 0
+                var upper = runs.count
+                let target = Int(value)
+                while lower < upper {
+                    let middle = lower + (upper - lower) / 2
+                    let run = runs[middle]
+                    let start = Int(run.start)
+                    let end = start + Int(run.length)
+                    if target < start {
+                        upper = middle
+                    } else if target > end {
+                        lower = middle + 1
+                    } else {
                         return true
-                    }
-                    if value < start {
-                        return false
                     }
                 }
                 return false
@@ -108,11 +135,11 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
         func adding(_ value: UInt16) -> Container {
             switch self {
             case .array(var arr):
-                if arr.contains(value) {
+                let index = Container.lowerBound(of: value, in: arr)
+                if index < arr.count, arr[index] == value {
                     return .array(arr)
                 }
-                arr.append(value)
-                arr.sort()
+                arr.insert(value, at: index)
                 if arr.count > RoaringBitmap.arrayMaxSize {
                     return Container.arrayToBitmap(arr)
                 }
@@ -125,16 +152,7 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
                 return .bitmap(bits)
 
             case .run(let runs):
-                // Simplified: convert to array, add, reconvert if needed
-                var arr = Container.runToArray(runs)
-                if !arr.contains(value) {
-                    arr.append(value)
-                    arr.sort()
-                }
-                if arr.count > RoaringBitmap.arrayMaxSize {
-                    return Container.arrayToBitmap(arr)
-                }
-                return .array(arr)
+                return Container.adding(value, to: runs)
             }
         }
 
@@ -142,7 +160,11 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
         func removing(_ value: UInt16) -> Container? {
             switch self {
             case .array(var arr):
-                arr.removeAll { $0 == value }
+                let index = Container.lowerBound(of: value, in: arr)
+                guard index < arr.count, arr[index] == value else {
+                    return .array(arr)
+                }
+                arr.remove(at: index)
                 return arr.isEmpty ? nil : .array(arr)
 
             case .bitmap(var bits):
@@ -159,10 +181,105 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
                 return .bitmap(bits)
 
             case .run(let runs):
-                var arr = Container.runToArray(runs)
-                arr.removeAll { $0 == value }
-                return arr.isEmpty ? nil : .array(arr)
+                return Container.removing(value, from: runs)
             }
+        }
+
+        private static func adding(
+            _ value: UInt16,
+            to runs: [(start: UInt16, length: UInt16)]
+        ) -> Container {
+            var updated = runs
+            let target = Int(value)
+
+            for index in updated.indices {
+                let run = updated[index]
+                let start = Int(run.start)
+                let end = start + Int(run.length)
+                if target >= start, target <= end {
+                    return .run(updated)
+                }
+                guard target < start else { continue }
+
+                let joinsPrevious: Bool
+                if index > updated.startIndex {
+                    let previous = updated[index - 1]
+                    joinsPrevious = Int(previous.start)
+                        + Int(previous.length) + 1 == target
+                } else {
+                    joinsPrevious = false
+                }
+                let joinsNext = target + 1 == start
+
+                switch (joinsPrevious, joinsNext) {
+                case (true, true):
+                    let previousIndex = index - 1
+                    let previousStart = Int(updated[previousIndex].start)
+                    updated[previousIndex].length = UInt16(end - previousStart)
+                    updated.remove(at: index)
+                case (true, false):
+                    let previousIndex = index - 1
+                    updated[previousIndex].length &+= 1
+                case (false, true):
+                    updated[index] = (
+                        start: value,
+                        length: UInt16(end - target)
+                    )
+                case (false, false):
+                    updated.insert((start: value, length: 0), at: index)
+                }
+                return .run(updated)
+            }
+
+            if let lastIndex = updated.indices.last {
+                let last = updated[lastIndex]
+                if Int(last.start) + Int(last.length) + 1 == target {
+                    updated[lastIndex].length &+= 1
+                    return .run(updated)
+                }
+            }
+            updated.append((start: value, length: 0))
+            return .run(updated)
+        }
+
+        private static func removing(
+            _ value: UInt16,
+            from runs: [(start: UInt16, length: UInt16)]
+        ) -> Container? {
+            var updated = runs
+            let target = Int(value)
+
+            for index in updated.indices {
+                let run = updated[index]
+                let start = Int(run.start)
+                let end = start + Int(run.length)
+                if target < start {
+                    return .run(updated)
+                }
+                guard target <= end else { continue }
+
+                if start == end {
+                    updated.remove(at: index)
+                } else if target == start {
+                    updated[index] = (
+                        start: UInt16(start + 1),
+                        length: UInt16(end - start - 1)
+                    )
+                } else if target == end {
+                    updated[index].length = UInt16(end - start - 1)
+                } else {
+                    updated[index].length = UInt16(target - start - 1)
+                    updated.insert(
+                        (
+                            start: UInt16(target + 1),
+                            length: UInt16(end - target - 1)
+                        ),
+                        at: index + 1
+                    )
+                }
+                return updated.isEmpty ? nil : .run(updated)
+            }
+            return .run(updated)
         }
 
         // MARK: - Container Type Conversions
@@ -192,6 +309,9 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
 
         static func runToArray(_ runs: [(start: UInt16, length: UInt16)]) -> [UInt16] {
             var arr: [UInt16] = []
+            arr.reserveCapacity(
+                runs.reduce(0) { $0 + Int($1.length) + 1 }
+            )
             for (start, length) in runs {
                 for i in 0...length {
                     arr.append(start &+ i)
@@ -200,15 +320,127 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
             return arr
         }
 
+        private static func intersectSorted(
+            _ lhs: [UInt16],
+            _ rhs: [UInt16]
+        ) -> [UInt16] {
+            var result: [UInt16] = []
+            result.reserveCapacity(Swift.min(lhs.count, rhs.count))
+            var leftIndex = 0
+            var rightIndex = 0
+            while leftIndex < lhs.count, rightIndex < rhs.count {
+                let left = lhs[leftIndex]
+                let right = rhs[rightIndex]
+                if left < right {
+                    leftIndex += 1
+                } else if left > right {
+                    rightIndex += 1
+                } else {
+                    result.append(left)
+                    leftIndex += 1
+                    rightIndex += 1
+                }
+            }
+            return result
+        }
+
+        private static func unionSorted(
+            _ lhs: [UInt16],
+            _ rhs: [UInt16]
+        ) -> [UInt16] {
+            var result: [UInt16] = []
+            result.reserveCapacity(lhs.count + rhs.count)
+            var leftIndex = 0
+            var rightIndex = 0
+            while leftIndex < lhs.count, rightIndex < rhs.count {
+                let left = lhs[leftIndex]
+                let right = rhs[rightIndex]
+                if left < right {
+                    result.append(left)
+                    leftIndex += 1
+                } else if left > right {
+                    result.append(right)
+                    rightIndex += 1
+                } else {
+                    result.append(left)
+                    leftIndex += 1
+                    rightIndex += 1
+                }
+            }
+            result.append(contentsOf: lhs[leftIndex...])
+            result.append(contentsOf: rhs[rightIndex...])
+            return result
+        }
+
+        private static func subtractSorted(
+            _ lhs: [UInt16],
+            _ rhs: [UInt16]
+        ) -> [UInt16] {
+            var result: [UInt16] = []
+            result.reserveCapacity(lhs.count)
+            var leftIndex = 0
+            var rightIndex = 0
+            while leftIndex < lhs.count, rightIndex < rhs.count {
+                let left = lhs[leftIndex]
+                let right = rhs[rightIndex]
+                if left < right {
+                    result.append(left)
+                    leftIndex += 1
+                } else if left > right {
+                    rightIndex += 1
+                } else {
+                    leftIndex += 1
+                    rightIndex += 1
+                }
+            }
+            result.append(contentsOf: lhs[leftIndex...])
+            return result
+        }
+
+        private static func symmetricDifferenceSorted(
+            _ lhs: [UInt16],
+            _ rhs: [UInt16]
+        ) -> [UInt16] {
+            var result: [UInt16] = []
+            result.reserveCapacity(lhs.count + rhs.count)
+            var leftIndex = 0
+            var rightIndex = 0
+            while leftIndex < lhs.count, rightIndex < rhs.count {
+                let left = lhs[leftIndex]
+                let right = rhs[rightIndex]
+                if left < right {
+                    result.append(left)
+                    leftIndex += 1
+                } else if left > right {
+                    result.append(right)
+                    rightIndex += 1
+                } else {
+                    leftIndex += 1
+                    rightIndex += 1
+                }
+            }
+            result.append(contentsOf: lhs[leftIndex...])
+            result.append(contentsOf: rhs[rightIndex...])
+            return result
+        }
+
+        private static func container(
+            fromSorted values: [UInt16]
+        ) -> Container? {
+            guard !values.isEmpty else { return nil }
+            if values.count > RoaringBitmap.arrayMaxSize {
+                return arrayToBitmap(values)
+            }
+            return .array(values)
+        }
+
         // MARK: - Set Operations
 
         /// Intersection (AND)
         static func intersection(_ a: Container, _ b: Container) -> Container? {
             switch (a, b) {
             case (.array(let arrA), .array(let arrB)):
-                let setB = Set(arrB)
-                let result = arrA.filter { setB.contains($0) }
-                return result.isEmpty ? nil : .array(result)
+                return container(fromSorted: intersectSorted(arrA, arrB))
 
             case (.array(let arr), .bitmap(let bits)),
                  (.bitmap(let bits), .array(let arr)):
@@ -234,11 +466,9 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
                 return .bitmap(result)
 
             default:
-                // Convert runs to arrays and intersect
-                let arrA = a.toArray()
-                let setB = Set(b.toArray())
-                let result = arrA.filter { setB.contains($0) }
-                return result.isEmpty ? nil : .array(result)
+                return container(
+                    fromSorted: intersectSorted(a.toArray(), b.toArray())
+                )
             }
         }
 
@@ -246,13 +476,11 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
         static func union(_ a: Container, _ b: Container) -> Container {
             switch (a, b) {
             case (.array(let arrA), .array(let arrB)):
-                var result = Set(arrA)
-                result.formUnion(arrB)
-                let sorted = result.sorted()
-                if sorted.count > RoaringBitmap.arrayMaxSize {
-                    return arrayToBitmap(sorted)
+                let result = unionSorted(arrA, arrB)
+                if result.count > RoaringBitmap.arrayMaxSize {
+                    return arrayToBitmap(result)
                 }
-                return .array(sorted)
+                return .array(result)
 
             case (.array(let arr), .bitmap(var bits)),
                  (.bitmap(var bits), .array(let arr)):
@@ -271,15 +499,11 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
                 return .bitmap(result)
 
             default:
-                let arrA = a.toArray()
-                let arrB = b.toArray()
-                var result = Set(arrA)
-                result.formUnion(arrB)
-                let sorted = result.sorted()
-                if sorted.count > RoaringBitmap.arrayMaxSize {
-                    return arrayToBitmap(sorted)
+                let result = unionSorted(a.toArray(), b.toArray())
+                if result.count > RoaringBitmap.arrayMaxSize {
+                    return arrayToBitmap(result)
                 }
-                return .array(sorted)
+                return .array(result)
             }
         }
 
@@ -289,10 +513,9 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
         static func symmetricDifference(_ a: Container, _ b: Container) -> Container? {
             switch (a, b) {
             case (.array(let arrA), .array(let arrB)):
-                let setA = Set(arrA)
-                let setB = Set(arrB)
-                let result = setA.symmetricDifference(setB).sorted()
-                return result.isEmpty ? nil : .array(result)
+                return container(
+                    fromSorted: symmetricDifferenceSorted(arrA, arrB)
+                )
 
             case (.array(let arr), .bitmap(let bits)):
                 var resultBits = bits
@@ -338,15 +561,12 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
                 return .bitmap(result)
 
             default:
-                // Convert runs to arrays and compute XOR
-                let setA = Set(a.toArray())
-                let setB = Set(b.toArray())
-                let result = setA.symmetricDifference(setB).sorted()
-                if result.isEmpty { return nil }
-                if result.count > RoaringBitmap.arrayMaxSize {
-                    return arrayToBitmap(result)
-                }
-                return .array(result)
+                return container(
+                    fromSorted: symmetricDifferenceSorted(
+                        a.toArray(),
+                        b.toArray()
+                    )
+                )
             }
         }
 
@@ -355,7 +575,7 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
         /// Returns elements in `a` that are NOT in `b`.
         ///
         /// **Time Complexity**:
-        /// - array-array: O(n + m) using Set lookup
+        /// - array-array: O(n + m) using a linear merge
         /// - array-bitmap: O(n) with O(1) bitmap lookup per element
         /// - bitmap-array: O(m) for clearing bits + O(1024) for counting
         /// - bitmap-bitmap: O(1024) bitwise AND NOT
@@ -364,9 +584,7 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
         static func difference(_ a: Container, _ b: Container) -> Container? {
             switch (a, b) {
             case (.array(let arrA), .array(let arrB)):
-                let setB = Set(arrB)
-                let result = arrA.filter { !setB.contains($0) }
-                return result.isEmpty ? nil : .array(result)
+                return container(fromSorted: subtractSorted(arrA, arrB))
 
             case (.array(let arr), .bitmap(let bits)):
                 let result = arr.filter { value in
@@ -405,11 +623,9 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
                 return .bitmap(result)
 
             default:
-                // Convert runs to arrays and compute difference
-                let arrA = a.toArray()
-                let setB = Set(b.toArray())
-                let result = arrA.filter { !setB.contains($0) }
-                return result.isEmpty ? nil : .array(result)
+                return container(
+                    fromSorted: subtractSorted(a.toArray(), b.toArray())
+                )
             }
         }
 
@@ -445,9 +661,27 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
 
     /// Create a bitmap from values
     public init<S: Sequence>(_ values: S) where S.Element == UInt32 {
-        self.containers = [:]
+        var groupedValues: [UInt16: [UInt16]] = [:]
         for value in values {
-            add(value)
+            let high = UInt16(value >> 16)
+            let low = UInt16(value & 0xFFFF)
+            groupedValues[high, default: []].append(low)
+        }
+
+        self.containers = [:]
+        self.containers.reserveCapacity(groupedValues.count)
+        for (high, var lowValues) in groupedValues {
+            lowValues.sort()
+            var uniqueValues: [UInt16] = []
+            uniqueValues.reserveCapacity(lowValues.count)
+            for value in lowValues where uniqueValues.last != value {
+                uniqueValues.append(value)
+            }
+            if uniqueValues.count > Self.arrayMaxSize {
+                containers[high] = Container.arrayToBitmap(uniqueValues)
+            } else {
+                containers[high] = .array(uniqueValues)
+            }
         }
     }
 
@@ -616,33 +850,21 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
     /// let xor = a ^ b  // [1, 4]
     /// ```
     public static func ^ (lhs: RoaringBitmap, rhs: RoaringBitmap) -> RoaringBitmap {
-        var result = RoaringBitmap()
-
-        // Get all unique high parts
-        let allHighParts = Set(lhs.containers.keys).union(rhs.containers.keys)
-
-        for high in allHighParts {
-            let containerA = lhs.containers[high]
-            let containerB = rhs.containers[high]
-
-            switch (containerA, containerB) {
-            case (.some(let a), .some(let b)):
-                // Both have this container - compute XOR
-                if let xorContainer = Container.symmetricDifference(a, b) {
+        var result = lhs
+        for (high, containerB) in rhs.containers {
+            if let containerA = result.containers[high] {
+                if let xorContainer = Container.symmetricDifference(
+                    containerA,
+                    containerB
+                ) {
                     result.containers[high] = xorContainer
+                } else {
+                    result.containers.removeValue(forKey: high)
                 }
-            case (.some(let a), .none):
-                // Only in lhs
-                result.containers[high] = a
-            case (.none, .some(let b)):
-                // Only in rhs
-                result.containers[high] = b
-            case (.none, .none):
-                // Neither (shouldn't happen)
-                break
+            } else {
+                result.containers[high] = containerB
             }
         }
-
         return result
     }
 

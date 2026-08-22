@@ -336,40 +336,25 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: Set<ByteString>? = nil
-        var idToElements: [ByteString: [any TupleElement]] = [:]
+        var intersection: [[any TupleElement]]?
 
         for term in terms {
             let results = try await searchNormalizedTerm(term, transaction: transaction)
-            var currentSet: Set<ByteString> = []
-
-            for elements in results {
-                let idKey = elementsToStableKey(elements)
-                currentSet.insert(idKey)
-
-                // Only store elements that might be in final result
-                // For first term, store all; for subsequent terms, only store if in intersection
-                if intersection == nil || intersection!.contains(idKey) {
-                    idToElements[idKey] = elements
-                }
-            }
-
-            // Update intersection incrementally
-            if let prev = intersection {
-                intersection = prev.intersection(currentSet)
-
-                // Early termination: if intersection is empty, no need to check remaining terms
-                if intersection!.isEmpty {
+            if let existing = intersection {
+                let reduced = try FullTextPostingListAlgebra.intersection(
+                    existing,
+                    results
+                )
+                if reduced.isEmpty {
                     return []
                 }
+                intersection = reduced
             } else {
-                intersection = currentSet
+                intersection = results
             }
         }
 
-        // Return matching elements
-        guard let finalIntersection = intersection else { return [] }
-        return finalIntersection.compactMap { idToElements[$0] }
+        return intersection ?? []
     }
 
     /// Search for documents containing any term (OR query)
@@ -385,18 +370,14 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         let termGroups = normalizeQueryTermGroups(terms)
         guard !termGroups.isEmpty else { return [] }
 
-        var idToElements: [ByteString: [any TupleElement]] = [:]
+        var union: [[any TupleElement]] = []
 
         for normalizedTerms in termGroups {
             let results = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
-
-            for elements in results {
-                let idKey = elementsToStableKey(elements)
-                idToElements[idKey] = elements
-            }
+            union = try FullTextPostingListAlgebra.union(union, results)
         }
 
-        return Array(idToElements.values)
+        return union
     }
 
     /// Search for a phrase (exact sequence of terms)
@@ -646,15 +627,6 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         return Tuple(elements).pack()
     }
 
-    /// Preserve tuple type identity while using the packed bytes directly as a
-    /// hash key. `ByteString` retains its immutable storage without materializing a
-    /// `Data` or Base64 representation.
-    private func elementsToStableKey(
-        _ elements: [any TupleElement]
-    ) -> ByteString {
-        Tuple(elements).pack()
-    }
-
     // MARK: - BM25 Statistics
 
     /// Get BM25 corpus statistics
@@ -781,14 +753,12 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
             matchingDocs = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
         case .any:
             let groups = normalizeQueryTermGroups(terms)
-            var idToElements: [ByteString: [any TupleElement]] = [:]
+            var union: [[any TupleElement]] = []
             for group in groups {
                 let matches = try await searchNormalizedTermsAND(group, transaction: transaction)
-                for elements in matches {
-                    idToElements[elementsToStableKey(elements)] = elements
-                }
+                union = try FullTextPostingListAlgebra.union(union, matches)
             }
-            matchingDocs = Array(idToElements.values)
+            matchingDocs = union
         case .phrase:
             matchingDocs = try await searchPhrase(terms.joined(separator: " "), transaction: transaction)
         }

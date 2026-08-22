@@ -7,6 +7,8 @@
 # Swift Package Manager
 /.build/
 /Benchmarks/.build/
+/Benchmarks/BitmapCore/.build/
+/Benchmarks/FullTextQuery/.build/
 /.build-*/
 /Packages/
 .swiftpm/configuration/registries.json
