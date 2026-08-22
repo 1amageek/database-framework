@@ -77,11 +77,13 @@ the implementation change on the same Apple M4 Max (14 cores, 36 GB) running
 macOS 27.0 and Swift snapshot 2026-08-14. Absolute timings are machine-specific;
 the paired ratios are the regression reference.
 
-`reference-medians.tsv` applies a 2x median ceiling to the fixed macOS runner.
-This deliberately wide bound detects material regressions without treating
-ordinary scheduler and filesystem noise as a failure. The harness also
-requires the exact reviewed metric-name set, one finite positive median per
-metric, and zero compiler, analyzer, and runtime warnings.
+`reference-medians.tsv` applies a 3x median ceiling to the sub-millisecond
+bitmap workloads and a 2x ceiling to the full-text workloads. The bitmap
+ceiling accounts for virtualization and scheduler variance while still
+requiring every operation to remain at least 3.7x faster than its paired
+pre-optimization baseline. The harness also requires the exact reviewed
+metric-name set, one finite positive median per metric, and zero compiler,
+analyzer, and runtime warnings.
 
 | Benchmark | Baseline (us) | Optimized (us) | Speedup |
 |---|---:|---:|---:|

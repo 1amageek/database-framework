@@ -62,17 +62,21 @@ jobs:
           echo "FDB_CLIENT_INCLUDE_DIRECTORY=$client_directory/include" >> "$GITHUB_ENV"
           echo "FDB_CLIENT_LIBRARY_DIRECTORY=$client_directory/lib" >> "$GITHUB_ENV"
 
-      - name: Run optimization regression benchmarks
+      - name: Validate benchmark median gate
         working-directory: database-framework
-        run: |
-          result_directory=/tmp/database-framework-optimization-benchmarks
-          scripts/test-benchmark-median-validator
-          scripts/xcode-benchmark-harness bitmap \
-            --result-directory "$result_directory/bitmap"
-          scripts/xcode-benchmark-harness fulltext \
-            --result-directory "$result_directory/fulltext"
+        run: scripts/test-benchmark-median-validator
+
+      - name: Run bitmap regression benchmark
+        working-directory: database-framework
+        run: scripts/xcode-benchmark-harness bitmap --result-directory /tmp/database-framework-optimization-benchmarks/bitmap
+
+      - name: Run full-text regression benchmark
+        if: ${{ !cancelled() }}
+        working-directory: database-framework
+        run: scripts/xcode-benchmark-harness fulltext --result-directory /tmp/database-framework-optimization-benchmarks/fulltext
 
       - name: Build benchmark package without executing workloads
+        if: ${{ !cancelled() }}
         working-directory: database-framework/Benchmarks
         run: |
           result_directory=/tmp/database-framework-benchmark-build
@@ -104,6 +108,7 @@ jobs:
           grep -F "SWIFT_EXEC = $pinned_swiftc" "$log_path"
 
       - name: Validate benchmark build result
+        if: ${{ !cancelled() }}
         run: |
           summary="$(xcrun xcresulttool get build-results \
             --path /tmp/database-framework-benchmark-build/FrameworkPerformanceBenchmarks.xcresult)"
