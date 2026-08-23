@@ -337,6 +337,27 @@ public struct IndexQueryContext: Sendable {
         }
     }
 
+    /// Resolves a declared index for an admitted cross-package database
+    /// execution without exposing write or transaction-control authority.
+    @_spi(DatabaseExecution)
+    public func readableIndexForExecution(
+        named indexName: String,
+        indexType: IndexType,
+        forEntityName entityName: String,
+        partitions: FieldObject,
+        authorization: IndexReadAuthorization,
+        transaction: any TransactionReadAccess
+    ) async throws -> ReadableIndex? {
+        try await readableIndex(
+            named: indexName,
+            indexType: indexType,
+            forEntityName: entityName,
+            partitions: partitions,
+            authorization: authorization,
+            transaction: transaction
+        )
+    }
+
     private func resolveReadableIndex(
         named indexName: String,
         indexType: IndexType,

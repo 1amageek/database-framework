@@ -73,7 +73,7 @@ public struct DatabaseMutationStateStore: Sendable {
 
     public func currentLogicalVersion(
         in binding: DatabaseMutationStateBinding,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> UInt64 {
         try await logicalVersion(
             in: binding.root,
@@ -265,7 +265,7 @@ public struct DatabaseMutationStateStore: Sendable {
 
     private func logicalVersion(
         in root: Subspace,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         snapshot: Bool
     ) async throws -> UInt64 {
         guard let bytes = try await transaction.getValue(

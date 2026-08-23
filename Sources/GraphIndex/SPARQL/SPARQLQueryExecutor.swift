@@ -140,6 +140,31 @@ public struct SPARQLQueryExecutor: Sendable {
         )
     }
 
+    /// Creates a transaction-bound executor for an admitted cross-package
+    /// database execution. The returned executor cannot open storage itself.
+    @_spi(DatabaseExecution)
+    public static func transactionBound(
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock,
+        sources: [RDFDatasetSource],
+        readMode: RDFDatasetReadMode = .snapshot,
+        dataset: SPARQLExecutionDataset = .implicit,
+        functionRegistry: SPARQLFunctionRegistry = .empty,
+        ontologyContext: OntologyContext? = nil,
+        propertyPathConfiguration: ExecutionPropertyPathConfiguration = .default
+    ) -> Self {
+        Self(
+            monotonicClock: monotonicClock,
+            wallClock: wallClock,
+            sources: sources,
+            readMode: readMode,
+            dataset: dataset,
+            functionRegistry: functionRegistry,
+            ontologyContext: ontologyContext,
+            propertyPathConfiguration: propertyPathConfiguration
+        )
+    }
+
     // MARK: - Result Type
 
     struct EvaluationResult: ~Copyable, Sendable {
