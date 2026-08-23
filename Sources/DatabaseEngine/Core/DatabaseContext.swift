@@ -1886,11 +1886,12 @@ extension DatabaseContext {
     /// originating request's persisted Grant.
     ///
     /// The execution host must validate the current durable operation lease in
-    /// `validateOwnership`. No data capability is passed to host code until
-    /// that validation succeeds for the current transaction attempt. Because
-    /// control and data may occupy different storage domains, the mutation must
-    /// be idempotent and retain evidence that the final control-domain commit
-    /// can validate.
+    /// `validateOwnership`. No data transaction or capability is created until
+    /// that validation succeeds. Because control and data may occupy different
+    /// storage domains, the mutation must be idempotent and retain evidence
+    /// that the final control-domain commit can validate. Ownership is checked
+    /// again by that final atomic transition rather than by nesting a control
+    /// transaction inside this data transaction.
     @_spi(DatabaseExecution)
     public func withExecutionCheckpointedOperationOwnedTransaction<
         Ownership: Sendable,
@@ -1904,13 +1905,13 @@ extension DatabaseContext {
             DatabaseTransaction
         ) async throws -> T
     ) async throws -> T {
-        try await withModelTransactionCapabilities(
+        let ownership = try await validateOwnership()
+        return try await withModelTransactionCapabilities(
             authorization: .durableOperationOwner,
             configuration: configuration,
             executionDeadline: executionDeadline,
             exposesControlMetadata: false
         ) { transaction, _ in
-            let ownership = try await validateOwnership()
             return try await operation(ownership, transaction)
         }
     }
