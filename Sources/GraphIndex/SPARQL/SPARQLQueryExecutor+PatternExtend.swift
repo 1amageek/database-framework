@@ -8,7 +8,7 @@ extension SPARQLQueryExecutor {
         innerPattern: ExecutionPattern,
         variable: String,
         expression: SPARQLExpressionPlan,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         seed: VariableBinding,
         resultLimit: Int?,

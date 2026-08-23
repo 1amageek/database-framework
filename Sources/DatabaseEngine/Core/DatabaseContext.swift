@@ -19,7 +19,7 @@ import Synchronization
 /// **Transaction Management**:
 /// - Use `context.withTransaction()` for explicit transaction control
 /// - ReadVersionCache is per-context for proper scoping per unit of work
-/// - System operations (DirectoryLayer, Migration) use `(try container.requireDataTransactionExecutor()).withTransaction()`
+/// - System operations (DirectoryLayer, Migration) use `container.transactionExecutor.withTransaction()`
 ///
 /// **Usage**:
 /// ```swift
@@ -116,6 +116,9 @@ public final class DatabaseContext: Sendable {
 
     /// Database event logger selected by the container configuration.
     private let logger: DatabaseLogger
+
+    /// Cached stores keyed by (typeName, partitionPath) to avoid re-creation on every save()
+    private let storeRegistry = Mutex(ContextDataStoreRegistry())
 
     /// Error handler for autosave failures
     ///
@@ -263,23 +266,84 @@ public final class DatabaseContext: Sendable {
         }
     }
 
-    /// Resolves read storage inside the caller-owned transaction. Read paths
-    /// never create directories, initialize lifecycle state, or open a nested
-    /// transaction merely to construct a store facade.
-    private func openStoreForRead<T: Persistable>(
-        for type: T.Type,
-        path: AnyDirectoryPath? = nil,
-        transaction: any TransactionReadAccess
-    ) async throws -> DatabaseDataStore? {
-        guard let entity = container.schema.entity(named: T.persistableType)
-        else {
-            throw ContainerSchemaError.entityNotFound(T.persistableType)
-        }
-        return try await container.openStore(
-            for: entity,
-            path: path,
-            transaction: transaction
+    private func cachedStore<T: Persistable>(
+        for type: T.Type
+    ) async throws -> DatabaseDataStore {
+        #if DATABASE_MULTI_BASE
+        let lease = try requireOperationDataRoot()
+        let storeKey = DatabaseStoreCacheKey(
+            basePlacementGeneration: lease.generation,
+            entity: T.persistableType,
+            components: []
         )
+        #else
+        let storeKey = DatabaseStoreCacheKey(
+            entity: T.persistableType,
+            components: []
+        )
+        #endif
+        if let cached = storeRegistry.withLock({
+            $0.stores.value(for: storeKey)
+        }) {
+            return cached
+        }
+
+        let store = try await container.store(for: type)
+        storeRegistry.withLock { $0.stores.insert(store, for: storeKey) }
+        return store
+    }
+
+    /// Point reads with `.server` consistency do not benefit from per-context store caching.
+    ///
+    /// Fresh contexts used by one-shot reads avoid local cache bookkeeping.
+    /// Longer-lived contexts use `cachedStore` to reuse their resolved stores.
+    private func pointReadStore<T: Persistable>(
+        for type: T.Type
+    ) async throws -> DatabaseDataStore {
+        #if DATABASE_MULTI_BASE
+        _ = try requireOperationDataRoot()
+        #endif
+        return try await container.store(for: type)
+    }
+
+    private func cachedStore<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T>
+    ) async throws -> DatabaseDataStore {
+        #if DATABASE_MULTI_BASE
+        let lease = try requireOperationDataRoot()
+        let resolvedPath = try AnyDirectoryPath(path).resolve()
+        let storeKey = DatabaseStoreCacheKey(
+            basePlacementGeneration: lease.generation,
+            entity: T.persistableType,
+            components: resolvedPath
+        )
+        #else
+        let resolvedPath = try AnyDirectoryPath(path).resolve()
+        let storeKey = DatabaseStoreCacheKey(
+            entity: T.persistableType,
+            components: resolvedPath
+        )
+        #endif
+        if let cached = storeRegistry.withLock({
+            $0.stores.value(for: storeKey)
+        }) {
+            return cached
+        }
+
+        let store = try await container.store(for: type, path: path)
+        storeRegistry.withLock { $0.stores.insert(store, for: storeKey) }
+        return store
+    }
+
+    private func pointReadStore<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T>
+    ) async throws -> DatabaseDataStore {
+        #if DATABASE_MULTI_BASE
+        _ = try requireOperationDataRoot()
+        #endif
+        return try await container.store(for: type, path: path)
     }
 
     private func ensureUsable() throws {
@@ -605,7 +669,7 @@ public final class DatabaseContext: Sendable {
     /// and entity reads all remain inside the supplied transaction.
     package func fetch<T: Persistable>(
         _ query: Query<T>,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [T] {
         try ensureUsable()
         #if DATABASE_MULTI_BASE
@@ -629,11 +693,11 @@ public final class DatabaseContext: Sendable {
         guard let entity = container.schema.entity(named: T.persistableType) else {
             throw ContainerSchemaError.entityNotFound(T.persistableType)
         }
-        guard let store = try await container.openStore(
+        let store = try await container.store(
             for: entity,
             path: path,
             transaction: transaction
-        ) else { return [] }
+        )
         return try await store.fetchInTransaction(
             query,
             transaction: transaction
@@ -646,7 +710,7 @@ public final class DatabaseContext: Sendable {
     /// evaluated at the same per-domain snapshot as member authorization.
     package func fetchCount<T: Persistable>(
         _ query: Query<T>,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Int {
         try ensureUsable()
         #if DATABASE_MULTI_BASE
@@ -670,11 +734,11 @@ public final class DatabaseContext: Sendable {
         guard let entity = container.schema.entity(named: T.persistableType) else {
             throw ContainerSchemaError.entityNotFound(T.persistableType)
         }
-        guard let store = try await container.openStore(
+        let store = try await container.store(
             for: entity,
             path: path,
             transaction: transaction
-        ) else { return 0 }
+        )
         return try await store.fetchCountInTransaction(
             query,
             transaction: transaction
@@ -696,23 +760,13 @@ public final class DatabaseContext: Sendable {
             try binding.validate()
         }
 
-        guard let entity = container.schema.entity(named: T.persistableType)
-        else {
-            throw ContainerSchemaError.entityNotFound(T.persistableType)
+        let store: DatabaseDataStore
+        if let binding = query.partitionBinding {
+            store = try await cachedStore(for: T.self, path: binding)
+        } else {
+            store = try await cachedStore(for: T.self)
         }
-        let directoryPath = try query.partitionBinding.map(AnyDirectoryPath.init)
-            ?? AnyDirectoryPath(for: entity)
-        let store = DatabaseDataStore(
-            container: container,
-            subspace: try container.operationDataSubspace(
-                relativePath: directoryPath.resolve()
-            ),
-            entity: entity,
-            securityDelegate: container.securityDelegate,
-            indexConfigurations: container.runtimeConfiguration
-                .indexConfigurations
-        )
-        return try await withReadStorageAccess {
+        return try await withStorageAccess(requiredAccess: .read) {
             transaction in
             try await store.executionPlan(
                 for: query,
@@ -727,7 +781,7 @@ public final class DatabaseContext: Sendable {
         _ query: Query<T>,
         _ operation: @Sendable @escaping (
             [T],
-            any DatabaseTransactionPersistenceReading
+            DatabaseTransaction
         ) async throws -> Result
     ) async throws -> Result {
         return try await withDataOperation { [self] in
@@ -742,16 +796,25 @@ public final class DatabaseContext: Sendable {
             try binding.validate()
         }
 
+        // Get store for this type (partition-aware if needed)
+        let store: DatabaseDataStore
+        if let binding = query.partitionBinding {
+            store = try await cachedStore(for: T.self, path: binding)
+        } else {
+            store = try await cachedStore(for: T.self)
+        }
+
         // Create TransactionConfiguration with CachePolicy
         let config = TransactionConfiguration(cachePolicy: query.cachePolicy)
 
         // Execute fetch within transaction (uses ReadVersionCache)
-        return try await self.withPersistenceReadTransaction(
+        return try await self.withTransaction(
+            requiredAccess: .read,
             configuration: config
-        ) { transaction, storageAccess in
-            let models = try await self.fetch(
+        ) { transaction in
+            let models = try await store.fetchInTransaction(
                 query,
-                transaction: storageAccess
+                transaction: transaction.storageAccess
             )
             return try await operation(models, transaction)
         }
@@ -781,14 +844,23 @@ public final class DatabaseContext: Sendable {
             try binding.validate()
         }
 
+        // Get store (partition-aware if needed)
+        let store: DatabaseDataStore
+        if let binding = query.partitionBinding {
+            store = try await cachedStore(for: T.self, path: binding)
+        } else {
+            store = try await cachedStore(for: T.self)
+        }
+
         // Create TransactionConfiguration with CachePolicy
         let config = TransactionConfiguration(cachePolicy: query.cachePolicy)
 
         // Execute count within transaction (uses ReadVersionCache)
-        return try await self.withReadStorageAccess(
+        return try await self.withStorageAccess(
+            requiredAccess: .read,
             configuration: config
         ) { transaction in
-            try await self.fetchCount(
+            try await store.fetchCountInTransaction(
                 query,
                 transaction: transaction
             )
@@ -871,19 +943,24 @@ public final class DatabaseContext: Sendable {
             return nil
         }
 
-        let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
-        return try await withReadStorageAccess(
-            configuration: configuration
-        ) { transaction in
-            guard let store = try await self.openStoreForRead(
-                for: type,
-                transaction: transaction
-            ) else { return nil }
-            return try await store.fetchByIDInTransaction(
-                type,
-                id: id,
-                transaction: transaction
-            )
+        // Auto-commit for default cache policy (single point read, no transaction needed).
+        // Non-default cache policies require TransactionRunner for ReadVersionCache support.
+        if case .server = cachePolicy {
+            let store = try await pointReadStore(for: type)
+            return try await withStorageAccess(
+                requiredAccess: .read
+            ) { transaction in
+                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
+            }
+        } else {
+            let store = try await cachedStore(for: type)
+            let config = TransactionConfiguration(cachePolicy: cachePolicy)
+            return try await self.withStorageAccess(
+                requiredAccess: .read,
+                configuration: config
+            ) { transaction in
+                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
+            }
         }
     }
 
@@ -944,15 +1021,26 @@ public final class DatabaseContext: Sendable {
             return nil
         }
 
+        if case .server = cachePolicy {
+            let store = try await pointReadStore(for: type)
+            return try await withStorageAccess(
+                requiredAccess: .read
+            ) { transaction in
+                try await store.fetchByIdentifierTupleInTransaction(
+                    type,
+                    identifier: identifierTuple,
+                    transaction: transaction
+                )
+            }
+        }
+
+        let store = try await cachedStore(for: type)
         let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
-        return try await withReadStorageAccess(
+        return try await withStorageAccess(
+            requiredAccess: .read,
             configuration: configuration
         ) { transaction in
-            guard let store = try await self.openStoreForRead(
-                for: type,
-                transaction: transaction
-            ) else { return nil }
-            return try await store.fetchByIdentifierTupleInTransaction(
+            try await store.fetchByIdentifierTupleInTransaction(
                 type,
                 identifier: identifierTuple,
                 transaction: transaction
@@ -967,7 +1055,7 @@ public final class DatabaseContext: Sendable {
         forIdentifierTuple identifierTuple: Tuple,
         as type: T.Type,
         partitions: FieldObject,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> T? {
         try ensureUsable()
         #if DATABASE_MULTI_BASE
@@ -1001,11 +1089,11 @@ public final class DatabaseContext: Sendable {
             entity: entity,
             partitions: partitions
         )
-        guard let store = try await container.openStore(
+        let store = try await container.store(
             for: entity,
             path: path,
             transaction: transaction
-        ) else { return nil }
+        )
         return try await store.fetchByIdentifierTupleInTransaction(
             type,
             identifier: identifierTuple,
@@ -1079,21 +1167,24 @@ public final class DatabaseContext: Sendable {
             return nil
         }
 
-        let directoryPath = try AnyDirectoryPath(path)
-        let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
-        return try await withReadStorageAccess(
-            configuration: configuration
-        ) { transaction in
-            guard let store = try await self.openStoreForRead(
-                for: type,
-                path: directoryPath,
-                transaction: transaction
-            ) else { return nil }
-            return try await store.fetchByIDInTransaction(
-                type,
-                id: id,
-                transaction: transaction
-            )
+        // Auto-commit for default cache policy (single point read, no transaction needed).
+        // Non-default cache policies require TransactionRunner for ReadVersionCache support.
+        if case .server = cachePolicy {
+            let store = try await pointReadStore(for: type, path: path)
+            return try await withStorageAccess(
+                requiredAccess: .read
+            ) { transaction in
+                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
+            }
+        } else {
+            let store = try await cachedStore(for: type, path: path)
+            let config = TransactionConfiguration(cachePolicy: cachePolicy)
+            return try await self.withStorageAccess(
+                requiredAccess: .read,
+                configuration: config
+            ) { transaction in
+                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
+            }
         }
     }
 
@@ -1146,17 +1237,26 @@ public final class DatabaseContext: Sendable {
             return nil
         }
 
-        let directoryPath = try AnyDirectoryPath(path)
+        if case .server = cachePolicy {
+            let store = try await pointReadStore(for: type, path: path)
+            return try await withStorageAccess(
+                requiredAccess: .read
+            ) { transaction in
+                try await store.fetchByIdentifierTupleInTransaction(
+                    type,
+                    identifier: identifierTuple,
+                    transaction: transaction
+                )
+            }
+        }
+
+        let store = try await cachedStore(for: type, path: path)
         let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
-        return try await withReadStorageAccess(
+        return try await withStorageAccess(
+            requiredAccess: .read,
             configuration: configuration
         ) { transaction in
-            guard let store = try await self.openStoreForRead(
-                for: type,
-                path: directoryPath,
-                transaction: transaction
-            ) else { return nil }
-            return try await store.fetchByIdentifierTupleInTransaction(
+            try await store.fetchByIdentifierTupleInTransaction(
                 type,
                 identifier: identifierTuple,
                 transaction: transaction
@@ -1526,15 +1626,15 @@ extension DatabaseContext {
             DatabaseTransaction
         ) async throws -> T
     ) async throws -> T {
-        try await withModelTransaction(
-            requiredAccess: [.read, .write],
+        try await withTransaction(
+            requiredAccess: .write,
             configuration: configuration,
             executionDeadline: executionDeadline,
             operation
         )
     }
 
-    private func withModelTransaction<T: Sendable>(
+    package func withTransaction<T: Sendable>(
         requiredAccess: Security.Access,
         configuration: TransactionConfiguration = .default,
         executionDeadline: TransactionExecutionDeadline? = nil,
@@ -1542,79 +1642,66 @@ extension DatabaseContext {
             DatabaseTransaction
         ) async throws -> T
     ) async throws -> T {
-        try await withModelTransactionCapabilities(
-            authorization: .request(requiredAccess),
-            configuration: configuration,
-            executionDeadline: executionDeadline,
-            exposesControlMetadata: false
-        ) { transaction, _ in
-            try await operation(transaction)
-        }
-    }
-
-    private func withModelTransactionCapabilities<T: Sendable>(
-        authorization: DatabaseModelTransactionAuthorization,
-        configuration: TransactionConfiguration,
-        executionDeadline: TransactionExecutionDeadline?,
-        exposesControlMetadata: Bool,
-        _ operation: @Sendable @escaping (
-            DatabaseTransaction,
-            (any TransactionAccess)?
-        ) async throws -> T
-    ) async throws -> T {
-        // A DatabaseTransaction exposes both model reads and model mutations.
-        // Every callback receiving that capability must therefore be admitted
-        // for both operations, in addition to any domain-specific access such
-        // as administration requested by the caller.
-        let grantedAccess = authorization.grantedAccess
         try ensureUsable()
         return try await withDataOperation {
             if let binding = ActiveDatabaseTransactionContext.binding {
-                guard !exposesControlMetadata else {
-                    throw DatabaseControlMetadataTransactionError
-                        .requiresIndependentTransaction
-                }
-                try binding.identity.validateReuse(by: self)
-                guard binding.accessMode.allowsMutation else {
-                    throw DatabaseReadTransactionError
-                        .mutationRequiresWriteAccess
-                }
-                guard !authorization.requiresPersistedGrant
-                        || binding.grantedAccess.isSuperset(of: grantedAccess)
-                else {
-                    #if DATABASE_MULTI_BASE
-                    throw DatabaseGrantAuthorizationError.denied(
-                        resource: self.resource,
-                        required: grantedAccess
-                    )
-                    #else
-                    throw DatabaseReadTransactionError
-                        .mutationRequiresWriteAccess
-                    #endif
-                }
                 #if DATABASE_MULTI_BASE
                 guard binding.resource == self.resource,
-                      binding.authorization == self.authorization
+                      binding.authorization == self.authorization,
+                      binding.grantedAccess.isSuperset(of: requiredAccess)
                 else {
                     throw DatabaseGrantAuthorizationError.denied(
                         resource: self.resource,
-                        required: grantedAccess
+                        required: requiredAccess
                     )
                 }
                 #endif
-                let reuseLease = try binding.operationScope.beginRead()
-                defer { reuseLease.finish() }
-                guard let databaseTransaction = binding.databaseTransaction
-                else {
-                    throw DatabaseTransactionError.invalidOperationContext
+                if requiredAccess != .read,
+                   let databaseTransaction = binding.databaseTransaction {
+                    return try await operation(databaseTransaction)
                 }
-                return try await operation(databaseTransaction, nil)
+                let admittedStorageAccess = requiredAccess == .read
+                    ? ReadAuthorizedTransactionAccess.admitted(
+                        binding.transaction
+                    )
+                    : binding.transaction
+                let databaseTransaction = DatabaseTransaction(
+                    storageAccess: admittedStorageAccess,
+                    container: self.container
+                )
+                #if DATABASE_MULTI_BASE
+                let nestedBinding = DatabaseTransactionExecutionBinding(
+                    transaction: admittedStorageAccess,
+                    resource: binding.resource,
+                    authorization: binding.authorization,
+                    grantedAccess: requiredAccess,
+                    databaseTransaction: databaseTransaction
+                )
+                #else
+                let nestedBinding = DatabaseTransactionExecutionBinding(
+                    transaction: admittedStorageAccess,
+                    databaseTransaction: databaseTransaction
+                )
+                #endif
+                return try await ActiveDatabaseTransactionContext.$binding
+                    .withValue(nestedBinding) {
+                        do {
+                            let result = try await operation(
+                                databaseTransaction
+                            )
+                            try await databaseTransaction.prepareForCommit()
+                            return result
+                        } catch {
+                            await databaseTransaction.invalidate()
+                            throw error
+                        }
+                    }
             }
             #if DATABASE_MULTI_BASE
             let lease = try self.requireOperationDataRoot()
             let selectedTransactionExecutor = lease.transactionExecutor
             #else
-            let selectedTransactionExecutor = (try self.container.requireDataTransactionExecutor())
+            let selectedTransactionExecutor = self.container.transactionExecutor
             #endif
             let runner = TransactionRunner(
                 transactionExecutor: selectedTransactionExecutor,
@@ -1632,172 +1719,49 @@ extension DatabaseContext {
                 }
             ) { storageAccess in
                 #if DATABASE_MULTI_BASE
-                if authorization.requiresPersistedGrant {
-                    try await self.requireGrant(
-                        grantedAccess,
-                        lease: lease,
-                        transaction: storageAccess
-                    )
-                }
+                try await self.requireGrant(
+                    requiredAccess,
+                    lease: lease,
+                    transaction: storageAccess
+                )
                 #endif
-                let executionIdentity = try DatabaseTransactionExecutionIdentity(
-                    context: self
-                )
-                let controlStorage = self.container.controlStorage()
-                if exposesControlMetadata,
-                   executionIdentity.storageDomainIdentifier
-                    != controlStorage.domainIdentifier {
-                    throw DatabaseControlMetadataTransactionError
-                        .storageDomainMismatch
-                }
-                let operationScope = DatabaseReadScopeGate()
-                let validationScope = DatabaseReadScopeGate()
-                let accessMode: DatabaseTransactionAccessMode = grantedAccess
-                    .contains(.write) ? .readWrite : .readOnly
-                let admittedStorageAccess = DataRootTransactionAccess.admitted(
-                    storageAccess,
-                    dataRoot: executionIdentity.dataRoot,
-                    accessMode: accessMode,
-                    readScope: operationScope
-                )
-                let validationStorageAccess = DataRootTransactionAccess.admitted(
-                    storageAccess,
-                    dataRoot: executionIdentity.dataRoot,
-                    accessMode: .readOnly,
-                    readScope: validationScope
-                )
+                let admittedStorageAccess = requiredAccess == .read
+                    ? ReadAuthorizedTransactionAccess.admitted(storageAccess)
+                    : storageAccess
                 let transaction = DatabaseTransaction(
                     storageAccess: admittedStorageAccess,
-                    validationStorageAccess: validationStorageAccess,
                     container: self.container
                 )
-                let controlMetadataAccess = exposesControlMetadata
-                    ? DataRootTransactionAccess.admitted(
-                        storageAccess,
-                        dataRoot: controlStorage.root,
-                        accessMode: .readWrite,
-                        readScope: operationScope
-                    )
-                    : nil
                 #if DATABASE_MULTI_BASE
                 let executionBinding = DatabaseTransactionExecutionBinding(
-                    identity: executionIdentity,
                     transaction: admittedStorageAccess,
-                    grantedAccess: grantedAccess,
-                    accessMode: accessMode,
-                    operationScope: operationScope,
                     resource: self.resource,
                     authorization: self.authorization,
+                    grantedAccess: requiredAccess,
                     databaseTransaction: transaction
                 )
                 #else
                 let executionBinding = DatabaseTransactionExecutionBinding(
-                    identity: executionIdentity,
                     transaction: admittedStorageAccess,
-                    grantedAccess: grantedAccess,
-                    accessMode: accessMode,
-                    operationScope: operationScope,
                     databaseTransaction: transaction
                 )
                 #endif
                 return try await ActiveDatabaseTransactionContext.$binding
                     .withValue(executionBinding) {
                         do {
-                            let result = try await operation(
-                                transaction,
-                                controlMetadataAccess
-                            )
-                            try await operationScope.closeAndWait()
-                            controlMetadataAccess?.revoke()
-                            admittedStorageAccess.revoke()
+                            let result = try await operation(transaction)
                             try await transaction.prepareForCommit()
-                            try await validationScope.closeAndWait()
-                            validationStorageAccess.revoke()
                             return result
                         } catch {
-                            var terminalError: any Error = error
-                            for scope in [operationScope, validationScope] {
-                                do {
-                                    try await scope.closeAndWait()
-                                } catch let cleanupError as DatabaseReadScopeCleanupError {
-                                    terminalError = cleanupError.preserving(
-                                        operationError: terminalError
-                                    )
-                                }
-                            }
-                            controlMetadataAccess?.revoke()
-                            admittedStorageAccess.revoke()
-                            validationStorageAccess.revoke()
                             await transaction.invalidate()
-                            throw terminalError
+                            throw error
                         }
                     }
                 }
         }
     }
 
-    /// Executes dependent model reads in one transaction while erasing every
-    /// persistence mutation method at the package boundary.
-    package func withPersistenceReadTransaction<T: Sendable>(
-        configuration: TransactionConfiguration = .default,
-        executionDeadline: TransactionExecutionDeadline? = nil,
-        _ operation: @Sendable @escaping (
-            any DatabaseTransactionPersistenceReading,
-            any TransactionReadAccess
-        ) async throws -> T
-    ) async throws -> T {
-        try await withAdmittedStorageAccess(
-            requiredAccess: .read,
-            mode: .readOnly,
-            configuration: configuration,
-            executionDeadline: executionDeadline
-        ) { storageAccess in
-            guard let admitted = storageAccess as? DataRootTransactionAccess
-            else {
-                throw DatabaseRuntimeError.internalError(
-                    "Persistence reads require admitted read storage access"
-                )
-            }
-            let transaction = DatabaseTransaction(
-                storageAccess: admitted,
-                container: self.container
-            )
-            do {
-                let result = try await operation(
-                    DatabaseTransactionPersistenceReadProjection(
-                        transaction: transaction
-                    ),
-                    admitted.readProjection()
-                )
-                await transaction.invalidate()
-                return result
-            } catch {
-                await transaction.invalidate()
-                throw error
-            }
-        }
-    }
-
     #if DATABASE_MULTI_BASE
-    /// Executes server-owned read work with a capability that cannot express
-    /// model or storage mutation.
-    @_spi(DatabaseExecution)
-    public func withExecutionReadTransaction<T: Sendable>(
-        requiredAccess: Security.Access = .read,
-        configuration: TransactionConfiguration = .default,
-        executionDeadline: TransactionExecutionDeadline? = nil,
-        _ operation: @Sendable @escaping (
-            DatabaseExecutionReadTransaction
-        ) async throws -> T
-    ) async throws -> T {
-        try await withExecutionReadTransactionImplementation(
-            requiredAccess: requiredAccess,
-            configuration: configuration,
-            executionDeadline: executionDeadline,
-            operation
-        )
-    }
-
     @_spi(DatabaseExecution)
     public func withExecutionTransaction<T: Sendable>(
         requiredAccess: Security.Access = .write,
@@ -1807,33 +1771,14 @@ extension DatabaseContext {
             DatabaseTransaction
         ) async throws -> T
     ) async throws -> T {
-        return try await withModelTransaction(
+        try await withTransaction(
             requiredAccess: requiredAccess,
             configuration: configuration,
             executionDeadline: executionDeadline,
             operation
         )
     }
-
     #else
-    /// Executes server-owned read work with a capability that cannot express
-    /// model or storage mutation.
-    @_spi(DatabaseExecution)
-    public func withExecutionReadTransaction<T: Sendable>(
-        configuration: TransactionConfiguration = .default,
-        executionDeadline: TransactionExecutionDeadline? = nil,
-        _ operation: @Sendable @escaping (
-            DatabaseExecutionReadTransaction
-        ) async throws -> T
-    ) async throws -> T {
-        try await withExecutionReadTransactionImplementation(
-            requiredAccess: .read,
-            configuration: configuration,
-            executionDeadline: executionDeadline,
-            operation
-        )
-    }
-
     @_spi(DatabaseExecution)
     public func withExecutionTransaction<T: Sendable>(
         configuration: TransactionConfiguration = .default,
@@ -1841,162 +1786,15 @@ extension DatabaseContext {
         _ operation: @Sendable @escaping (
             DatabaseTransaction
         ) async throws -> T
-        ) async throws -> T {
-        try await withModelTransaction(
-            requiredAccess: [.read, .write],
+    ) async throws -> T {
+        try await withTransaction(
+            requiredAccess: .write,
             configuration: configuration,
             executionDeadline: executionDeadline,
             operation
         )
     }
     #endif
-
-    /// Executes data semantics and control-metadata mutations in one physical
-    /// transaction while preserving independent root-scoped capabilities.
-    ///
-    /// This is the framework-owned atomic boundary used by an execution host
-    /// for durable control state that must commit with one data operation. It
-    /// rejects cross-domain composition; those operations require a durable
-    /// checkpoint protocol instead of weakening either root boundary.
-    @_spi(DatabaseExecution)
-    public func withExecutionDataAndControlMetadataTransaction<T: Sendable>(
-        requiredAccess: Security.Access = .write,
-        configuration: TransactionConfiguration = .default,
-        executionDeadline: TransactionExecutionDeadline? = nil,
-        _ operation: @Sendable @escaping (
-            DatabaseTransaction,
-            any TransactionAccess
-        ) async throws -> T
-    ) async throws -> T {
-        try await withModelTransactionCapabilities(
-            authorization: .request(requiredAccess),
-            configuration: configuration,
-            executionDeadline: executionDeadline,
-            exposesControlMetadata: true
-        ) { transaction, controlMetadataAccess in
-            guard let controlMetadataAccess else {
-                throw DatabaseControlMetadataTransactionError
-                    .requiresIndependentTransaction
-            }
-            return try await operation(transaction, controlMetadataAccess)
-        }
-    }
-
-    /// Runs one checkpointed durable-operation mutation without applying the
-    /// originating request's persisted Grant.
-    ///
-    /// The execution host must validate the current durable operation lease in
-    /// `validateOwnership`. No data transaction or capability is created until
-    /// that validation succeeds. Because control and data may occupy different
-    /// storage domains, the mutation must be idempotent and retain evidence
-    /// that the final control-domain commit can validate. Ownership is checked
-    /// again by that final atomic transition rather than by nesting a control
-    /// transaction inside this data transaction.
-    @_spi(DatabaseExecution)
-    public func withExecutionCheckpointedOperationOwnedTransaction<
-        Ownership: Sendable,
-        T: Sendable
-    >(
-        configuration: TransactionConfiguration = .default,
-        executionDeadline: TransactionExecutionDeadline? = nil,
-        validateOwnership: @Sendable @escaping () async throws -> Ownership,
-        _ operation: @Sendable @escaping (
-            Ownership,
-            DatabaseTransaction
-        ) async throws -> T
-    ) async throws -> T {
-        let ownership = try await validateOwnership()
-        return try await withModelTransactionCapabilities(
-            authorization: .durableOperationOwner,
-            configuration: configuration,
-            executionDeadline: executionDeadline,
-            exposesControlMetadata: false
-        ) { transaction, _ in
-            return try await operation(ownership, transaction)
-        }
-    }
-
-    /// Atomically commits durable-operation cleanup with its control state.
-    ///
-    /// The execution host receives no data mutation capability until
-    /// `validateOwnership` confirms the current operation lease through the
-    /// read-only control-metadata projection in the same physical transaction.
-    /// Cross-domain work remains unsupported and must use a checkpointed
-    /// protocol.
-    @_spi(DatabaseExecution)
-    public func withExecutionOperationOwnedDataAndControlMetadataTransaction<
-        Ownership: Sendable,
-        T: Sendable
-    >(
-        configuration: TransactionConfiguration = .default,
-        executionDeadline: TransactionExecutionDeadline? = nil,
-        validateOwnership: @Sendable @escaping (
-            any TransactionReadAccess
-        ) async throws -> Ownership,
-        _ operation: @Sendable @escaping (
-            Ownership,
-            DatabaseTransaction,
-            any TransactionAccess
-        ) async throws -> T
-    ) async throws -> T {
-        try await withModelTransactionCapabilities(
-            authorization: .durableOperationOwner,
-            configuration: configuration,
-            executionDeadline: executionDeadline,
-            exposesControlMetadata: true
-        ) { transaction, controlMetadataAccess in
-            guard let controlMetadataAccess else {
-                throw DatabaseControlMetadataTransactionError
-                    .requiresIndependentTransaction
-            }
-            let ownership = try await validateOwnership(controlMetadataAccess)
-            return try await operation(
-                ownership,
-                transaction,
-                controlMetadataAccess
-            )
-        }
-    }
-
-    private func withExecutionReadTransactionImplementation<T: Sendable>(
-        requiredAccess: Security.Access,
-        configuration: TransactionConfiguration,
-        executionDeadline: TransactionExecutionDeadline?,
-        _ operation: @Sendable @escaping (
-            DatabaseExecutionReadTransaction
-        ) async throws -> T
-    ) async throws -> T {
-        try await withAdmittedStorageAccess(
-            requiredAccess: requiredAccess,
-            mode: .readOnly,
-            configuration: configuration,
-            executionDeadline: executionDeadline
-        ) { storageAccess in
-            guard let admitted = storageAccess as? DataRootTransactionAccess
-            else {
-                throw DatabaseRuntimeError.internalError(
-                    "Execution reads require admitted data-root access"
-                )
-            }
-            let transaction = DatabaseTransaction(
-                storageAccess: admitted,
-                container: self.container
-            )
-            do {
-                let result = try await operation(
-                    DatabaseExecutionReadTransaction(
-                        transaction: transaction,
-                        context: self
-                    )
-                )
-                await transaction.invalidate()
-                return result
-            } catch {
-                await transaction.invalidate()
-                throw error
-            }
-        }
-    }
 
     @_spi(DatabaseExecution)
     public func withExecutionDataOperation<Result: Sendable>(
@@ -2016,50 +1814,27 @@ extension DatabaseContext {
     ///
     /// **For public API users**:
     /// - Use `withTransaction(_:)` for high-level DatabaseTransaction API
-    /// - Use `(try container.requireDataTransactionExecutor()).withTransaction(_:)` for storage-level work
+    /// - Use `container.transactionExecutor.withTransaction(_:)` for storage-level work
     ///
     /// - Parameters:
     ///   - configuration: Transaction configuration (timeout, retry, priority)
     ///   - operation: The operation to execute within the transaction
     /// - Returns: The result of the operation
     /// - Throws: Error if the transaction cannot be committed after retries
-    package func withAdmittedStorageAccess<T: Sendable>(
+    internal func withStorageAccess<T: Sendable>(
         requiredAccess: Security.Access,
-        mode: DatabaseTransactionAccessMode,
         configuration: TransactionConfiguration = .default,
         executionDeadline: TransactionExecutionDeadline? = nil,
-        requestedReadPoint: DatabaseExecutionReadPoint? = nil,
         _ operation: @Sendable @escaping (any TransactionAccess) async throws -> T
     ) async throws -> T {
         try ensureUsable()
 
         return try await withDataOperation {
             if let binding = ActiveDatabaseTransactionContext.binding {
-                guard requestedReadPoint == nil else {
-                    throw DatabaseExecutionReadPointError
-                        .restoreRequiresIndependentTransaction
-                }
-                try binding.identity.validateReuse(by: self)
-                guard mode == .readOnly || binding.accessMode.allowsMutation
-                else {
-                    throw DatabaseReadTransactionError
-                        .mutationRequiresWriteAccess
-                }
-                guard binding.grantedAccess.isSuperset(of: requiredAccess)
-                else {
-                    #if DATABASE_MULTI_BASE
-                    throw DatabaseGrantAuthorizationError.denied(
-                        resource: self.resource,
-                        required: requiredAccess
-                    )
-                    #else
-                    throw DatabaseReadTransactionError
-                        .mutationRequiresWriteAccess
-                    #endif
-                }
                 #if DATABASE_MULTI_BASE
                 guard binding.resource == self.resource,
-                      binding.authorization == self.authorization
+                      binding.authorization == self.authorization,
+                      binding.grantedAccess.isSuperset(of: requiredAccess)
                 else {
                     throw DatabaseGrantAuthorizationError.denied(
                         resource: self.resource,
@@ -2067,72 +1842,18 @@ extension DatabaseContext {
                     )
                 }
                 #endif
-                let reuseLease = try binding.operationScope.beginRead()
-                defer { reuseLease.finish() }
-                let nestedOperationScope = DatabaseReadScopeGate()
-                let admittedTransaction = DataRootTransactionAccess.admitted(
-                    binding.transaction,
-                    dataRoot: binding.identity.dataRoot,
-                    accessMode: mode,
-                    readScope: nestedOperationScope
-                )
-                #if DATABASE_MULTI_BASE
-                let nestedBinding = DatabaseTransactionExecutionBinding(
-                    identity: binding.identity,
-                    transaction: admittedTransaction,
-                    grantedAccess: binding.grantedAccess,
-                    accessMode: mode,
-                    operationScope: nestedOperationScope,
-                    resource: binding.resource,
-                    authorization: binding.authorization,
-                    databaseTransaction: mode.allowsMutation
-                        ? binding.databaseTransaction
-                        : nil
-                )
-                #else
-                let nestedBinding = DatabaseTransactionExecutionBinding(
-                    identity: binding.identity,
-                    transaction: admittedTransaction,
-                    grantedAccess: binding.grantedAccess,
-                    accessMode: mode,
-                    operationScope: nestedOperationScope,
-                    databaseTransaction: mode.allowsMutation
-                        ? binding.databaseTransaction
-                        : nil
-                )
-                #endif
-                let result: T
-                do {
-                    result = try await ActiveDatabaseTransactionContext.$binding
-                        .withValue(nestedBinding) {
-                            try await operation(admittedTransaction)
-                        }
-                } catch {
-                    var terminalError: any Error = error
-                    do {
-                        try await nestedOperationScope.closeAndWait()
-                    } catch let cleanupError as DatabaseReadScopeCleanupError {
-                        terminalError = cleanupError.preserving(
-                            operationError: terminalError
-                        )
-                    }
-                    admittedTransaction.revoke()
-                    throw terminalError
-                }
-                do {
-                    try await nestedOperationScope.closeAndWait()
-                } catch {
-                    admittedTransaction.revoke()
-                    throw error
-                }
-                admittedTransaction.revoke()
-                return result
+                let admittedTransaction = requiredAccess == .read
+                    ? ReadAuthorizedTransactionAccess.admitted(
+                        binding.transaction
+                    )
+                    : binding.transaction
+                return try await operation(admittedTransaction)
             }
             #if DATABASE_MULTI_BASE
             let lease = try self.requireOperationDataRoot()
             let selectedTransactionExecutor = lease.transactionExecutor
             #else
-            let selectedTransactionExecutor = (try self.container.requireDataTransactionExecutor())
+            let selectedTransactionExecutor = self.container.transactionExecutor
             #endif
             let runner = TransactionRunner(
                 transactionExecutor: selectedTransactionExecutor,
@@ -2140,204 +1861,51 @@ extension DatabaseContext {
                 logging: self.container.configuration.logging,
                 metrics: self.container.configuration.metrics
             )
-            #if DATABASE_MULTI_BASE
-            if requestedReadPoint != nil {
-                let authorizationRunner = TransactionRunner(
-                    transactionExecutor: selectedTransactionExecutor,
-                    clock: self.container.monotonicClock,
-                    logging: self.container.configuration.logging,
-                    metrics: self.container.configuration.metrics
-                )
-                _ = try await authorizationRunner.run(
-                    configuration: configuration,
-                    executionDeadline: executionDeadline,
-                    readVersionCache: nil,
-                    operationDescription:
-                        "DatabaseContext.withStorageAccess.currentGrant",
-                    onCommitOutcomeUnknown: {}
-                ) { authorizationTransaction in
-                    try await self.requireGrant(
-                        requiredAccess,
-                        lease: lease,
-                        transaction: authorizationTransaction
-                    )
-                }
-            }
-            #endif
             return try await runner.run(
                 configuration: configuration,
                 executionDeadline: executionDeadline,
-                readVersionCache: requestedReadPoint == nil
-                    ? self.readVersionCache
-                    : nil,
+                readVersionCache: self.readVersionCache,
                 operationDescription: "DatabaseContext.withStorageAccess",
                 onCommitOutcomeUnknown: { [self] in
                     stateLock.withLock { $0.commitOutcomeUnknown = true }
                 }
             ) { transaction in
-                let executionIdentity = try DatabaseTransactionExecutionIdentity(
-                    context: self
-                )
-                if let requestedReadPoint {
-                    guard requestedReadPoint.domainIdentifier
-                            == executionIdentity.storageDomainIdentifier else {
-                        throw DatabaseExecutionReadPointError.domainMismatch
-                    }
-                    guard case .version(let version) =
-                            requestedReadPoint.position else {
-                        throw DatabaseExecutionReadPointError
-                            .opaquePositionCannotBeRestored
-                    }
-                    guard transaction.capabilities.historicalReadVersion else {
-                        throw DatabaseExecutionReadPointError
-                            .historicalReadUnsupported
-                    }
-                    guard let signedVersion = Int64(exactly: version) else {
-                        throw DatabaseExecutionReadPointError
-                            .invalidVersion(version)
-                    }
-                    try transaction.setReadVersion(signedVersion)
-                }
                 #if DATABASE_MULTI_BASE
-                if requestedReadPoint == nil {
-                    try await self.requireGrant(
-                        requiredAccess,
-                        lease: lease,
-                        transaction: transaction
-                    )
-                }
-                #endif
-                let operationScope = DatabaseReadScopeGate()
-                let admittedTransaction = DataRootTransactionAccess.admitted(
-                    transaction,
-                    dataRoot: executionIdentity.dataRoot,
-                    accessMode: mode,
-                    readScope: operationScope
+                try await self.requireGrant(
+                    requiredAccess,
+                    lease: lease,
+                    transaction: transaction
                 )
+                #endif
+                let admittedTransaction = requiredAccess == .read
+                    ? ReadAuthorizedTransactionAccess.admitted(transaction)
+                    : transaction
                 #if DATABASE_MULTI_BASE
                 let executionBinding = DatabaseTransactionExecutionBinding(
-                    identity: executionIdentity,
                     transaction: admittedTransaction,
-                    grantedAccess: requiredAccess,
-                    accessMode: mode,
-                    operationScope: operationScope,
                     resource: self.resource,
                     authorization: self.authorization,
+                    grantedAccess: requiredAccess,
                     databaseTransaction: nil
                 )
                 #else
                 let executionBinding = DatabaseTransactionExecutionBinding(
-                    identity: executionIdentity,
                     transaction: admittedTransaction,
-                    grantedAccess: requiredAccess,
-                    accessMode: mode,
-                    operationScope: operationScope,
                     databaseTransaction: nil
                 )
                 #endif
                 return try await ActiveDatabaseTransactionContext.$binding
                     .withValue(executionBinding) {
-                        let result: T
-                        do {
-                            result = try await operation(
-                                admittedTransaction
-                            )
-                        } catch {
-                            var terminalError: any Error = error
-                            do {
-                                try await operationScope.closeAndWait()
-                            } catch let cleanupError as DatabaseReadScopeCleanupError {
-                                terminalError = cleanupError.preserving(
-                                    operationError: terminalError
-                                )
-                            }
-                            admittedTransaction.revoke()
-                            throw terminalError
-                        }
-                        do {
-                            try await operationScope.closeAndWait()
-                            admittedTransaction.revoke()
-                            return result
-                        } catch {
-                            admittedTransaction.revoke()
-                            throw error
-                        }
+                        try await operation(admittedTransaction)
                     }
             }
-        }
-    }
-
-    /// Executes one read-only storage operation with both the selected data
-    /// root and the absence of mutation capability represented by the value
-    /// passed to the caller.
-    internal func withReadStorageAccess<T: Sendable>(
-        requiredAccess: Security.Access = .read,
-        configuration: TransactionConfiguration = .default,
-        executionDeadline: TransactionExecutionDeadline? = nil,
-        _ operation: @Sendable @escaping (
-            any TransactionReadAccess
-        ) async throws -> T
-    ) async throws -> T {
-        try await withAdmittedStorageAccess(
-            requiredAccess: requiredAccess,
-            mode: .readOnly,
-            configuration: configuration,
-            executionDeadline: executionDeadline
-        ) { transaction in
-            guard let admitted = transaction
-                as? DataRootTransactionAccess else {
-                throw DatabaseRuntimeError.internalError(
-                    "Read storage access was not admitted through its data root"
-                )
-            }
-            return try await operation(admitted.readProjection())
-        }
-    }
-
-    /// Executes one mutation-capable storage operation after independently
-    /// validating the caller's required authorization level.
-    internal func withWriteStorageAccess<T: Sendable>(
-        requiredAccess: DatabaseMutationAuthorization,
-        configuration: TransactionConfiguration = .default,
-        executionDeadline: TransactionExecutionDeadline? = nil,
-        _ operation: @Sendable @escaping (
-            any TransactionAccess
-        ) async throws -> T
-    ) async throws -> T {
-        try await withAdmittedStorageAccess(
-            requiredAccess: requiredAccess.securityAccess,
-            mode: .readWrite,
-            configuration: configuration,
-            executionDeadline: executionDeadline,
-            operation
-        )
-    }
-
-    /// Reads the backend snapshot identifier for diagnostics while retaining
-    /// the same authorization, transaction runner, and data-root admission as
-    /// an ordinary read. No control capability escapes this method.
-    internal func currentStorageReadVersion(
-        configuration: TransactionConfiguration = .default
-    ) async throws -> Int64 {
-        try await withAdmittedStorageAccess(
-            requiredAccess: .read,
-            mode: .readOnly,
-            configuration: configuration
-        ) { transaction in
-            guard let admitted = transaction
-                as? DataRootTransactionAccess else {
-                throw DatabaseRuntimeError.internalError(
-                    "Read version diagnostics require admitted storage access"
-                )
-            }
-            return try await admitted.currentReadVersionForDiagnostics()
         }
     }
 
     private func requireAccess(
         _ access: Security.Access
     ) async throws {
-        try await withReadStorageAccess(requiredAccess: access) { _ in () }
+        try await withStorageAccess(requiredAccess: access) { _ in () }
     }
 
     /// Executes one higher-level database operation while retaining the
@@ -2351,28 +1919,11 @@ extension DatabaseContext {
     ) async throws -> Result {
         try await container.withOperationSchemaLease { _ in
             #if DATABASE_MULTI_BASE
-            if let dataRootBinding = ActiveDatabaseDataRootContext.binding {
-                let current = dataRootBinding.lease
+            if let current = ActiveDatabaseDataRootContext.lease {
                 guard current.resource == resource else {
-                    throw DatabaseTransactionExecutionScopeError
-                        .dataRootMismatch
-                }
-                let dataRootOperationLease = try dataRootBinding
-                    .operationScope.beginRead()
-                defer { dataRootOperationLease.finish() }
-                switch resource {
-                case .database:
-                    break
-                case .base(let baseID):
-                    guard let binding = ActiveDatabaseBaseContext.binding,
-                          binding.baseID == baseID,
-                          binding.placementGeneration == current.generation,
-                          binding.root == current.root,
-                          binding.operationScope === dataRootBinding.operationScope
-                    else {
-                        throw DatabaseTransactionExecutionScopeError
-                            .dataRootMismatch
-                    }
+                    throw DatabaseRuntimeError.internalError(
+                        "The context target does not match the active data root"
+                    )
                 }
                 return try await RequestAuthorization.$context.withValue(
                     authorization
@@ -2420,6 +1971,8 @@ extension DatabaseContext {
         #if DATABASE_MULTI_BASE
         let lease = try requireOperationDataRoot()
         return DatabaseExecutionStorage(
+            engine: lease.domain.engine,
+            transactionExecutor: lease.transactionExecutor,
             root: lease.root,
             resource: lease.resource,
             generation: lease.generation,
@@ -2432,23 +1985,11 @@ extension DatabaseContext {
 
     #if DATABASE_MULTI_BASE
     package func requireOperationDataRoot() throws -> DatabaseDataRootLease {
-        guard let dataRootBinding = ActiveDatabaseDataRootContext.binding else {
-            throw DatabaseTransactionExecutionScopeError.dataRootMismatch
-        }
-        let lease = dataRootBinding.lease
-        guard lease.resource == resource else {
-            throw DatabaseTransactionExecutionScopeError.dataRootMismatch
-        }
-        try dataRootBinding.operationScope.validateOpen()
-        if case .base(let baseID) = resource {
-            guard let binding = ActiveDatabaseBaseContext.binding,
-                  binding.baseID == baseID,
-                  binding.placementGeneration == lease.generation,
-                  binding.root == lease.root,
-                  binding.operationScope === dataRootBinding.operationScope
-            else {
-                throw DatabaseTransactionExecutionScopeError.dataRootMismatch
-            }
+        guard let lease = ActiveDatabaseDataRootContext.lease,
+              lease.resource == resource else {
+            throw DatabaseRuntimeError.internalError(
+                "The context target does not match the active data root"
+            )
         }
         return lease
     }

@@ -30,7 +30,7 @@ public struct CanonicalRDFDatasetScanner: RDFDatasetScanner {
         graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         try await indexedScanner.scan(
@@ -48,10 +48,10 @@ public struct CanonicalRDFDatasetScanner: RDFDatasetScanner {
     public func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> RDFNamedGraphResult {
-        if let limit, limit <= 0 { return .empty }
+    ) async throws -> [RDFGraphName] {
+        if let limit, limit <= 0 { return [] }
 
         let authoritative = try await authoritativeStore.namedGraphs(
             limit: nil,
@@ -66,22 +66,36 @@ public struct CanonicalRDFDatasetScanner: RDFDatasetScanner {
             workMeter: workMeter
         )
 
-        var graphs = try RDFNamedGraphResultBuilder(workMeter: workMeter)
-        for row in authoritative {
+        var seen = Set<RDFGraphName>()
+        var graphs: [RDFGraphName] = []
+        graphs.reserveCapacity(authoritative.count + projected.count)
+        for graph in authoritative {
             try workMeter.consume(at: .deduplication)
-            try graphs.append(row.graph)
+            if seen.insert(graph).inserted {
+                graphs.append(graph)
+            }
         }
-        for row in projected {
+        for graph in projected {
             try workMeter.consume(at: .deduplication)
-            try graphs.append(row.graph)
+            if seen.insert(graph).inserted {
+                graphs.append(graph)
+            }
         }
-        return try graphs.finish(limit: limit)
+        try workMeter.consume(UInt64(graphs.count), at: .sortInput)
+        var ordered = try graphs.sorted { lhs, rhs in
+            try workMeter.consume(2, at: .sortComparison)
+            return lhs < rhs
+        }
+        if let limit, ordered.count > limit {
+            ordered.removeLast(ordered.count - limit)
+        }
+        return ordered
     }
 
     public func containsNamedGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         if try await authoritativeStore.containsNamedGraph(

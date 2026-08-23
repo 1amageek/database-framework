@@ -15,30 +15,13 @@ public struct CompositionQueryPlanner: Sendable {
             try CompositionQueryPlanner.validateRelationalSource(query)
         }
 
-        func admitLogicalRead(
-            context: DatabaseContext,
-            query: SelectQuery,
-            restrictingTo entityNames: Set<String>?
-        ) throws -> DatabaseReadAuthorizationAdmission {
-            try context.admitLogicalRead(
-                listAuthorization: try IndexReadAuthorization(
-                    selectQuery: query
-                ),
-                fieldPlan: DatabaseFieldReadAuthorizationPlan.make(
-                    query: query,
-                    schema: context.container.schema
-                ),
-                restrictingTo: entityNames
-            )
-        }
-
         func execute(
             context: DatabaseContext,
             query: SelectQuery,
             execution: ReadExecutionContext,
-            transaction: any TransactionReadAccess
-        ) async throws -> DatabaseRetainedQueryResponse {
-            try await context.executeRetainedCanonicalQuery(
+            transaction: any TransactionAccess
+        ) async throws -> QueryResponse {
+            try await context.query(
                 query,
                 execution: execution,
                 transaction: transaction
@@ -46,10 +29,10 @@ public struct CompositionQueryPlanner: Sendable {
         }
 
         func prepare(
-            _ row: DatabaseRetainedQueryRow,
+            _ row: DatabaseEngine.QueryRow,
             sourceBaseID: Base.ID
         ) throws -> DatabaseEngine.QueryRow {
-            row.materializeForRetainedTransfer()
+            row
         }
     }
 
@@ -61,34 +44,38 @@ public struct CompositionQueryPlanner: Sendable {
     }
 
     private struct MemberCursor: Sendable {
-        let member: DatabaseCompositionReadMember
+        let member: DatabaseBaseLease
         var continuation: QueryContinuation?
-        var page: DatabaseRetainedQueryResponse?
+        var rows: [DatabaseEngine.QueryRow]
         var nextRowIndex: Int
         var reachedEnd: Bool
+        var reservation: DatabaseIntermediateReservation?
 
-        init(member: DatabaseCompositionReadMember) {
+        init(member: DatabaseBaseLease) {
             self.member = member
             self.continuation = nil
-            self.page = nil
+            self.rows = []
             self.nextRowIndex = 0
             self.reachedEnd = false
+            self.reservation = nil
         }
 
-        var rowCount: Int { page?.count ?? 0 }
-
         mutating func releaseConsumedPage() {
-            guard nextRowIndex >= rowCount else { return }
-            page = nil
+            guard nextRowIndex >= rows.count else { return }
+            rows.removeAll(keepingCapacity: false)
             nextRowIndex = 0
+            reservation?.release()
+            reservation = nil
         }
 
         mutating func replacePage(
-            _ newPage: consuming DatabaseRetainedQueryResponse
+            _ newRows: consuming [DatabaseEngine.QueryRow],
+            reservation newReservation: DatabaseIntermediateReservation?
         ) {
-            precondition(page == nil)
-            page = newPage
+            precondition(rows.isEmpty && reservation == nil)
+            rows = newRows
             nextRowIndex = 0
+            reservation = newReservation
         }
     }
 
@@ -128,32 +115,7 @@ public struct CompositionQueryPlanner: Sendable {
     private enum AggregateState: Sendable {
         case count(Int64)
         case numeric(DatabaseNumericAggregateAccumulator)
-        case extremum(RetainedAggregateExtremum?)
-    }
-
-    private struct RetainedAggregateExtremum: Sendable {
-        let value: FieldValue
-        let reservation: DatabaseIntermediateReservation
-    }
-
-    private struct RetainedAggregateRow: Sendable {
-        let row: OriginRow
-        private let reservation: DatabaseIntermediateReservation
-
-        init(
-            row: OriginRow,
-            reservation: DatabaseIntermediateReservation
-        ) {
-            self.row = row
-            self.reservation = reservation
-        }
-
-        func withRow<Result: Sendable>(
-            _ body: (borrowing OriginRow) async throws -> Result
-        ) async rethrows -> Result {
-            _ = reservation
-            return try await body(row)
-        }
+        case extremum(FieldValue?)
     }
 
     private struct MergeHeap {
@@ -314,16 +276,9 @@ public struct CompositionQueryPlanner: Sendable {
         let workMeter = options.readContext.workMeter
 
         try await source.withReadSnapshot { snapshot in
-            let readAdmissions = try await makeReadAdmissions(
-                query: query,
-                crossBaseJoin: crossBaseJoin,
-                source: source,
-                snapshot: snapshot,
-                memberExecutor: memberExecutor
-            )
             let metadata = CompositionQueryMetadata(
-                composition: snapshot.resolution,
-                basePlacementGenerations: snapshot
+                composition: snapshot.lease.resolution,
+                basePlacementGenerations: snapshot.lease
                     .basePlacementGenerations,
                 schemaGeneration: source.container.schemaGeneration,
                 consistency: .federated(try await snapshot.readPoints())
@@ -337,7 +292,6 @@ public struct CompositionQueryPlanner: Sendable {
                     options: options,
                     source: source,
                     snapshot: snapshot,
-                    readAdmissions: readAdmissions,
                     workMeter: workMeter,
                     memberExecutor: memberExecutor,
                     emit: emit
@@ -348,28 +302,26 @@ public struct CompositionQueryPlanner: Sendable {
             var window = try Self.emissionWindow(query)
             if !window.isExhausted,
                let aggregates = try Self.aggregateProjection(query.projection) {
-                let retainedRow = try await executeAggregates(
+                let rows = try await executeAggregates(
                     query,
                     aggregates: aggregates,
                     options: options,
                     source: source,
                     snapshot: snapshot,
-                    readAdmissions: readAdmissions,
                     workMeter: workMeter,
                     memberExecutor: memberExecutor
                 )
-                if window.acceptsNextRow() {
-                    let shouldContinue = try await retainedRow.withRow { row in
-                        try await emit(
-                            .row(
-                                CompositionQueryRow(
-                                    row: row.row,
-                                    origin: row.origin
-                                )
+                for row in rows where window.acceptsNextRow() {
+                    guard try await emit(
+                        .row(
+                            CompositionQueryRow(
+                                row: row.row,
+                                origin: row.origin
                             )
                         )
+                    ) else {
+                        return
                     }
-                    guard shouldContinue else { return }
                 }
             } else if !window.isExhausted,
                       query.distinct
@@ -386,7 +338,6 @@ public struct CompositionQueryPlanner: Sendable {
                         options: options,
                         source: source,
                         snapshot: snapshot,
-                        readAdmissions: readAdmissions,
                         workMeter: workMeter,
                         memberExecutor: memberExecutor
                     ) { row in
@@ -434,7 +385,6 @@ public struct CompositionQueryPlanner: Sendable {
                     options: options,
                     source: source,
                     snapshot: snapshot,
-                    readAdmissions: readAdmissions,
                     workMeter: workMeter,
                     memberExecutor: memberExecutor
                 ) { row in
@@ -452,48 +402,6 @@ public struct CompositionQueryPlanner: Sendable {
                 }
             }
         }
-    }
-
-    private func makeReadAdmissions(
-        query: SelectQuery,
-        crossBaseJoin: CrossBaseJoinPlan?,
-        source: CompositionDataSource,
-        snapshot: DatabaseCompositionReadSnapshot,
-        memberExecutor: any CompositionMemberQueryExecutor
-    ) async throws -> [Base.ID: DatabaseReadAuthorizationAdmission] {
-        var entityNamesByBase: [Base.ID: Set<String>] = [:]
-        if let crossBaseJoin {
-            entityNamesByBase[crossBaseJoin.leftBaseID, default: []].insert(
-                crossBaseJoin.leftTable.table
-            )
-            entityNamesByBase[crossBaseJoin.rightBaseID, default: []].insert(
-                crossBaseJoin.rightTable.table
-            )
-        }
-        var admissions: [Base.ID: DatabaseReadAuthorizationAdmission] = [:]
-        admissions.reserveCapacity(snapshot.members.count)
-        for member in snapshot.members {
-            let restrictedEntities: Set<String>?
-            if crossBaseJoin != nil {
-                guard let selected = entityNamesByBase[member.baseID] else {
-                    continue
-                }
-                restrictedEntities = selected
-            } else {
-                restrictedEntities = nil
-            }
-            admissions[member.baseID] = try await source.withMemberContext(
-                member,
-                in: snapshot
-            ) { context, _ in
-                try memberExecutor.admitLogicalRead(
-                    context: context,
-                    query: query,
-                    restrictingTo: restrictedEntities
-                )
-            }
-        }
-        return admissions
     }
 
     private static func validateRelational(
@@ -599,21 +507,20 @@ public struct CompositionQueryPlanner: Sendable {
         options: CompositionQueryExecutionOptions,
         source: CompositionDataSource,
         snapshot: DatabaseCompositionReadSnapshot,
-        readAdmissions: [Base.ID: DatabaseReadAuthorizationAdmission],
         workMeter: DatabaseWorkMeter,
         memberExecutor: any CompositionMemberQueryExecutor,
         emit: @Sendable @escaping (CompositionQueryEvent) async throws -> Bool
     ) async throws {
-        guard let leftMember = snapshot.members.first(where: {
-            $0.baseID == plan.leftBaseID
-        }) else {
+        guard let leftMember = snapshot.lease.member(
+            identifiedBy: plan.leftBaseID
+        ) else {
             throw CompositionQueryError.unsupportedPlan(
                 "the left Base is not a member of the selected Composition"
             )
         }
-        guard let rightMember = snapshot.members.first(where: {
-            $0.baseID == plan.rightBaseID
-        }) else {
+        guard let rightMember = snapshot.lease.member(
+            identifiedBy: plan.rightBaseID
+        ) else {
             throw CompositionQueryError.unsupportedPlan(
                 "the right Base is not a member of the selected Composition"
             )
@@ -644,7 +551,6 @@ public struct CompositionQueryPlanner: Sendable {
             options: options,
             source: source,
             snapshot: snapshot,
-            readAdmissions: readAdmissions,
             workMeter: workMeter,
             memberExecutor: memberExecutor
         )
@@ -654,7 +560,6 @@ public struct CompositionQueryPlanner: Sendable {
             options: options,
             source: source,
             snapshot: snapshot,
-            readAdmissions: readAdmissions,
             workMeter: workMeter,
             memberExecutor: memberExecutor
         )
@@ -667,7 +572,7 @@ public struct CompositionQueryPlanner: Sendable {
             workMeter: workMeter,
             queryStructuralLimits: structuralLimits
         )
-        let response: DatabaseRetainedQueryResponse
+        let response: QueryResponse
         do {
             response = try await joinContext.executeCompositionCrossBaseJoin(
                 query,
@@ -694,10 +599,6 @@ public struct CompositionQueryPlanner: Sendable {
         guard response.continuation == nil else {
             throw CompositionQueryError.workspaceCorrupted
         }
-        try response.validateWorkMeter(
-            workMeter,
-            sourceName: "Composition cross-Base JOIN"
-        )
         let origin: CompositionOrigin
         if plan.leftBaseID == plan.rightBaseID {
             origin = .source(plan.leftBaseID)
@@ -706,9 +607,7 @@ public struct CompositionQueryPlanner: Sendable {
                 contributors: [plan.leftBaseID, plan.rightBaseID].sorted()
             )
         }
-        for index in 0..<response.count {
-            let retainedRow = response.row(at: index)
-            let row = retainedRow.materializeForRetainedTransfer()
+        for row in response.rows {
             guard try await emit(
                 .row(CompositionQueryRow(row: row, origin: origin))
             ) else {
@@ -719,11 +618,10 @@ public struct CompositionQueryPlanner: Sendable {
 
     private func collectCrossBaseInput(
         query: SelectQuery,
-        member: DatabaseCompositionReadMember,
+        member: DatabaseBaseLease,
         options: CompositionQueryExecutionOptions,
         source: CompositionDataSource,
         snapshot: DatabaseCompositionReadSnapshot,
-        readAdmissions: [Base.ID: DatabaseReadAuthorizationAdmission],
         workMeter: DatabaseWorkMeter,
         memberExecutor: any CompositionMemberQueryExecutor
     ) async throws -> DatabaseRetainedBuffer<DatabaseEngine.QueryRow> {
@@ -745,18 +643,16 @@ public struct CompositionQueryPlanner: Sendable {
                 .retainedArrayLayout(for: DatabaseEngine.QueryRow.self)
         )
         var cursor = MemberCursor(member: member)
-        while let retainedRow = try await nextRow(
+        while let row = try await nextRow(
             cursor: &cursor,
             query: query,
             pageSize: localPageSize,
             options: options,
             source: source,
             snapshot: snapshot,
-            readAdmissions: readAdmissions,
             workMeter: workMeter,
             memberExecutor: memberExecutor
         ) {
-            let row = retainedRow.materializeForRetainedTransfer()
             try rows.append(
                 footprint: try CanonicalRelationalFootprintMeter.footprint(
                     of: row,
@@ -933,7 +829,6 @@ public struct CompositionQueryPlanner: Sendable {
         options: CompositionQueryExecutionOptions,
         source: CompositionDataSource,
         snapshot: DatabaseCompositionReadSnapshot,
-        readAdmissions: [Base.ID: DatabaseReadAuthorizationAdmission],
         workMeter: DatabaseWorkMeter,
         memberExecutor: any CompositionMemberQueryExecutor,
         emit: (OriginRow) async throws -> Bool
@@ -953,7 +848,7 @@ public struct CompositionQueryPlanner: Sendable {
             reduced: false,
             dataset: query.dataset
         )
-        let memberCount = max(1, snapshot.members.count)
+        let memberCount = max(1, snapshot.lease.members.count)
         let mergeOrdering: MergeOrdering?
         if try Self.vectorIndexScan(query) != nil {
             mergeOrdering = .vectorDistance
@@ -1014,12 +909,12 @@ public struct CompositionQueryPlanner: Sendable {
                 maximumLocalPageSize
             )
         )
-        var cursors = snapshot.members.map(MemberCursor.init(member:))
+        var cursors = snapshot.lease.members.map(MemberCursor.init(member:))
         var sequence: UInt64 = 0
 
         func prepared(
-            _ row: DatabaseRetainedQueryRow,
-            member: DatabaseCompositionReadMember
+            _ row: DatabaseEngine.QueryRow,
+            member: DatabaseBaseLease
         ) throws -> OriginRow {
             let qualifiedRow = try memberExecutor.prepare(
                 row,
@@ -1062,7 +957,6 @@ public struct CompositionQueryPlanner: Sendable {
                     options: options,
                     source: source,
                     snapshot: snapshot,
-                    readAdmissions: readAdmissions,
                     workMeter: workMeter,
                     memberExecutor: memberExecutor
                 ) {
@@ -1112,7 +1006,6 @@ public struct CompositionQueryPlanner: Sendable {
                     options: options,
                     source: source,
                     snapshot: snapshot,
-                    readAdmissions: readAdmissions,
                     workMeter: workMeter,
                     memberExecutor: memberExecutor
                 ) {
@@ -1145,7 +1038,6 @@ public struct CompositionQueryPlanner: Sendable {
                     options: options,
                     source: source,
                     snapshot: snapshot,
-                    readAdmissions: readAdmissions,
                     workMeter: workMeter,
                     memberExecutor: memberExecutor
                 ) {
@@ -1165,38 +1057,29 @@ public struct CompositionQueryPlanner: Sendable {
         options: CompositionQueryExecutionOptions,
         source: CompositionDataSource,
         snapshot: DatabaseCompositionReadSnapshot,
-        readAdmissions: [Base.ID: DatabaseReadAuthorizationAdmission],
         workMeter: DatabaseWorkMeter,
         memberExecutor: any CompositionMemberQueryExecutor
-    ) async throws -> DatabaseRetainedQueryRow? {
-        while cursor.nextRowIndex >= cursor.rowCount {
+    ) async throws -> DatabaseEngine.QueryRow? {
+        while cursor.nextRowIndex >= cursor.rows.count {
             cursor.releaseConsumedPage()
             guard !cursor.reachedEnd else { return nil }
             let previousContinuation = cursor.continuation
-            guard let readAdmission = readAdmissions[cursor.member.baseID]
-            else {
-                throw CompositionQueryError.workspaceCorrupted
-            }
             let response = try await source.withMemberContext(
                 cursor.member,
                 in: snapshot
             ) { databaseContext, transaction in
-                try await databaseContext.withReadAuthorizationAdmission(
-                    readAdmission
-                ) {
-                    try await memberExecutor.execute(
-                        context: databaseContext,
-                        query: query,
-                        execution: try localExecution(
-                            options: options,
-                            continuation: previousContinuation,
-                            pageSize: pageSize,
-                            workMeter: workMeter,
-                            source: source
-                        ),
-                        transaction: transaction
-                    )
-                }
+                try await memberExecutor.execute(
+                    context: databaseContext,
+                    query: query,
+                    execution: try localExecution(
+                        options: options,
+                        continuation: previousContinuation,
+                        pageSize: pageSize,
+                        workMeter: workMeter,
+                        source: source
+                    ),
+                    transaction: transaction
+                )
             }
             guard response.continuation == nil
                     || response.continuation != previousContinuation else {
@@ -1204,19 +1087,28 @@ public struct CompositionQueryPlanner: Sendable {
                     "a Base-local cursor did not make progress"
                 )
             }
-            try response.validateWorkMeter(
-                workMeter,
-                sourceName: "Composition member"
+            var retainedBytes: UInt64 = 0
+            for row in response.rows {
+                retainedBytes = try Self.adding(
+                    retainedBytes,
+                    rowFootprint(row)
+                )
+            }
+            let reservation = response.rows.isEmpty
+                ? nil
+                : try workMeter.reserveIntermediate(
+                    rows: UInt64(response.rows.count),
+                    bytes: retainedBytes,
+                    at: .resultMaterialization
+                )
+            cursor.replacePage(
+                response.rows,
+                reservation: reservation
             )
-            let continuation = response.continuation
-            cursor.replacePage(response)
-            cursor.continuation = continuation
-            cursor.reachedEnd = continuation == nil
+            cursor.continuation = response.continuation
+            cursor.reachedEnd = response.continuation == nil
         }
-        guard let page = cursor.page else {
-            throw CompositionQueryError.workspaceCorrupted
-        }
-        let row = page.row(at: cursor.nextRowIndex)
+        let row = cursor.rows[cursor.nextRowIndex]
         cursor.nextRowIndex += 1
         return row
     }
@@ -1230,10 +1122,9 @@ public struct CompositionQueryPlanner: Sendable {
         options: CompositionQueryExecutionOptions,
         source: CompositionDataSource,
         snapshot: DatabaseCompositionReadSnapshot,
-        readAdmissions: [Base.ID: DatabaseReadAuthorizationAdmission],
         workMeter: DatabaseWorkMeter,
         memberExecutor: any CompositionMemberQueryExecutor
-    ) async throws -> RetainedAggregateRow {
+    ) async throws -> [OriginRow] {
         let localQuery = SelectQuery(
             projection: aggregates.localProjection,
             source: query.source,
@@ -1249,16 +1140,6 @@ public struct CompositionQueryPlanner: Sendable {
             reduced: false,
             dataset: query.dataset
         )
-        let stateFootprint = try DatabaseIntermediateCollectionMeter
-            .arrayFootprint(
-                count: aggregates.descriptors.count,
-                element: AggregateState.self
-            )
-        let stateReservation = try workMeter.reserveIntermediate(
-            bytes: stateFootprint.bytes,
-            at: .aggregateInput
-        )
-        defer { stateReservation.release() }
         var states = aggregates.descriptors.map { descriptor in
             switch descriptor.kind {
             case .countAll, .countValue:
@@ -1278,7 +1159,7 @@ public struct CompositionQueryPlanner: Sendable {
                 "maximumIntermediateRows exceeds the current runtime range"
             )
         }
-        for member in snapshot.members {
+        for member in snapshot.lease.members {
             var cursor = MemberCursor(member: member)
             while let row = try await nextRow(
                 cursor: &cursor,
@@ -1287,7 +1168,6 @@ public struct CompositionQueryPlanner: Sendable {
                 options: options,
                 source: source,
                 snapshot: snapshot,
-                readAdmissions: readAdmissions,
                 workMeter: workMeter,
                 memberExecutor: memberExecutor
             ) {
@@ -1313,34 +1193,12 @@ public struct CompositionQueryPlanner: Sendable {
                     try Self.accumulate(
                         value,
                         descriptor: descriptor,
-                        state: &states[index],
-                        workMeter: workMeter
+                        state: &states[index]
                     )
                 }
             }
         }
 
-        var outputByteCount: UInt64 = 192
-        for index in aggregates.descriptors.indices {
-            let descriptor = aggregates.descriptors[index]
-            let value = try Self.result(
-                descriptor: descriptor,
-                state: states[index]
-            )
-            outputByteCount = try Self.adding(
-                outputByteCount,
-                UInt64(descriptor.outputName.utf8.count)
-            )
-            outputByteCount = try Self.adding(
-                outputByteCount,
-                UInt64(try FieldValueTupleCodec.encodedByteCount(for: value))
-            )
-        }
-        let outputReservation = try workMeter.reserveIntermediate(
-            rows: 1,
-            bytes: outputByteCount,
-            at: .resultMaterialization
-        )
         var fields: [String: FieldValue] = [:]
         fields.reserveCapacity(aggregates.descriptors.count)
         for index in aggregates.descriptors.indices {
@@ -1350,29 +1208,25 @@ public struct CompositionQueryPlanner: Sendable {
             )
         }
         let row = DatabaseEngine.QueryRow(fields: fields)
-        let retainedRow = RetainedAggregateRow(
-            row: OriginRow(
+        return [
+            OriginRow(
                 row: row,
                 origin: .derived(
-                    contributors: snapshot.resolution.bases
+                    contributors: snapshot.lease.resolution.bases
                 ),
                 sequence: 0,
                 fingerprint: try CanonicalRowFingerprint.compute(
                     row,
                     workMeter: workMeter
                 )
-            ),
-            reservation: outputReservation
-        )
-        states.removeAll(keepingCapacity: false)
-        return retainedRow
+            )
+        ]
     }
 
     private static func accumulate(
         _ value: FieldValue,
         descriptor: AggregateDescriptor,
-        state: inout AggregateState,
-        workMeter: DatabaseWorkMeter
+        state: inout AggregateState
     ) throws {
         switch (descriptor.kind, state) {
         case (.countAll, .count(let count)):
@@ -1395,18 +1249,13 @@ public struct CompositionQueryPlanner: Sendable {
              (.maximum, .extremum(let current)):
             guard value != .null else { return }
             guard let current else {
-                state = .extremum(
-                    try retainedExtremum(value, workMeter: workMeter)
-                )
+                state = .extremum(value)
                 return
             }
             let comparison: QueryComparison
-            if value.isNumeric && current.value.isNumeric {
+            if value.isNumeric && current.isNumeric {
                 guard let numericComparison =
-                    RelationalValueIdentity.compareNumeric(
-                        value,
-                        current.value
-                    )
+                    RelationalValueIdentity.compareNumeric(value, current)
                 else {
                     throw CompositionQueryError.aggregateFailure(
                         "MIN/MAX values contain a non-finite numeric value"
@@ -1420,8 +1269,7 @@ public struct CompositionQueryPlanner: Sendable {
                     comparison = .equal
                 }
             } else {
-                guard let fieldComparison = value.compare(to: current.value)
-                else {
+                guard let fieldComparison = value.compare(to: current) else {
                     throw CompositionQueryError.aggregateFailure(
                         "MIN/MAX values are not mutually comparable"
                     )
@@ -1431,9 +1279,7 @@ public struct CompositionQueryPlanner: Sendable {
             if descriptor.kind.isMinimum
                 ? comparison == .lessThan
                 : comparison == .greaterThan {
-                state = .extremum(
-                    try retainedExtremum(value, workMeter: workMeter)
-                )
+                state = .extremum(value)
             }
         default:
             throw CompositionQueryError.aggregateFailure(
@@ -1466,30 +1312,12 @@ public struct CompositionQueryPlanner: Sendable {
             }
         case (.minimum, .extremum(let value)),
              (.maximum, .extremum(let value)):
-            return value?.value ?? .null
+            return value ?? .null
         default:
             throw CompositionQueryError.aggregateFailure(
                 "aggregate state does not match its plan"
             )
         }
-    }
-
-    private static func retainedExtremum(
-        _ value: borrowing FieldValue,
-        workMeter: DatabaseWorkMeter
-    ) throws -> RetainedAggregateExtremum {
-        let footprint = try CanonicalRelationalFootprintMeter.footprint(
-            of: value,
-            workMeter: workMeter
-        )
-        let reservation = try workMeter.reserveIntermediate(
-            bytes: footprint.bytes,
-            at: .aggregateInput
-        )
-        return RetainedAggregateExtremum(
-            value: copy value,
-            reservation: reservation
-        )
     }
 
     private static func incrementAggregateCount(

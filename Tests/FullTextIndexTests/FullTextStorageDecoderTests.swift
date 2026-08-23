@@ -22,31 +22,9 @@ struct FullTextStorageDecoderTests {
         #expect(frequencyOnly.termFrequency == 3)
         #expect(frequencyOnly.positions.isEmpty)
 
-        #expect(
-            try FullTextStorageDecoder.termFrequency(
-                from: Tuple(Int64(1), Int64.max).pack(),
-                positionsStored: true,
-                term: "swift"
-            ) == 1
-        )
-
         #expect(throws: FullTextStorageError.self) {
             _ = try FullTextStorageDecoder.posting(
                 from: Tuple(Int64(2), Int64(0)).pack(),
-                positionsStored: true,
-                term: "swift"
-            )
-        }
-        #expect(throws: FullTextStorageError.self) {
-            _ = try FullTextStorageDecoder.posting(
-                from: Tuple(Int64(2), Int64(4), Int64(4)).pack(),
-                positionsStored: true,
-                term: "swift"
-            )
-        }
-        #expect(throws: FullTextStorageError.self) {
-            _ = try FullTextStorageDecoder.termFrequency(
-                from: Tuple(Int64(3), Int64(1), Int64(3), Int64(2)).pack(),
                 positionsStored: true,
                 term: "swift"
             )

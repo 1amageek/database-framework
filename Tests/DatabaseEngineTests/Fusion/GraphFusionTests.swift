@@ -112,7 +112,7 @@ private struct GraphFusionContext {
     func insertFollow(_ follow: GraphFusionFollow) async throws {
         try await database.withTransaction { transaction in
             let itemKey = itemsSubspace.pack(Tuple(follow.id))
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(
                 try PersistableStorageCodec.encode(follow),
                 for: itemKey

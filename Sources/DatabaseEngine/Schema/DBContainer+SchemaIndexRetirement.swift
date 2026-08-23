@@ -135,7 +135,7 @@ extension DBContainer {
     @_spi(DatabaseExecution)
     public func pendingSchemaIndexRetirements(
         validFor target: Schema,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [DatabasePendingIndexRetirement] {
         let lease = acquireActiveSchemaLease()
         guard lease.schema == target else {
@@ -170,7 +170,7 @@ extension DBContainer {
     }
 
     private func loadSchemaIndexRetirements(
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [DatabasePendingIndexRetirement] {
         let storage = try schemaIndexRetirementSubspace()
         let range = storage.range()

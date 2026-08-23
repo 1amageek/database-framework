@@ -8,23 +8,22 @@ extension SPARQLQueryExecutor {
         pattern: ExecutionTriple,
         leftBindings: borrowing SPARQLRetainedBindings,
         joinVariables: Set<String>,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression?,
         resultLimit: Int?
     ) async throws -> HashJoinEvaluation {
-        let hashWorkspace = try SPARQLHashJoinWorkspace.make(
-            joinVariables: joinVariables,
-            workMeter: try requiredWorkMeter()
-        )
-        defer { hashWorkspace.shutdown() }
+        let sortedJoinVars = joinVariables.sorted()
+
+        var hashTable: [JoinKey: [Int]] = [:]
         for leftIndex in 0..<leftBindings.count {
             try requiredWorkMeter().consume(at: .joinCandidate)
-            try leftBindings.withElement(at: leftIndex) { binding in
-                try hashWorkspace.insert(
+            leftBindings.withElement(at: leftIndex) { binding in
+                let key = JoinKey(
                     binding: binding,
-                    index: leftIndex
+                    variables: sortedJoinVars
                 )
+                hashTable[key, default: []].append(leftIndex)
             }
         }
 
@@ -55,48 +54,52 @@ extension SPARQLQueryExecutor {
             try await rightMatches.bindings.withElement(
                 at: matchIndex
             ) { match in
-                _ = try await hashWorkspace.withMatchIndices(
-                    binding: match
-                ) { leftGroup in
-                    for leftIndex in leftGroup {
-                        if let resultLimit, results.count >= resultLimit {
-                            break
-                        }
-                        try requiredWorkMeter().consume(at: .joinCandidate)
-                        try await leftBindings.withElement(
-                            at: leftIndex
-                        ) { leftBinding in
-                            let preparation = try results.prepareAppend(
-                                merging: leftBinding,
-                                with: match,
-                                at: .joinCandidate
-                            )
-                            switch consume preparation {
-                            case .incompatible:
-                                return
-                            case .admitted(let admission):
-                                guard let merged = leftBinding.merged(
-                                    with: match
-                                ) else {
-                                    throw SPARQLQueryError.executionFailed(
-                                        "hash join preflight disagrees with row construction"
-                                    )
-                                }
-                                if let filter {
-                                    try requiredWorkMeter().consume(
-                                        at: .filterEvaluation
-                                    )
-                                    guard try await evaluateFilterExpression(
-                                        filter,
-                                        binding: merged,
-                                        transaction: transaction,
-                                        activeGraph: activeGraph
-                                    ) else {
-                                        return
-                                    }
-                                }
-                                results.append(merged, using: admission)
+                let probeKey = JoinKey(
+                    binding: match,
+                    variables: sortedJoinVars
+                )
+                guard let leftGroup = hashTable[probeKey] else {
+                    return
+                }
+
+                for leftIndex in leftGroup {
+                    if let resultLimit, results.count >= resultLimit {
+                        break
+                    }
+                    try requiredWorkMeter().consume(at: .joinCandidate)
+                    try await leftBindings.withElement(
+                        at: leftIndex
+                    ) { leftBinding in
+                        let preparation = try results.prepareAppend(
+                            merging: leftBinding,
+                            with: match,
+                            at: .joinCandidate
+                        )
+                        switch consume preparation {
+                        case .incompatible:
+                            return
+                        case .admitted(let admission):
+                            guard let merged = leftBinding.merged(
+                                with: match
+                            ) else {
+                                throw SPARQLQueryError.executionFailed(
+                                    "hash join preflight disagrees with row construction"
+                                )
                             }
+                            if let filter {
+                                try requiredWorkMeter().consume(
+                                    at: .filterEvaluation
+                                )
+                                guard try await evaluateFilterExpression(
+                                    filter,
+                                    binding: merged,
+                                    transaction: transaction,
+                                    activeGraph: activeGraph
+                                ) else {
+                                    return
+                                }
+                            }
+                            results.append(merged, using: admission)
                         }
                     }
                 }

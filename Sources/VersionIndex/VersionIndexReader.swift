@@ -16,7 +16,7 @@ public struct VersionIndexReader: Sendable {
     public func history(
         primaryKey: [any TupleElement],
         limit: Int? = nil,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(version: Version, data: ByteString)] {
         if let limit {
@@ -61,7 +61,7 @@ public struct VersionIndexReader: Sendable {
                     )
                 }
                 let version = Version(
-                    bytes: key[(key.count - 10)..<key.count].detached()
+                    bytes: key[(key.count - 10)..<key.count]
                 )
                 let data = value.count > Self.timestampByteCount
                     ? value[Self.timestampByteCount..<value.count]
@@ -102,7 +102,7 @@ public struct VersionIndexReader: Sendable {
 
     public func latest(
         primaryKey: [any TupleElement],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> ByteString? {
         let beginKey = subspace.pack(Tuple(primaryKey))
         let endKey = beginKey.appending(0xFF)

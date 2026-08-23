@@ -17,7 +17,7 @@ public struct RDFSGraphEntailment: SHACLEntailmentContext, Sendable {
     public static func resolve(
         executor: SPARQLQueryExecutor,
         dataGraph: SHACLDataGraphTarget,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         budget: SHACLValidationWorkBudget
     ) async throws -> Self {
         let graphTarget: RDFGraphScanTarget

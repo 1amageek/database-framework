@@ -29,7 +29,7 @@ extension DBContainer {
     public func executionWithBaseLease<Result: Sendable>(
         _ lease: DatabaseBaseLease,
         _ operation: @Sendable () async throws -> Result
-    ) async throws -> Result {
+    ) async rethrows -> Result {
         try await withBaseLease(lease, operation)
     }
 
@@ -209,17 +209,6 @@ extension DBContainer {
         let lease = try requireBoundBaseLease()
         return lease.baseID == id
             && lease.domainID == controlDomainID.value
-    }
-
-    /// Reports whether every configured Base placement is confined to the
-    /// control domain. A server may use this immutable topology capability to
-    /// admit a job whose data effect and durable control state must share one
-    /// physical transaction for its entire lifetime.
-    @_spi(DatabaseExecution)
-    public var executionConfinesAllBasePlacementsToControlDomain: Bool {
-        storageTopology.placements.values.allSatisfy {
-            $0.domainID == controlDomainID
-        }
     }
 
     @_spi(DatabaseExecution)

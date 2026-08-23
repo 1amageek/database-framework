@@ -51,12 +51,12 @@ struct ItemStorageTests {
 
         // Write and read in same transaction to ensure same blobsSubspace
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(testData, for: key)
         }
 
         let loaded = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: key)
         }
 
@@ -81,12 +81,12 @@ struct ItemStorageTests {
         let testData = ByteString(repeating: 0x41, count: 10_000)
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(testData, for: key)
         }
 
         let loaded = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: key)
         }
 
@@ -111,12 +111,12 @@ struct ItemStorageTests {
         let testData = randomByteString(count: 200_000)
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(testData, for: key)
         }
 
         let loaded = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: key)
         }
 
@@ -142,17 +142,17 @@ struct ItemStorageTests {
         let testData = ByteString(utf8: "Delete me")
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(testData, for: key)
         }
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.delete(for: key)
         }
 
         let loaded = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: key)
         }
 
@@ -175,7 +175,7 @@ struct ItemStorageTests {
         let testData = randomByteString(count: 300_000)
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(testData, for: key)
         }
 
@@ -191,12 +191,12 @@ struct ItemStorageTests {
         #expect(blobCountBefore > 0, "Blobs should be created for large data")
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.delete(for: key)
         }
 
         let loaded = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: key)
         }
 
@@ -231,12 +231,12 @@ struct ItemStorageTests {
         let testData = ByteString(utf8: "I exist")
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(testData, for: key)
         }
 
         let exists = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.exists(for: key)
         }
 
@@ -256,7 +256,7 @@ struct ItemStorageTests {
         let key = itemsSubspace.pack(Tuple(["does_not_exist"]))
 
         let exists = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.exists(for: key)
         }
 
@@ -287,12 +287,12 @@ struct ItemStorageTests {
         let testData = ByteString(utf8: json)
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(testData, for: key)
         }
 
         let loaded = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: key)
         }
 
@@ -324,12 +324,12 @@ struct ItemStorageTests {
         }
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(testData, for: key)
         }
 
         let loaded = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: key)
         }
 
@@ -353,12 +353,12 @@ struct ItemStorageTests {
         let testData = ByteString()
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(testData, for: key)
         }
 
         let loaded = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: key)
         }
 
@@ -378,7 +378,7 @@ struct ItemStorageTests {
         let key = itemsSubspace.pack(Tuple(["nonexistent"]))
 
         let loaded = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: key)
         }
 
@@ -395,7 +395,7 @@ struct ItemStorageTests {
         let firstData = randomByteString(count: 200_000)
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(firstData, for: key)
         }
 
@@ -414,12 +414,12 @@ struct ItemStorageTests {
         let secondData = ByteString(utf8: "Small replacement")
 
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(secondData, for: key)  // async write cleans up old blobs
         }
 
         let loaded = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: key)
         }
 
@@ -443,10 +443,10 @@ struct ItemStorageTests {
         }
     }
 
-    // MARK: - Atomic Transaction Composition
+    // MARK: - Underlying Transaction Access
 
-    @Test("Writer and caller-owned index mutations share one transaction")
-    func callerOwnedTransactionComposition() async throws {
+    @Test("Underlying transaction access for index operations")
+    func underlyingTransactionAccess() async throws {
         let database = try await setupDatabase()
         let (itemsSubspace, blobsSubspace) = createTestSubspaces()
         let dataKey = itemsSubspace.pack(Tuple(["data"]))
@@ -456,19 +456,18 @@ struct ItemStorageTests {
 
         // Write entity via storage, index via underlying
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
 
             // Entity data - uses compression/splitting
             try await storage.write(testData, for: dataKey)
 
-            // Non-item mutations remain the caller's responsibility. The item
-            // capability never exposes the transaction it was constructed with.
-            try transaction.setValue(ByteString(), for: indexKey)
+            // Index entry - uses underlying directly (empty value)
+            try storage.storageAccess.setValue(ByteString(), for: indexKey)
         }
 
         // Verify both exist
         let loadedData = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             return try await storage.read(for: dataKey)
         }
         #expect(loadedData == Optional(testData))
@@ -499,7 +498,7 @@ struct ItemStorageTests {
 
         // Write all
         try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             for (key, value) in zip(keys, values) {
                 try await storage.write(value, for: key)
             }
@@ -508,7 +507,7 @@ struct ItemStorageTests {
         // Read all
         for (key, expectedValue) in zip(keys, values) {
             let loaded = try await database.withTransaction { transaction in
-                let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+                let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
                 return try await storage.read(for: key)
             }
             #expect(loaded == Optional(expectedValue))

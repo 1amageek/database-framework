@@ -16,7 +16,7 @@ public final class CompositionDecisionTransaction: Sendable {
     private let container: DBContainer
     private let authorization: AuthorizationContext
     private let lease: DatabaseCompositionLease
-    private let domainStorageAccess: any TransactionAccess
+    private let storageAccess: any TransactionAccess
     private let writerTransaction: DatabaseTransaction
     private let operationGate = TransactionOperationGate()
 
@@ -25,7 +25,7 @@ public final class CompositionDecisionTransaction: Sendable {
         authorization: AuthorizationContext,
         lease: DatabaseCompositionLease,
         writerBaseID: Base.ID,
-        domainStorageAccess: any TransactionAccess,
+        storageAccess: any TransactionAccess,
         writerTransaction: DatabaseTransaction
     ) {
         self.composition = lease.resolution
@@ -33,7 +33,7 @@ public final class CompositionDecisionTransaction: Sendable {
         self.container = container
         self.authorization = authorization
         self.lease = lease
-        self.domainStorageAccess = domainStorageAccess
+        self.storageAccess = storageAccess
         self.writerTransaction = writerTransaction
     }
 
@@ -51,41 +51,13 @@ public final class CompositionDecisionTransaction: Sendable {
             let context = container.session(
                 authorization: authorization
             ).base(baseID).newContext()
-            guard let baseBinding = ActiveDatabaseBaseContext.binding else {
-                throw DatabaseCompositionAccessError.unavailable(
-                    lease.selection
-                )
-            }
-            let memberAccess = DataRootTransactionAccess.admitted(
-                domainStorageAccess,
-                dataRoot: member.root,
-                accessMode: .readOnly,
-                readScope: baseBinding.operationScope
-            )
-            defer { memberAccess.revoke() }
-            let executionBinding = DatabaseTransactionExecutionBinding(
-                identity: try DatabaseTransactionExecutionIdentity(
-                    context: context
-                ),
-                transaction: memberAccess,
-                grantedAccess: .read,
-                accessMode: .readOnly,
-                operationScope: baseBinding.operationScope,
-                resource: context.resource,
-                authorization: authorization,
-                databaseTransaction: nil
-            )
             return try await RequestAuthorization.$context.withValue(
                 authorization
             ) {
-                try await ActiveDatabaseTransactionContext.$binding.withValue(
-                    executionBinding
-                ) {
-                    try await context.fetch(
-                        query,
-                        transaction: memberAccess.readProjection()
-                    )
-                }
+                try await context.fetch(
+                    query,
+                    transaction: storageAccess
+                )
             }
         }
     }
@@ -133,60 +105,39 @@ public extension CompositionDataSource {
             }) else {
                 throw CompositionDecisionError.multipleStorageDomains
             }
-            let runner = TransactionRunner(
-                transactionExecutor: writer.transactionExecutor,
-                clock: container.monotonicClock,
-                logging: container.configuration.logging,
-                metrics: container.configuration.metrics
-            )
-            return try await runner.run(
-                configuration: configuration,
-                operationDescription: "Composition decision transaction"
-            ) { domainStorageAccess in
-                for member in lease.members {
-                    try await DatabaseGrantStore(
-                        resource: .base(member.baseID),
-                        root: member.root
-                    ).require(
-                        .read,
+            return try await container.withBaseLease(writer) {
+                let context = container.session(
+                    authorization: authorization
+                ).base(writerBaseID).newContext()
+                return try await context.withTransaction(
+                    requiredAccess: .write,
+                    configuration: configuration
+                ) { transaction in
+                    for member in lease.members {
+                        try await DatabaseGrantStore(
+                            resource: .base(member.baseID),
+                            root: member.root
+                        ).require(
+                            .read,
+                            authorization: authorization,
+                            transaction: transaction.executionStorageAccess
+                        )
+                    }
+                    let decision = CompositionDecisionTransaction(
+                        container: container,
                         authorization: authorization,
-                        transaction: domainStorageAccess
+                        lease: lease,
+                        writerBaseID: writerBaseID,
+                        storageAccess: transaction.executionStorageAccess,
+                        writerTransaction: transaction
                     )
-                }
-                try await DatabaseGrantStore(
-                    resource: .base(writer.baseID),
-                    root: writer.root
-                ).require(
-                    .write,
-                    authorization: authorization,
-                    transaction: domainStorageAccess
-                )
-                return try await container.withBaseLease(writer) {
-                    try await RequestAuthorization.$context.withValue(
-                        authorization
-                    ) {
-                        try await container.withRootScopedDatabaseTransaction(
-                            storageAccess: domainStorageAccess,
-                            dataRoot: writer.root,
-                            accessMode: .readWrite
-                        ) { writerTransaction in
-                            let decision = CompositionDecisionTransaction(
-                                container: container,
-                                authorization: authorization,
-                                lease: lease,
-                                writerBaseID: writerBaseID,
-                                domainStorageAccess: domainStorageAccess,
-                                writerTransaction: writerTransaction
-                            )
-                            do {
-                                let result = try await operation(decision)
-                                await decision.close()
-                                return result
-                            } catch {
-                                await decision.close()
-                                throw error
-                            }
-                        }
+                    do {
+                        let result = try await operation(decision)
+                        await decision.close()
+                        return result
+                    } catch {
+                        await decision.close()
+                        throw error
                     }
                 }
             }

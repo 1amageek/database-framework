@@ -298,29 +298,27 @@ public struct SPARQLUpdateExecutor: Sendable {
             insertPattern = insert
         }
         var deleted: UInt64 = 0
-        for index in 0..<rows.count {
-            try await rows.withBinding(at: index, workMeter: workMeter) { row in
-                for template in deletePattern {
-                    try workMeter.consume(at: .mutationPlanning)
-                    let quads = try resolver.resolve(
-                        templateQuad(
-                            template,
-                            defaultGraph: query.withGraph
-                        ),
-                        row: row,
-                        blankNodeResolver: nil,
-                        variablesAllowed: true,
-                        blankNodesAllowed: false
-                    )
-                    for quad in quads {
-                        try mutationMeter.consume()
-                        if try await graphStore.delete(
-                            quad,
-                            transaction: transaction,
-                            workMeter: workMeter
-                        ) {
-                            deleted = try increment(deleted)
-                        }
+        for row in rows {
+            for template in deletePattern {
+                try workMeter.consume(at: .mutationPlanning)
+                let quads = try resolver.resolve(
+                    templateQuad(
+                        template,
+                        defaultGraph: query.withGraph
+                    ),
+                    row: row,
+                    blankNodeResolver: nil,
+                    variablesAllowed: true,
+                    blankNodesAllowed: false
+                )
+                for quad in quads {
+                    try mutationMeter.consume()
+                    if try await graphStore.delete(
+                        quad,
+                        transaction: transaction,
+                        workMeter: workMeter
+                    ) {
+                        deleted = try increment(deleted)
                     }
                 }
             }
@@ -328,42 +326,37 @@ public struct SPARQLUpdateExecutor: Sendable {
 
         var inserted: UInt64 = 0
         var createdGraphs: UInt64 = 0
-        for ordinal in 0..<rows.count {
+        for (ordinal, row) in rows.enumerated() {
             let blankNodeResolver = try makeBlankNodeResolver(
                 context: context,
                 operationOrdinal: operationOrdinal,
                 solutionOrdinal: UInt64(ordinal)
             )
-            try await rows.withBinding(
-                at: ordinal,
-                workMeter: workMeter
-            ) { row in
-                for template in insertPattern {
-                    try workMeter.consume(at: .mutationPlanning)
-                    let quads = try resolver.resolve(
-                        templateQuad(
-                            template,
-                            defaultGraph: query.withGraph
-                        ),
-                        row: row,
-                        blankNodeResolver: blankNodeResolver,
-                        variablesAllowed: true,
-                        blankNodesAllowed: true
+            for template in insertPattern {
+                try workMeter.consume(at: .mutationPlanning)
+                let quads = try resolver.resolve(
+                    templateQuad(
+                        template,
+                        defaultGraph: query.withGraph
+                    ),
+                    row: row,
+                    blankNodeResolver: blankNodeResolver,
+                    variablesAllowed: true,
+                    blankNodesAllowed: true
+                )
+                for quad in quads {
+                    try mutationMeter.consume()
+                    let insertResult = try await graphStore.insert(
+                        quad,
+                        transaction: transaction,
+                        workMeter: workMeter
                     )
-                    for quad in quads {
-                        try mutationMeter.consume()
-                        let insertResult = try await graphStore.insert(
-                            quad,
-                            transaction: transaction,
-                            workMeter: workMeter
-                        )
-                        try accumulate(
-                            insertResult,
-                            mutationMeter: mutationMeter,
-                            insertedQuads: &inserted,
-                            createdGraphs: &createdGraphs
-                        )
-                    }
+                    try accumulate(
+                        insertResult,
+                        mutationMeter: mutationMeter,
+                        insertedQuads: &inserted,
+                        createdGraphs: &createdGraphs
+                    )
                 }
             }
         }
@@ -379,7 +372,7 @@ public struct SPARQLUpdateExecutor: Sendable {
         context: any SPARQLUpdateExecutionContext,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> SPARQLRetainedResult {
+    ) async throws -> [VariableBinding] {
         let dataset: SPARQLDataset
         if !query.using.isEmpty {
             dataset = explicitDataset(query.using)
@@ -406,7 +399,7 @@ public struct SPARQLUpdateExecutor: Sendable {
         context: any SPARQLUpdateExecutionContext,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> SPARQLRetainedResult {
+    ) async throws -> [VariableBinding] {
         let detectionLimit = try mutationDetectionLimit()
         let executor = try context.makeSPARQLQueryExecutor(
             datasetScanner: graphStore,
@@ -414,7 +407,7 @@ public struct SPARQLUpdateExecutor: Sendable {
             dataset: try SPARQLExecutionDataset(dataset),
             functionRegistry: functionRegistry
         )
-        let bindings = try await executor.executeRetainedInTransaction(
+        let (bindings, _) = try await executor.executeInTransaction(
             pattern: try GraphPatternConverter.convert(
                 pattern,
                 structuralLimits: structuralLimits
@@ -448,26 +441,24 @@ public struct SPARQLUpdateExecutor: Sendable {
             workMeter: workMeter
         )
         var deleted: UInt64 = 0
-        for index in 0..<rows.count {
-            try await rows.withBinding(at: index, workMeter: workMeter) { row in
-                for template in query.pattern {
-                    try workMeter.consume(at: .mutationPlanning)
-                    let quads = try resolver.resolve(
-                        template,
-                        row: row,
-                        blankNodeResolver: nil,
-                        variablesAllowed: true,
-                        blankNodesAllowed: false
-                    )
-                    for quad in quads {
-                        try mutationMeter.consume()
-                        if try await graphStore.delete(
-                            quad,
-                            transaction: transaction,
-                            workMeter: workMeter
-                        ) {
-                            deleted = try increment(deleted)
-                        }
+        for row in rows {
+            for template in query.pattern {
+                try workMeter.consume(at: .mutationPlanning)
+                let quads = try resolver.resolve(
+                    template,
+                    row: row,
+                    blankNodeResolver: nil,
+                    variablesAllowed: true,
+                    blankNodesAllowed: false
+                )
+                for quad in quads {
+                    try mutationMeter.consume()
+                    if try await graphStore.delete(
+                        quad,
+                        transaction: transaction,
+                        workMeter: workMeter
+                    ) {
+                        deleted = try increment(deleted)
                     }
                 }
             }

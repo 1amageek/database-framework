@@ -299,7 +299,7 @@ public struct DistinctIndexMaintainer<Item: PersistedEntityValue>:
 
     public func getDistinctCount(
         groupingValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> (estimated: Int64, errorRate: Double) {
         try validateConfiguration()
         let group = try makeGroup(
@@ -314,7 +314,7 @@ public struct DistinctIndexMaintainer<Item: PersistedEntityValue>:
 
     private func storedDistinctCount(
         for group: DistinctIndexGroup,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         snapshot: Bool
     ) async throws -> (estimated: Int64, errorRate: Double)? {
         let membershipMetadata = try await storedMembershipMetadata(
@@ -346,7 +346,7 @@ public struct DistinctIndexMaintainer<Item: PersistedEntityValue>:
     }
 
     public func getAllDistinctCounts(
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [(
         grouping: [FieldValue],
         estimated: Int64,
@@ -620,7 +620,7 @@ public struct DistinctIndexMaintainer<Item: PersistedEntityValue>:
 
     private func storedMembershipMetadata(
         for group: DistinctIndexGroup,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         snapshot: Bool
     ) async throws -> AggregationMembershipMetadata? {
         guard let bytes = try await transaction.getValue(

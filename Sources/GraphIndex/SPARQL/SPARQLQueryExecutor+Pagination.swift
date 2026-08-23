@@ -64,7 +64,7 @@ extension SPARQLQueryExecutor {
     func filterBindings(
         _ source: borrowing SPARQLRetainedBindings,
         expression: FilterExpression,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         resultLimit: Int?
     ) async throws -> SPARQLRetainedBindings {

@@ -1,4 +1,4 @@
-@_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -10,21 +10,50 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         self.functionRegistry = functionRegistry
     }
 
+    func execute(
+        context: DatabaseContext,
+        selectQuery: SelectQuery,
+        options: ReadExecutionContext,
+        partitions: FieldObject
+    ) async throws -> QueryResponse {
+        try validate(selectQuery)
+        try context.authorizeRDFDatasetFieldRead()
+        let execution = CanonicalReadExecution.resolve(
+            requested: options.consistency,
+            default: .serializable
+        )
+        return try await context.container.transactionExecutor.withTransaction(
+            configuration: execution.transactionConfiguration,
+            clock: context.container.monotonicClock
+        ) { transaction in
+            let runtime = try await makeRuntime(
+                context: context,
+                partitions: partitions,
+                transaction: transaction
+            )
+            return try await executeSelect(
+                context: context,
+                selectQuery: selectQuery,
+                options: options,
+                includedFieldNames: runtime.includedFieldNames,
+                datasetScanner: runtime.scanner,
+                transaction: transaction
+            )
+        }
+    }
+
     func executeInTransaction(
         context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         partitions: FieldObject,
-        transaction: any TransactionReadAccess
-    ) async throws -> DatabaseRetainedQueryResponse {
+        transaction: any TransactionAccess
+    ) async throws -> QueryResponse {
         try validate(selectQuery)
         try context.authorizeRDFDatasetFieldRead()
         let runtime = try await makeRuntime(
             context: context,
             partitions: partitions,
-            authorization: try IndexReadAuthorization(
-                sparqlSelectQuery: selectQuery
-            ),
             transaction: transaction
         )
         return try await executeSelect(
@@ -42,15 +71,12 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         askQuery: AskQuery,
         options: ReadExecutionContext,
         partitions: FieldObject,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         try context.authorizeRDFDatasetFieldRead()
         let scanner = try await makeRuntime(
             context: context,
             partitions: partitions,
-            authorization: try IndexReadAuthorization(
-                modifiers: askQuery.modifiers
-            ),
             transaction: transaction
         ).scanner
         return try await makeExecutor(
@@ -71,15 +97,12 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         nodeNamespace: GraphResultNodeNamespace,
         options: ReadExecutionContext,
         partitions: FieldObject,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph {
         try context.authorizeRDFDatasetFieldRead()
         let scanner = try await makeRuntime(
             context: context,
             partitions: partitions,
-            authorization: try IndexReadAuthorization(
-                modifiers: constructQuery.modifiers
-            ),
             transaction: transaction
         ).scanner
         return try await makeExecutor(
@@ -100,15 +123,12 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         describeQuery: DescribeQuery,
         options: ReadExecutionContext,
         partitions: FieldObject,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph {
         try context.authorizeRDFDatasetFieldRead()
         let scanner = try await makeRuntime(
             context: context,
             partitions: partitions,
-            authorization: try IndexReadAuthorization(
-                modifiers: describeQuery.modifiers
-            ),
             transaction: transaction
         ).scanner
         return try await makeExecutor(
@@ -145,8 +165,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     private func makeRuntime(
         context: DatabaseContext,
         partitions: FieldObject,
-        authorization: IndexReadAuthorization,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> (
         scanner: CanonicalRDFDatasetScanner,
         includedFieldNames: [String]
@@ -160,7 +179,6 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
                context: context,
                resolution: resolution,
                partitions: partitions,
-               authorization: authorization,
                transaction: transaction
            ) {
             projectedSources = [projectedSource]
@@ -184,17 +202,15 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         context: DatabaseContext,
         resolution: RDFDatasetReadResolution,
         partitions: FieldObject,
-        authorization: IndexReadAuthorization,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> RDFDatasetSource? {
         let queryContext = context.indexQueryContext
         guard let index = try await queryContext
             .readableIndex(
                 named: resolution.indexDescriptor.name,
                     indexType: resolution.indexDescriptor.type,
-                forEntityName: resolution.entity.name,
+                    forEntityName: resolution.entity.name,
                 partitions: partitions,
-                authorization: authorization,
                 transaction: transaction
             ) else {
             return nil
@@ -215,6 +231,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         dataset: SPARQLDataset
     ) throws -> SPARQLQueryExecutor {
         SPARQLQueryExecutor(
+            database: context.container.engine,
             monotonicClock: context.container.monotonicClock,
             wallClock: context.container.wallClock,
             datasetScanner: scanner,
@@ -229,8 +246,8 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         options: ReadExecutionContext,
         includedFieldNames: [String],
         datasetScanner: any RDFDatasetScanner,
-        transaction: any TransactionReadAccess
-    ) async throws -> DatabaseRetainedQueryResponse {
+        transaction: (any TransactionAccess)?
+    ) async throws -> QueryResponse {
         let selectPlan = try SPARQLSelectPlanCompiler
             .compileForCanonicalPagination(
                 selectQuery,
@@ -244,62 +261,42 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             dataset: selectQuery.dataset
         )
 
-        let bindings = try await executor.executeRetainedInTransaction(
-            selectPlan: selectPlan,
-            transaction: transaction,
-            workMeter: options.workMeter
-        )
-
-        var rows = try DatabaseRetainedArrayBuilder<DatabaseEngine.QueryRow>(
-            workMeter: options.workMeter,
-            stage: .resultMaterialization,
-            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
-                for: DatabaseEngine.QueryRow.self
-            ),
-            expectedCount: bindings.count
-        )
-        let footprintMeter = try SPARQLBindingFootprintMeter.make(
-            workMeter: options.workMeter,
-            stage: .resultMaterialization
-        )
-        defer { footprintMeter.shutdown() }
-        for index in 0..<bindings.count {
-            try options.workMeter.consume(at: .resultMaterialization)
-            try bindings.withBinding(
-                at: index,
+        var bindings: [VariableBinding]
+        if let transaction {
+            (bindings, _) = try await executor.executeInTransaction(
+                selectPlan: selectPlan,
+                transaction: transaction,
                 workMeter: options.workMeter
-            ) { binding in
-                let footprint = try footprintMeter.footprint(of: binding)
-                try rows.append(
-                    footprint: footprint,
-                    make: {
-                        DatabaseEngine.QueryRow(
-                            fields: rowFields(
-                                from: binding,
-                                projectedVariables: projectedVariables
-                            )
-                        )
-                    }
-                )
-            }
+            )
+        } else {
+            (bindings, _) = try await executor.execute(
+                selectPlan: selectPlan,
+                workMeter: options.workMeter
+            )
         }
-        let retainedRows = try rows.finish().moveToSharedOwnership(
-            at: .resultMaterialization
-        )
-        let page = try CanonicalQueryPagination.retainedWindow(
-            rows: retainedRows,
+
+        var rows: [DatabaseEngine.QueryRow] = []
+        rows.reserveCapacity(bindings.count)
+        for binding in bindings {
+            let row = DatabaseEngine.QueryRow(
+                fields: rowFields(
+                    from: binding,
+                    projectedVariables: projectedVariables
+                )
+            )
+            try options.workMeter.consume(at: .resultMaterialization)
+            rows.append(row)
+        }
+        let page = try CanonicalQueryPagination.window(
+            rows: consume rows,
             selectQuery: selectQuery,
             options: options
         )
-        return DatabaseRetainedQueryResponse(
-            rows: retainedRows,
-            visibleRange: page.range,
-            continuation: page.continuation
-        )
+        return QueryResponse(rows: page.items, continuation: page.continuation)
     }
 
     private func rowFields(
-        from binding: borrowing VariableBinding,
+        from binding: VariableBinding,
         projectedVariables: [String]
     ) -> [String: FieldValue] {
         var fields: [String: FieldValue] = [:]

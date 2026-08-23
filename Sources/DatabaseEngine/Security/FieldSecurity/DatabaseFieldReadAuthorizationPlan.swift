@@ -5,10 +5,6 @@ import DatabaseKit
 package struct DatabaseFieldReadAuthorizationPlan: Sendable {
     package let fieldsByEntity: [String: Set<String>]
 
-    package init(fieldsByEntity: [String: Set<String>]) {
-        self.fieldsByEntity = fieldsByEntity
-    }
-
     package static func make(
         query: SelectQuery,
         schema: Schema
@@ -41,26 +37,6 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         }
         return DatabaseFieldReadAuthorizationPlan(
             fieldsByEntity: [entity.name: fields]
-        )
-    }
-
-    package static func fields(
-        entity: Schema.Entity,
-        names: Set<String>
-    ) -> DatabaseFieldReadAuthorizationPlan {
-        DatabaseFieldReadAuthorizationPlan(
-            fieldsByEntity: [entity.name: names]
-        )
-    }
-
-    package static func fullEntity(
-        _ entity: Schema.Entity,
-        including additionalFields: Set<String> = []
-    ) -> DatabaseFieldReadAuthorizationPlan {
-        DatabaseFieldReadAuthorizationPlan(
-            fieldsByEntity: [
-                entity.name: Set(entity.allFields).union(additionalFields)
-            ]
         )
     }
 

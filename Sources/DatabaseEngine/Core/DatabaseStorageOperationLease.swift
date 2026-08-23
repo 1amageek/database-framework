@@ -13,10 +13,6 @@ final class DatabaseStorageOperationLease: Sendable {
         self.lifecycle === lifecycle
     }
 
-    func beginChildOperation() throws(DatabaseContainerLifecycleError) -> DatabaseStorageOperationLease {
-        try lifecycle.beginOperation()
-    }
-
     func finish() {
         let shouldFinish = didFinish.withLock { didFinish in
             guard !didFinish else { return false }

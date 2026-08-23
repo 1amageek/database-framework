@@ -36,28 +36,6 @@ package struct SPARQLRetainedResult: Sendable {
     package var count: Int { bindings.count }
     package var isEmpty: Bool { count == 0 }
 
-    package func withBinding<Result, Failure: Error>(
-        at index: Int,
-        workMeter: DatabaseWorkMeter,
-        _ body: (borrowing VariableBinding) throws(Failure) -> Result
-    ) throws -> Result {
-        guard self.workMeter === workMeter else {
-            throw SPARQLRetainedResultError.workMeterMismatch
-        }
-        return try bindings.withElement(at: index, body)
-    }
-
-    package func withBinding<Result, Failure: Error>(
-        at index: Int,
-        workMeter: DatabaseWorkMeter,
-        _ body: (borrowing VariableBinding) async throws(Failure) -> Result
-    ) async throws -> Result {
-        guard self.workMeter === workMeter else {
-            throw SPARQLRetainedResultError.workMeterMismatch
-        }
-        return try await bindings.withElement(at: index, body)
-    }
-
     package func retainedValues(
         for variable: String,
         workMeter: DatabaseWorkMeter

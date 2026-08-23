@@ -76,16 +76,4 @@ public struct DatabaseRetainedRDFGraph: ~Copyable, Sendable {
     public consuming func promoteToOutput() -> [RDFQuad] {
         storage.promoteToOutput()
     }
-
-    /// Moves this graph into copyable retained ownership for downstream
-    /// stages that must outlive the source transaction.
-    @_spi(DatabaseExecution)
-    public consuming func moveToSharedOwnership()
-        throws -> DatabaseSharedRetainedRDFGraph {
-        DatabaseSharedRetainedRDFGraph(
-            storage: try storage.moveToSharedOwnership(
-                at: .resultMaterialization
-            )
-        )
-    }
 }

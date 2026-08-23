@@ -196,10 +196,10 @@ private enum DatabaseFrameworkE2ETransactionError: Error {
 
 private func databaseFrameworkE2ECountKeys(
     in subspace: Subspace,
-    container: DBContainer
+    engine: any StorageEngine
 ) async throws -> Int {
     let range = subspace.range()
-    return try await container.withTestBaseTransaction { transaction in
+    return try await engine.withTransaction { transaction in
         var count = 0
         for _ in try await transaction.collectRange(
             from: .firstGreaterOrEqual(range.begin),
@@ -1094,7 +1094,7 @@ struct DatabaseFrameworkE2ETests {
 
         let blobCountAfterInsert = try await databaseFrameworkE2ECountKeys(
             in: blobsSubspace,
-            container: container
+            engine: container.engine
         )
         let originalTitleHits = try await container.testBaseContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
@@ -1113,7 +1113,7 @@ struct DatabaseFrameworkE2ETests {
 
         let blobCountAfterCompact = try await databaseFrameworkE2ECountKeys(
             in: blobsSubspace,
-            container: container
+            engine: container.engine
         )
         let oldTitleHits = try await container.testBaseContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
@@ -1147,7 +1147,7 @@ struct DatabaseFrameworkE2ETests {
 
         let blobCountAfterRollback = try await databaseFrameworkE2ECountKeys(
             in: blobsSubspace,
-            container: container
+            engine: container.engine
         )
         let rolledBackTitleHits = try await container.testBaseContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)
@@ -1168,7 +1168,7 @@ struct DatabaseFrameworkE2ETests {
 
         let blobCountAfterDelete = try await databaseFrameworkE2ECountKeys(
             in: blobsSubspace,
-            container: container
+            engine: container.engine
         )
         let compactAfterDeleteHits = try await container.testBaseContext()
             .fetch(DatabaseFrameworkE2ELargeDocument.self)

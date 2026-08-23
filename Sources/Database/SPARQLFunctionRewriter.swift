@@ -72,7 +72,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
 
     private let context: DatabaseContext
     private let workMeter: DatabaseWorkMeter
-    private let snapshot: any IndexQuerySnapshotAccess
+    private let transaction: any TransactionAccess
     private let structuralLimits: QueryStructuralLimits
     private let retainedStorage: DatabasePreparedSQLSelectStorage
     private let inliningStructureMeter = InliningStructureMeter()
@@ -88,13 +88,13 @@ internal struct SPARQLFunctionRewriter: Sendable {
     internal init(
         context: DatabaseContext,
         workMeter: DatabaseWorkMeter,
-        snapshot: any IndexQuerySnapshotAccess,
+        transaction: any TransactionAccess,
         retainedStorage: DatabasePreparedSQLSelectStorage,
         structuralLimits: QueryStructuralLimits = .default
     ) {
         self.context = context
         self.workMeter = workMeter
-        self.snapshot = snapshot
+        self.transaction = transaction
         self.retainedStorage = retainedStorage
         self.structuralLimits = structuralLimits
     }
@@ -1039,51 +1039,40 @@ internal struct SPARQLFunctionRewriter: Sendable {
         metadata: RDFDatasetIndexMetadata,
         includedFieldNames: [String]
     ) async throws -> SPARQLRetainedResult {
-        let compilationLimits = SPARQLExpressionCompilationLimits(
-            structuralLimits: structuralLimits
-        )
-        let statement = try SPARQLParser(
-            structuralLimits: structuralLimits
-        ).parse(sparqlQuery)
-        guard case .select(let selectQuery) = statement else {
-            throw SPARQLStringError.unsupportedQueryForm(statement)
-        }
-        let plan = try SPARQLSelectPlanCompiler.compile(
-            selectQuery,
-            expressionLimits: compilationLimits
-        )
-        return try await snapshot.withReadableIndex(
+        let readableIndex = try await context.indexQueryContext
+            .readableIndex(
                 named: indexDescriptor.name,
                 indexType: indexDescriptor.type,
                 forEntityName: entityName,
                 partitions: FieldObject(),
-                authorization: try IndexReadAuthorization(
-                    selectQuery: selectQuery
+                transaction: transaction
+            )
+        let sources: [RDFDatasetSource]
+        if let readableIndex {
+            sources = [
+                RDFDatasetSource(
+                    entityName: entityName,
+                    indexName: indexDescriptor.name,
+                    indexSubspace: readableIndex.subspace,
+                    coverage: try metadata.graphMapping.sourceCoverage,
+                    includedFieldNames: includedFieldNames
                 )
-            ) { readableIndex, transaction in
-                let sources: [RDFDatasetSource]
-                if let readableIndex {
-                    sources = [
-                        RDFDatasetSource(
-                            entityName: entityName,
-                            indexName: indexDescriptor.name,
-                            indexSubspace: readableIndex.subspace,
-                            coverage: try metadata.graphMapping.sourceCoverage,
-                            includedFieldNames: includedFieldNames
-                        )
-                    ]
-                } else {
-                    sources = []
-                }
-                return try await _executeRetainedSPARQLSelectPlan(
-                    plan,
-                    sources: sources,
-                    monotonicClock: context.container.monotonicClock,
-                    wallClock: context.container.wallClock,
-                    transaction: transaction,
-                    workMeter: workMeter
-                )
-            }
+            ]
+        } else {
+            sources = []
+        }
+        return try await _executeRetainedSPARQLString(
+            sparqlQuery,
+            database: context.container.engine,
+            sources: sources,
+            monotonicClock: context.container.monotonicClock,
+            wallClock: context.container.wallClock,
+            transaction: transaction,
+            compilationLimits: SPARQLExpressionCompilationLimits(
+                structuralLimits: structuralLimits
+            ),
+            workMeter: workMeter
+        )
     }
 
     private func admitInlinedLiterals(_ count: Int) throws {

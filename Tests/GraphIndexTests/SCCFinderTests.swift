@@ -466,12 +466,7 @@ struct GraphEdgeScannerBatchTests {
         let readableIndex = try await context.indexQueryContext.withReadableIndex(
             named: descriptor.name,
             indexType: descriptor.type,
-            for: EdgeForSCC.self,
-            authorization: IndexReadAuthorization(
-                limit: nil,
-                offset: nil,
-                orderBy: nil
-            )
+            for: EdgeForSCC.self
         ) { index, _ in
             index
         }

@@ -134,7 +134,6 @@ public struct GraphPropertyScanner: Sendable {
     private let strategy: GraphIndexStrategy
     private let includedFieldNames: [String]
     private let snapshot: GraphReadSnapshot?
-    private let workMeter: DatabaseWorkMeter?
 
     public init(
         indexSubspace: Subspace,
@@ -145,7 +144,6 @@ public struct GraphPropertyScanner: Sendable {
         self.strategy = strategy
         self.includedFieldNames = includedFieldNames
         self.snapshot = nil
-        self.workMeter = nil
     }
 
     @_spi(DatabaseExecution)
@@ -159,22 +157,6 @@ public struct GraphPropertyScanner: Sendable {
         self.strategy = strategy
         self.includedFieldNames = includedFieldNames
         self.snapshot = snapshot
-        self.workMeter = nil
-    }
-
-    /// Canonical relational reads share their request work meter with the
-    /// physical graph scanner instead of opening an unmetered adapter path.
-    package init(
-        indexSubspace: Subspace,
-        strategy: GraphIndexStrategy,
-        includedFieldNames: [String],
-        workMeter: DatabaseWorkMeter
-    ) {
-        self.indexSubspace = indexSubspace
-        self.strategy = strategy
-        self.includedFieldNames = includedFieldNames
-        self.snapshot = nil
-        self.workMeter = workMeter
     }
 
     /// Scans a structural pattern inside an explicit graph target.
@@ -184,7 +166,7 @@ public struct GraphPropertyScanner: Sendable {
         to target: GraphIdentity?,
         graphTarget: GraphScanTarget = .all,
         propertyFilters: [PropertyFilter]?,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) -> GraphPropertyScan {
         let scanner: GraphEdgeScanner
         if let snapshot {
@@ -198,8 +180,7 @@ public struct GraphPropertyScanner: Sendable {
             scanner = GraphEdgeScanner(
                 indexSubspace: indexSubspace,
                 strategy: strategy,
-                graphTarget: graphTarget,
-                workMeter: workMeter
+                graphTarget: graphTarget
             )
         }
         return GraphPropertyScan(
@@ -211,31 +192,6 @@ public struct GraphPropertyScanner: Sendable {
                 transaction: transaction
             ),
             filters: propertyFilters
-        )
-    }
-
-    /// Scans through the immutable transaction owned by this scanner's graph
-    /// snapshot without exposing that transaction to the caller.
-    @_spi(DatabaseExecution)
-    public func scanSnapshotEdges(
-        from source: GraphIdentity?,
-        edge edgeLabel: GraphIdentity?,
-        to target: GraphIdentity?,
-        graphTarget: GraphScanTarget = .all,
-        propertyFilters: [PropertyFilter]?
-    ) -> GraphPropertyScan {
-        guard let snapshot else {
-            preconditionFailure(
-                "Snapshot scanning requires a GraphReadSnapshot"
-            )
-        }
-        return scanEdges(
-            from: source,
-            edge: edgeLabel,
-            to: target,
-            graphTarget: graphTarget,
-            propertyFilters: propertyFilters,
-            transaction: snapshot.transaction
         )
     }
 

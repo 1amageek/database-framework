@@ -230,11 +230,11 @@ struct KNNResultTests {
         #expect(result.count == 3)
         #expect(result.k == 5)
         #expect(result.searchRadiusMeters == 5000.0)
-        #expect(result.isComplete == true)
+        #expect(result.isComplete == false)  // 3 < 5
         #expect(result.limitReason == nil)
     }
 
-    @Test("SpatialKNNResult completeness follows source exhaustion")
+    @Test("SpatialKNNResult isComplete when count >= k")
     func testSpatialKNNResultIsComplete() async throws {
         let items: [(item: NearbyStore, distance: Double)] = [
             (try NearbyStore(name: "Store A", latitude: 35.0, longitude: 139.0), 100.0),
@@ -249,7 +249,7 @@ struct KNNResultTests {
             limitReason: nil
         )
 
-        #expect(result.isComplete == true)
+        #expect(result.isComplete == true)  // 3 >= 3
     }
 
     @Test("SpatialKNNResult with limit reason")

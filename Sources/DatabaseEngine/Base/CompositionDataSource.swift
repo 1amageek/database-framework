@@ -152,7 +152,8 @@ public struct CompositionDataSource: Sendable {
     }
 
     /// Acquires and authorizes every member for metadata-only resolution.
-    package func acquireReadLease() async throws -> DatabaseCompositionLease {
+    @_spi(DatabaseExecution)
+    public func acquireReadLease() async throws -> DatabaseCompositionLease {
         let lease = try await acquireLease()
         do {
             for member in lease.members {
@@ -160,7 +161,8 @@ public struct CompositionDataSource: Sendable {
                     let context = container.session(
                         authorization: authorization
                     ).base(member.baseID).newContext()
-                    try await context.withReadStorageAccess(
+                    try await context.withTransaction(
+                        requiredAccess: .read,
                         configuration: .readOnly
                     ) { _ in () }
                 }
@@ -180,22 +182,6 @@ public struct CompositionDataSource: Sendable {
     @_spi(DatabaseExecution)
     public func resolve() async throws -> CompositionResolution {
         try await acquireReadLease().resolution
-    }
-
-    /// Authorizes every member and retains their generation leases while an
-    /// adapter consumes immutable Composition metadata. Storage and lease
-    /// authority remain inside DatabaseEngine and cannot escape the callback.
-    @_spi(DatabaseExecution)
-    public func withAuthorizedReadDescriptor<Result: Sendable>(
-        _ operation: @escaping @Sendable (
-            DatabaseCompositionReadDescriptor
-        ) async throws -> Result
-    ) async throws -> Result {
-        let lease = try await acquireReadLease()
-        defer { withExtendedLifetime(lease) {} }
-        return try await operation(
-            DatabaseCompositionReadDescriptor(lease: lease)
-        )
     }
 
     /// Opens one read transaction per physical domain and keeps all of them
@@ -235,12 +221,10 @@ public struct CompositionDataSource: Sendable {
                 }
                 let transaction = try domain.transactionExecutor
                     .createOwnedTransaction()
-                // Register lifecycle ownership before configuration because
-                // backend option application may fail synchronously.
-                owned.append((id: domainID, transaction: transaction))
                 _ = try TransactionConfiguration.readOnly.apply(
                     to: transaction
                 )
+                owned.append((id: domainID, transaction: transaction))
             }
 
             var transactions: [String: any TransactionAccess] = [:]
@@ -289,28 +273,17 @@ public struct CompositionDataSource: Sendable {
                     transaction: transaction
                 )
             }
-            let snapshot = try DatabaseCompositionReadSnapshot(
-                lease: lease,
-                sourceIdentity: sourceIdentity,
-                authorization: authorization,
-                transactions: transactions,
-                readPoints: readPoints
+            let result = try await operation(
+                DatabaseCompositionReadSnapshot(
+                    lease: lease,
+                    sourceIdentity: sourceIdentity,
+                    authorization: authorization,
+                    transactions: transactions.mapValues {
+                        ReadAuthorizedTransactionAccess.admitted($0)
+                    },
+                    readPoints: readPoints
+                )
             )
-            let result: Result
-            do {
-                result = try await operation(snapshot)
-            } catch {
-                let operationError = error
-                do {
-                    try await snapshot.close()
-                } catch let cleanupError as DatabaseReadScopeCleanupError {
-                    throw cleanupError.preserving(
-                        operationError: operationError
-                    )
-                }
-                throw operationError
-            }
-            try await snapshot.close()
             for entry in owned {
                 try await entry.transaction.commit()
                 committedCount += 1
@@ -349,34 +322,28 @@ public struct CompositionDataSource: Sendable {
     /// transaction capable of resolving a different Base.
     @_spi(DatabaseExecution)
     public func withMemberContext<Result: Sendable>(
-        _ member: DatabaseCompositionReadMember,
+        _ member: DatabaseBaseLease,
         in snapshot: DatabaseCompositionReadSnapshot,
         _ operation: @Sendable @escaping (
             DatabaseContext,
-            any TransactionReadAccess
+            any TransactionAccess
         ) async throws -> Result
     ) async throws -> Result {
         guard snapshot.sourceIdentity === sourceIdentity,
-              snapshot.selection == selection else {
+              snapshot.lease.selection == selection,
+              snapshot.lease.members.contains(where: { $0 === member }) else {
             throw DatabaseCompositionAccessError.unavailable(selection)
         }
-        let operationLease = try snapshot.operationScope.beginRead()
-        defer { operationLease.finish() }
-        let admittedMember = try snapshot.admittedMember(for: member)
-        return try await container.withBaseLease(admittedMember.lease) {
+        let transaction = try snapshot.transaction(for: member)
+        return try await container.withBaseLease(member) {
             let context = container.session(
                 authorization: snapshot.authorization
             ).base(member.baseID).newContext()
             let executionBinding = DatabaseTransactionExecutionBinding(
-                identity: try DatabaseTransactionExecutionIdentity(
-                    context: context
-                ),
-                transaction: admittedMember.transaction,
-                grantedAccess: .read,
-                accessMode: .readOnly,
-                operationScope: snapshot.operationScope,
+                transaction: transaction,
                 resource: context.resource,
                 authorization: snapshot.authorization,
+                grantedAccess: .read,
                 databaseTransaction: nil
             )
             return try await RequestAuthorization.$context.withValue(
@@ -385,10 +352,7 @@ public struct CompositionDataSource: Sendable {
                 try await ActiveDatabaseTransactionContext.$binding.withValue(
                     executionBinding
                 ) {
-                    try await operation(
-                        context,
-                        admittedMember.transaction.readProjection()
-                    )
+                    try await operation(context, transaction)
                 }
             }
         }

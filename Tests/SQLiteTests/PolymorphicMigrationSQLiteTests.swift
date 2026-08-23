@@ -715,7 +715,7 @@ struct PolymorphicMigrationSQLiteTests {
             .subspace(SubspaceKey.indexes)
             .subspace(indexName)
 
-        return try await container.withTestBaseTransaction { transaction -> Int in
+        return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
             return try await transaction.collectRange(
                 begin: begin,
@@ -740,7 +740,7 @@ struct PolymorphicMigrationSQLiteTests {
             .subspace(indexName)
         let range = indexSubspace.range()
 
-        try await container.withTestBaseTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             try transaction.clearRange(beginKey: range.begin, endKey: range.end)
         }
         }
@@ -761,7 +761,7 @@ struct PolymorphicMigrationSQLiteTests {
                 .subspace("state")
                 .subspace(indexName)
             let range = stateSubspace.range()
-            return try await container.withTestBaseTransaction {
+            return try await container.engine.withTransaction {
                 transaction in
                 try await transaction.collectRange(
                     begin: range.begin,

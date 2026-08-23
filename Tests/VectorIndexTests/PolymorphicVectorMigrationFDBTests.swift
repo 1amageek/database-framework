@@ -485,7 +485,7 @@ struct PolymorphicVectorMigrationFDBTests {
     private static func countEntityVectorIndexEntries(container: DBContainer) async throws -> Int {
         let indexSubspace = try await entityVectorIndexSubspace(container: container)
 
-        return try await container.withTestBaseTransaction { transaction -> Int in
+        return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
             return try await transaction.collectRange(
                 begin: begin,
@@ -499,7 +499,7 @@ struct PolymorphicVectorMigrationFDBTests {
         let indexSubspace = try await entityVectorIndexSubspace(container: container)
         let range = indexSubspace.range()
 
-        try await container.withTestBaseTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             try transaction.clearRange(beginKey: range.begin, endKey: range.end)
         }
     }
@@ -508,9 +508,7 @@ struct PolymorphicVectorMigrationFDBTests {
         let group = try container.polymorphicGroup(identifier: FDBPolymorphicVectorPersonV2.polymorphableType)
         let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
         let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
-        return try await container.withTestBaseOperation {
-            try await lifecycleStore.state(of: "Entity_vector_embedding")
-        }
+        return try await lifecycleStore.state(of: "Entity_vector_embedding")
     }
 
     private static func entityVectorIndexSubspace(container: DBContainer) async throws -> Subspace {

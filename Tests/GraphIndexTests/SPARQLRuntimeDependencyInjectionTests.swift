@@ -7,7 +7,7 @@ import Foundation
 import StorageKit
 import TestHeartbeat
 import Testing
-@_spi(DatabaseExecution) @testable import DatabaseEngine
+@testable import DatabaseEngine
 @testable import GraphIndex
 
 @Suite("SPARQL runtime dependency injection", .serialized, .heartbeat)
@@ -126,12 +126,17 @@ struct SPARQLRuntimeDependencyInjectionTests {
         }
 
         let expectedSubject = FieldValue.rdfTerm(subject)
-        #expect(ordinary.rows.count == 1)
-        #expect(ordinary.rows[0].fields["subject"] == expectedSubject)
-        #expect(ordinary.rows[0].fields["identity"] == expectedSubject)
-        #expect(transactional.rows.count == 1)
-        #expect(transactional.rows[0].fields["subject"] == expectedSubject)
-        #expect(transactional.rows[0].fields["identity"] == expectedSubject)
+        for response in [ordinary, transactional] {
+            #expect(response.rows.count == 1)
+            #expect(
+                response.rows[0].fields["subject"]
+                    == expectedSubject
+            )
+            #expect(
+                response.rows[0].fields["identity"]
+                    == expectedSubject
+            )
+        }
     }
 }
 #endif

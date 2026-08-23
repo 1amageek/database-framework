@@ -66,7 +66,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
         graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         try await scanner.scan(
@@ -84,14 +84,14 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     public func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> RDFNamedGraphResult {
-        if let limit, limit <= 0 { return .empty }
+    ) async throws -> [RDFGraphName] {
+        if let limit, limit <= 0 { return [] }
 
-        var graphs = try RDFNamedGraphResultBuilder(workMeter: workMeter)
+        var graphs: [RDFGraphName] = []
         let range = catalogCodec.range
-        let storageLimit = try workMeter.storageWorkReadLimitWithSentinel()
+        let storageLimit = try workMeter.storageReadLimitWithSentinel()
         var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
@@ -104,7 +104,10 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             while let (key, value) = try await cursor.next() {
                 try workMeter.consume(at: .storageRow)
                 try catalogCodec.validateMarker(value)
-                try graphs.append(try catalogCodec.decodeGraph(from: key))
+                graphs.append(try catalogCodec.decodeGraph(from: key))
+                if let limit, graphs.count >= limit {
+                    break
+                }
             }
         } catch {
             let iterationError = error
@@ -119,13 +122,14 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             throw iterationError
         }
         try await cursor.finish()
-        return try graphs.finish(limit: limit)
+        graphs.sort()
+        return graphs
     }
 
     public func containsGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let key = try catalogCodec.key(for: graph)
@@ -455,7 +459,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
         workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         let scanRange = try physicalRange(for: graphTarget, ordering: .gspo)
-        let storageLimit = try workMeter.storageWorkReadLimitWithSentinel()
+        let storageLimit = try workMeter.storageReadLimitWithSentinel()
         var removed: UInt64 = 0
 
         if graphTarget == .allGraphs {

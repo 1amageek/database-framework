@@ -301,14 +301,14 @@ struct LargeValueStorageTests {
             try await database.withTransaction { transaction in
                 let serialized = try DataAccess.serialize(storedModel)
                 let key = itemSubspace.pack(Tuple(id))
-                let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+                let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
                 try await storage.write(serialized, for: key)
             }
         }
 
         // Scan all items in our test subspace
         let scannedItems = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             let (begin, end) = itemSubspace.range()
 
             var results: [(id: String, data: ByteString)] = []
@@ -369,14 +369,14 @@ struct LargeValueStorageTests {
             try await database.withTransaction { transaction in
                 let serialized = try DataAccess.serialize(storedModel)
                 let key = itemSubspace.pack(Tuple(id))
-                let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+                let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
                 try await storage.write(serialized, for: key)
             }
         }
 
         // Scan with limit=2
         let limitedResults = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             let (begin, end) = itemSubspace.range()
 
             var results: [String] = []
@@ -420,13 +420,13 @@ struct LargeValueStorageTests {
         try await database.withTransaction { transaction in
             let serialized = try DataAccess.serialize(storedModel)
             let key = itemSubspace.pack(Tuple(id))
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(serialized, for: key)
         }
 
         // Scan with snapshot=true
         let snapshotResults = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             let (begin, end) = itemSubspace.range()
 
             var results: [(id: String, dataSize: Int)] = []
@@ -463,7 +463,7 @@ struct LargeValueStorageTests {
         let emptySubspace = Subspace(prefix: Tuple("test", "empty", UUID().uuidString).pack())
 
         let results = try await database.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             let (begin, end) = emptySubspace.range()
 
             var count = 0
@@ -504,7 +504,7 @@ struct LargeValueStorageTests {
         let serializedSize = try await database.withTransaction { transaction in
             let serialized = try DataAccess.serialize(storedModel)
             let key = itemSubspace.pack(Tuple(id))
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(serialized, for: key)
             return serialized.count
         }

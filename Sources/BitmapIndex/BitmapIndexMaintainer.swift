@@ -389,9 +389,9 @@ public struct BitmapIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMa
     ///   - fieldValue: The field value to query
     ///   - transaction: The transaction to use
     /// - Returns: RoaringBitmap of matching entity IDs
-    package func getBitmap(
+    public func getBitmap(
         for fieldValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
         try await reader.bitmap(
             for: try FieldValue.toTupleElements(fieldValues),
@@ -405,9 +405,9 @@ public struct BitmapIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMa
     ///   - fieldValue: The field value to count
     ///   - transaction: The transaction to use
     /// - Returns: Number of entities with this value
-    package func getCount(
+    public func getCount(
         for fieldValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Int {
         let bitmap = try await reader.bitmap(
             for: try FieldValue.toTupleElements(fieldValues),
@@ -422,9 +422,9 @@ public struct BitmapIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMa
     ///   - values: Array of field values to AND together
     ///   - transaction: The transaction to use
     /// - Returns: Bitmap of entities matching ALL values
-    package func andQuery(
+    public func andQuery(
         values: [[FieldValue]],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
         var encodedValues: [[any TupleElement]] = []
         encodedValues.reserveCapacity(values.count)
@@ -443,9 +443,9 @@ public struct BitmapIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMa
     ///   - values: Array of field values to OR together
     ///   - transaction: The transaction to use
     /// - Returns: Bitmap of entities matching ANY value
-    package func orQuery(
+    public func orQuery(
         values: [[FieldValue]],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> RoaringBitmap {
         var encodedValues: [[any TupleElement]] = []
         encodedValues.reserveCapacity(values.count)
@@ -464,9 +464,9 @@ public struct BitmapIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMa
     ///   - bitmap: Bitmap of sequential IDs
     ///   - transaction: The transaction to use
     /// - Returns: Array of primary key tuples
-    package func getPrimaryKeys(
+    public func getPrimaryKeys(
         from bitmap: RoaringBitmap,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         try await reader.primaryKeys(
             for: bitmap,
@@ -478,8 +478,8 @@ public struct BitmapIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMa
     ///
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of distinct field values
-    package func getAllDistinctValues(
-        transaction: any TransactionReadAccess
+    public func getAllDistinctValues(
+        transaction: any TransactionAccess
     ) async throws -> [[FieldValue]] {
         let storedValues = try await reader.distinctValues(
             transaction: transaction

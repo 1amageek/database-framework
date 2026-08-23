@@ -32,19 +32,6 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
     /// Containers indexed by high 16 bits
     fileprivate var containers: [UInt16: Container]
 
-    /// Compares logical set membership rather than internal container form.
-    /// Set algebra and range construction may represent the same values as
-    /// array, bitmap, or run containers without changing public equality.
-    public static func == (lhs: RoaringBitmap, rhs: RoaringBitmap) -> Bool {
-        guard lhs.cardinality == rhs.cardinality else { return false }
-        var left = lhs.makeIterator()
-        var right = rhs.makeIterator()
-        while let leftValue = left.next() {
-            guard right.next() == leftValue else { return false }
-        }
-        return right.next() == nil
-    }
-
     /// Container storage types
     ///
     /// **NOTE on `run` encoding**: In `(start, length)`, `length` is the

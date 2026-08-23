@@ -13,32 +13,41 @@ extension IndexQueryContext {
         configuration: TransactionConfiguration = .batch,
         resourceLimits: VectorTrainingResourceLimits = .default
     ) async throws {
-        try await withWritableIndex(
+        let descriptor = try indexDescriptor(
+            named: indexName,
+            indexType: .vector,
+            for: type
+        )
+        let specification = try VectorIndexSpecification(
+            descriptor.declaration.definition
+        )
+        guard descriptor.fieldNames.count == 1,
+              let fieldName = descriptor.fieldNames.first else {
+            throw VectorIndexError.invalidStructure(
+                "Vector training requires exactly one indexed field"
+            )
+        }
+
+        let configurations = context.container.runtimeConfiguration
+            .indexConfigurations(named: indexName)
+        guard
+            let runtimePolicy = try VectorRuntimePolicy.resolve(
+            in: configurations
+        ) else {
+            throw VectorIndexError.invalidArgument(
+                "Vector training requires an explicit IVF or PQ runtime configuration"
+            )
+        }
+
+        try await withReadableIndex(
             named: indexName,
             indexType: .vector,
             for: type,
-            requiredAccess: .administer,
             configuration: configuration
         ) { readableIndex, transaction in
-            let descriptor = readableIndex.descriptor
-            let specification = try VectorIndexSpecification(
-                descriptor.declaration.definition
-            )
-            guard descriptor.fieldNames.count == 1,
-                  let fieldName = descriptor.fieldNames.first else {
+            guard let readableIndex else {
                 throw VectorIndexError.invalidStructure(
-                    "Vector training requires exactly one indexed field"
-                )
-            }
-            let configurations = context.container.runtimeConfiguration
-                .indexConfigurations(named: indexName)
-            guard
-                let runtimePolicy = try VectorRuntimePolicy.resolve(
-                    in: configurations
-                )
-            else {
-                throw VectorIndexError.invalidArgument(
-                    "Vector training requires an explicit IVF or PQ runtime configuration"
+                    "Vector index is not readable; complete migration before training"
                 )
             }
             let index = ResolvedIndex(

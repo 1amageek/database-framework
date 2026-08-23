@@ -66,12 +66,7 @@ public final class DatabaseWorkMeter: Sendable {
         )
     }
 
-    /// Returns a physical storage cursor limit derived only from the remaining
-    /// work-unit budget. Retained-row and retained-byte limits are enforced at
-    /// the point where a decoded value is admitted into request-owned memory.
-    /// Combining those limits here would truncate scans whose physical prefix
-    /// contains filtered or duplicate rows before a logical result is found.
-    public func storageWorkReadLimitWithSentinel(
+    public func storageReadLimitWithSentinel(
         at stage: DatabaseWorkStage = .indexScan
     ) throws -> Int {
         try state.withLock { state in
@@ -81,11 +76,16 @@ public final class DatabaseWorkMeter: Sendable {
             let withSentinel = remaining == UInt64.max
                 ? UInt64.max
                 : remaining + 1
+            let intermediateLimit = UInt64(budget.maximumIntermediateRows)
+            let boundedIntermediateLimit = intermediateLimit == UInt64.max
+                ? UInt64.max
+                : intermediateLimit + 1
             return max(
                 1,
                 Int(
                     min(
                         withSentinel,
+                        boundedIntermediateLimit,
                         UInt64(Int.max)
                     )
                 )

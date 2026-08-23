@@ -46,7 +46,7 @@ public enum RelationshipReferenceCatalog {
         descriptor: RelationshipDescriptor,
         limit: Int,
         baseRoot: Subspace,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [EntityReference] {
         guard limit > 0 else {
             throw RelationshipReferenceError.invalidScanLimit(limit)
@@ -78,7 +78,7 @@ public enum RelationshipReferenceCatalog {
         continuation: ByteString?,
         limit: Int,
         baseRoot: Subspace,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> RelationshipReferenceIdentityPage {
         guard limit > 0, limit <= 256 else {
             throw RelationshipReferenceError.invalidScanLimit(limit)

@@ -12,7 +12,7 @@ public protocol RDFDatasetScanner: Sendable {
         graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult
 
@@ -21,16 +21,16 @@ public protocol RDFDatasetScanner: Sendable {
     func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> RDFNamedGraphResult
+    ) async throws -> [RDFGraphName]
 
     /// Tests logical graph existence without inferring it from a non-empty
     /// triple scan. Authoritative stores can therefore preserve empty graphs.
     func containsNamedGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool
 }

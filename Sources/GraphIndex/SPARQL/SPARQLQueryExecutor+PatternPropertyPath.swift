@@ -8,7 +8,7 @@ extension SPARQLQueryExecutor {
         subject: ExecutionTerm,
         path: ExecutionPropertyPath,
         object: ExecutionTerm,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         seed: consuming VariableBinding,
         resultLimit: Int?,

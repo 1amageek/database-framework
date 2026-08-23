@@ -40,14 +40,6 @@ struct RuntimeSemanticPathEdge {
     .heartbeat
 )
 struct SPARQLPropertyPathRuntimeSemanticsTests {
-    private struct ExecutionFixture: Sendable {
-        let container: DBContainer
-        let context: DatabaseContext
-        let selection: RDFDatasetIndexSelection
-        let ontologyContext: OntologyContext?
-        let configuration: ExecutionPropertyPathConfiguration
-    }
-
     init() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
     }
@@ -57,7 +49,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await Self.setupContainer()
             let context = container.testBaseContext()
-            let executor = try await Self.makeExecutionFixture(
+            let executor = try await Self.makeExecutor(
                 container: container,
                 context: context
             )
@@ -176,7 +168,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 ],
                 context: context
             )
-            let executor = try await Self.makeExecutionFixture(
+            let executor = try await Self.makeExecutor(
                 container: container,
                 context: context
             )
@@ -219,7 +211,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 ],
                 context: context
             )
-            let executor = try await Self.makeExecutionFixture(
+            let executor = try await Self.makeExecutor(
                 container: container,
                 context: context
             )
@@ -279,7 +271,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 ],
                 context: context
             )
-            let executor = try await Self.makeExecutionFixture(
+            let executor = try await Self.makeExecutor(
                 container: container,
                 context: context
             )
@@ -356,7 +348,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 .exists(existsQuery)
             )
             let pattern = try GraphPatternConverter.convert(query)
-            let executor = try await Self.makeExecutionFixture(
+            let executor = try await Self.makeExecutor(
                 container: container,
                 context: context,
                 configuration: ExecutionPropertyPathConfiguration(
@@ -412,7 +404,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 ],
                 context: context
             )
-            let executor = try await Self.makeExecutionFixture(
+            let executor = try await Self.makeExecutor(
                 container: container,
                 context: context,
                 configuration: ExecutionPropertyPathConfiguration(
@@ -468,7 +460,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 ],
                 context: context
             )
-            let executor = try await Self.makeExecutionFixture(
+            let executor = try await Self.makeExecutor(
                 container: container,
                 context: context,
                 configuration: ExecutionPropertyPathConfiguration(
@@ -547,7 +539,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                     second: inverse.rawValue
                 ),
             ]
-            let executor = try await Self.makeExecutionFixture(
+            let executor = try await Self.makeExecutor(
                 container: container,
                 context: context,
                 ontologyContext: OntologyContext(ontology: ontology)
@@ -613,7 +605,7 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 ),
                 OWLObjectProperty(iri: declaredInverse.rawValue),
             ]
-            let executor = try await Self.makeExecutionFixture(
+            let executor = try await Self.makeExecutor(
                 container: container,
                 context: context,
                 ontologyContext: OntologyContext(ontology: ontology)
@@ -708,29 +700,46 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
         )
     }
 
-    private static func makeExecutionFixture(
+    private static func makeExecutor(
         container: DBContainer,
         context: DatabaseContext,
         ontologyContext: OntologyContext? = nil,
         configuration: ExecutionPropertyPathConfiguration = .default
-    ) async throws -> ExecutionFixture {
+    ) async throws -> SPARQLQueryExecutor {
         let selections = try RuntimeSemanticPathEdge.indexDescriptors
             .compactMap(RDFDatasetIndexSelection.init(descriptor:))
         guard selections.count == 1 else {
             throw SPARQLQueryError.indexNotConfigured
         }
-        return ExecutionFixture(
-            container: container,
-            context: context,
-            selection: selections[0],
+        let selection = selections[0]
+        let readableIndex = try await context.indexQueryContext.withReadableIndex(
+            named: selection.indexName,
+            indexType: selection.indexType,
+            for: RuntimeSemanticPathEdge.self
+        ) { index, _ in
+            index
+        }
+        guard let readableIndex else {
+            throw SPARQLQueryError.indexNotConfigured
+        }
+        let source = try RDFDatasetSource(
+            entityName: RuntimeSemanticPathEdge.persistableType,
+            selection: selection,
+            indexSubspace: readableIndex.subspace
+        )
+        return SPARQLQueryExecutor(
+            database: container.engine,
+            monotonicClock: container.monotonicClock,
+            wallClock: FixedTestWallClock(),
+            sources: [source],
             ontologyContext: ontologyContext,
-            configuration: configuration
+            propertyPathConfiguration: configuration
         )
     }
 
     private static func execute(
         _ pattern: ExecutionPattern,
-        using executor: ExecutionFixture,
+        using executor: SPARQLQueryExecutor,
         limit: Int? = nil
     ) async throws -> (
         bindings: [VariableBinding],
@@ -741,41 +750,12 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
             budget: ExecutionBudget(),
             monotonicClock: TestProcessMonotonicClock()
         )
-        let selection = executor.selection
-        let result = try await executor.context.indexQueryContext
-            .withReadableIndex(
-                named: selection.indexName,
-                indexType: selection.indexType,
-                for: RuntimeSemanticPathEdge.self,
-                authorization: IndexReadAuthorization(
-                    limit: limit,
-                    offset: 0,
-                    orderBy: nil
-                )
-            ) { readableIndex, transaction in
-                guard let readableIndex else {
-                    throw SPARQLQueryError.indexNotConfigured
-                }
-                let source = try RDFDatasetSource(
-                    entityName: RuntimeSemanticPathEdge.persistableType,
-                    selection: selection,
-                    indexSubspace: readableIndex.subspace
-                )
-                let queryExecutor = SPARQLQueryExecutor(
-                    monotonicClock: executor.container.monotonicClock,
-                    wallClock: FixedTestWallClock(),
-                    sources: [source],
-                    ontologyContext: executor.ontologyContext,
-                    propertyPathConfiguration: executor.configuration
-                )
-                return try await queryExecutor.executeInTransaction(
-                    pattern: pattern,
-                    transaction: transaction,
-                    limit: limit,
-                    offset: 0,
-                    workMeter: workMeter
-                )
-            }
+        let result = try await executor.execute(
+            pattern: pattern,
+            limit: limit,
+            offset: 0,
+            workMeter: workMeter
+        )
         return (result.0, result.1, workMeter)
     }
 

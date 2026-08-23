@@ -303,9 +303,9 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     ///   - term: Search term
     ///   - transaction: FDB transaction
     /// - Returns: Array of primary keys
-    func searchTerm(
+    public func searchTerm(
         _ term: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let normalizedTerms = normalizeQueryTerms([term])
         return try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
@@ -321,9 +321,9 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     ///   - terms: Search terms
     ///   - transaction: FDB transaction
     /// - Returns: Array of primary keys that contain all terms
-    func searchTermsAND(
+    public func searchTermsAND(
         _ terms: [String],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let normalizedTerms = normalizeQueryTerms(terms)
         return try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
@@ -332,7 +332,7 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     /// Search for already-normalized terms using AND semantics.
     private func searchNormalizedTermsAND(
         _ terms: [String],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -363,9 +363,9 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     ///   - terms: Search terms
     ///   - transaction: FDB transaction
     /// - Returns: Array of primary keys that contain any of the terms
-    func searchTermsOR(
+    public func searchTermsOR(
         _ terms: [String],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let termGroups = normalizeQueryTermGroups(terms)
         guard !termGroups.isEmpty else { return [] }
@@ -390,9 +390,9 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     ///   - phrase: Search phrase
     ///   - transaction: FDB transaction
     /// - Returns: Array of primary keys that contain the phrase
-    func searchPhrase(
+    public func searchPhrase(
         _ phrase: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard storePositions else {
             throw FullTextIndexError.invalidQuery("Phrase search requires storePositions=true")
@@ -514,7 +514,7 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     /// Search for an exact already-normalized term.
     private func searchNormalizedTerm(
         _ term: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()
@@ -634,7 +634,7 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     /// - Parameter transaction: FDB transaction
     /// - Returns: BM25 statistics (N, totalLength, avgDL)
     public func getBM25Statistics(
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> BM25Statistics {
         // Read N (total document count)
         let nValue = try await transaction.getValue(for: statsNKey, snapshot: true)
@@ -669,7 +669,7 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     /// - Returns: Number of documents containing the term
     public func getDocumentFrequency(
         term: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         // Tokenize the term using the same pipeline as indexing
         let tokens = tokenize(term)
@@ -688,7 +688,7 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     /// - Returns: Number of documents containing the term
     private func getDocumentFrequencyForNormalizedTerm(
         _ normalizedTerm: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         let dfKey = dfSubspace.pack(Tuple(normalizedTerm))
         let value = try await transaction.getValue(for: dfKey, snapshot: true)
@@ -704,7 +704,7 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     /// - Returns: Tuple of (uniqueTermCount, docLength), or nil if not found
     public func getDocumentMetadata(
         id: Tuple,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> (uniqueTermCount: Int64, docLength: Int64)? {
         let docKey = docsSubspace.pack(id)
         guard let value = try await transaction.getValue(for: docKey, snapshot: true) else {
@@ -731,7 +731,7 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         terms: [String],
         matchMode: TextMatchMode = .all,
         bm25Params: BM25Parameters = .default,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         limit: Int? = nil
     ) async throws -> [(id: Tuple, score: Double)] {
         guard !terms.isEmpty else { return [] }
@@ -793,23 +793,20 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
                 let termSubspace = termsSubspace.subspace(term)
                 let termKey = termSubspace.pack(docId)
                 if let value = try await transaction.getValue(for: termKey, snapshot: true) {
-                    termFrequencies[term] = try FullTextStorageDecoder.termFrequency(
+                    let posting = try FullTextStorageDecoder.posting(
                         from: value,
                         positionsStored: storePositions,
                         term: term
                     )
+                    termFrequencies[term] = posting.termFrequency
                 }
             }
 
             // Calculate BM25 score
-            guard let documentLength = Int(exactly: metadata.docLength),
-                  documentLength >= 0 else {
-                throw FullTextStorageError.corruptedDocumentMetadata
-            }
-            let score = try scorer.score(
+            let score = scorer.score(
                 termFrequencies: termFrequencies,
                 documentFrequencies: documentFrequencies,
-                docLength: documentLength
+                docLength: Int(metadata.docLength)
             )
 
             scoredResults.append((id: docId, score: score))

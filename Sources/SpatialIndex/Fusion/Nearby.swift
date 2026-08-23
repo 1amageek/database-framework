@@ -4,7 +4,7 @@
 // This file is part of SpatialIndex module, not DatabaseEngine.
 // DatabaseEngine dispatches spatial semantics without depending on this module.
 
-@_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -24,11 +24,10 @@ import StorageKit
 public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     public typealias Item = T
 
-    private let queryContext: IndexQueryContext!
+    private let queryContext: IndexQueryContext
     private let field: FieldIdentity
     private var constraint: SpatialConstraint?
     private var referencePoint: GeographicPoint?
-    private var configurationError: FusionQueryError?
 
     // MARK: - Initialization (FusionContext)
 
@@ -45,10 +44,11 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     /// }
     /// ```
     public init(_ field: Field<T, GeographicPoint>) {
-        let context = FusionContext.current
+        guard let context = FusionContext.current else {
+            fatalError("Nearby must be used within context.fuse { } block")
+        }
         self.field = field.identity
         self.queryContext = context
-        self.configurationError = nil
     }
 
     /// Create a Nearby query for an optional GeographicPoint field
@@ -57,10 +57,11 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     ///
     /// - Parameter keyPath: KeyPath to the optional GeographicPoint field
     public init(_ field: Field<T, GeographicPoint?>) {
-        let context = FusionContext.current
+        guard let context = FusionContext.current else {
+            fatalError("Nearby must be used within context.fuse { } block")
+        }
         self.field = field.identity
         self.queryContext = context
-        self.configurationError = nil
     }
 
     // MARK: - Initialization (Explicit Context)
@@ -76,7 +77,6 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     ) {
         self.field = field.identity
         self.queryContext = context
-        self.configurationError = nil
     }
 
     /// Create a Nearby query for an optional GeographicPoint field with explicit context
@@ -90,7 +90,6 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     ) {
         self.field = field.identity
         self.queryContext = context
-        self.configurationError = nil
     }
 
     // MARK: - Configuration
@@ -103,25 +102,13 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     /// - Returns: Updated query
     public func within(radiusKm: Double, of center: GeographicPoint) -> Self {
         var copy = self
-        let radiusMeters = radiusKm * 1000.0
-        guard radiusKm.isFinite,
-              radiusKm >= 0,
-              radiusMeters.isFinite else {
-            copy.constraint = nil
-            copy.referencePoint = nil
-            copy.configurationError = .invalidConfiguration(
-                "Nearby radius must be finite and non-negative"
-            )
-            return copy
-        }
         copy.constraint = SpatialConstraint(
             type: .withinDistance(
                 center: center,
-                radiusMeters: radiusMeters
+                radiusMeters: radiusKm * 1000.0
             )
         )
         copy.referencePoint = center
-        copy.configurationError = nil
         return copy
     }
 
@@ -141,7 +128,6 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         )
         // Use center of bounding box as reference for distance scoring
         copy.referencePoint = try bounds.center()
-        copy.configurationError = nil
         return copy
     }
 
@@ -157,47 +143,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - FusionQuery
 
-    public var fusionQueryPlan: FusionQueryPlan<T> {
-        if let configurationError {
-            return FusionQueryPlan(configurationError: configurationError)
-        }
-        guard let queryContext else {
-            return FusionQueryPlan(
-                configurationError: .invalidConfiguration(
-                    "Nearby requires an IndexQueryContext or context.fuse"
-                )
-            )
-        }
-        return FusionQueryPlan(
-            context: queryContext,
-            authorization: IndexReadAuthorization(
-                limit: nil,
-                offset: nil,
-                orderBy: ["distance"]
-            ),
-            indexDescriptor: {
-                guard let descriptor = self.findIndexDescriptor() else {
-                    throw FusionQueryError.indexNotFound(
-                        entity: T.persistableType,
-                        field: self.field.name,
-                        indexType: .spatial
-                    )
-                }
-                return descriptor
-            },
-            operation: { [self] candidates, execution in
-                try await executeBound(
-                    candidates: candidates,
-                    execution: execution
-                )
-            }
-        )
-    }
-
-    private func executeBound(
-        candidates: Set<T.ID>?,
-        execution: ReadExecutionContext
-    ) async throws -> FusionQueryResult<T> {
+    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
         guard let constraint = constraint else {
             throw FusionQueryError.invalidConfiguration("No spatial constraint specified")
         }
@@ -217,151 +163,65 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
 
         let indexName = descriptor.name
 
-        guard let entity = queryContext.schema.entity(
-            named: T.persistableType
-        ) else {
-            throw IndexQueryContextError.entityNotFound(T.persistableType)
-        }
-
-        // Keep the index keys and decoded storage rows in request-accounted
-        // ownership on the same transaction snapshot until Fusion adopts them.
-        return try await queryContext.withReadableIndex(
+        // Execute spatial search
+        let primaryKeys: [Tuple] = try await queryContext.withReadableIndex(
             named: indexName,
             indexType: descriptor.type,
-            for: T.self,
-            authorization: IndexReadAuthorization(
-                limit: nil,
-                offset: nil,
-                orderBy: ["distance"]
-            )
+            for: T.self
         ) { readableIndex, transaction in
             guard let readableIndex else {
-                return try FusionQueryResultBuilder<T>(
-                    execution: execution
-                ).finish()
+                return []
             }
-            let scan = try await self.searchSpatial(
+            return try await self.searchSpatial(
                 constraint: constraint,
                 level: level,
                 encoding: encoding,
                 indexSubspace: readableIndex.subspace,
-                transaction: transaction,
-                workMeter: execution.workMeter
-            )
-            let models = try await transaction
-                .fetchPersistedModelsPreservingOrder(
-                    entity: entity,
-                    primaryKeys: scan.keys,
-                    partitions: queryContext.partitionValues,
-                    workMeter: execution.workMeter
-                )
-            return try buildFusionResult(
-                primaryKeys: scan.keys,
-                models: models,
-                candidates: candidates,
-                constraint: constraint,
-                indexName: descriptor.name,
-                execution: execution
+                transaction: transaction
             )
         }
-    }
 
-    private func buildFusionResult(
-        primaryKeys: DatabaseSharedRetainedArray<Tuple>,
-        models: DatabaseSharedRetainedArray<PersistedModel?>,
-        candidates: Set<T.ID>?,
-        constraint: SpatialConstraint,
-        indexName: String,
-        execution: ReadExecutionContext
-    ) throws -> FusionQueryResult<T> {
-        precondition(primaryKeys.count == models.count)
+        // Fetch items by primary keys
+        var items = try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
+        var matchingItems: [T] = []
+        matchingItems.reserveCapacity(items.count)
+        for item in items where try matches(item, constraint: constraint) {
+            matchingItems.append(item)
+        }
+        items = matchingItems
 
-        let candidateReservation = try execution.workMeter.reserveIntermediate(
-            bytes: candidates == nil
-                ? 0
-                : UInt64(MemoryLayout<Set<ByteString>>.stride),
-            at: .indexScan
-        )
-        defer { candidateReservation.release() }
-        var candidateKeys: Set<ByteString>?
-        if let candidates {
-            var keys: Set<ByteString> = []
-            keys.reserveCapacity(candidates.count)
-            for candidate in candidates {
-                let packed = try PersistableIdentifierKeyCodec
-                    .tuple(for: candidate).pack()
-                guard !keys.contains(packed) else { continue }
-                try candidateReservation.reserveAdditional(
-                    rows: 1,
-                    bytes: UInt64(packed.count) + 64,
-                    at: .indexScan
-                )
-                keys.insert(packed)
-            }
-            candidateKeys = keys
+        // Filter to candidates if provided
+        if let candidateIDs = candidates {
+            items = items.filter { candidateIDs.contains($0.id) }
         }
 
-        let reference = referencePoint
-        var maximumDistance = 0.0
-        if let reference {
-            for index in models.indices {
-                try execution.workMeter.consume(at: .indexScan)
-                guard let model = models[index] else {
-                    throw SpatialQueryError.indexedItemMissing(
-                        index: indexName,
-                        primaryKey: primaryKeys[index].pack()
-                    )
-                }
-                let packedPrimaryKey = primaryKeys[index].pack()
-                guard candidateKeys?.contains(packedPrimaryKey) ?? true,
-                      let coordinate = try coordinate(from: model),
-                      matches(coordinate, constraint: constraint)
-                else {
-                    continue
-                }
-                maximumDistance = max(
-                    maximumDistance,
-                    CellDistanceCalculator.haversineDistance(
-                        from: reference,
-                        to: coordinate
-                    )
-                )
-            }
+        // Calculate distance scores
+        guard let ref = referencePoint else {
+            return items.map { ScoredResult(item: $0, score: 1.0) }
         }
 
-        var output = try FusionQueryResultBuilder<T>(
-            execution: execution,
-            expectedCount: models.count
-        )
-        for index in models.indices {
-            try execution.workMeter.consume(at: .indexScan)
-            guard let model = models[index] else {
-                throw SpatialQueryError.indexedItemMissing(
-                    index: indexName,
-                    primaryKey: primaryKeys[index].pack()
-                )
-            }
-            let packedPrimaryKey = primaryKeys[index].pack()
-            guard candidateKeys?.contains(packedPrimaryKey) ?? true,
-                  let coordinate = try coordinate(from: model),
-                  matches(coordinate, constraint: constraint)
-            else {
+        // Extract locations and calculate distances
+        var itemsWithDistance: [(item: T, distance: Double)] = []
+        itemsWithDistance.reserveCapacity(items.count)
+        for item in items {
+            guard let coordinate = try coordinate(from: item) else {
                 continue
             }
-            let score: Double
-            if let reference,
-               maximumDistance > 0 {
-                let distance = CellDistanceCalculator.haversineDistance(
-                    from: reference,
-                    to: coordinate
-                )
-                score = 1.0 - distance / maximumDistance
-            } else {
-                score = 1.0
-            }
-            try output.appendDecodedModel(model, score: score)
+            let distance = CellDistanceCalculator.haversineDistance(
+                from: ref,
+                to: coordinate
+            )
+            itemsWithDistance.append((item: item, distance: distance))
         }
-        return try output.finish()
+
+        // Normalize distance to score (closer = higher score)
+        guard let maxDist = itemsWithDistance.map({ $0.distance }).max(), maxDist > 0 else {
+            return items.map { ScoredResult(item: $0, score: 1.0) }
+        }
+
+        return itemsWithDistance
+            .map { ScoredResult(item: $0.item, score: 1.0 - $0.distance / maxDist) }
+            .sorted { $0.score > $1.score }
     }
 
     // MARK: - Spatial Index Reading
@@ -376,28 +236,21 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         level: Int,
         encoding: SpatialEncoding,
         indexSubspace: Subspace,
-        transaction: any TransactionReadAccess,
-        workMeter: DatabaseWorkMeter
-    ) async throws -> RetainedSpatialScanResult {
-        let plan = try SpatialScanPlanner.plan(
-            for: constraint,
-            encoding: encoding,
-            level: level,
-            workMeter: workMeter
-        )
+        transaction: any TransactionAccess
+    ) async throws -> [Tuple] {
+        let plan = try SpatialScanPlanner.plan(for: constraint, encoding: encoding, level: level)
         let scanner = SpatialCellScanner(indexSubspace: indexSubspace, encoding: encoding, level: level)
-        return try await scanner.scanRetained(
-            plan: plan,
-            limit: nil,
-            transaction: transaction,
-            workMeter: workMeter
-        )
+        let (keys, _) = try await scanner.scan(plan: plan, limit: nil, transaction: transaction)
+        return keys
     }
 
     private func matches(
-        _ coordinate: GeographicPoint,
+        _ item: T,
         constraint: SpatialConstraint
-    ) -> Bool {
+    ) throws -> Bool {
+        guard let coordinate = try coordinate(from: item) else {
+            return false
+        }
         switch constraint.type {
         case .withinDistance(let center, let radiusMeters):
             return CellDistanceCalculator.haversineDistance(
@@ -445,10 +298,8 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         return inside
     }
 
-    private func coordinate(
-        from model: borrowing PersistedModel
-    ) throws -> GeographicPoint? {
-        guard let value = model.value(for: field) else {
+    private func coordinate(from item: T) throws -> GeographicPoint? {
+        guard let value = try item.persistedFieldValue(for: field) else {
             throw SpatialIndexMaintenanceError.missingCoordinate(
                 fieldName: field.name
             )

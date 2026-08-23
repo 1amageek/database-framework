@@ -33,16 +33,19 @@ struct DatabaseGrantAuthorizationTests {
             )
         )
 
-        try await context.withTransaction(configuration: .readOnly) { _ in () }
+        try await context.withTransaction(
+            requiredAccess: .read.union(.write),
+            configuration: .readOnly
+        ) { _ in () }
         await #expect(throws: DatabaseGrantAuthorizationError.self) {
-            try await context.withExecutionTransaction(
+            try await context.withTransaction(
                 requiredAccess: .administer,
                 configuration: .readOnly
             ) { _ in () }
         }
     }
 
-    @Test("A full model transaction cannot be minted from one access bit")
+    @Test("Access bits remain independent")
     func accessBitsRemainIndependent() async throws {
         let container = try await makeContainer()
         let cases: [(String, Security.Access, Security.Access)] = [
@@ -60,124 +63,16 @@ struct DatabaseGrantAuthorizationTests {
                 container: container,
                 principal: Principal(identifier: identifier)
             )
-            try await context.withAdmittedStorageAccess(
+            try await context.withTransaction(
                 requiredAccess: granted,
-                mode: .readOnly,
                 configuration: .readOnly
             ) { _ in () }
             await #expect(throws: DatabaseGrantAuthorizationError.self) {
-                try await context.withAdmittedStorageAccess(
+                try await context.withTransaction(
                     requiredAccess: denied,
-                    mode: .readOnly,
                     configuration: .readOnly
                 ) { _ in () }
             }
-        }
-    }
-
-    @Test("Public read-write transactions require both Grant bits")
-    func publicReadWriteTransactionRequiresBothGrantBits() async throws {
-        let container = try await makeContainer()
-        defer { await container.shutdown() }
-        let identifier = "write-only-transaction"
-        try await container.grantTestBaseAccess(
-            to: .principal(identifier),
-            access: .write
-        )
-        let context = context(
-            container: container,
-            principal: Principal(identifier: identifier)
-        )
-
-        await #expect(throws: DatabaseGrantAuthorizationError.self) {
-            try await context.withTransaction { _ in () }
-        }
-    }
-
-    @Test("A read Grant cannot mint mutation storage authority")
-    func readGrantCannotMintMutationStorageAuthority() async throws {
-        let container = try await makeContainer()
-        defer { await container.shutdown() }
-        let identifier = "read-only-storage-capability"
-        try await container.grantTestBaseAccess(
-            to: .principal(identifier),
-            access: .read
-        )
-        let context = context(
-            container: container,
-            principal: Principal(identifier: identifier)
-        )
-
-        await #expect(throws: DatabaseGrantAuthorizationError.self) {
-            try await context.indexQueryContext.withWriteTransaction { _ in () }
-        }
-    }
-
-    @Test("An administrator Grant alone cannot receive a model transaction")
-    func administratorGrantCannotMintModelMutationAuthority() async throws {
-        let container = try await makeContainer()
-        defer { await container.shutdown() }
-        let identifier = "administrator-without-write"
-        try await container.grantTestBaseAccess(
-            to: .principal(identifier),
-            access: .administer
-        )
-        let context = context(
-            container: container,
-            principal: Principal(identifier: identifier)
-        )
-
-        await #expect(throws: DatabaseGrantAuthorizationError.self) {
-            try await context.withExecutionTransaction(
-                requiredAccess: .administer
-            ) { transaction in
-                try await transaction.save(
-                    SecuredItem(id: "must-not-persist", value: "denied"),
-                    precondition: .notExists
-                )
-            }
-        }
-    }
-
-    @Test("Raw administration cannot recover a nested model transaction")
-    func rawAdministrationCannotRecoverModelTransaction() async throws {
-        let container = try await makeContainer()
-        defer { await container.shutdown() }
-        let identifier = "raw-administrator-without-model-access"
-        try await container.grantTestBaseAccess(
-            to: .principal(identifier),
-            access: .administer
-        )
-        let context = context(
-            container: container,
-            principal: Principal(identifier: identifier)
-        )
-
-        await #expect(throws: DatabaseGrantAuthorizationError.self) {
-            try await context.withWriteStorageAccess(
-                requiredAccess: .administer
-            ) { _ in
-                try await context.withTransaction { _ in () }
-            }
-        }
-    }
-
-    @Test("Read-write transaction preserves nested read authorization")
-    func readWriteTransactionPreservesNestedReadAuthorization() async throws {
-        let container = try await makeContainer()
-        defer { await container.shutdown() }
-        let identifier = "read-write-transaction"
-        try await container.grantTestBaseAccess(
-            to: .principal(identifier),
-            access: [.read, .write]
-        )
-        let context = context(
-            container: container,
-            principal: Principal(identifier: identifier)
-        )
-
-        try await context.withTransaction { _ in
-            _ = try await context.fetch(SecuredItem.self).execute()
         }
     }
 
@@ -196,7 +91,8 @@ struct DatabaseGrantAuthorizationTests {
         )
 
         do {
-            try await context.withReadStorageAccess(
+            try await context.withTransaction(
+                requiredAccess: .read,
                 configuration: .readOnly
             ) { _ in () }
             Issue.record("Expected the Base-local Grant check to fail")

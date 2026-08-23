@@ -1,7 +1,7 @@
 // FullTextQuery.swift
 // FullTextIndex - Query extension for full-text search
 
-@_spi(DatabaseExecution) @_spi(PolymorphicRuntime) import DatabaseEngine
+@_spi(PolymorphicRuntime) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -159,9 +159,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     /// - Throws: Error if search fails
     public func execute() async throws -> [T] {
         guard !searchTerms.isEmpty else {
-            return try await withAuthorizedFullModelRead(orderBy: nil) {
-                _, _, _ in []
-            }
+            return []
         }
 
         let response = try await queryContext.context.query(
@@ -178,20 +176,21 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     internal func executeDirect(
         configuration: TransactionConfiguration = .default
     ) async throws -> [T] {
-        try await withAuthorizedFullModelRead(orderBy: nil) {
-            indexName, _, indexConfiguration in
-            guard !searchTerms.isEmpty else { return [] }
-            return try await queryContext.withReadableIndex(
-                named: indexName,
-                indexType: .text(.fullText),
-                for: T.self,
-                authorization: IndexReadAuthorization(
-                    limit: fetchLimit,
-                    offset: nil,
-                    orderBy: nil
-                ),
-                configuration: configuration
-            ) { readableIndex, transaction in
+        guard !searchTerms.isEmpty else {
+            return []
+        }
+
+        let indexName = try buildIndexName()
+        let (_, indexConfiguration) = try resolveFullTextIndex(
+            named: indexName
+        )
+
+        return try await queryContext.withReadableIndex(
+            named: indexName,
+            indexType: .text(.fullText),
+            for: T.self,
+            configuration: configuration
+        ) { readableIndex, transaction in
             guard let readableIndex else {
                 return []
             }
@@ -214,13 +213,13 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             }
             var items = try await self.fetchIndexedItems(
                 ids: matchingIds,
-                indexName: indexName
+                indexName: indexName,
+                transaction: transaction
             )
             if let limit = self.fetchLimit, items.count > limit {
                 items = Array(items.prefix(limit))
             }
             return items
-            }
         }
     }
 
@@ -251,10 +250,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     /// - Throws: Error if search fails
     public func executeWithFacets() async throws -> FacetedSearchResult<T> {
         guard !searchTerms.isEmpty else {
-            return try await withAuthorizedFullModelRead(orderBy: nil) {
-                _, _, _ in
-                FacetedSearchResult(items: [], facets: [:], totalCount: 0)
-            }
+            return FacetedSearchResult(items: [], facets: [:], totalCount: 0)
         }
 
         let response = try await queryContext.context.query(
@@ -285,26 +281,21 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     internal func executeFacetedDirect(
         configuration: TransactionConfiguration = .default
     ) async throws -> FacetedSearchResult<T> {
-        try await withAuthorizedFullModelRead(orderBy: nil) {
-            indexName, _, indexConfiguration in
-            guard !searchTerms.isEmpty else {
-                return FacetedSearchResult(
-                    items: [],
-                    facets: [:],
-                    totalCount: 0
-                )
-            }
-            return try await queryContext.withReadableIndex(
-                named: indexName,
-                indexType: .text(.fullText),
-                for: T.self,
-                authorization: IndexReadAuthorization(
-                    limit: fetchLimit,
-                    offset: nil,
-                    orderBy: nil
-                ),
-                configuration: configuration
-            ) { readableIndex, transaction in
+        guard !searchTerms.isEmpty else {
+            return FacetedSearchResult(items: [], facets: [:], totalCount: 0)
+        }
+
+        let indexName = try buildIndexName()
+        let (_, indexConfiguration) = try resolveFullTextIndex(
+            named: indexName
+        )
+
+        return try await queryContext.withReadableIndex(
+            named: indexName,
+            indexType: .text(.fullText),
+            for: T.self,
+            configuration: configuration
+        ) { readableIndex, transaction in
             guard let readableIndex else {
                 return FacetedSearchResult(
                     items: [],
@@ -330,7 +321,8 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             }
             let allItems = try await self.fetchIndexedItems(
                 ids: matchingIds,
-                indexName: indexName
+                indexName: indexName,
+                transaction: transaction
             )
             let totalCount = allItems.count
             let facetCounts: [String: [(value: String, count: Int64)]]
@@ -354,7 +346,6 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 facets: facetCounts,
                 totalCount: totalCount
             )
-            }
         }
     }
 
@@ -410,7 +401,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchPhrase(
         indexName: String,
         indexSubspace: Subspace,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let (indexDescriptor, configuration) = try resolveFullTextIndex(
             named: indexName
@@ -442,7 +433,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         matchMode: TextMatchMode,
         configuration: FullTextIndexConfiguration,
         indexSubspace: Subspace,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [Tuple] {
         let termsSubspace = indexSubspace.subspace("terms")
 
@@ -485,7 +476,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchTermsAND(
         _ terms: [String],
         termsSubspace: Subspace,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -518,7 +509,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchTerm(
         _ term: String,
         termsSubspace: Subspace,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()
@@ -592,9 +583,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     /// - Throws: Error if search fails
     public func executeWithScores() async throws -> [(item: T, score: Double)] {
         guard !searchTerms.isEmpty else {
-            return try await withAuthorizedFullModelRead(
-                orderBy: ["score"]
-            ) { _, _, _ in [] }
+            return []
         }
 
         let response = try await queryContext.context.query(
@@ -615,20 +604,22 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     internal func executeScoredDirect(
         configuration: TransactionConfiguration = .default
     ) async throws -> [(item: T, score: Double)] {
-        try await withAuthorizedFullModelRead(orderBy: ["score"]) {
-            indexName, indexDescriptor, indexConfiguration in
-            guard !searchTerms.isEmpty else { return [] }
-            return try await queryContext.withReadableIndex(
-                named: indexName,
-                indexType: .text(.fullText),
-                for: T.self,
-                authorization: IndexReadAuthorization(
-                    limit: fetchLimit,
-                    offset: nil,
-                    orderBy: ["score"]
-                ),
-                configuration: configuration
-            ) { readableIndex, transaction in
+        guard !searchTerms.isEmpty else {
+            return []
+        }
+
+        let indexName = try buildIndexName()
+
+        let (indexDescriptor, indexConfiguration) = try resolveFullTextIndex(
+            named: indexName
+        )
+
+        return try await queryContext.withReadableIndex(
+            named: indexName,
+            indexType: .text(.fullText),
+            for: T.self,
+            configuration: configuration
+        ) { readableIndex, transaction in
             guard let readableIndex else {
                 return []
             }
@@ -660,7 +651,8 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             let ids = scoredResults.map { $0.id }
             let items = try await self.fetchIndexedItems(
                 ids: ids,
-                indexName: indexName
+                indexName: indexName,
+                transaction: transaction
             )
             var results: [(item: T, score: Double)] = []
             results.reserveCapacity(scoredResults.count)
@@ -668,17 +660,18 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 results.append((item: item, score: scoredResult.score))
             }
             return results
-            }
         }
     }
 
     private func fetchIndexedItems(
         ids: [Tuple],
-        indexName: String
+        indexName: String,
+        transaction: any TransactionAccess
     ) async throws -> [T] {
         let fetched = try await queryContext.fetchItemsPreservingOrder(
             ids: ids,
-            type: T.self
+            type: T.self,
+            transaction: transaction
         )
         var items: [T] = []
         items.reserveCapacity(fetched.count)
@@ -768,54 +761,6 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             descriptor,
             try FullTextIndexConfiguration(definition: descriptor.declaration.definition)
         )
-    }
-
-    /// Admits the complete model projection before any index transaction is
-    /// created. Empty and non-empty searches therefore have identical LIST,
-    /// field, lifecycle, and index-configuration failure semantics.
-    private func withAuthorizedFullModelRead<Result: Sendable>(
-        orderBy: [String]?,
-        _ operation: @Sendable @escaping (
-            String,
-            IndexDescriptor,
-            FullTextIndexConfiguration
-        ) async throws -> Result
-    ) async throws -> Result {
-        try await queryContext.context.withDataOperation {
-            let indexName = try buildIndexName()
-            let (descriptor, configuration) = try resolveFullTextIndex(
-                named: indexName
-            )
-            guard let entity = queryContext.schema.entity(
-                named: T.persistableType
-            ) else {
-                throw IndexQueryContextError.entityNotFound(
-                    T.persistableType
-                )
-            }
-            let admission = try queryContext.context.admitLogicalRead(
-                listAuthorization: IndexReadAuthorization(
-                    limit: fetchLimit,
-                    offset: nil,
-                    orderBy: orderBy
-                ),
-                fieldPlan: .fullEntity(
-                    entity,
-                    including: Set(descriptor.fieldNames).union(
-                        descriptor.includedFieldNames
-                    )
-                ),
-                restrictingTo: [T.persistableType]
-            )
-            return try await queryContext.context
-                .withReadAuthorizationAdmission(admission) {
-                    try await operation(
-                        indexName,
-                        descriptor,
-                        configuration
-                    )
-                }
-        }
     }
 
     /// Build the index name based on type and field
@@ -986,6 +931,10 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
 
     /// Execute the polymorphic full-text search and return page metadata.
     public func executePage() async throws -> PolymorphicQueryPage {
+        guard !searchTerms.isEmpty else {
+            return PolymorphicQueryPage(results: [], continuation: nil, metadata: [:])
+        }
+
         return try await base.executePage(accessPath: .index(try makeIndexScan()))
     }
 

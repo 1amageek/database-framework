@@ -170,12 +170,12 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// - Returns: The fetched items (in request order where found)
     public func fetch(
         primaryKeys: [Tuple],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [Item] {
         guard !primaryKeys.isEmpty else { return [] }
 
         let itemTypeSubspace = subspace.subspace(itemType)
-        let storage = itemStorageFactory.makeReader(
+        let storage = itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
@@ -225,7 +225,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     private func fetchBatch(
         primaryKeys: [Tuple],
         subspace: Subspace,
-        storage: ItemStorageReader
+        storage: ItemStorage
     ) async throws -> [(ByteString, Item)] {
         var results: [(ByteString, Item)] = []
         results.reserveCapacity(primaryKeys.count)
@@ -254,20 +254,19 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// - Returns: A throwing stream of fetched items
     public func stream(
         primaryKeys: [Tuple],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) -> AsyncThrowingStream<Item, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
+            Task {
                 do {
                     let itemTypeSubspace = subspace.subspace(itemType)
-                    let storage = itemStorageFactory.makeReader(
+                    let storage = itemStorageFactory.make(
                         transaction: transaction,
                         blobsSubspace: blobsSubspace
                     )
                     let batches = primaryKeys.chunked(into: configuration.batchSize)
 
                     for batch in batches {
-                        try Task.checkCancellation()
                         for pk in batch {
                             let key = itemTypeSubspace.pack(pk)
                             if let data = try await storage.read(for: key) {
@@ -281,7 +280,6 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -295,7 +293,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// - Returns: Fetch result with items and metadata
     public func fetchWithMetadata(
         primaryKeys: [Tuple],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> RemoteFetchResult<Item> {
         let startTime = monotonicClock.now
 
@@ -310,7 +308,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         }
 
         let itemTypeSubspace = subspace.subspace(itemType)
-        let storage = itemStorageFactory.makeReader(
+        let storage = itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
@@ -439,26 +437,25 @@ public struct LocalityHints: Sendable {
 /// For use cases where multiple independent fetches can run in parallel
 /// across different read snapshots.
 public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
-    private let context: DatabaseContext
+    private let container: DBContainer
     private let fetcher: RemoteFetcher<Item>
     private let maxConcurrency: Int
 
     public init(
-        context: DatabaseContext,
+        container: DBContainer,
         subspace: Subspace,
         blobsSubspace: Subspace,
         itemType: String = Item.persistableType,
         configuration: RemoteFetchConfiguration = .default,
         maxConcurrency: Int = 4
     ) {
-        precondition(maxConcurrency > 0, "maxConcurrency must be positive")
-        self.context = context
+        self.container = container
         self.fetcher = RemoteFetcher<Item>(
             subspace: subspace,
             blobsSubspace: blobsSubspace,
             itemType: itemType,
-            itemStorageFactory: context.container.itemStorageFactory,
-            monotonicClock: context.container.monotonicClock,
+            itemStorageFactory: container.itemStorageFactory,
+            monotonicClock: container.monotonicClock,
             configuration: configuration
         )
         self.maxConcurrency = maxConcurrency
@@ -474,49 +471,30 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
     public func fetchParallel(primaryKeys: [Tuple]) async throws -> [Item] {
         guard !primaryKeys.isEmpty else { return [] }
 
-        let quotient = primaryKeys.count / maxConcurrency
-        let chunkSize = quotient + (primaryKeys.count % maxConcurrency == 0 ? 0 : 1)
-        let chunks = primaryKeys.chunked(into: max(1, chunkSize))
-        let context = self.context
-        let fetcher = self.fetcher
+        // Split keys into chunks for parallel processing
+        let chunks = primaryKeys.chunked(into: max(1, primaryKeys.count / maxConcurrency))
 
-        // Detached tasks avoid inheriting and concurrently sharing an active
-        // transaction TaskLocal. Every chunk receives an independently
-        // admitted, read-only transaction for this context's data root.
-        let tasks = chunks.map { chunk in
-            Task.detached(priority: Task.currentPriority) {
-                try Task.checkCancellation()
-                return try await context.executeCanonicalRead { transaction in
-                    try await fetcher.fetch(
-                        primaryKeys: chunk,
-                        transaction: transaction
-                    )
-                }
-            }
-        }
-        return try await withTaskCancellationHandler {
-            do {
-                var allItems: [Item] = []
-                allItems.reserveCapacity(primaryKeys.count)
-                for task in tasks {
-                    allItems.append(contentsOf: try await task.value)
-                }
-                return allItems
-            } catch {
-                tasks.forEach { $0.cancel() }
-                for task in tasks {
-                    do {
-                        _ = try await task.value
-                    } catch {
-                        // The first failure remains authoritative after all
-                        // detached work has reached a terminal state.
+        // Fetch chunks in parallel using separate transactions
+        let results = try await withThrowingTaskGroup(of: [Item].self) { group in
+            for chunk in chunks {
+                group.addTask {
+                    try await self.container.transactionExecutor.withTransaction(configuration: .default, clock: self.container.monotonicClock) { tx in
+                        try await self.fetcher.fetch(primaryKeys: chunk, transaction: tx)
                     }
                 }
-                throw error
             }
-        } onCancel: {
-            tasks.forEach { $0.cancel() }
+
+            var allItems: [Item] = []
+            allItems.reserveCapacity(primaryKeys.count)
+
+            while let items = try await group.next() {
+                allItems.append(contentsOf: items)
+            }
+
+            return allItems
         }
+
+        return results
     }
 }
 

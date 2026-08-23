@@ -6,47 +6,37 @@ enum OnlineIndexBatchWriter {
     static func write<Item: PersistedEntityValue>(
         _ entries: [(item: Item, id: Tuple)],
         index: ResolvedIndex,
-        indexSubspace: Subspace,
         maintainer: any IndexMaintainer<Item>,
         uniquenessMaintainer: (any IndexUniquenessMaintainer<Item>)?,
         violationTracker: UniquenessViolationTracker,
         transaction: any TransactionAccess
     ) async throws {
-        try await withIndexMaintenanceTransaction(
-            transaction: transaction,
-            indexSubspace: indexSubspace
-        ) { maintenanceTransaction in
-            guard index.isUnique else {
-                try await maintainer.scanItems(
-                    entries,
-                    transaction: maintenanceTransaction
-                )
-                return
-            }
+        guard index.isUnique else {
+            try await maintainer.scanItems(entries, transaction: transaction)
+            return
+        }
 
-            guard let uniquenessMaintainer else {
-                throw OnlineIndexBuildError.unsupportedUniquenessConstraint(
-                    indexName: index.name
-                )
-            }
+        guard let uniquenessMaintainer else {
+            throw OnlineIndexBuildError.unsupportedUniquenessConstraint(
+                indexName: index.name
+            )
+        }
 
-            for entry in entries {
-                try await IndexUniquenessConstraint.enforce(
-                    index: index,
-                    item: entry.item,
-                    id: entry.id,
-                    state: .writeOnly,
-                    maintainer: uniquenessMaintainer,
-                    violationTracker: violationTracker,
-                    maintenanceTransaction: maintenanceTransaction,
-                    violationTransaction: transaction
-                )
-                try await maintainer.scanItem(
-                    entry.item,
-                    id: entry.id,
-                    transaction: maintenanceTransaction
-                )
-            }
+        for entry in entries {
+            try await IndexUniquenessConstraint.enforce(
+                index: index,
+                item: entry.item,
+                id: entry.id,
+                state: .writeOnly,
+                maintainer: uniquenessMaintainer,
+                violationTracker: violationTracker,
+                transaction: transaction
+            )
+            try await maintainer.scanItem(
+                entry.item,
+                id: entry.id,
+                transaction: transaction
+            )
         }
     }
 }

@@ -28,17 +28,24 @@ extension DBContainer {
                 authorization: authorization,
                 transaction: storageAccess
             )
+            let admittedStorageAccess = requiredAccess == .read
+                ? ReadAuthorizedTransactionAccess.admitted(storageAccess)
+                : storageAccess
+            let transaction = DatabaseTransaction(
+                storageAccess: admittedStorageAccess,
+                container: self
+            )
             return try await RequestAuthorization.$context.withValue(
                 authorization
             ) {
-                try await self.withRootScopedDatabaseTransaction(
-                    storageAccess: storageAccess,
-                    dataRoot: lease.root,
-                    accessMode: requiredAccess == .read
-                        ? .readOnly
-                        : .readWrite,
-                    operation
-                )
+                do {
+                    let result = try await operation(transaction)
+                    try await transaction.prepareForCommit()
+                    return result
+                } catch {
+                    await transaction.invalidate()
+                    throw error
+                }
             }
         }
     }

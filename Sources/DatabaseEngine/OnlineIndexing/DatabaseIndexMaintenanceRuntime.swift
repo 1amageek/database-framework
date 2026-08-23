@@ -53,7 +53,7 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
         index: String,
         partitions: FieldObject,
         expectedIdentity: DatabaseIndexStorageIdentity? = nil,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> DatabaseIndexMaintenanceStatus {
         let target = try await resolveTarget(
             entity: entity,
@@ -379,7 +379,7 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
         key: ByteString,
         entity: String,
         index: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> DatabaseIndexRebuildState? {
         guard let bytes = try await transaction.getValue(
             for: key,
@@ -489,7 +489,7 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
 
     private enum DirectoryAccess: Sendable {
         case create(any TransactionAccess)
-        case open(any TransactionReadAccess)
+        case open(any TransactionAccess)
     }
 
     private func rebuildStateKey(target: Target) -> ByteString {

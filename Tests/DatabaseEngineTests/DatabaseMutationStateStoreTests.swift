@@ -305,7 +305,6 @@ struct DatabaseMutationStateStoreTests {
             .subspace("operation-state")
         return StoreContext(
             storage: container.controlStorage(),
-            transactionExecutor: container.transactionExecutor,
             store: store,
             binding: binding,
             limits: limits,
@@ -403,7 +402,7 @@ struct DatabaseMutationStateStoreTests {
             any TransactionAccess
         ) async throws -> Result
     ) async throws -> Result {
-        try await context.transactionExecutor.withTransaction(
+        try await context.storage.transactionExecutor.withTransaction(
             configuration: configuration,
             clock: TestProcessMonotonicClock(),
             body
@@ -453,7 +452,6 @@ struct DatabaseMutationStateStoreTests {
 
     private struct StoreContext: Sendable {
         let storage: DatabaseExecutionStorage
-        let transactionExecutor: StorageTransactionExecutor
         let store: DatabaseMutationStateStore
         let binding: DatabaseMutationStateBinding
         let limits: DatabaseMutationStateLimits

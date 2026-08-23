@@ -116,7 +116,7 @@ struct DatabaseWorkMeterTests {
         #expect(meter.consumedWorkUnits == 50)
     }
 
-    @Test("storage sentinel is positive, overflow safe, and work bounded")
+    @Test("storage sentinel is positive, overflow safe, and memory bounded")
     func storageSentinelIsSafe() throws {
         let budget = ExecutionBudget(
             maximumRows: 1,
@@ -127,17 +127,10 @@ struct DatabaseWorkMeterTests {
             budget: budget
         )
 
-        #expect(try meter.storageWorkReadLimitWithSentinel() == Int.max)
-
-        let boundedMeter = makeWorkMeter(
-            budget: ExecutionBudget(
-                maximumRows: 1,
-                maximumWorkUnits: 5,
-                maximumIntermediateRows: 1,
-                timeoutMilliseconds: 30_000
-            )
+        #expect(
+            try meter.storageReadLimitWithSentinel()
+                == Int(budget.maximumIntermediateRows) + 1
         )
-        #expect(try boundedMeter.storageWorkReadLimitWithSentinel() == 6)
     }
 
     @Test("relational footprint measurement remains independent of the memory budget")
@@ -242,7 +235,7 @@ struct DatabaseWorkMeterTests {
         clock.advance(by: .milliseconds(1))
 
         #expect {
-            try meter.storageWorkReadLimitWithSentinel(at: .indexScan)
+            try meter.storageReadLimitWithSentinel(at: .indexScan)
         } throws: { error in
             error as? DatabaseWorkLimitError == .deadline(stage: .indexScan)
         }

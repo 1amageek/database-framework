@@ -77,17 +77,15 @@ private func containsSubsequence(
 }
 
 private func findEntries(
-    container: DBContainer,
+    engine: any StorageEngine,
     containing term: RDFTerm
 ) async throws -> [ByteString] {
     let needle = try RDFTermStorageFormat.encode(term).copyBytes()
-    let dataRoot = try await container.testBaseDataRoot()
-    return try await container.withTestBaseTransaction { transaction in
-        let range = dataRoot.range()
+    return try await engine.withTransaction { transaction in
         var matched: [ByteString] = []
         for (key, _) in try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
+            from: .firstGreaterOrEqual([0x00]),
+            to: .firstGreaterOrEqual([0xFF]),
             limit: 10_000,
             snapshot: true
         ) where containsSubsequence(key, needle) {
@@ -265,7 +263,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
 
         let subject = try person.ontologySubject()
         let entries = try await findEntries(
-            container: container,
+            engine: container.engine,
             containing: subject.term
         )
         #expect(entries.count == 18)
@@ -284,7 +282,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         try await context.save()
 
         let entries = try await findEntries(
-            container: container,
+            engine: container.engine,
             containing: person.ontologySubject().term
         )
         let oldLiteral = try RDFTermStorageFormat.encode(
@@ -310,7 +308,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         try await context.save()
         #expect(
             try await !findEntries(
-                container: container,
+                engine: container.engine,
                 containing: subject.term
             ).isEmpty
         )
@@ -320,7 +318,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
 
         #expect(
             try await findEntries(
-                container: container,
+                engine: container.engine,
                 containing: subject.term
             ).isEmpty
         )

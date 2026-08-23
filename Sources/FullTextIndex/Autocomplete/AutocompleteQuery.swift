@@ -48,12 +48,7 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
         return try await queryContext.withReadableIndex(
             named: resolved.descriptor.name,
             indexType: resolved.descriptor.type,
-            for: Item.self,
-            authorization: IndexReadAuthorization(
-                limit: fetchLimit,
-                offset: nil,
-                orderBy: nil
-            )
+            for: Item.self
         ) { readableIndex, transaction in
             guard let readableIndex else {
                 return []
@@ -79,12 +74,7 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
         return try await queryContext.withReadableIndex(
             named: resolved.descriptor.name,
             indexType: resolved.descriptor.type,
-            for: Item.self,
-            authorization: IndexReadAuthorization(
-                limit: fetchLimit,
-                offset: nil,
-                orderBy: nil
-            )
+            for: Item.self
         ) { readableIndex, transaction in
             guard let readableIndex else {
                 return []

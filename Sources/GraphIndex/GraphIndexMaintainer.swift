@@ -491,7 +491,6 @@ public enum GraphIndexError: Error, CustomStringConvertible, Sendable {
     case invalidRDFEncoding(RDFTermStorageError)
     case rdfPhysicalIndex(RDFQuadIndexPhysicalCodecError)
     case invalidScanState
-    case indexedItemMissing(index: String, primaryKey: ByteString)
 
     public var description: String {
         switch self {
@@ -521,8 +520,6 @@ public enum GraphIndexError: Error, CustomStringConvertible, Sendable {
             return "RDF graph index key has an invalid physical layout: \(reason)"
         case .invalidScanState:
             return "Graph scan iterator lost its prepared range state"
-        case .indexedItemMissing(let index, let primaryKey):
-            return "Graph index '\(index)' references missing item \(primaryKey)"
         }
     }
 }

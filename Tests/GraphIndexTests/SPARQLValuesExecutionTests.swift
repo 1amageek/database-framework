@@ -21,13 +21,15 @@ struct SPARQLValuesExecutionTests {
                 ]
             )
         )
-        let (bindings, _) = try await executeSPARQLTest(
-            executor: SPARQLQueryExecutor(
+        let (bindings, _) = try await SPARQLQueryExecutor(
+            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
-            ),
+        ).execute(
             pattern: pattern,
+            limit: nil,
+            offset: 0,
             workMeter: DatabaseWorkMeter(
                 budget: ExecutionBudget(),
                 monotonicClock: TestProcessMonotonicClock()
@@ -52,13 +54,15 @@ struct SPARQLValuesExecutionTests {
         let pattern = try GraphPatternConverter.convert(
             .values(variables: ["value"], bindings: [])
         )
-        let (bindings, _) = try await executeSPARQLTest(
-            executor: SPARQLQueryExecutor(
+        let (bindings, _) = try await SPARQLQueryExecutor(
+            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
-            ),
+        ).execute(
             pattern: pattern,
+            limit: nil,
+            offset: 0,
             workMeter: DatabaseWorkMeter(
                 budget: ExecutionBudget(),
                 monotonicClock: TestProcessMonotonicClock()
@@ -83,26 +87,29 @@ struct SPARQLValuesExecutionTests {
             )
         )
         let executor = SPARQLQueryExecutor(
+            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
         )
         let meter = DatabaseWorkMeter(budget: ExecutionBudget(), monotonicClock: TestProcessMonotonicClock())
 
-        let (present, _) = try await executeSPARQLTest(
-            executor: executor,
+        let (present, _) = try await executor.execute(
             pattern: .filter(
                 .basic([]),
                 .query(try SPARQLExpressionPlan(.exists(nonEmpty)))
             ),
+            limit: nil,
+            offset: 0,
             workMeter: meter
         )
-        let (absent, _) = try await executeSPARQLTest(
-            executor: executor,
+        let (absent, _) = try await executor.execute(
             pattern: .filter(
                 .basic([]),
                 .query(try SPARQLExpressionPlan(.exists(empty)))
             ),
+            limit: nil,
+            offset: 0,
             workMeter: DatabaseWorkMeter(
                 budget: ExecutionBudget(),
                 monotonicClock: TestProcessMonotonicClock()
@@ -122,13 +129,15 @@ struct SPARQLValuesExecutionTests {
             )
         )
 
-        let (bindings, _) = try await executeSPARQLTest(
-            executor: SPARQLQueryExecutor(
+        let (bindings, _) = try await SPARQLQueryExecutor(
+            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
-            ),
+        ).execute(
             pattern: pattern,
+            limit: nil,
+            offset: 0,
             workMeter: DatabaseWorkMeter(
                 budget: ExecutionBudget(),
                 monotonicClock: TestProcessMonotonicClock()
@@ -148,13 +157,15 @@ struct SPARQLValuesExecutionTests {
             )
         )
 
-        let (bindings, _) = try await executeSPARQLTest(
-            executor: SPARQLQueryExecutor(
+        let (bindings, _) = try await SPARQLQueryExecutor(
+            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
-            ),
+        ).execute(
             pattern: pattern,
+            limit: nil,
+            offset: 0,
             workMeter: DatabaseWorkMeter(
                 budget: ExecutionBudget(),
                 monotonicClock: TestProcessMonotonicClock()
@@ -176,13 +187,15 @@ struct SPARQLValuesExecutionTests {
             )
         )
 
-        let (bindings, _) = try await executeSPARQLTest(
-            executor: SPARQLQueryExecutor(
+        let (bindings, _) = try await SPARQLQueryExecutor(
+            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
-            ),
+        ).execute(
             pattern: pattern,
+            limit: nil,
+            offset: 0,
             workMeter: DatabaseWorkMeter(
                 budget: ExecutionBudget(),
                 monotonicClock: TestProcessMonotonicClock()
@@ -211,13 +224,15 @@ struct SPARQLValuesExecutionTests {
         }
         #expect(table.rowCount == rowCount)
 
-        let (bindings, _) = try await executeSPARQLTest(
-            executor: SPARQLQueryExecutor(
+        let (bindings, _) = try await SPARQLQueryExecutor(
+            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
-            ),
+        ).execute(
             pattern: pattern,
+            limit: nil,
+            offset: 0,
             workMeter: DatabaseWorkMeter(
                 budget: ExecutionBudget(
                     maximumRows: UInt32(rowCount),

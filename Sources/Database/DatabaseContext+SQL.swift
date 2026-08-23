@@ -111,18 +111,19 @@ extension DatabaseContext {
     ) async throws -> QueryResponse {
         #if DATABASE_GRAPH_INDEXES
         if SPARQLFunctionRewriter.containsSPARQLFunction(in: selectQuery) {
-            return try await indexQueryContext.withQuerySnapshot {
-                snapshot in
+            return try await indexQueryContext.withTransaction {
+                transaction in
                 let preparedQuery = try await self
                     .prepareSQLSelectForCanonicalExecution(
                     selectQuery,
                     workMeter: workMeter,
-                    snapshot: snapshot,
+                    transaction: transaction,
                     structuralLimits: execution.queryStructuralLimits
                 )
                 return try await preparedQuery.execute(
                     in: self,
-                    execution: execution
+                    execution: execution,
+                    transaction: transaction
                 )
             }
         }
@@ -142,24 +143,7 @@ extension DatabaseContext {
     public func prepareSQLSelectForCanonicalExecution(
         _ selectQuery: SelectQuery,
         workMeter: DatabaseWorkMeter,
-        transaction: any TransactionReadAccess,
-        structuralLimits: QueryStructuralLimits
-    ) async throws -> DatabasePreparedSQLSelect {
-        _ = transaction
-        return try await indexQueryContext.withQuerySnapshot { snapshot in
-            try await self.prepareSQLSelectForCanonicalExecution(
-                selectQuery,
-                workMeter: workMeter,
-                snapshot: snapshot,
-                structuralLimits: structuralLimits
-            )
-        }
-    }
-
-    package func prepareSQLSelectForCanonicalExecution(
-        _ selectQuery: SelectQuery,
-        workMeter: DatabaseWorkMeter,
-        snapshot: any IndexQuerySnapshotAccess,
+        transaction: any TransactionAccess,
         structuralLimits: QueryStructuralLimits
     ) async throws -> DatabasePreparedSQLSelect {
         guard SPARQLFunctionRewriter.containsSPARQLFunction(
@@ -176,7 +160,7 @@ extension DatabaseContext {
         let rewriter = SPARQLFunctionRewriter(
             context: self,
             workMeter: workMeter,
-            snapshot: snapshot,
+            transaction: transaction,
             retainedStorage: retainedStorage,
             structuralLimits: structuralLimits
         )
@@ -187,7 +171,7 @@ extension DatabaseContext {
     public func prepareSQLSelectForCanonicalExecution(
         _ selectQuery: SelectQuery,
         workMeter: DatabaseWorkMeter,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         structuralLimits: QueryStructuralLimits
     ) async throws -> DatabasePreparedSQLSelect {
         _ = workMeter

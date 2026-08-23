@@ -172,21 +172,16 @@ struct OntologyIRIValidationTests {
         )
     }
 
-    private func withOntologyStore<Result: Sendable>(
-        context: DatabaseContext,
-        _ operation: @Sendable @escaping (
-            OntologyStore,
-            any IndexReadAccess
-        ) async throws -> Result
-    ) async throws -> Result {
-        try await context.indexQueryContext.withAuxiliaryReadStorage(
-            path: ["database-framework", "ontology-index"]
-        ) { root, transaction in
-            try await operation(
-                OntologyStore(
-                    subspace: OntologySubspace(base: root)
-                ),
-                transaction
+    private func ontologyStore(
+        context: DatabaseContext
+    ) async throws -> OntologyStore {
+        try await context.withDataOperation {
+            let root = try context.operationDataRoot()
+                .subspace("data")
+                .subspace("database-framework")
+                .subspace("ontology-index")
+            return OntologyStore(
+                subspace: OntologySubspace(base: root)
             )
         }
     }
@@ -199,8 +194,10 @@ struct OntologyIRIValidationTests {
         defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
-        try await withOntologyStore(context: context) { store, transaction in
-            let validator = OntologyIRIValidator(store: store)
+        let store = try await ontologyStore(context: context)
+        let validator = OntologyIRIValidator(store: store)
+
+        try await context.indexQueryContext.withTransaction { transaction in
             try await validator.validateClass(
                 "http://test.org/onto#Employee",
                 in: Self.ontologyIRI,
@@ -215,8 +212,10 @@ struct OntologyIRIValidationTests {
         defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
-        try await withOntologyStore(context: context) { store, transaction in
-            let validator = OntologyIRIValidator(store: store)
+        let store = try await ontologyStore(context: context)
+        let validator = OntologyIRIValidator(store: store)
+
+        try await context.indexQueryContext.withTransaction { transaction in
             do {
                 try await validator.validateClass(
                     "http://test.org/onto#NonExistentClass",
@@ -243,8 +242,10 @@ struct OntologyIRIValidationTests {
         defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
-        try await withOntologyStore(context: context) { store, transaction in
-            let validator = OntologyIRIValidator(store: store)
+        let store = try await ontologyStore(context: context)
+        let validator = OntologyIRIValidator(store: store)
+
+        try await context.indexQueryContext.withTransaction { transaction in
             try await validator.validateObjectProperty(
                 "http://test.org/onto#worksOn",
                 in: Self.ontologyIRI,
@@ -259,8 +260,10 @@ struct OntologyIRIValidationTests {
         defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
-        try await withOntologyStore(context: context) { store, transaction in
-            let validator = OntologyIRIValidator(store: store)
+        let store = try await ontologyStore(context: context)
+        let validator = OntologyIRIValidator(store: store)
+
+        try await context.indexQueryContext.withTransaction { transaction in
             do {
                 try await validator.validateObjectProperty(
                     "http://test.org/onto#nonExistentProp",
@@ -285,8 +288,10 @@ struct OntologyIRIValidationTests {
         defer { await context.container.shutdown() }
         try await loadTestOntology(context: context)
 
-        try await withOntologyStore(context: context) { store, transaction in
-            let validator = OntologyIRIValidator(store: store)
+        let store = try await ontologyStore(context: context)
+        let validator = OntologyIRIValidator(store: store)
+
+        try await context.indexQueryContext.withTransaction { transaction in
             do {
                 // "name" is a DataProperty, not an ObjectProperty
                 try await validator.validateObjectProperty(

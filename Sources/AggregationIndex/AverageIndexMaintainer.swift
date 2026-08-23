@@ -107,7 +107,7 @@ public struct AverageIndexMaintainer<Item: PersistedEntityValue, Value: IndexNum
     /// Get the canonical typed average for a specific grouping.
     public func getAverage(
         groupingValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> (count: Int64, average: FieldValue) {
         let storedGrouping = try FieldValue.toTupleElements(groupingValues)
         let sumKey = try buildSumKey(storedGroupingElements: storedGrouping)
@@ -137,7 +137,7 @@ public struct AverageIndexMaintainer<Item: PersistedEntityValue, Value: IndexNum
     /// Get a lossless Double view of the average for a specific grouping.
     public func getAverageAsDouble(
         groupingValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> (count: Int64, average: Double) {
         let exact = try await getAverage(
             groupingValues: groupingValues,
@@ -156,7 +156,7 @@ public struct AverageIndexMaintainer<Item: PersistedEntityValue, Value: IndexNum
     ///
     /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
     public func getAllAveragesAsDouble(
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [(
         grouping: [FieldValue],
         count: Int64,
@@ -180,7 +180,7 @@ public struct AverageIndexMaintainer<Item: PersistedEntityValue, Value: IndexNum
     }
 
     public func getAllAverages(
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [(
         grouping: [FieldValue],
         count: Int64,

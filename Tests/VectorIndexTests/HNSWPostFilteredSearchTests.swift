@@ -86,7 +86,7 @@ private struct PostFilteredSearchContext {
             let itemKey = itemsSubspace.pack(try product.persistableIdentifierTuple())
             let itemData = try PersistableStorageCodec.encode(product)
 
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(itemData, for: itemKey)
 
             // Index the vector
@@ -108,7 +108,7 @@ private struct PostFilteredSearchContext {
         try await database.withTransaction { transaction in
             let identifier = try PersistableIdentifierKeyCodec.tuple(for: id)
             let itemKey = itemsSubspace.pack(identifier)
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             if let data = try await storage.read(for: itemKey) {
                 return try PersistableStorageCodec.decode(
                     PostFilteredProduct.self,
@@ -128,14 +128,11 @@ private struct PostFilteredSearchContext {
         try await database.withTransaction { transaction in
             // Create fetch function using ItemStorage for proper envelope handling
             let fetchItem: @Sendable (
-                Tuple
-            ) async throws -> PostFilteredProduct? = { primaryKey in
+                Tuple,
+                any TransactionAccess
+            ) async throws -> PostFilteredProduct? = { primaryKey, tx in
                 let itemKey = self.itemsSubspace.pack(primaryKey)
-                let storage = ItemStorageWriter(
-                    transaction: transaction,
-                    blobsSubspace: self.blobsSubspace,
-                    configuration: .v1
-                )
+                let storage = ItemStorage(transaction: tx, blobsSubspace: self.blobsSubspace, configuration: .v1)
                 if let data = try await storage.read(for: itemKey) {
                     return try PersistableStorageCodec.decode(
                         PostFilteredProduct.self,

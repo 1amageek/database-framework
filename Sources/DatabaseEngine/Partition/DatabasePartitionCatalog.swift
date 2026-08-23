@@ -89,7 +89,7 @@ package struct DatabasePartitionCatalog: Sendable {
     package func contains(
         entity: String,
         partitions: FieldObject,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         try validate(entity: entity, partitions: partitions)
         let entry = DatabasePartitionCatalogEntry(
@@ -177,7 +177,7 @@ package struct DatabasePartitionCatalog: Sendable {
         entity: String,
         continuation: ByteString?,
         limit: Int,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> DatabasePartitionCatalogPage {
         guard limit > 0, limit <= Self.maximumPageSize else {
             throw DatabasePartitionCatalogError.invalidPageLimit(
@@ -222,7 +222,7 @@ package struct DatabasePartitionCatalog: Sendable {
 
     package func containsEntries(
         entity: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         let page = try await page(
             entity: entity,
@@ -239,7 +239,7 @@ package struct DatabasePartitionCatalog: Sendable {
         rangeEnd: ByteString,
         limit: Int,
         snapshot: Bool,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> DatabasePartitionCatalogPage {
         let rows = try await TransactionRangeCollection.collect(
             using: transaction,

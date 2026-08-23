@@ -102,86 +102,71 @@ public struct CompositionRDFQueryPlanner: Sendable {
         )
         do {
             try await source.withReadSnapshot { snapshot in
-                let authorization = try Self.authorization(for: statement)
-                let admissions = try await makeReadAdmissions(
-                    authorization: authorization,
-                    source: source,
-                    snapshot: snapshot
-                )
                 let metadata = CompositionRDFMetadata(
-                    composition: snapshot.resolution,
-                    basePlacementGenerations: snapshot
+                    composition: snapshot.lease.resolution,
+                    basePlacementGenerations: snapshot.lease
                         .basePlacementGenerations,
                     schemaGeneration: source.container.schemaGeneration,
                     consistency: .federated(try await snapshot.readPoints())
                 )
                 guard try await emit(.began(metadata)) else { return }
                 var nextSequence: UInt64 = 0
-                for member in snapshot.members {
-                    guard let admission = admissions[member.baseID] else {
-                        throw CompositionQueryError.workspaceCorrupted
-                    }
+                for member in snapshot.lease.members {
                     let memberSequenceStart = nextSequence
                     nextSequence = try await source.withMemberContext(
                         member,
                         in: snapshot
                     ) { [memberSequenceStart] databaseContext, transaction in
-                        try await databaseContext
-                            .withReadAuthorizationAdmission(admission) {
-                                let graph: DatabaseRetainedRDFGraph
-                                switch statement {
-                                case .construct(let query):
-                                    guard let nodeNamespace else {
-                                        throw CompositionQueryError
-                                            .invalidExecutionConfiguration(
-                                                "CONSTRUCT requires a deterministic graph-result node namespace"
-                                            )
-                                    }
-                                    graph = try await executor
-                                        .executeConstructInTransaction(
-                                            context: databaseContext,
-                                            constructQuery: query,
-                                            nodeNamespace: nodeNamespace,
-                                            options: readContext,
-                                            partitions: graphPartitions,
-                                            transaction: transaction
-                                        )
-                                case .describe(let query):
-                                    graph = try await executor
-                                        .executeDescribeInTransaction(
-                                            context: databaseContext,
-                                            describeQuery: query,
-                                            options: readContext,
-                                            partitions: graphPartitions,
-                                            transaction: transaction
-                                        )
-                                }
-                                var memberSequence = memberSequenceStart
-                                for index in 0..<graph.count {
-                                    let quad = try graph.withElement(at: index) {
-                                        value in
-                                        try CompositionRDFIdentity
-                                            .qualifyBlankNodes(
-                                                in: copy value,
-                                                baseID: member.baseID
-                                            )
-                                    }
-                                    let currentSequence = memberSequence
-                                    let next = memberSequence
-                                        .addingReportingOverflow(1)
-                                    guard !next.overflow else {
-                                        throw CompositionQueryError
-                                            .workspaceCorrupted
-                                    }
-                                    memberSequence = next.partialValue
-                                    try await workspace.insert(
-                                        try Self.row(from: quad),
-                                        origin: .source(member.baseID),
-                                        sequence: currentSequence
+                        let graph: DatabaseRetainedRDFGraph
+                        switch statement {
+                        case .construct(let query):
+                            guard let nodeNamespace else {
+                                throw CompositionQueryError
+                                    .invalidExecutionConfiguration(
+                                        "CONSTRUCT requires a deterministic graph-result node namespace"
                                     )
-                                }
-                                return memberSequence
                             }
+                            graph = try await executor
+                                .executeConstructInTransaction(
+                                    context: databaseContext,
+                                    constructQuery: query,
+                                    nodeNamespace: nodeNamespace,
+                                    options: readContext,
+                                    partitions: graphPartitions,
+                                    transaction: transaction
+                                )
+                        case .describe(let query):
+                            graph = try await executor
+                                .executeDescribeInTransaction(
+                                    context: databaseContext,
+                                    describeQuery: query,
+                                    options: readContext,
+                                    partitions: graphPartitions,
+                                    transaction: transaction
+                                )
+                        }
+                        var memberSequence = memberSequenceStart
+                        for index in 0..<graph.count {
+                            let quad = try graph.withElement(at: index) {
+                                value in
+                                try CompositionRDFIdentity.qualifyBlankNodes(
+                                    in: copy value,
+                                    baseID: member.baseID
+                                )
+                            }
+                            let currentSequence = memberSequence
+                            let next = memberSequence.addingReportingOverflow(1)
+                            guard !next.overflow else {
+                                throw CompositionQueryError.workspaceCorrupted
+                            }
+                            memberSequence = next.partialValue
+                            try await workspace.insert(
+                                try Self.row(from: quad),
+                                origin: .source(member.baseID),
+                                sequence: currentSequence
+                            )
+                        }
+                        return memberSequence
                     }
                 }
                 try await workspace.forEachResult(batchSize: 64) { result in
@@ -217,42 +202,29 @@ public struct CompositionRDFQueryPlanner: Sendable {
             )
         }
         return try await source.withReadSnapshot { snapshot in
-            let admissions = try await makeReadAdmissions(
-                authorization: try IndexReadAuthorization(
-                    modifiers: query.modifiers
-                ),
-                source: source,
-                snapshot: snapshot
-            )
             var matchingBases: [Base.ID] = []
-            matchingBases.reserveCapacity(snapshot.members.count)
-            for member in snapshot.members {
-                guard let admission = admissions[member.baseID] else {
-                    throw CompositionQueryError.workspaceCorrupted
-                }
+            matchingBases.reserveCapacity(snapshot.lease.members.count)
+            for member in snapshot.lease.members {
                 let matched = try await source.withMemberContext(
                     member,
                     in: snapshot
                 ) { databaseContext, transaction in
-                    try await databaseContext
-                        .withReadAuthorizationAdmission(admission) {
-                            try await executor.executeAskInTransaction(
-                                context: databaseContext,
-                                askQuery: query,
-                                options: readContext,
-                                partitions: graphPartitions,
-                                transaction: transaction
-                            )
-                        }
+                    try await executor.executeAskInTransaction(
+                        context: databaseContext,
+                        askQuery: query,
+                        options: readContext,
+                        partitions: graphPartitions,
+                        transaction: transaction
+                    )
                 }
                 if matched { matchingBases.append(member.baseID) }
             }
-            let allBases = snapshot.resolution.bases
+            let allBases = snapshot.lease.resolution.bases
             return CompositionAskResult(
                 value: !matchingBases.isEmpty,
                 metadata: CompositionRDFMetadata(
-                    composition: snapshot.resolution,
-                    basePlacementGenerations: snapshot
+                    composition: snapshot.lease.resolution,
+                    basePlacementGenerations: snapshot.lease
                         .basePlacementGenerations,
                     schemaGeneration: source.container.schemaGeneration,
                     consistency: .federated(try await snapshot.readPoints())
@@ -264,41 +236,6 @@ public struct CompositionRDFQueryPlanner: Sendable {
                 )
             )
         }
-    }
-
-    private static func authorization(
-        for statement: CompositionRDFStatement
-    ) throws -> IndexReadAuthorization {
-        switch statement {
-        case .construct(let query):
-            return try IndexReadAuthorization(modifiers: query.modifiers)
-        case .describe(let query):
-            return try IndexReadAuthorization(modifiers: query.modifiers)
-        }
-    }
-
-    private func makeReadAdmissions(
-        authorization: IndexReadAuthorization,
-        source: CompositionDataSource,
-        snapshot: DatabaseCompositionReadSnapshot
-    ) async throws -> [Base.ID: DatabaseReadAuthorizationAdmission] {
-        var admissions: [Base.ID: DatabaseReadAuthorizationAdmission] = [:]
-        admissions.reserveCapacity(snapshot.members.count)
-        for member in snapshot.members {
-            admissions[member.baseID] = try await source.withMemberContext(
-                member,
-                in: snapshot
-            ) { context, _ in
-                let fieldPlan = DatabaseFieldReadAuthorizationPlan
-                    .rdfDataset(schema: context.container.schema)
-                return try context.admitLogicalRead(
-                    listAuthorization: authorization,
-                    fieldPlan: fieldPlan,
-                    restrictingTo: Set(fieldPlan.fieldsByEntity.keys)
-                )
-            }
-        }
-        return admissions
     }
 
     private static func row(from quad: RDFQuad) throws -> QueryRow {

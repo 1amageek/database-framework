@@ -2,68 +2,16 @@
 // Comprehensive tests for BitmapIndex behavior with FDB
 
 import Testing
-import DatabaseKit
 import DatabaseTypes
-import StorageKit
 import TestSupport
 @testable import BitmapIndex
-@testable import DatabaseEngine
-
-@Persistable
-private struct BitmapSecuredItem: SecurityPolicy {
-    #Directory<BitmapSecuredItem>("bitmap-secured")
-    #Index(
-        .bitmap(
-            name: "BitmapSecuredItem_status",
-            field: \BitmapSecuredItem.status
-        )
-    )
-
-    var id: String
-    var ownerID: String
-    var status: String
-
-    static func permitsRead(
-        of resource: borrowing BitmapSecuredItem,
-        in context: borrowing AuthorizationContext
-    ) -> Bool {
-        resource.ownerID == context.principal?.identifier
-    }
-
-    static func permitsQuery(
-        _ query: borrowing SecurityQuery,
-        in context: borrowing AuthorizationContext
-    ) -> Bool {
-        context.principal?.roles.contains("search") == true
-    }
-
-    static func permitsCreate(
-        _ newResource: borrowing BitmapSecuredItem,
-        in context: borrowing AuthorizationContext
-    ) -> Bool {
-        newResource.ownerID == context.principal?.identifier
-    }
-
-    static func permitsUpdate(
-        from resource: borrowing BitmapSecuredItem,
-        to newResource: borrowing BitmapSecuredItem,
-        in context: borrowing AuthorizationContext
-    ) -> Bool {
-        resource.ownerID == context.principal?.identifier
-            && newResource.ownerID == resource.ownerID
-    }
-
-    static func permitsDelete(
-        _ resource: borrowing BitmapSecuredItem,
-        in context: borrowing AuthorizationContext
-    ) -> Bool {
-        resource.ownerID == context.principal?.identifier
-    }
-}
 
 #if FOUNDATION_DB
 import Foundation
+import StorageKit
 import FDBStorage
+import DatabaseKit
+@testable import DatabaseEngine
 
 // MARK: - Test Model
 
@@ -169,165 +117,6 @@ private struct BitmapIndexContext {
 }
 
 #endif
-
-@Suite("Bitmap retained resource lifecycle")
-struct BitmapRetainedResourceLifecycleTests {
-    @Test("Rejected admission releases ownership before meter reuse")
-    func rejectedAdmissionReleasesOwnershipBeforeMeterReuse() async throws {
-        let engine = InMemoryEngine()
-        let subspace = Subspace(prefix: Tuple("bitmap-retained-resource").pack())
-        let reader = BitmapIndexReader(subspace: subspace)
-        let bitmap = RoaringBitmap([0, 1, 2].map(UInt32.init))
-        try await engine.withTransaction { transaction in
-            try transaction.setValue(
-                bitmap.serializedBytes(),
-                for: subspace.subspace("data").pack(Tuple("active"))
-            )
-            for identifier in 0..<3 {
-                try transaction.setValue(
-                    Tuple("item-\(identifier)").pack(),
-                    for: subspace.subspace("ids").pack(Tuple(identifier))
-                )
-            }
-        }
-
-        func read(using execution: ReadExecutionContext) async throws -> Int {
-            try await engine.withTransaction { transaction in
-                let retainedBitmap = try await reader.retainedBitmap(
-                    for: ["active"],
-                    transaction: transaction,
-                    workMeter: execution.workMeter
-                )
-                let primaryKeys = try await reader.retainedPrimaryKeys(
-                    for: retainedBitmap,
-                    transaction: transaction,
-                    workMeter: execution.workMeter
-                )
-                #expect(execution.workMeter.retainedIntermediateBytes > 0)
-                return primaryKeys.count
-            }
-        }
-
-        let measurement = ReadExecutionContext(
-            monotonicClock: TestProcessMonotonicClock()
-        )
-        #expect(try await read(using: measurement) == 3)
-        #expect(measurement.workMeter.retainedIntermediateRows == 0)
-        #expect(measurement.workMeter.retainedIntermediateBytes == 0)
-        let maximum = measurement.workMeter.peakIntermediateBytes
-        #expect(maximum > 0)
-
-        let constrained = ReadExecutionContext(
-            options: ReadExecutionOptions(
-                budget: ExecutionBudget(maximumIntermediateBytes: maximum)
-            ),
-            monotonicClock: TestProcessMonotonicClock()
-        )
-        let blocker = try constrained.workMeter.reserveIntermediate(
-            bytes: 1,
-            at: .indexScan
-        )
-        await #expect(throws: DatabaseWorkLimitError.self) {
-            _ = try await read(using: constrained)
-        }
-        #expect(constrained.workMeter.retainedIntermediateBytes == 1)
-        blocker.release()
-        #expect(constrained.workMeter.retainedIntermediateBytes == 0)
-
-        #expect(try await read(using: constrained) == 3)
-        #expect(constrained.workMeter.retainedIntermediateRows == 0)
-        #expect(constrained.workMeter.retainedIntermediateBytes == 0)
-    }
-
-    @Test("Direct bitmap aggregates preserve LIST authorization")
-    func directBitmapAggregatesPreserveListAuthorization() async throws {
-        let maintainerProvider = BitmapIndexMaintainerProvider()
-        var entityRuntime = try EntityRuntimeDefinition(BitmapSecuredItem.self)
-        try BitmapReadExecutors.register(with: &entityRuntime)
-        try entityRuntime.register(maintainerProvider)
-        let container = try await DBContainer.open(
-            for: try Schema(entities: [try BitmapSecuredItem.schemaEntity]),
-            configuration: .testing(storageEngine: InMemoryEngine()),
-            runtimeConfiguration: try DatabaseRuntimeConfiguration(
-                executionIdentity: DatabaseExecutionRuntimeIdentity(
-                    identifier: "bitmap-direct-authorization-tests",
-                    revision: 1
-                ),
-                indexMaintainerProviderDescriptors: [
-                    .init(describing: maintainerProvider)
-                ],
-                entityRuntimes: [entityRuntime.registration()],
-                authorizationPolicies: [
-                    AuthorizationPolicyHandler(BitmapSecuredItem.self)
-                ]
-            ),
-            security: .enabled()
-        )
-        defer { await container.shutdown() }
-
-        let owner = Principal(identifier: "owner", roles: ["search"])
-        let reader = Principal(identifier: "reader", roles: ["search"])
-        let blocked = Principal(identifier: "blocked")
-        #if MultiBase
-        try await container.grantTestBaseAccess(
-            to: .principal(owner.identifier),
-            access: [.read, .write]
-        )
-        try await container.grantTestBaseAccess(
-            to: .principal(reader.identifier),
-            access: .read
-        )
-        try await container.grantTestBaseAccess(
-            to: .principal(blocked.identifier),
-            access: .read
-        )
-        #endif
-
-        let ownerContext = container.testBaseContext(
-            authorization: .authenticated(owner)
-        )
-        try ownerContext.insert(
-            BitmapSecuredItem(
-                id: "secured-item",
-                ownerID: owner.identifier,
-                status: "active"
-            )
-        )
-        try await ownerContext.save()
-
-        let blockedContext = container.testBaseContext(
-            authorization: .authenticated(blocked)
-        )
-        for status in ["active", "absent"] {
-            let query = blockedContext.bitmap(BitmapSecuredItem.self)
-                .field(BitmapSecuredItem.fields.status)
-                .equals(status)
-            do {
-                _ = try await query.count()
-                Issue.record("Bitmap count must enforce LIST authorization")
-            } catch let error as SecurityError {
-                #expect(error.operation == .list)
-            }
-            do {
-                _ = try await query.getBitmap()
-                Issue.record("Bitmap retrieval must enforce LIST authorization")
-            } catch let error as SecurityError {
-                #expect(error.operation == .list)
-            }
-        }
-
-        let readerContext = container.testBaseContext(
-            authorization: .authenticated(reader)
-        )
-        let authorizedQuery = readerContext.bitmap(BitmapSecuredItem.self)
-            .field(BitmapSecuredItem.fields.status)
-            .equals("active")
-        let count = try await authorizedQuery.count()
-        #expect(count == 1)
-        let bitmap = try await authorizedQuery.getBitmap()
-        #expect(bitmap.cardinality == 1)
-    }
-}
 
 // MARK: - RoaringBitmap Unit Tests
 
@@ -555,25 +344,6 @@ struct RoaringBitmapUnitTests {
         let bitmap = RoaringBitmap(values)
 
         #expect(bitmap.toArray() == [0, 1, 2, 65_536, 65_537, 131_072])
-    }
-
-    @Test("Equality compares logical values across container forms")
-    func equalityComparesLogicalValuesAcrossContainerForms() throws {
-        let bitmapBacked = RoaringBitmap((0..<5_000).map(UInt32.init))
-        let runBacked = RoaringBitmap.range(0..<5_000)
-
-        #expect(bitmapBacked == runBacked)
-        #expect(runBacked == bitmapBacked)
-
-        let roundTrip = try RoaringBitmap(
-            serializedBytes: runBacked.serializedBytes()
-        )
-        #expect(roundTrip == bitmapBacked)
-
-        let reference = RoaringBitmap((2_500..<7_500).map(UInt32.init))
-        let union = bitmapBacked || reference
-        let expectedUnion = RoaringBitmap.range(0..<7_500)
-        #expect(union == expectedUnion)
     }
 
     @Test("Set operations match the reference algebra across containers")

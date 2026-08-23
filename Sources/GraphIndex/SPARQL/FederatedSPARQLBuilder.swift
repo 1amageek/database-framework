@@ -10,7 +10,7 @@
 // while retaining one transaction snapshot and one active named graph.
 
 import DatabaseKit
-@_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseEngine
 import StorageKit
 
 /// Fluent builder for graph-scoped federated SPARQL queries.
@@ -248,14 +248,6 @@ public struct FederatedSPARQLBuilder: Sendable {
     public func execute(
         budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SPARQLResult {
-        try await queryContext.context.withDataOperation { [self] in
-            try await executeInDataOperation(budget: budget)
-        }
-    }
-
-    private func executeInDataOperation(
-        budget: ExecutionBudget
-    ) async throws -> SPARQLResult {
         guard offsetCount >= 0, limitCount.map({ $0 >= 0 }) ?? true else {
             throw SPARQLQueryError.invalidPagination
         }
@@ -266,36 +258,21 @@ public struct FederatedSPARQLBuilder: Sendable {
             monotonicClock: queryContext.context.container.monotonicClock
         )
 
-        let authorization = IndexReadAuthorization(
-            limit: limitCount,
-            offset: offsetCount,
-            orderBy: sortKeys.isEmpty
-                ? nil
-                : sortKeys.map(\.authorizationName)
-        )
-        try RDFDatasetSourcePlanner.preflightAuthorization(
-            namedGraph: namedGraph,
-            queryContext: queryContext,
-            authorization: authorization
-        )
-
-        let evaluation = try await queryContext.withQuerySnapshot {
-            snapshot -> ([VariableBinding], ExecutionStatistics)? in
-            try await RDFDatasetSourcePlanner.withPlannedSources(
+        let evaluation = try await queryContext.withTransaction {
+            transaction -> ([VariableBinding], ExecutionStatistics)? in
+            let sources = try await RDFDatasetSourcePlanner.plan(
                 namedGraph: namedGraph,
                 queryContext: queryContext,
-                authorization: authorization,
-                snapshot: snapshot
-            ) { sources, transaction in
-                guard !sources.isEmpty else {
-                    return nil
-                }
-                return try await evaluate(
-                    sources: sources,
-                    transaction: transaction,
-                    workMeter: workMeter
-                )
+                transaction: transaction
+            )
+            guard !sources.isEmpty else {
+                return nil
             }
+            return try await evaluate(
+                sources: sources,
+                transaction: transaction,
+                workMeter: workMeter
+            )
         }
         guard let (bindings, stats) = evaluation else {
             return SPARQLResult(
@@ -369,9 +346,10 @@ public struct FederatedSPARQLBuilder: Sendable {
     /// Evaluate algebra once while atomic scans fan out across all sources.
     private func evaluate(
         sources: [RDFDatasetSource],
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
+        let engine = queryContext.context.container.engine
         let pattern = ExecutionPattern.graph(
             .named(namedGraph),
             graphPattern
@@ -394,6 +372,7 @@ public struct FederatedSPARQLBuilder: Sendable {
         }
 
         let executor = SPARQLQueryExecutor(
+            database: engine,
             monotonicClock: queryContext.context.container.monotonicClock,
             wallClock: queryContext.context.container.wallClock,
             sources: sources

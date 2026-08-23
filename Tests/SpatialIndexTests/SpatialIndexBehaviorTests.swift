@@ -274,43 +274,6 @@ struct SpatialIndexBehaviorTests {
         try await ctx.cleanup()
     }
 
-    @Test("Radius search crosses the antimeridian for every encoding")
-    func radiusSearchCrossesAntimeridian() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        for encoding in [SpatialEncoding.s2, .morton] {
-            let ctx = try await SpatialIndexContext(
-                encoding: encoding,
-                level: 10,
-                indexName: "antimeridian_\(encoding)"
-            )
-            let west = try GeospatialLocation(
-                id: "west",
-                name: "West of antimeridian",
-                latitude: 0,
-                longitude: -179.9
-            )
-            try await ctx.database.withTransaction { transaction in
-                try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
-                    newItem: west,
-                    transaction: transaction
-                )
-            }
-
-            let results = try await ctx.searchRadius(
-                lat: 0,
-                lon: 179.9,
-                radiusMeters: 50_000
-            )
-            #expect(
-                results.keys.contains {
-                    $0.pack() == Tuple("west").pack()
-                }
-            )
-            try await ctx.cleanup()
-        }
-    }
-
     @Test("Bounding box search finds locations within box")
     func testBoundingBoxSearch() async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()

@@ -24,9 +24,7 @@ import DatabaseEngine
 /// let key = BindingSortKey.variable("?age", ascending: false, nullsLast: true)
 ///
 /// // Custom evaluation
-/// let key = BindingSortKey(authorizationName: "?score", ascending: true) {
-///     binding in binding["?score"]
-/// }
+/// let key = BindingSortKey(ascending: true) { binding in binding["?score"] }
 /// ```
 public struct BindingSortKey: Sendable {
 
@@ -42,9 +40,6 @@ public struct BindingSortKey: Sendable {
     /// This property overrides the default behavior.
     public let nullsLast: Bool
 
-    /// Entity field or projected variable reported to LIST authorization.
-    public let authorizationName: String
-
     // MARK: - Initialization
 
     /// Create a sort key with a custom evaluation function
@@ -54,12 +49,10 @@ public struct BindingSortKey: Sendable {
     ///   - nullsLast: Whether nulls sort last (default: false = nulls sort first)
     ///   - evaluate: Function to extract the sort value from a binding
     public init(
-        authorizationName: String,
         ascending: Bool = true,
         nullsLast: Bool = false,
         evaluate: @escaping @Sendable (VariableBinding) throws -> FieldValue?
     ) {
-        self.authorizationName = authorizationName
         self.ascending = ascending
         self.nullsLast = nullsLast
         self.evaluate = evaluate
@@ -80,7 +73,6 @@ public struct BindingSortKey: Sendable {
         nullsLast: Bool = false
     ) -> BindingSortKey {
         BindingSortKey(
-            authorizationName: name,
             ascending: ascending,
             nullsLast: nullsLast,
             evaluate: { binding in binding[name] }

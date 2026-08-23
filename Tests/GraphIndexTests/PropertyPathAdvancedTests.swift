@@ -114,13 +114,11 @@ struct PropertyPathAdvancedTests {
         return value.rawValue
     }
 
-    private func execute(
-        _ pattern: ExecutionPattern,
+    private func makeExecutor(
         container: DBContainer,
         context: DatabaseContext,
-        configuration: ExecutionPropertyPathConfiguration,
-        limit: Int? = nil
-    ) async throws -> ([VariableBinding], ExecutionStatistics) {
+        configuration: ExecutionPropertyPathConfiguration
+    ) async throws -> SPARQLQueryExecutor {
         let selections = try AdvancedPathEdge.indexDescriptors.compactMap(
             RDFDatasetIndexSelection.init(descriptor:)
         )
@@ -128,42 +126,28 @@ struct PropertyPathAdvancedTests {
             throw SPARQLQueryError.indexNotConfigured
         }
         let selection = selections[0]
-        let workMeter = DatabaseWorkMeter(
-            budget: .init(),
-            monotonicClock: TestProcessMonotonicClock()
-        )
-        return try await context.indexQueryContext.withReadableIndex(
+        let readableIndex = try await context.indexQueryContext.withReadableIndex(
             named: selection.indexName,
             indexType: selection.indexType,
-            for: AdvancedPathEdge.self,
-            authorization: IndexReadAuthorization(
-                limit: limit,
-                offset: 0,
-                orderBy: nil
-            )
-        ) { readableIndex, transaction in
-            guard let readableIndex else {
-                throw SPARQLQueryError.indexNotConfigured
-            }
-            let source = try RDFDatasetSource(
-                entityName: AdvancedPathEdge.persistableType,
-                selection: selection,
-                indexSubspace: readableIndex.subspace
-            )
-            let executor = SPARQLQueryExecutor(
-                monotonicClock: container.monotonicClock,
-                wallClock: FixedTestWallClock(),
-                sources: [source],
-                propertyPathConfiguration: configuration
-            )
-            return try await executor.executeInTransaction(
-                pattern: pattern,
-                transaction: transaction,
-                limit: limit,
-                offset: 0,
-                workMeter: workMeter
-            )
+            for: AdvancedPathEdge.self
+        ) { index, _ in
+            index
         }
+        guard let readableIndex else {
+            throw SPARQLQueryError.indexNotConfigured
+        }
+        let source = try RDFDatasetSource(
+            entityName: AdvancedPathEdge.persistableType,
+            selection: selection,
+            indexSubspace: readableIndex.subspace
+        )
+        return SPARQLQueryExecutor(
+            database: container.engine,
+            monotonicClock: container.monotonicClock,
+            wallClock: FixedTestWallClock(),
+            sources: [source],
+            propertyPathConfiguration: configuration
+        )
     }
 
     // MARK: - Negated Property Set Tests
@@ -466,6 +450,15 @@ struct PropertyPathAdvancedTests {
             context: context
         )
 
+        let executor = try await makeExecutor(
+            container: container,
+            context: context,
+            configuration: ExecutionPropertyPathConfiguration(
+                maximumExpressionDepth: 1,
+                maximumTraversalDepth: 10,
+                maximumResults: 10
+            )
+        )
         let pattern = ExecutionPattern.propertyPath(
             subject: try iriTerm(start),
             path: .oneOrMore(.inverse(.inverse(.iri(predicate)))),
@@ -473,15 +466,11 @@ struct PropertyPathAdvancedTests {
         )
 
         do {
-            _ = try await execute(
-                pattern,
-                container: container,
-                context: context,
-                configuration: ExecutionPropertyPathConfiguration(
-                    maximumExpressionDepth: 1,
-                    maximumTraversalDepth: 10,
-                    maximumResults: 10
-                )
+            _ = try await executor.execute(
+                pattern: pattern,
+                limit: nil,
+                offset: 0,
+                workMeter: DatabaseWorkMeter(budget: .init(), monotonicClock: TestProcessMonotonicClock())
             )
             Issue.record("Expected the expression depth limit to reject the query")
         } catch let error as SPARQLQueryError {
@@ -511,6 +500,15 @@ struct PropertyPathAdvancedTests {
             context: context
         )
 
+        let executor = try await makeExecutor(
+            container: container,
+            context: context,
+            configuration: ExecutionPropertyPathConfiguration(
+                maximumExpressionDepth: 10,
+                maximumTraversalDepth: 1,
+                maximumResults: 10
+            )
+        )
         let pattern = ExecutionPattern.propertyPath(
             subject: try iriTerm(start),
             path: .oneOrMore(.iri(predicate)),
@@ -518,15 +516,11 @@ struct PropertyPathAdvancedTests {
         )
 
         do {
-            _ = try await execute(
-                pattern,
-                container: container,
-                context: context,
-                configuration: ExecutionPropertyPathConfiguration(
-                    maximumExpressionDepth: 10,
-                    maximumTraversalDepth: 1,
-                    maximumResults: 10
-                )
+            _ = try await executor.execute(
+                pattern: pattern,
+                limit: nil,
+                offset: 0,
+                workMeter: DatabaseWorkMeter(budget: .init(), monotonicClock: TestProcessMonotonicClock())
             )
             Issue.record("Expected the traversal depth limit to reject the query")
         } catch let error as SPARQLQueryError {
@@ -556,6 +550,15 @@ struct PropertyPathAdvancedTests {
             context: context
         )
 
+        let executor = try await makeExecutor(
+            container: container,
+            context: context,
+            configuration: ExecutionPropertyPathConfiguration(
+                maximumExpressionDepth: 10,
+                maximumTraversalDepth: 10,
+                maximumResults: 1
+            )
+        )
         let pattern = ExecutionPattern.propertyPath(
             subject: try iriTerm(start),
             path: .oneOrMore(.iri(predicate)),
@@ -563,15 +566,11 @@ struct PropertyPathAdvancedTests {
         )
 
         do {
-            _ = try await execute(
-                pattern,
-                container: container,
-                context: context,
-                configuration: ExecutionPropertyPathConfiguration(
-                    maximumExpressionDepth: 10,
-                    maximumTraversalDepth: 10,
-                    maximumResults: 1
-                )
+            _ = try await executor.execute(
+                pattern: pattern,
+                limit: nil,
+                offset: 0,
+                workMeter: DatabaseWorkMeter(budget: .init(), monotonicClock: TestProcessMonotonicClock())
             )
             Issue.record("Expected the result limit to reject the query")
         } catch let error as SPARQLQueryError {

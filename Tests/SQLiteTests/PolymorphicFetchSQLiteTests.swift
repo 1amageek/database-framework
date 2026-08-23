@@ -332,7 +332,7 @@ struct PolymorphicFetchSQLiteTests {
             indexSubspace = baseIndexSubspace
         }
 
-        return try await container.withTestBaseTransaction { transaction -> Int in
+        return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
             return try await transaction.collectRange(
                 begin: begin,
@@ -352,7 +352,7 @@ struct PolymorphicFetchSQLiteTests {
                 subspace: groupSubspace
             ).indexSubspace(for: "SQLitePolymorphicVectorDocument_embedding")
 
-        return try await container.withTestBaseTransaction { transaction -> Int in
+        return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
             return try await transaction.collectRange(
                 begin: begin,
@@ -387,7 +387,7 @@ struct PolymorphicFetchSQLiteTests {
             indexSubspace = baseIndexSubspace
         }
 
-        return try await container.withTestBaseTransaction { transaction -> Int in
+        return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
             return try await transaction.collectRange(
                 begin: begin,
@@ -411,7 +411,7 @@ struct PolymorphicFetchSQLiteTests {
                 for: "SQLitePolymorphicOptionalVectorDocument_embedding"
             )
 
-        return try await container.withTestBaseTransaction { transaction -> Int in
+        return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
             return try await transaction.collectRange(
                 begin: begin,
@@ -970,17 +970,6 @@ struct PolymorphicFetchSQLiteTests {
             .execute()
 
         #expect(afterDeleteNeedle.isEmpty)
-
-        await #expect(throws: BM25ScoringError.invalidK1) {
-            _ = try await context.findPolymorphic(
-                SQLitePolymorphicArticle.self
-            )
-            .fullText(SQLitePolymorphicArticle.fields.title)
-            .term("needle")
-            .bm25(k1: .nan)
-            .limit(0)
-            .execute()
-        }
     }
 
     @Test("staged writes are visible to polymorphic fetches on SQLite")

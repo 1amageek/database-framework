@@ -14,32 +14,12 @@ private struct CompositionSPARQLMemberQueryExecutor:
         try CompositionSPARQLPlanValidator.validate(query)
     }
 
-    func admitLogicalRead(
-        context: DatabaseContext,
-        query: SelectQuery,
-        restrictingTo entityNames: Set<String>?
-    ) throws -> DatabaseReadAuthorizationAdmission {
-        let resolution = try RDFDatasetReadResolver.resolve(
-            schema: context.container.schema
-        )
-        let selectedEntities = entityNames ?? Set(
-            resolution.map { [$0.entity.name] } ?? []
-        )
-        return try context.admitLogicalRead(
-            listAuthorization: try IndexReadAuthorization(
-                sparqlSelectQuery: query
-            ),
-            fieldPlan: .rdfDataset(schema: context.container.schema),
-            restrictingTo: selectedEntities
-        )
-    }
-
     func execute(
         context: DatabaseContext,
         query: SelectQuery,
         execution: ReadExecutionContext,
-        transaction: any TransactionReadAccess
-    ) async throws -> DatabaseRetainedQueryResponse {
+        transaction: any TransactionAccess
+    ) async throws -> QueryResponse {
         try await sourceExecutor.executeInTransaction(
             context: context,
             selectQuery: query,
@@ -50,11 +30,11 @@ private struct CompositionSPARQLMemberQueryExecutor:
     }
 
     func prepare(
-        _ row: DatabaseRetainedQueryRow,
+        _ row: DatabaseEngine.QueryRow,
         sourceBaseID: Base.ID
     ) throws -> DatabaseEngine.QueryRow {
         try CompositionRDFIdentity.qualifyBlankNodes(
-            in: row.materializeForRetainedTransfer(),
+            in: row,
             baseID: sourceBaseID
         )
     }

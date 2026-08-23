@@ -6,18 +6,12 @@ import StorageKit
 enum FullTextPostingListAlgebra {
     typealias Identifier = [any TupleElement]
 
-    static func intersection<LHS, RHS>(
-        _ lhs: LHS,
-        _ rhs: RHS,
+    static func intersection(
+        _ lhs: [Identifier],
+        _ rhs: [Identifier],
         reservingCapacity: Bool = true,
         admitting: (Identifier, ByteString) throws -> Void = { _, _ in }
-    ) rethrows -> [Identifier]
-    where LHS: RandomAccessCollection,
-          RHS: RandomAccessCollection,
-          LHS.Index == Int,
-          RHS.Index == Int,
-          LHS.Element == Identifier,
-          RHS.Element == Identifier {
+    ) rethrows -> [Identifier] {
         guard !lhs.isEmpty, !rhs.isEmpty else { return [] }
 
         var result: [Identifier] = []
@@ -57,18 +51,12 @@ enum FullTextPostingListAlgebra {
         return result
     }
 
-    static func union<LHS, RHS>(
-        _ lhs: LHS,
-        _ rhs: RHS,
+    static func union(
+        _ lhs: [Identifier],
+        _ rhs: [Identifier],
         reservingCapacity: Bool = true,
         admitting: (Identifier, ByteString) throws -> Void = { _, _ in }
-    ) rethrows -> [Identifier]
-    where LHS: RandomAccessCollection,
-          RHS: RandomAccessCollection,
-          LHS.Index == Int,
-          RHS.Index == Int,
-          LHS.Element == Identifier,
-          RHS.Element == Identifier {
+    ) rethrows -> [Identifier] {
         guard !lhs.isEmpty else {
             return try admittedCopy(
                 of: rhs,
@@ -145,14 +133,11 @@ enum FullTextPostingListAlgebra {
         return result
     }
 
-    private static func admittedCopy<Source>(
-        of source: Source,
+    private static func admittedCopy(
+        of source: [Identifier],
         reservingCapacity: Bool,
         admitting: (Identifier, ByteString) throws -> Void
-    ) rethrows -> [Identifier]
-    where Source: RandomAccessCollection,
-          Source.Index == Int,
-          Source.Element == Identifier {
+    ) rethrows -> [Identifier] {
         var result: [Identifier] = []
         if reservingCapacity {
             result.reserveCapacity(source.count)

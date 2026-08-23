@@ -50,9 +50,6 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     /// Database container for transaction execution
     let container: DBContainer
 
-    /// Root-scoped, per-attempt authorized transaction capability.
-    private let buildContext: IndexBuildContext
-
     /// Store root subspace (parent of R/I/B/M)
     private let storeSubspace: Subspace
 
@@ -121,8 +118,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     ///   - indexLifecycleStore: ResolvedIndex state manager
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - throttleDelayMs: Delay between batches in milliseconds (default: 0)
-    package init(
-        transactionAuthority: IndexBuildTransactionAuthority,
+    public init(
         container: DBContainer,
         storeSubspace: Subspace,
         itemType: String,
@@ -186,22 +182,6 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
             container: container,
             metadataSubspace: metadataSubspace
         )
-        do {
-            self.buildContext = try IndexBuildContext(
-                authority: transactionAuthority,
-                container: container,
-                itemSubspace: self.itemSubspace.subspace(itemType),
-                blobsSubspace: self.blobsSubspace,
-                indexSubspace: self.indexSubspace,
-                itemType: itemType,
-                index: index
-            )
-        } catch {
-            throw .invalidIndexStorageIdentity(
-                indexName: index.name,
-                reason: "The build execution scope does not own the target storage"
-            )
-        }
 
         // Initialize metrics with index-specific dimensions
         let baseDimensions: [(String, String)] = [
@@ -263,21 +243,20 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
             try await clearIndexData()
             // Also clear any existing violation entries for this index
             if index.isUnique {
-                try await buildContext.withTransaction { transaction in
-                    try await self.violationTracker.clearAllViolations(
-                        indexName: self.index.name,
-                        transaction: transaction
-                    )
-                }
+                try await violationTracker.clearAllViolations(indexName: index.name)
             }
         }
 
         // Check if IndexMaintainer provides custom build strategy
         if let customStrategy = indexMaintainer.customBuildStrategy {
             // Use custom strategy (e.g., HNSW bulk build)
-            try await buildContext.withCustomStrategySession { context in
-                try await customStrategy.buildIndex(context: context)
-            }
+            try await customStrategy.buildIndex(
+                container: container,
+                itemSubspace: itemSubspace,
+                indexSubspace: indexSubspace,
+                itemType: itemType,
+                index: index
+            )
         } else {
             // Standard scan-based build
             try await buildIndexInBatches()
@@ -289,8 +268,9 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
 
         // For unique indexes, check for violations before making readable
         if index.isUnique {
-            let summary = try await uniquenessViolationSummary()
-            if summary.hasViolations {
+            let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
+            if hasViolations {
+                let summary = try await violationTracker.violationSummary(indexName: index.name)
                 throw OnlineIndexBuildError.uniquenessViolationsDetected(
                     indexName: index.name,
                     violationCount: summary.violationCount,
@@ -300,7 +280,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
         }
 
         // Transition to readable state
-        try await makeIndexReadable()
+        try await indexLifecycleStore.makeReadable(index.name)
     }
 
     // MARK: - Standard Build
@@ -344,13 +324,13 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
 
                 // Process batch in transaction with batch priority
                 // Progress is saved atomically in the same transaction
-                let (itemsInBatch, lastProcessedKey) = try await buildContext.withTransaction { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
 
                     var itemsInBatch = 0
                     var lastProcessedKey: ByteString? = nil
 
                     // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
-                    let storage = self.container.itemStorageFactory.makeWriter(
+                    let storage = self.container.itemStorageFactory.make(
                         transaction: transaction,
                         blobsSubspace: self.blobsSubspace
                     )
@@ -384,7 +364,6 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
                     try await OnlineIndexBatchWriter.write(
                         batchEntries,
                         index: self.index,
-                        indexSubspace: self.indexSubspace,
                         maintainer: self.indexMaintainer,
                         uniquenessMaintainer: self.uniquenessMaintainer,
                         violationTracker: self.violationTracker,
@@ -456,7 +435,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     /// - Returns: RangeSet if progress exists, nil otherwise
     private func loadProgress() async throws -> RangeSet? {
         let progressKey = self.progressKey
-        return try await buildContext.withTransaction { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -482,7 +461,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     /// Called after successful completion
     private func clearProgress() async throws {
         let progressKey = self.progressKey
-        try await buildContext.withTransaction { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clear(key: progressKey)
         }
     }
@@ -495,7 +474,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
     /// Used when `clearFirst: true` is specified.
     private func clearIndexData() async throws {
         let indexRange = self.indexSubspace.range()
-        try await buildContext.withTransaction { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
@@ -546,7 +525,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
         let progress = ParallelBuildProgress(
             indexSubspace: indexSubspace,
             indexName: index.name,
-            buildContext: buildContext
+            container: container
         )
 
         // Clear existing data and progress if requested
@@ -555,12 +534,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
             try await progress.clearProgress()
             // Also clear any existing violation entries for this index
             if index.isUnique {
-                try await buildContext.withTransaction { transaction in
-                    try await self.violationTracker.clearAllViolations(
-                        indexName: self.index.name,
-                        transaction: transaction
-                    )
-                }
+                try await violationTracker.clearAllViolations(indexName: index.name)
             }
         }
 
@@ -569,7 +543,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
         let (begin, end) = itemTypeSubspace.range()
 
         // Get split points from FDB
-        let splitPoints = try await buildContext.withTransaction { transaction in
+        let splitPoints = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: begin,
                 endKey: end,
@@ -583,8 +557,9 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
             try await finalizeBuild()
             // Check for violations before making readable (for unique indexes)
             if index.isUnique {
-                let summary = try await uniquenessViolationSummary()
-                if summary.hasViolations {
+                let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
+                if hasViolations {
+                    let summary = try await violationTracker.violationSummary(indexName: index.name)
                     throw OnlineIndexBuildError.uniquenessViolationsDetected(
                         indexName: index.name,
                         violationCount: summary.violationCount,
@@ -592,7 +567,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
                     )
                 }
             }
-            try await makeIndexReadable()
+            try await indexLifecycleStore.makeReadable(index.name)
             return
         }
 
@@ -637,8 +612,9 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
             try await progress.clearProgress()
             // Check for violations before making readable (for unique indexes)
             if index.isUnique {
-                let summary = try await uniquenessViolationSummary()
-                if summary.hasViolations {
+                let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
+                if hasViolations {
+                    let summary = try await violationTracker.violationSummary(indexName: index.name)
                     throw OnlineIndexBuildError.uniquenessViolationsDetected(
                         indexName: index.name,
                         violationCount: summary.violationCount,
@@ -646,7 +622,7 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
                     )
                 }
             }
-            try await makeIndexReadable()
+            try await indexLifecycleStore.makeReadable(index.name)
             return
         }
 
@@ -696,8 +672,9 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
 
         // For unique indexes, check for violations before making readable
         if index.isUnique {
-            let summary = try await uniquenessViolationSummary()
-            if summary.hasViolations {
+            let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
+            if hasViolations {
+                let summary = try await violationTracker.violationSummary(indexName: index.name)
                 throw OnlineIndexBuildError.uniquenessViolationsDetected(
                     indexName: index.name,
                     violationCount: summary.violationCount,
@@ -707,35 +684,15 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
         }
 
         // Transition to readable state
-        try await makeIndexReadable()
+        try await indexLifecycleStore.makeReadable(index.name)
     }
 
     private func finalizeBuild() async throws {
-        try await buildContext.withTransaction { transaction in
-            try await withIndexMaintenanceTransaction(
-                transaction: transaction,
-                indexSubspace: self.indexSubspace
-            ) { maintenanceTransaction in
-                try await self.indexMaintainer.finalizeBuild(
-                    transaction: maintenanceTransaction
-                )
-            }
-        }
-    }
-
-    private func uniquenessViolationSummary() async throws -> ViolationSummary {
-        try await buildContext.withTransaction { transaction in
-            try await self.violationTracker.violationSummary(
-                indexName: self.index.name,
-                transaction: transaction
-            )
-        }
-    }
-
-    private func makeIndexReadable() async throws {
-        try await buildContext.withTransaction { transaction in
-            try await self.indexLifecycleStore.makeReadable(
-                self.index.name,
+        try await container.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock
+        ) { transaction in
+            try await self.indexMaintainer.finalizeBuild(
                 transaction: transaction
             )
         }
@@ -769,12 +726,12 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
             // Capture current begin for Sendable closure
             let rangeBegin = currentBegin
 
-            let (batchCount, newLastKey): (Int, ByteString?) = try await buildContext.withTransaction { transaction in
+            let (batchCount, newLastKey): (Int, ByteString?) = try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
                 var count = 0
                 var processedKey: ByteString? = nil
 
                 // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
-                let storage = self.container.itemStorageFactory.makeWriter(
+                let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
                     blobsSubspace: self.blobsSubspace
                 )
@@ -808,7 +765,6 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
                 try await OnlineIndexBatchWriter.write(
                     batchEntries,
                     index: self.index,
-                    indexSubspace: self.indexSubspace,
                     maintainer: self.indexMaintainer,
                     uniquenessMaintainer: self.uniquenessMaintainer,
                     violationTracker: self.violationTracker,
@@ -859,7 +815,6 @@ package final class OnlineIndexer<Item: PersistedEntityValue>: Sendable {
 
 extension OnlineIndexer where Item: Persistable {
     package convenience init(
-        transactionAuthority: IndexBuildTransactionAuthority,
         container: DBContainer,
         storeSubspace: Subspace,
         itemType: String,
@@ -871,7 +826,6 @@ extension OnlineIndexer where Item: Persistable {
         throttleDelayMs: Int = 0
     ) throws(OnlineIndexBuildError) {
         try self.init(
-            transactionAuthority: transactionAuthority,
             container: container,
             storeSubspace: storeSubspace,
             itemType: itemType,
@@ -930,22 +884,18 @@ internal final class ParallelBuildProgress: Sendable {
     /// Subspace for progress data
     private let progressSubspace: Subspace
 
-    /// Root-scoped, per-attempt authorized transaction capability.
-    private let buildContext: IndexBuildContext
+    /// Database container for transaction execution
+    let container: DBContainer
 
     /// Initialize progress tracker
     ///
     /// - Parameters:
     ///   - indexSubspace: ResolvedIndex subspace (progress stored under _build/)
     ///   - indexName: Name of the index being built
-    ///   - buildContext: Root-scoped transaction capability for this build
-    init(
-        indexSubspace: Subspace,
-        indexName: String,
-        buildContext: IndexBuildContext
-    ) {
+    ///   - container: DBContainer for transaction execution
+    init(indexSubspace: Subspace, indexName: String, container: DBContainer) {
         self.progressSubspace = indexSubspace.subspace("_build").subspace(indexName)
-        self.buildContext = buildContext
+        self.container = container
     }
 
     /// Load progress for all chunks
@@ -955,7 +905,7 @@ internal final class ParallelBuildProgress: Sendable {
     func loadProgress(chunkCount: Int) async throws -> [Int: ChunkProgress] {
         let (begin, end) = progressSubspace.range()
 
-        return try await buildContext.withTransaction { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             var progress: [Int: ChunkProgress] = [:]
 
             let sequence = try await TransactionRangeCollection.collect(using: transaction,
@@ -994,7 +944,7 @@ internal final class ParallelBuildProgress: Sendable {
         let key = progressSubspace.pack(Tuple(chunkIndex))
         let value = encodeProgress(status: status, lastKey: lastKey)
 
-        try await buildContext.withTransaction { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.setValue(value, for: key)
         }
     }
@@ -1023,7 +973,7 @@ internal final class ParallelBuildProgress: Sendable {
     func clearProgress() async throws {
         let (begin, end) = progressSubspace.range()
 
-        try await buildContext.withTransaction { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try transaction.clearRange(beginKey: begin, endKey: end)
         }
     }

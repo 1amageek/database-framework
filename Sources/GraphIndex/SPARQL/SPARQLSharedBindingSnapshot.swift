@@ -37,22 +37,6 @@ enum SPARQLSharedBindingSnapshot: Sendable {
         }
     }
 
-    func withElement<Result, Failure: Error>(
-        at index: Int,
-        _ body: (borrowing VariableBinding) async throws(Failure) -> Result
-    ) async throws(Failure) -> Result {
-        precondition(index >= 0 && index < count)
-        switch self {
-        case .empty:
-            preconditionFailure("Cannot borrow an element from an empty relation")
-        case .shared(let storage, let visibleRange):
-            return try await storage.withElement(
-                at: visibleRange.lowerBound + index,
-                body
-            )
-        }
-    }
-
     func retainedBindings() -> SPARQLRetainedBindings {
         switch self {
         case .empty:

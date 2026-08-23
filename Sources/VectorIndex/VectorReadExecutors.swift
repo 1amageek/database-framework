@@ -1,4 +1,4 @@
-@_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -41,6 +41,7 @@ private enum VectorReadError: Error, Sendable {
     case invalidParameter(String)
     case indexNotFound(String)
     case fetchedItemCountMismatch(expected: Int, actual: Int)
+    case missingFetchedEntity(ByteString)
 }
 
 private struct VectorReadExecutor: IndexReadExecutor {
@@ -89,7 +90,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
         }
         let boundedK = min(
             k,
-            try options.workMeter.storageWorkReadLimitWithSentinel()
+            try options.workMeter.storageReadLimitWithSentinel()
         )
 
         let execution = CanonicalReadExecution.resolve(
@@ -109,9 +110,6 @@ private struct VectorReadExecutor: IndexReadExecutor {
             indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
-            authorization: try IndexReadAuthorization(
-                selectQuery: selectQuery
-            ),
             configuration: execution.transactionConfiguration
         ) { readableIndex, transaction -> IndexReadResult in
             guard let readableIndex else { return .empty }
@@ -143,8 +141,16 @@ private struct VectorReadExecutor: IndexReadExecutor {
                 entity: entity,
                 primaryKeys: identifiers,
                 partitions: partitions,
+                transaction: transaction,
                 workMeter: options.workMeter
             )
+            let fetchedReservation = try DatabaseIntermediateCollectionMeter
+                .reservePersistedModels(
+                    fetched,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { fetchedReservation.release() }
             guard fetched.count == matches.count else {
                 throw VectorReadError.fetchedItemCountMismatch(
                     expected: matches.count,
@@ -157,9 +163,8 @@ private struct VectorReadExecutor: IndexReadExecutor {
             ) { rows in
                 for (match, item) in zip(matches, fetched) {
                     guard let item else {
-                        throw VectorQueryError.indexedItemMissing(
-                            index: index.name,
-                            primaryKey: Tuple(match.primaryKey).pack()
+                        throw VectorReadError.missingFetchedEntity(
+                            Tuple(match.primaryKey).pack()
                         )
                     }
                     try rows.append(
@@ -271,7 +276,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         )
         let boundedK = min(
             k,
-            try options.workMeter.storageWorkReadLimitWithSentinel()
+            try options.workMeter.storageReadLimitWithSentinel()
         )
 
         let orderByFields = try selectQuery.requiredOrderByColumnNames()
@@ -329,12 +334,19 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             let entities = try await context.fetchPolymorphicItemsPreservingOrder(
                 group: group,
                 ids: tuples,
+                transaction: transaction,
                 workMeter: options.workMeter
             )
+            let entityReservation = try DatabaseIntermediateCollectionMeter
+                .reservePolymorphicEntities(
+                    entities,
+                    workMeter: options.workMeter,
+                    stage: .indexScan
+                )
+            defer { entityReservation.release() }
             return try makeResponse(
                 results: primaryKeysWithDistances,
                 entities: entities,
-                indexName: index.name,
                 workMeter: options.workMeter
             )
         }
@@ -348,7 +360,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         queryVector: Vector,
         k: Int,
         context: DatabaseContext,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let configs = context.container.runtimeConfiguration
@@ -431,14 +443,11 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         }
     }
 
-    private func makeResponse<Entities>(
+    private func makeResponse(
         results: [(primaryKey: [any TupleElement], distance: Double)],
-        entities: Entities,
-        indexName: String,
+        entities: [PolymorphicEntity?],
         workMeter: DatabaseWorkMeter
-    ) throws -> IndexReadResult
-    where Entities: RandomAccessCollection,
-          Entities.Element == PolymorphicEntity? {
+    ) throws -> IndexReadResult {
         guard results.count == entities.count else {
             throw VectorReadError.fetchedItemCountMismatch(
                 expected: results.count,
@@ -452,9 +461,8 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         ) { rows in
             for (result, entity) in zip(results, entities) {
                 guard let entity else {
-                    throw VectorQueryError.indexedItemMissing(
-                        index: indexName,
-                        primaryKey: Tuple(result.primaryKey).pack()
+                    throw VectorReadError.missingFetchedEntity(
+                        Tuple(result.primaryKey).pack()
                     )
                 }
                 try rows.append(

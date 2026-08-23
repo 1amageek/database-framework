@@ -18,8 +18,8 @@ struct RDFDatasetReadModeTests {
         )
 
         let defaultObservations = ScannerCallObservations()
-        let defaultEngine = InMemoryEngine()
         let defaultExecutor = SPARQLQueryExecutor(
+            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(
                 now: Timestamp(secondsSinceUnixEpoch: 0)
@@ -31,8 +31,7 @@ struct RDFDatasetReadModeTests {
         )
         try await exerciseAllDatasetReadPaths(
             executor: defaultExecutor,
-            graph: graph,
-            database: defaultEngine
+            graph: graph
         )
         #expect(defaultObservations.calls == [
             .scan(.snapshot),
@@ -41,8 +40,8 @@ struct RDFDatasetReadModeTests {
         ])
 
         let mutationObservations = ScannerCallObservations()
-        let mutationEngine = InMemoryEngine()
         let mutationExecutor = SPARQLQueryExecutor(
+            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(
                 now: Timestamp(secondsSinceUnixEpoch: 0)
@@ -55,8 +54,7 @@ struct RDFDatasetReadModeTests {
         )
         try await exerciseAllDatasetReadPaths(
             executor: mutationExecutor,
-            graph: graph,
-            database: mutationEngine
+            graph: graph
         )
         #expect(mutationObservations.calls == [
             .scan(.serializable),
@@ -239,8 +237,7 @@ struct RDFDatasetReadModeTests {
 
     private func exerciseAllDatasetReadPaths(
         executor: SPARQLQueryExecutor,
-        graph: RDFGraphName,
-        database: any StorageEngine
+        graph: RDFGraphName
     ) async throws {
         let triple = ExecutionTriple(
             subject: .variable("?subject"),
@@ -252,13 +249,11 @@ struct RDFDatasetReadModeTests {
             .graph(.named(graph), .basic([])),
             .graph(.variable("?graph"), .basic([])),
         ] {
-            _ = try await executeSPARQLTest(
-                executor: executor,
+            _ = try await executor.execute(
                 pattern: pattern,
                 limit: nil,
                 offset: 0,
-                workMeter: makeMeter(),
-                database: database
+                workMeter: makeMeter()
             )
         }
     }
@@ -342,7 +337,7 @@ struct RDFDatasetReadModeTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionReadAccess,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             observations.record(.scan(readMode))
@@ -352,19 +347,17 @@ struct RDFDatasetReadModeTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionReadAccess,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> RDFNamedGraphResult {
+        ) async throws -> [RDFGraphName] {
             observations.record(.namedGraphs(readMode))
-            var result = try RDFNamedGraphResultBuilder(workMeter: workMeter)
-            try result.append(graph)
-            return try result.finish(limit: limit)
+            return [graph]
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionReadAccess,
+            transaction: any TransactionAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             observations.record(.containsNamedGraph(readMode))

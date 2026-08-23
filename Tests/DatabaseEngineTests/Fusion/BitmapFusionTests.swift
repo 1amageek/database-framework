@@ -90,7 +90,7 @@ private struct BitmapFusionContext {
         try await database.withTransaction { transaction in
             // Serialize user to items subspace
             let itemKey = itemsSubspace.pack(Tuple(user.id))
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             try await storage.write(
                 try PersistableStorageCodec.encode(user),
                 for: itemKey

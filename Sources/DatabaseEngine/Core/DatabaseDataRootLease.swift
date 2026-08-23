@@ -19,28 +19,8 @@ package struct DatabaseDataRootLease: Sendable {
     }
 }
 
-/// Revocable request-local binding for one selected data root.
-package struct DatabaseDataRootExecutionBinding: Sendable {
-    package let lease: DatabaseDataRootLease
-    package let operationScope: DatabaseReadScopeGate
-
-    package init(
-        lease: DatabaseDataRootLease,
-        operationScope: DatabaseReadScopeGate
-    ) {
-        self.lease = lease
-        self.operationScope = operationScope
-    }
-}
-
-/// Request-local data root used by all relative storage paths. The binding is
-/// revocable so a child task cannot keep storage authority after the lexical
-/// operation that selected the root has returned.
+/// Request-local data root used by all relative storage paths.
 package enum ActiveDatabaseDataRootContext {
-    @TaskLocal package static var binding: DatabaseDataRootExecutionBinding?
-
-    package static var lease: DatabaseDataRootLease? {
-        binding?.lease
-    }
+    @TaskLocal package static var lease: DatabaseDataRootLease?
 }
 #endif

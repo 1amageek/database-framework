@@ -3,7 +3,7 @@
 //
 // Provides DatabaseContext extension and query builder for leaderboard operations.
 
-@_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -124,121 +124,100 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of (item, score) tuples sorted by score descending
     public func execute() async throws -> [(item: T, score: Int64)] {
-        try await executeRanked(bottom: false)
+        let (descriptor, indexConfiguration) =
+            try resolveIndexDescriptorAndConfiguration()
+
+        let results: [(pk: Tuple, score: Int64)] = try await withReadableMaintainer(
+            descriptor: descriptor,
+            configuration: indexConfiguration,
+            missing: { [] }
+        ) { maintainer, transaction in
+            let grouping = try self.groupingTupleElements()
+
+            if let wid = self.windowId {
+                return try await maintainer.getTopK(
+                    k: self.topK,
+                    windowId: wid,
+                    grouping: grouping,
+                    transaction: transaction
+                )
+            } else {
+                return try await maintainer.getTopK(
+                    k: self.topK,
+                    grouping: grouping,
+                    transaction: transaction
+                )
+            }
+        }
+
+        // Fetch items
+        let ids = results.map { $0.pk }
+        let items = try await queryContext.fetchItems(ids: ids, type: T.self)
+
+        // Match items with scores
+        var finalResults: [(item: T, score: Int64)] = []
+        for result in results {
+            let pkBytes = result.pk.pack()
+            for item in items {
+                let itemPKBytes = try item.persistableIdentifierTuple().pack()
+                if pkBytes == itemPKBytes {
+                    finalResults.append((item: item, score: result.score))
+                    break
+                }
+            }
+        }
+
+        return finalResults
     }
 
     /// Execute the query and return bottom K entries with scores
     ///
     /// - Returns: Array of (item, score) tuples sorted by score ascending
     public func executeBottom() async throws -> [(item: T, score: Int64)] {
-        try await executeRanked(bottom: true)
-    }
-
-    private func executeRanked(
-        bottom: Bool
-    ) async throws -> [(item: T, score: Int64)] {
-        guard topK > 0 else {
-            throw LeaderboardQueryError.invalidLimit(topK)
-        }
         let (descriptor, indexConfiguration) =
             try resolveIndexDescriptorAndConfiguration()
-        let authorization = IndexReadAuthorization(
-            limit: topK,
-            offset: nil,
-            orderBy: [scoreFieldName]
-        )
-        let execution = ReadExecutionContext(
-            monotonicClock: queryContext.context.container.monotonicClock
-        )
-        return try await queryContext.context.withDataOperation {
-            guard let entity = queryContext.schema.entity(
-                named: T.persistableType
-            ) else {
-                throw LeaderboardQueryError.invalidConfiguration(
-                    "Entity '\(T.persistableType)' is not present in the active schema"
+
+        let results: [(pk: Tuple, score: Int64)] = try await withReadableMaintainer(
+            descriptor: descriptor,
+            configuration: indexConfiguration,
+            missing: { [] }
+        ) { maintainer, transaction in
+            let grouping = try self.groupingTupleElements()
+
+            if let wid = self.windowId {
+                return try await maintainer.getBottomK(
+                    k: self.topK,
+                    windowId: wid,
+                    grouping: grouping,
+                    transaction: transaction
+                )
+            } else {
+                return try await maintainer.getBottomK(
+                    k: self.topK,
+                    grouping: grouping,
+                    transaction: transaction
                 )
             }
-            let admission = try queryContext.context.admitLogicalRead(
-                listAuthorization: authorization,
-                fieldPlan: .fullEntity(
-                    entity,
-                    including: Set(descriptor.fieldNames).union(
-                        descriptor.includedFieldNames
-                    )
-                ),
-                restrictingTo: [T.persistableType]
-            )
-            return try await queryContext.context
-                .withReadAuthorizationAdmission(admission) {
-                    try await queryContext.withReadableIndex(
-                        named: descriptor.name,
-                        indexType: descriptor.type,
-                        for: T.self,
-                        authorization: authorization
-                    ) { readableIndex, transaction in
-                        guard let readableIndex else { return [] }
-                        let maintainer = createMaintainer(
-                            indexSubspace: readableIndex.subspace,
-                            descriptor: descriptor,
-                            configuration: indexConfiguration
-                        )
-                        let grouping = try groupingTupleElements()
-                        let ranked: [(pk: Tuple, score: Int64)]
-                        if bottom {
-                            if let windowId {
-                                ranked = try await maintainer.getBottomK(
-                                    k: topK,
-                                    windowId: windowId,
-                                    grouping: grouping,
-                                    transaction: transaction
-                                )
-                            } else {
-                                ranked = try await maintainer.getBottomK(
-                                    k: topK,
-                                    grouping: grouping,
-                                    transaction: transaction
-                                )
-                            }
-                        } else if let windowId {
-                            ranked = try await maintainer.getTopK(
-                                k: topK,
-                                windowId: windowId,
-                                grouping: grouping,
-                                transaction: transaction
-                            )
-                        } else {
-                            ranked = try await maintainer.getTopK(
-                                k: topK,
-                                grouping: grouping,
-                                transaction: transaction
-                            )
-                        }
-                        let primaryKeys = ranked.map(\.pk)
-                        let models = try await transaction
-                            .fetchPersistedModelsPreservingOrder(
-                                entity: entity,
-                                primaryKeys: primaryKeys,
-                                partitions: queryContext.partitionValues,
-                                workMeter: execution.workMeter
-                            )
-                        var output: [(item: T, score: Int64)] = []
-                        output.reserveCapacity(ranked.count)
-                        for (entry, model) in zip(ranked, models) {
-                            guard let model else {
-                                throw LeaderboardQueryError.indexedItemMissing(
-                                    index: descriptor.name,
-                                    primaryKey: entry.pk.pack()
-                                )
-                            }
-                            output.append((
-                                item: try model.decode(as: T.self),
-                                score: entry.score
-                            ))
-                        }
-                        return output
-                    }
-                }
         }
+
+        // Fetch items
+        let ids = results.map { $0.pk }
+        let items = try await queryContext.fetchItems(ids: ids, type: T.self)
+
+        // Match items with scores
+        var finalResults: [(item: T, score: Int64)] = []
+        for result in results {
+            let pkBytes = result.pk.pack()
+            for item in items {
+                let itemPKBytes = try item.persistableIdentifierTuple().pack()
+                if pkBytes == itemPKBytes {
+                    finalResults.append((item: item, score: result.score))
+                    break
+                }
+            }
+        }
+
+        return finalResults
     }
 
     /// Get rank for a specific item
@@ -252,11 +231,6 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
         return try await withReadableMaintainer(
             descriptor: descriptor,
             configuration: indexConfiguration,
-            authorization: IndexReadAuthorization(
-                limit: 1,
-                offset: nil,
-                orderBy: nil
-            ),
             missing: { nil as Int? }
         ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
@@ -290,11 +264,6 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
         return try await withReadableMaintainer(
             descriptor: descriptor,
             configuration: indexConfiguration,
-            authorization: IndexReadAuthorization(
-                limit: 1,
-                offset: nil,
-                orderBy: nil
-            ),
             missing: { nil as Int? }
         ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
@@ -317,27 +286,12 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     /// - Parameter percentile: Percentile value between 0.0 and 1.0 (e.g., 0.5 for median)
     /// - Returns: Score at the given percentile, or nil if no entries
     public func percentile(_ percentile: Double) async throws -> Int64? {
-        guard percentile.isFinite,
-              percentile >= 0,
-              percentile <= 1 else {
-            throw TimeWindowLeaderboardIndexError.invalidPercentile(
-                percentile
-            )
-        }
         let (descriptor, indexConfiguration) =
             try resolveIndexDescriptorAndConfiguration()
-        let execution = ReadExecutionContext(
-            monotonicClock: queryContext.context.container.monotonicClock
-        )
 
         return try await withReadableMaintainer(
             descriptor: descriptor,
             configuration: indexConfiguration,
-            authorization: IndexReadAuthorization(
-                limit: 1,
-                offset: nil,
-                orderBy: [scoreFieldName]
-            ),
             missing: { nil as Int64? }
         ) { maintainer, transaction in
             let grouping = try self.groupingTupleElements()
@@ -347,15 +301,13 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
                     percentile,
                     windowId: wid,
                     grouping: grouping,
-                    transaction: transaction,
-                    workMeter: execution.workMeter
+                    transaction: transaction
                 )
             } else {
                 return try await maintainer.getPercentile(
                     percentile,
                     grouping: grouping,
-                    transaction: transaction,
-                    workMeter: execution.workMeter
+                    transaction: transaction
                 )
             }
         }
@@ -371,11 +323,6 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
         return try await withReadableMaintainer(
             descriptor: descriptor,
             configuration: indexConfiguration,
-            authorization: IndexReadAuthorization(
-                limit: nil,
-                offset: nil,
-                orderBy: nil
-            ),
             missing: { [] }
         ) { maintainer, transaction in
             return try await maintainer.getAvailableWindows(transaction: transaction)
@@ -433,18 +380,16 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
     private func withReadableMaintainer<Result: Sendable>(
         descriptor: IndexDescriptor,
         configuration: TimeWindowLeaderboardConfiguration,
-        authorization: IndexReadAuthorization,
         missing: @Sendable @escaping () -> Result,
         _ operation: @Sendable @escaping (
             TimeWindowLeaderboardIndexMaintainer<T>,
-            any TransactionReadAccess
+            any TransactionAccess
         ) async throws -> Result
     ) async throws -> Result {
         return try await queryContext.withReadableIndex(
             named: descriptor.name,
             indexType: descriptor.type,
-            for: T.self,
-            authorization: authorization
+            for: T.self
         ) { readableIndex, transaction in
             guard let readableIndex else {
                 return missing()
@@ -506,22 +451,12 @@ public enum LeaderboardQueryError: Error, CustomStringConvertible {
     /// Invalid configuration
     case invalidConfiguration(String)
 
-    /// Ranking result counts must be positive.
-    case invalidLimit(Int)
-
-    /// The index referenced a model that did not exist on the same snapshot.
-    case indexedItemMissing(index: String, primaryKey: ByteString)
-
     public var description: String {
         switch self {
         case .indexNotFound(let name):
             return "Leaderboard index not found: \(name)"
         case .invalidConfiguration(let reason):
             return "Invalid leaderboard configuration: \(reason)"
-        case .invalidLimit(let limit):
-            return "Leaderboard result limit must be positive: \(limit)"
-        case .indexedItemMissing(let index, let primaryKey):
-            return "Leaderboard index '\(index)' references missing item \(primaryKey)"
         }
     }
 }

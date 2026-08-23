@@ -102,7 +102,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     // MARK: - Fetch Operations
     //
     // **Design Intent - No ReadVersionCache**:
-    // Fetch operations use `(try container.requireDataTransactionExecutor()).withTransaction()` directly without
+    // Fetch operations use `container.transactionExecutor.withTransaction()` directly without
     // ReadVersionCache. This is a deliberate simplification:
     //
     // 1. DatabaseDataStore is a low-level storage component that doesn't own a cache
@@ -138,11 +138,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let startTime = container.monotonicClock.now
 
         do {
-            let results: [T] = try await container.withDatabaseTransaction(
-                requiredAccess: .read
-            ) { transaction in
+            let results: [T] = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
                 // Use ItemStorage for proper handling of large values
-                let storage = self.container.itemStorageFactory.makeWriter(
+                let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
                     blobsSubspace: self.blobsSubspace
                 )
@@ -178,43 +176,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
     }
 
-    /// Scans the complete entity range through a caller-owned admitted read.
-    /// Long-running services use this boundary so authorization and the
-    /// physical read belong to the same transaction attempt.
-    package func fetchAll<T: Persistable>(
-        _ type: T.Type,
-        transaction: any TransactionReadAccess
-    ) async throws -> [T] {
-        try securityDelegate?.evaluateList(
-            entity: T.persistableType,
-            limit: nil,
-            offset: nil,
-            orderBy: nil
-        )
-        let typeSubspace = itemSubspace.subspace(T.persistableType)
-        let (begin, end) = typeSubspace.range()
-        let storage = container.itemStorageFactory.makeReader(
-            transaction: transaction,
-            blobsSubspace: blobsSubspace
-        )
-        var results: [T] = []
-        var iterator = storage.scan(
-            begin: begin,
-            end: end,
-            snapshot: true
-        ).makeAsyncIterator()
-        while let (_, data) = try await iterator.next() {
-            results.append(try DataAccess.deserialize(data))
-        }
-        try evaluateReadResults(results)
-        return results
-    }
-
     /// Fetch a single model by ID
     package func fetch<T: Persistable>(_ type: T.Type, id: T.ID) async throws -> T? {
-        let result: T? = try await container.withDatabaseTransaction(
-            requiredAccess: .read
-        ) { [self] transaction in
+        let result: T? = try await container.transactionExecutor.withTransaction { [self] transaction in
             try await self.fetchByIDInTransaction(type, id: id, transaction: transaction)
         }
 
@@ -254,7 +218,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// lifecycle checks as query execution.
     func executionPlan<T: Persistable>(
         for query: Query<T>,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> QueryAccessPlan {
         try QueryResultWindow.validate(
             limit: query.fetchLimit,
@@ -459,9 +423,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let streamingMode: StreamingMode = StreamingMode.forQuery(limit: limit)
         let scannedIndexName = matchingIndex.name
 
-        let ids: [Tuple] = try await container.withDatabaseTransaction(
-            requiredAccess: .read
-        ) { transaction in
+        let ids: [Tuple] = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             var ids: [Tuple] = []
             if let limit = limit {
                 ids.reserveCapacity(limit)
@@ -670,10 +632,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // Pre-compute keys outside transaction
         let keys = ids.map { typeSubspace.pack($0) }
 
-        return try await container.withDatabaseTransaction(
-            requiredAccess: .read
-        ) { transaction in
-            let storage = self.container.itemStorageFactory.makeWriter(
+        return try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
             )
@@ -885,7 +845,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// - Returns: Array of matching items
     func fetchInTransaction<T: Persistable>(
         _ query: Query<T>,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [T] {
         // Security evaluation
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
@@ -907,7 +867,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Called by DatabaseContext.fetch() which manages transaction and cache.
     private func fetchInternalWithTransaction<T: Persistable>(
         _ query: Query<T>,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [T] {
         try QueryResultWindow.validate(
             limit: query.fetchLimit,
@@ -1018,7 +978,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Fetch all models with an existing transaction
     private func fetchAllWithTransaction<T: Persistable>(
         _ type: T.Type,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter?,
         limit: Int? = nil,
         offset: Int = 0,
@@ -1029,7 +989,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let startTime = container.monotonicClock.now
 
         do {
-            let storage = self.container.itemStorageFactory.makeReader(
+            let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
             )
@@ -1099,7 +1059,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         offset: Int?,
         hasSort: Bool,
         forcedIndexName: String? = nil,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter?
     ) async throws -> IndexFetchResult<T>? {
         guard let selection = try ScalarIndexAccessPlanner.select(
@@ -1285,13 +1245,13 @@ package final class DatabaseDataStore: DataStore, Sendable {
         _ type: T.Type,
         ids: [Tuple],
         indexName: String,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter?
     ) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let keys = ids.map { typeSubspace.pack($0) }
 
-        let storage = self.container.itemStorageFactory.makeReader(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: self.blobsSubspace
         )
@@ -1355,7 +1315,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         workMeter: DatabaseWorkMeter?
     ) throws -> Int? {
         guard let workMeter else { return requested }
-        let budgetLimit = try workMeter.storageWorkReadLimitWithSentinel()
+        let budgetLimit = try workMeter.storageReadLimitWithSentinel()
         guard let requested else { return budgetLimit }
         return max(1, min(requested, budgetLimit))
     }
@@ -1365,7 +1325,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Called by DatabaseContext.fetchCount() which manages transaction and ReadVersionCache.
     func fetchCountInTransaction<T: Persistable>(
         _ query: Query<T>,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Int {
         // Security evaluation
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
@@ -1461,7 +1421,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     func fetchByIDInTransaction<T: Persistable>(
         _ type: T.Type,
         id: T.ID,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> T? {
         let identifier = try PersistableIdentifierKeyCodec.tuple(for: id)
         return try await fetchByIdentifierTupleInTransaction(
@@ -1479,12 +1439,12 @@ package final class DatabaseDataStore: DataStore, Sendable {
     func fetchByIdentifierTupleInTransaction<T: Persistable>(
         _ type: T.Type,
         identifier: Tuple,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         snapshot: Bool = false
     ) async throws -> T? {
         let key = itemKey(for: T.persistableType, id: identifier)
 
-        let storage = self.container.itemStorageFactory.makeReader(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: self.blobsSubspace
         )
@@ -1521,7 +1481,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Count all models with an existing transaction
     private func countAllWithTransaction<T: Persistable>(
         _ type: T.Type,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Int {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
@@ -1545,7 +1505,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Count using index scan with an existing transaction
     private func countUsingIndexWithTransaction(
         _ accessPath: ScalarIndexAccessPath,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Int {
         let condition = accessPath.condition
         let index = accessPath.descriptor
@@ -1659,9 +1619,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             )
         }
 
-        return try await container.withDatabaseTransaction(
-            requiredAccess: .read
-        ) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = try await TransactionRangeCollection.collect(using: transaction,
@@ -1684,9 +1642,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        return try await container.withDatabaseTransaction(
-            requiredAccess: .read
-        ) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = try await TransactionRangeCollection.collect(using: transaction,
@@ -1723,9 +1679,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        let sizeBytes = try await container.withDatabaseTransaction(
-            requiredAccess: .read
-        ) { transaction in
+        let sizeBytes = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -1750,9 +1704,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             for: index.name)
         let (begin, end) = indexSubspaceForIndex.range()
 
-        let sizeBytes = try await container.withDatabaseTransaction(
-            requiredAccess: .read
-        ) { transaction in
+        let sizeBytes = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -1924,7 +1876,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let key = itemKey(for: persistableType, id: idTuple)
 
         // Use ItemStorage for large value handling (stores chunks in blobs subspace)
-        let storage = self.container.itemStorageFactory.makeWriter(
+        let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: self.blobsSubspace
         )
@@ -2097,7 +2049,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             expectedType: runtime.entity.identifierType
         )
         let key = itemKey(for: persistableType, id: idTuple)
-        let storage = container.itemStorageFactory.makeWriter(
+        let storage = container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
@@ -2240,10 +2192,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             DatabaseTransaction
         ) async throws -> T
     ) async throws -> T {
-        return try await container.withDatabaseTransaction(
-            requiredAccess: [.read, .write],
-            configuration: configuration
-        ) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: configuration, clock: container.monotonicClock) { transaction in
             let databaseTransaction = DatabaseTransaction(
                 storageAccess: transaction,
                 container: self.container

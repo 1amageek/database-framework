@@ -240,7 +240,7 @@ struct MigrationTests {
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         try await container.engine.withTransaction { transaction in
-            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             for entity in entities {
                 let data = try PersistableStorageCodec.encode(entity)
                 let identifier = try entity.persistableIdentifierTuple()
@@ -677,7 +677,7 @@ struct MigrationTests {
                 let identifier = try entity.persistableIdentifierTuple()
                 let key = itemSubspace.pack(identifier)
                 let data: ByteString? = try await container.engine.withTransaction { tx in
-                    let storage = ItemStorageWriter(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
+                    let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
                     return try await storage.read(for: key, snapshot: false)
                 }
                 guard let data = data else {
@@ -772,7 +772,7 @@ struct MigrationTests {
             let updateIdentifier = try updateEntity.persistableIdentifierTuple()
             let updateKey = itemSubspace.pack(updateIdentifier)
             let updateData: ByteString? = try await container.engine.withTransaction { tx in
-                let storage = ItemStorageWriter(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
+                let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
                 return try await storage.read(for: updateKey, snapshot: false)
             }
             #expect(updateData != nil, "Updated item not found")
@@ -785,7 +785,7 @@ struct MigrationTests {
             let deleteIdentifier = try deleteEntity.persistableIdentifierTuple()
             let deleteKey = itemSubspace.pack(deleteIdentifier)
             let deleteData: ByteString? = try await container.engine.withTransaction { tx in
-                let storage = ItemStorageWriter(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
+                let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace, configuration: .v1)
                 return try await storage.read(for: deleteKey, snapshot: false)
             }
             #expect(deleteData == nil)

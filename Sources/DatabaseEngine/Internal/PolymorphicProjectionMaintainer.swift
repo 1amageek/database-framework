@@ -40,7 +40,7 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
             identifier: write.identifier
         )
         let key = projection.items.pack(compositeID)
-        let storage = container.itemStorageFactory.makeWriter(
+        let storage = container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: projection.blobs
         )
@@ -107,7 +107,7 @@ internal struct PolymorphicProjectionMaintainer: Sendable {
             identifier: identifier
         )
         let key = projection.items.pack(compositeID)
-        let storage = container.itemStorageFactory.makeWriter(
+        let storage = container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: projection.blobs
         )

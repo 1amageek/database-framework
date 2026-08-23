@@ -281,7 +281,7 @@ public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
     public func getPercentile(
         percentile: Double,
         groupingValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Double? {
         try validatePercentiles(CollectionOfOne(percentile))
         guard var digest = try await digest(
@@ -296,7 +296,7 @@ public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
     public func getPercentiles(
         percentiles: [Double],
         groupingValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [Double: Double] {
         try validatePercentiles(percentiles)
         guard var digest = try await digest(
@@ -311,7 +311,7 @@ public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
     public func getCDF(
         value: Double,
         groupingValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Double? {
         try validateConfiguration()
         guard value.isFinite else {
@@ -330,7 +330,7 @@ public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
 
     public func getStatistics(
         groupingValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> (
         count: Int64,
         min: Double,
@@ -354,7 +354,7 @@ public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
 
     public func getAllPercentiles(
         percentiles: [Double],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [(
         grouping: [FieldValue],
         values: [Double: Double]
@@ -577,7 +577,7 @@ public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
 
     private func digest(
         groupingValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> TDigest? {
         let group = try makeGroup(
             groupingValues: FieldValue.toTupleElements(groupingValues)
@@ -609,7 +609,7 @@ public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
 
     private func storedMembershipMetadata(
         for group: PercentileIndexGroup,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         snapshot: Bool
     ) async throws -> AggregationMembershipMetadata? {
         guard let bytes = try await transaction.getValue(

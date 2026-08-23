@@ -12,82 +12,75 @@ struct IndexStateInitializationTests {
     func initializesEmptyStore() async throws {
         let indexContext = try await makeIndexInitializationContext()
 
-        try await indexContext.container.withTestBaseOperation {
-            try await indexContext.indexStateManager.ensureReadable(
-                [indexContext.indexName],
-                entityRange: indexContext.entityRange
-            )
+        try await indexContext.indexStateManager.ensureReadable(
+            [indexContext.indexName],
+            entityRange: indexContext.entityRange
+        )
 
-            #expect(
-                try await indexContext.indexStateManager.state(
-                    of: indexContext.indexName
-                ) == .readable
-            )
-        }
+        #expect(
+            try await indexContext.indexStateManager.state(
+                of: indexContext.indexName
+            ) == .readable
+        )
     }
 
     @Test("Missing state fails when source entities already exist")
     func rejectsMissingStateForNonEmptyStore() async throws {
         let indexContext = try await makeIndexInitializationContext()
-        try await indexContext.container.withTestBaseTransaction { transaction in
+        try await indexContext.engine.withTransaction { transaction in
             try transaction.setValue([1], for: indexContext.entitySubspace.pack(Tuple("entity")))
         }
 
-        try await indexContext.container.withTestBaseOperation {
-            await #expect(throws: IndexStateError.self) {
-                try await indexContext.indexStateManager.ensureReadable(
-                    [indexContext.indexName],
-                    entityRange: indexContext.entityRange
-                )
-            }
-            let state = try await indexContext.indexStateManager.state(
-                of: indexContext.indexName
+        await #expect(throws: IndexStateError.self) {
+            try await indexContext.indexStateManager.ensureReadable(
+                [indexContext.indexName],
+                entityRange: indexContext.entityRange
             )
-            #expect(state == .disabled)
         }
+        #expect(
+            try await indexContext.indexStateManager.state(
+                of: indexContext.indexName
+            ) == .disabled
+        )
     }
 
     @Test("Write-only state remains incomplete")
     func rejectsWriteOnlyState() async throws {
         let indexContext = try await makeIndexInitializationContext()
-        try await indexContext.container.withTestBaseOperation {
-            try await indexContext.indexStateManager.enable(indexContext.indexName)
+        try await indexContext.indexStateManager.enable(indexContext.indexName)
 
-            await #expect(throws: IndexStateError.self) {
-                try await indexContext.indexStateManager.ensureReadable(
-                    [indexContext.indexName],
-                    entityRange: indexContext.entityRange
-                )
-            }
-            let state = try await indexContext.indexStateManager.state(
-                of: indexContext.indexName
+        await #expect(throws: IndexStateError.self) {
+            try await indexContext.indexStateManager.ensureReadable(
+                [indexContext.indexName],
+                entityRange: indexContext.entityRange
             )
-            #expect(state == .writeOnly)
         }
+        #expect(
+            try await indexContext.indexStateManager.state(
+                of: indexContext.indexName
+            ) == .writeOnly
+        )
     }
 
     @Test("Disabled state remains incomplete")
     func rejectsDisabledState() async throws {
         let indexContext = try await makeIndexInitializationContext()
-        try await indexContext.container.withTestBaseOperation {
-            try await indexContext.indexStateManager.disable(indexContext.indexName)
+        try await indexContext.indexStateManager.disable(indexContext.indexName)
 
-            await #expect(throws: IndexStateError.self) {
-                try await indexContext.indexStateManager.ensureReadable(
-                    [indexContext.indexName],
-                    entityRange: indexContext.entityRange
-                )
-            }
-            let state = try await indexContext.indexStateManager.state(
-                of: indexContext.indexName
+        await #expect(throws: IndexStateError.self) {
+            try await indexContext.indexStateManager.ensureReadable(
+                [indexContext.indexName],
+                entityRange: indexContext.entityRange
             )
-            #expect(state == .disabled)
         }
+        #expect(
+            try await indexContext.indexStateManager.state(
+                of: indexContext.indexName
+            ) == .disabled
+        )
     }
 
-    private func makeIndexInitializationContext()
-        async throws -> IndexInitializationContext
-    {
+    private func makeIndexInitializationContext() async throws -> IndexInitializationContext {
         let engine = InMemoryEngine()
         let schema = try Schema(
             entities: [BootstrapIndexedEntity.schemaEntity],
@@ -109,22 +102,18 @@ struct IndexStateInitializationTests {
             ),
             security: .testingDisabled
         )
-        let root = try await container.testBaseDataRoot()
-            .subspace("index-state-initialization")
+        let root = Subspace(prefix: Tuple("index-state-initialization").pack())
         let entitySubspace = root.subspace("entities")
         return IndexInitializationContext(
-            container: container,
-            indexStateManager: IndexLifecycleStore(
-                container: container,
-                subspace: root
-            ),
+            engine: engine,
+            indexStateManager: IndexLifecycleStore(container: container, subspace: root),
             entitySubspace: entitySubspace,
             indexName: "bootstrap_value"
         )
     }
 
     private struct IndexInitializationContext {
-        let container: DBContainer
+        let engine: any StorageEngine
         let indexStateManager: IndexLifecycleStore
         let entitySubspace: Subspace
         let indexName: String

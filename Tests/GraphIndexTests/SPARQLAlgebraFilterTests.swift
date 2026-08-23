@@ -10,8 +10,7 @@ import Testing
 struct SPARQLAlgebraFilterTests {
     @Test("Empty BGP is the join identity")
     func emptyBasicPatternProducesOneBinding() async throws {
-        let result = try await executeSPARQLTest(
-            executor: makeExecutor(),
+        let result = try await makeExecutor().execute(
             pattern: .basic([]),
             limit: nil,
             offset: 0,
@@ -43,8 +42,7 @@ struct SPARQLAlgebraFilterTests {
 
         let executor = try makeExecutor()
         for (name, pattern) in patterns {
-            let result = try await executeSPARQLTest(
-                executor: executor,
+            let result = try await executor.execute(
                 pattern: .filter(pattern, .alwaysFalse),
                 limit: nil,
                 offset: 0,
@@ -62,8 +60,7 @@ struct SPARQLAlgebraFilterTests {
             aggregates: [.countAll(as: "?count")],
             having: nil
         )
-        let result = try await executeSPARQLTest(
-            executor: makeExecutor(),
+        let result = try await makeExecutor().execute(
             pattern: pattern,
             limit: nil,
             offset: 0,
@@ -86,8 +83,7 @@ struct SPARQLAlgebraFilterTests {
             aggregates: [.countAll(as: "?count")],
             having: nil
         )
-        let result = try await executeSPARQLTest(
-            executor: makeExecutor(),
+        let result = try await makeExecutor().execute(
             pattern: pattern,
             limit: nil,
             offset: 0,
@@ -99,6 +95,7 @@ struct SPARQLAlgebraFilterTests {
 
     private func makeExecutor() throws -> SPARQLQueryExecutor {
         SPARQLQueryExecutor(
+            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(
                 now: Timestamp(secondsSinceUnixEpoch: 0)

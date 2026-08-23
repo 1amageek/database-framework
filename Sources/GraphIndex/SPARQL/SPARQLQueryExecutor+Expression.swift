@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateCanonicalExpression(
         _ plan: SPARQLExpressionPlan,
         binding: VariableBinding,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph
     ) async throws -> SPARQLExpressionEvaluationOutcome<FieldValue> {
         guard let expressionContext else {
@@ -58,7 +58,7 @@ extension SPARQLQueryExecutor {
     func evaluateFilterExpression(
         _ expression: FilterExpression,
         binding: VariableBinding,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph
     ) async throws -> Bool {
         guard let expressionContext else {
@@ -146,7 +146,7 @@ extension SPARQLQueryExecutor {
     func evaluateExists(
         _ pattern: ExecutionPattern,
         binding: VariableBinding,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph
     ) async throws -> Bool {
         let result = try await evaluate(

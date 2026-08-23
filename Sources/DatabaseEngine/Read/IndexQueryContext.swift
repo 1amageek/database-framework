@@ -5,74 +5,6 @@ import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
-/// Exact LIST policy shape for one direct index operation.
-public struct IndexReadAuthorization: Sendable, Hashable {
-    public let limit: Int?
-    public let offset: Int?
-    public let orderBy: [String]?
-
-    public init(
-        limit: Int?,
-        offset: Int?,
-        orderBy: [String]?
-    ) {
-        self.limit = limit
-        self.offset = offset
-        self.orderBy = orderBy
-    }
-
-    package init(selectQuery: SelectQuery) throws {
-        self.limit = try Self.runtimeWindowValue(
-            selectQuery.limit,
-            name: "limit"
-        )
-        self.offset = try Self.runtimeWindowValue(
-            selectQuery.offset,
-            name: "offset"
-        )
-        self.orderBy = try selectQuery.requiredOrderByColumnNames()
-    }
-
-    package init(sparqlSelectQuery: SelectQuery) throws {
-        self.limit = try Self.runtimeWindowValue(
-            sparqlSelectQuery.limit,
-            name: "limit"
-        )
-        self.offset = try Self.runtimeWindowValue(
-            sparqlSelectQuery.offset,
-            name: "offset"
-        )
-        self.orderBy = sparqlSelectQuery
-            .orderByVariableNamesForAuthorization()
-    }
-
-    package init(modifiers: SPARQLSolutionModifiers) throws {
-        self.limit = try Self.runtimeWindowValue(
-            modifiers.limit,
-            name: "limit"
-        )
-        self.offset = try Self.runtimeWindowValue(
-            modifiers.offset,
-            name: "offset"
-        )
-        self.orderBy = modifiers.orderByVariableNamesForAuthorization()
-    }
-
-    private static func runtimeWindowValue(
-        _ value: UInt64?,
-        name: String
-    ) throws -> Int? {
-        guard let value else { return nil }
-        guard let converted = Int(exactly: value) else {
-            throw CanonicalReadError.paginationValueExceedsRuntimeRange(
-                name: name,
-                value: value
-            )
-        }
-        return converted
-    }
-}
-
 /// Context for executing index-based queries
 ///
 /// This struct provides low-level storage access for index-specific query builders.
@@ -114,60 +46,11 @@ public struct IndexReadAuthorization: Sendable, Hashable {
 /// ```
 public struct IndexQueryContext: Sendable {
 
-    /// The database execution context retained by this capability facade.
-    package let context: DatabaseContext
+    /// The DatabaseContext this query context wraps
+    public let context: DatabaseContext
 
     /// Canonical partition values for dynamic directories.
     private let partitions: FieldObject?
-
-    package var partitionValues: FieldObject {
-        partitions ?? FieldObject()
-    }
-
-    /// Performs entity LIST admission for direct index execution paths that
-    /// do not construct a canonical SelectQuery envelope.
-    package func authorizeListAccess(
-        entityName: String,
-        authorization: IndexReadAuthorization
-    ) throws {
-        if try ActiveDatabaseReadAuthorizationAdmission.admission?.coversList(
-            entityName: entityName,
-            authorization: authorization,
-            context: context
-        ) == true {
-            return
-        }
-        try RequestAuthorization.$context.withValue(context.authorization) {
-            try context.container.securityDelegate?.evaluateList(
-                entity: entityName,
-                limit: authorization.limit,
-                offset: authorization.offset,
-                orderBy: authorization.orderBy
-            )
-        }
-    }
-
-    /// Admits every field that can influence or be exposed by one direct
-    /// index read. This preflight is intentionally independent of storage so
-    /// a denied read cannot use index existence as an oracle.
-    package func authorizeIndexRead(
-        entityName: String,
-        descriptor: IndexDescriptor,
-        authorization: IndexReadAuthorization
-    ) throws {
-        try RequestAuthorization.$context.withValue(context.authorization) {
-            try authorizeListAccess(
-                entityName: entityName,
-                authorization: authorization
-            )
-            guard let entity = schema.entitiesByName[entityName] else {
-                throw IndexQueryContextError.entityNotFound(entityName)
-            }
-            try context.authorizeFieldReads(
-                .index(entity: entity, descriptor: descriptor)
-            )
-        }
-    }
 
     /// Create an index query context
     public init(context: DatabaseContext) {
@@ -235,7 +118,7 @@ public struct IndexQueryContext: Sendable {
             for: type,
             partitions: partitions
         ) != nil else {
-            return IndexQueryContext(context: context, partitions: nil)
+            return self
         }
         return IndexQueryContext(context: context, partitions: partitions)
     }
@@ -257,38 +140,11 @@ public struct IndexQueryContext: Sendable {
     ///
     /// This API does not create a directory or initialize index state. `nil`
     /// means the logical partition has never existed and has no rows to scan.
-    package func readableIndex<T: Persistable>(
+    public func readableIndex<T: Persistable>(
         named indexName: String,
         indexType: IndexType,
         for type: T.Type,
-        authorization: IndexReadAuthorization,
-        transaction: any TransactionReadAccess
-    ) async throws -> ReadableIndex? {
-        try await context.withDataOperation { [self] in
-            let descriptor = try indexDescriptor(
-                named: indexName,
-                indexType: indexType,
-                for: type
-            )
-            try authorizeIndexRead(
-                entityName: T.persistableType,
-                descriptor: descriptor,
-                authorization: authorization
-            )
-            return try await resolveReadableIndex(
-                named: indexName,
-                indexType: indexType,
-                for: type,
-                transaction: transaction
-            )
-        }
-    }
-
-    private func resolveReadableIndex<T: Persistable>(
-        named indexName: String,
-        indexType: IndexType,
-        for type: T.Type,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> ReadableIndex? {
         #if DATABASE_MULTI_BASE
         _ = try context.requireOperationDataRoot()
@@ -321,62 +177,12 @@ public struct IndexQueryContext: Sendable {
     /// Resolves a declared index by entity name using only the caller's read
     /// transaction. A missing logical partition is an empty dataset and returns
     /// `nil`; this method never creates directory or index metadata.
-    package func readableIndex(
+    public func readableIndex(
         named indexName: String,
         indexType: IndexType,
         forEntityName entityName: String,
         partitions: FieldObject,
-        authorization: IndexReadAuthorization,
-        transaction: any TransactionReadAccess
-    ) async throws -> ReadableIndex? {
-        try await context.withDataOperation { [self] in
-            let descriptor = try indexDescriptor(
-                named: indexName,
-                indexType: indexType,
-                forEntityName: entityName
-            )
-            try authorizeIndexRead(
-                entityName: entityName,
-                descriptor: descriptor,
-                authorization: authorization
-            )
-            return try await resolveReadableIndex(
-                named: indexName,
-                indexType: indexType,
-                forEntityName: entityName,
-                partitions: partitions,
-                transaction: transaction
-            )
-        }
-    }
-
-    /// Resolves a declared index for an admitted cross-package database
-    /// execution without exposing write or transaction-control authority.
-    @_spi(DatabaseExecution)
-    public func readableIndexForExecution(
-        named indexName: String,
-        indexType: IndexType,
-        forEntityName entityName: String,
-        partitions: FieldObject,
-        authorization: IndexReadAuthorization,
-        transaction: any TransactionReadAccess
-    ) async throws -> ReadableIndex? {
-        try await readableIndex(
-            named: indexName,
-            indexType: indexType,
-            forEntityName: entityName,
-            partitions: partitions,
-            authorization: authorization,
-            transaction: transaction
-        )
-    }
-
-    private func resolveReadableIndex(
-        named indexName: String,
-        indexType: IndexType,
-        forEntityName entityName: String,
-        partitions: FieldObject,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> ReadableIndex? {
         #if DATABASE_MULTI_BASE
         _ = try context.requireOperationDataRoot()
@@ -409,310 +215,75 @@ public struct IndexQueryContext: Sendable {
 
     /// Owns the read transaction so lifecycle admission and the physical index
     /// operation always observe the same read version.
-    package func withReadableIndex<T: Persistable, Result: Sendable>(
+    public func withReadableIndex<T: Persistable, Result: Sendable>(
         named indexName: String,
         indexType: IndexType,
         for type: T.Type,
-        authorization: IndexReadAuthorization,
         configuration: TransactionConfiguration = .default,
         _ operation: @Sendable @escaping (
             ReadableIndex?,
-            any IndexQueryReadAccess
+            any TransactionAccess
         ) async throws -> Result
     ) async throws -> Result {
-        try await context.withDataOperation { [self] in
-            let descriptor = try indexDescriptor(
-                named: indexName,
-                indexType: indexType,
-                for: type
-            )
-            try authorizeIndexRead(
-                entityName: T.persistableType,
-                descriptor: descriptor,
-                authorization: authorization
-            )
-            return try await context.withReadStorageAccess(
-                configuration: configuration
-            ) { transaction in
-                let index = try await resolveReadableIndex(
-                    named: indexName,
-                    indexType: indexType,
-                    for: type,
-                    transaction: transaction
-                )
-                return try await operation(
-                    index,
-                    ScopedIndexReadAccess(
-                        queryContext: self,
-                        transaction: transaction,
-                        index: index
-                    )
-                )
-            }
-        }
-    }
-
-    /// Owns a read transaction and resolves an index through schema metadata,
-    /// without requiring a compiled model type.
-    package func withReadableIndex<Result: Sendable>(
-        named indexName: String,
-        indexType: IndexType,
-        forEntityName entityName: String,
-        partitions: FieldObject,
-        authorization: IndexReadAuthorization,
-        configuration: TransactionConfiguration = .default,
-        _ operation: @Sendable @escaping (
-            ReadableIndex?,
-            any IndexQueryReadAccess
-        ) async throws -> Result
-    ) async throws -> Result {
-        try await context.withDataOperation { [self] in
-            let descriptor = try indexDescriptor(
-                named: indexName,
-                indexType: indexType,
-                forEntityName: entityName
-            )
-            try authorizeIndexRead(
-                entityName: entityName,
-                descriptor: descriptor,
-                authorization: authorization
-            )
-            return try await context.withReadStorageAccess(
-                configuration: configuration
-            ) { transaction in
-                let index = try await resolveReadableIndex(
-                    named: indexName,
-                    indexType: indexType,
-                    forEntityName: entityName,
-                    partitions: partitions,
-                    transaction: transaction
-                )
-                return try await operation(
-                    index,
-                    ScopedIndexReadAccess(
-                        queryContext: self,
-                        transaction: transaction,
-                        index: index
-                    )
-                )
-            }
-        }
-    }
-
-    /// Owns a mutation-authorized transaction while resolving one schema-
-    /// admitted physical index. The feature callback receives storage authority
-    /// confined to that index and cannot access the enclosing database root.
-    package func withWritableIndex<T: Persistable, Result: Sendable>(
-        named indexName: String,
-        indexType: IndexType,
-        for type: T.Type,
-        requiredAccess: DatabaseMutationAuthorization = .write,
-        configuration: TransactionConfiguration = .default,
-        _ operation: @Sendable @escaping (
-            ReadableIndex,
-            any IndexMaintenanceTransactionAccess
-        ) async throws -> Result
-    ) async throws -> Result {
-        try await context.withWriteStorageAccess(
-            requiredAccess: requiredAccess,
-            configuration: configuration
-        ) { transaction in
-            let index = try await resolveReadableIndex(
+        try await withTransaction(configuration: configuration) { transaction in
+            let index = try await readableIndex(
                 named: indexName,
                 indexType: indexType,
                 for: type,
                 transaction: transaction
             )
-            guard let index else {
-                throw IndexQueryContextError.indexNotReadable(
-                    indexName: indexName,
-                    entityName: T.persistableType
-                )
-            }
-            return try await withIndexMaintenanceTransaction(
-                transaction: transaction,
-                indexSubspace: index.subspace
-            ) { maintenanceTransaction in
-                try await operation(index, maintenanceTransaction)
-            }
+            return try await operation(index, transaction)
+        }
+    }
+
+    /// Owns a read transaction and resolves an index through schema metadata,
+    /// without requiring a compiled model type.
+    public func withReadableIndex<Result: Sendable>(
+        named indexName: String,
+        indexType: IndexType,
+        forEntityName entityName: String,
+        partitions: FieldObject,
+        configuration: TransactionConfiguration = .default,
+        _ operation: @Sendable @escaping (
+            ReadableIndex?,
+            any TransactionAccess
+        ) async throws -> Result
+    ) async throws -> Result {
+        try await withTransaction(configuration: configuration) { transaction in
+            let index = try await readableIndex(
+                named: indexName,
+                indexType: indexType,
+                forEntityName: entityName,
+                partitions: partitions,
+                transaction: transaction
+            )
+            return try await operation(index, transaction)
         }
     }
 
     /// Bind raw storage reads to one already-admitted transaction.
     package func storageReader(
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) -> TransactionStorageReader {
         TransactionStorageReader(transaction: transaction)
     }
 
-    /// Resolves semantic read capabilities on one hidden storage snapshot.
-    /// Feature packages can compose multiple index reads without recovering
-    /// the database-root transaction.
-    package func withQuerySnapshot<R: Sendable>(
+    /// Execute a closure within a transaction
+    ///
+    /// Uses `context.withStorageAccess()` internally to benefit from
+    /// `ReadVersionCache` while withholding lifecycle authority.
+    ///
+    /// - Parameter body: Closure that takes a transaction
+    /// - Returns: Result of the closure
+    public func withTransaction<R: Sendable>(
         configuration: TransactionConfiguration = .default,
-        _ body: @Sendable @escaping (
-            any IndexQuerySnapshotAccess
-        ) async throws -> R
+        _ body: @Sendable @escaping (any TransactionAccess) async throws -> R
     ) async throws -> R {
-        return try await context.withReadStorageAccess(
+        return try await context.withStorageAccess(
+            requiredAccess: .read,
             configuration: configuration
         ) { transaction in
-            try await body(
-                ScopedIndexQuerySnapshotAccess(
-                    queryContext: self,
-                    transaction: transaction
-                )
-            )
-        }
-    }
-
-    /// Executes one feature-owned auxiliary read inside a data-root-relative
-    /// namespace while withholding every other database key range.
-    package func withAuxiliaryReadStorage<R: Sendable>(
-        namespace: ByteString,
-        configuration: TransactionConfiguration = .default,
-        _ body: @Sendable @escaping (
-            Subspace,
-            any IndexReadAccess
-        ) async throws -> R
-    ) async throws -> R {
-        guard !namespace.isEmpty else {
-            throw IndexReadAccessError.invalidReadableIndexSubspace
-        }
-        return try await context.withReadStorageAccess(
-            configuration: configuration
-        ) { transaction in
-            let subspace = try context.operationDataRoot()
-                .subspace("data")
-                .subspace(namespace)
-            return try await body(
-                subspace,
-                ScopedIndexReadAccess(
-                    transaction: transaction,
-                    subspace: subspace
-                )
-            )
-        }
-    }
-
-    package func withAuxiliaryReadStorage<R: Sendable>(
-        path: [String],
-        configuration: TransactionConfiguration = .default,
-        _ body: @Sendable @escaping (
-            Subspace,
-            any IndexReadAccess
-        ) async throws -> R
-    ) async throws -> R {
-        guard !path.isEmpty, path.allSatisfy({ !$0.isEmpty }) else {
-            throw IndexReadAccessError.invalidReadableIndexSubspace
-        }
-        return try await context.withReadStorageAccess(
-            configuration: configuration
-        ) { transaction in
-            var subspace = try context.operationDataRoot().subspace("data")
-            for component in path {
-                subspace = subspace.subspace(component)
-            }
-            return try await body(
-                subspace,
-                ScopedIndexReadAccess(
-                    transaction: transaction,
-                    subspace: subspace
-                )
-            )
-        }
-    }
-
-    /// Executes one feature-owned auxiliary mutation inside a
-    /// data-root-relative namespace.
-    package func withAuxiliaryWriteStorage<R: Sendable>(
-        namespace: ByteString,
-        requiredAccess: DatabaseMutationAuthorization,
-        configuration: TransactionConfiguration = .default,
-        _ body: @Sendable @escaping (
-            Subspace,
-            any IndexMaintenanceTransactionAccess
-        ) async throws -> R
-    ) async throws -> R {
-        guard !namespace.isEmpty else {
-            throw IndexReadAccessError.invalidReadableIndexSubspace
-        }
-        return try await context.withWriteStorageAccess(
-            requiredAccess: requiredAccess,
-            configuration: configuration
-        ) { transaction in
-            let subspace = try context.operationDataRoot()
-                .subspace("data")
-                .subspace(namespace)
-            return try await withIndexMaintenanceTransaction(
-                transaction: transaction,
-                indexSubspace: subspace
-            ) { scoped in
-                try await body(subspace, scoped)
-            }
-        }
-    }
-
-    package func withAuxiliaryWriteStorage<R: Sendable>(
-        path: [String],
-        requiredAccess: DatabaseMutationAuthorization,
-        configuration: TransactionConfiguration = .default,
-        _ body: @Sendable @escaping (
-            Subspace,
-            any IndexMaintenanceTransactionAccess
-        ) async throws -> R
-    ) async throws -> R {
-        guard !path.isEmpty, path.allSatisfy({ !$0.isEmpty }) else {
-            throw IndexReadAccessError.invalidReadableIndexSubspace
-        }
-        return try await context.withWriteStorageAccess(
-            requiredAccess: requiredAccess,
-            configuration: configuration
-        ) { transaction in
-            var subspace = try context.operationDataRoot().subspace("data")
-            for component in path {
-                subspace = subspace.subspace(component)
-            }
-            let scopedSubspace = subspace
-            return try await withIndexMaintenanceTransaction(
-                transaction: transaction,
-                indexSubspace: scopedSubspace
-            ) { scoped in
-                try await body(scopedSubspace, scoped)
-            }
-        }
-    }
-
-    /// Executes persistence projection on one Engine-owned read snapshot
-    /// without exposing root-wide physical storage access to feature targets.
-    package func withPersistenceRead<R: Sendable>(
-        configuration: TransactionConfiguration = .default,
-        _ body: @Sendable @escaping (
-            any PersistenceQueryReadAccess
-        ) async throws -> R
-    ) async throws -> R {
-        try await context.withReadStorageAccess(
-            configuration: configuration
-        ) { transaction in
-            try await body(
-                ScopedPersistenceQueryReadAccess(
-                    context: context,
-                    transaction: transaction
-                )
-            )
-        }
-    }
-
-    /// Binds nested semantic query operations to one snapshot without
-    /// disclosing that snapshot's root storage capability.
-    package func withReadSnapshot<R: Sendable>(
-        configuration: TransactionConfiguration = .default,
-        _ body: @Sendable @escaping () async throws -> R
-    ) async throws -> R {
-        try await context.withReadStorageAccess(
-            configuration: configuration
-        ) { _ in
-            try await body()
+            try await body(transaction)
         }
     }
 
@@ -722,7 +293,7 @@ public struct IndexQueryContext: Sendable {
         configuration: TransactionConfiguration = .default,
         _ body: @Sendable @escaping (any TransactionAccess) async throws -> R
     ) async throws -> R {
-        try await context.withWriteStorageAccess(
+        try await context.withStorageAccess(
             requiredAccess: .write,
             configuration: configuration
         ) { transaction in
@@ -745,42 +316,41 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> [T] {
-        try await context.withDataOperation { [self] in
-            try authorizeListAccess(
-                entityName: T.persistableType,
-                authorization: IndexReadAuthorization(
-                    limit: ids.count,
-                    offset: nil,
-                    orderBy: nil
-                )
-            )
+        // Security: Evaluate LIST before fetching
+        try context.container.securityDelegate?.evaluateList(
+            entity: T.persistableType,
+            limit: ids.count,
+            offset: nil,
+            orderBy: nil
+        )
 
-            var results: [T] = []
+        var results: [T] = []
 
-            if let binding = try partitionBinding(for: type) {
-                for identifierTuple in ids {
-                    if let item = try await context.model(
-                        forIdentifierTuple: identifierTuple,
-                        as: type,
-                        partition: binding,
-                        cachePolicy: cachePolicy
-                    ) {
-                        results.append(item)
-                    }
-                }
-            } else {
-                for identifierTuple in ids {
-                    if let item = try await context.model(
-                        forIdentifierTuple: identifierTuple,
-                        as: type,
-                        cachePolicy: cachePolicy
-                    ) {
-                        results.append(item)
-                    }
+        // Use partition binding if available
+        if let binding = try partitionBinding(for: type) {
+            for identifierTuple in ids {
+                if let item = try await context.model(
+                    forIdentifierTuple: identifierTuple,
+                    as: type,
+                    partition: binding,
+                    cachePolicy: cachePolicy
+                ) {
+                    results.append(item)
                 }
             }
-            return results
+        } else {
+            for identifierTuple in ids {
+                if let item = try await context.model(
+                    forIdentifierTuple: identifierTuple,
+                    as: type,
+                    cachePolicy: cachePolicy
+                ) {
+                    results.append(item)
+                }
+            }
         }
+
+        return results
     }
 
     /// Fetches application-level identifiers without erasing their declared
@@ -790,41 +360,38 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> [T] {
-        try await context.withDataOperation { [self] in
-            try authorizeListAccess(
-                entityName: T.persistableType,
-                authorization: IndexReadAuthorization(
-                    limit: identifiers.count,
-                    offset: nil,
-                    orderBy: nil
-                )
-            )
-            var results: [T] = []
-            results.reserveCapacity(identifiers.count)
-            if let binding = try partitionBinding(for: type) {
-                for identifier in identifiers {
-                    if let item = try await context.model(
-                        for: identifier,
-                        as: type,
-                        partition: binding,
-                        cachePolicy: cachePolicy
-                    ) {
-                        results.append(item)
-                    }
-                }
-            } else {
-                for identifier in identifiers {
-                    if let item = try await context.model(
-                        for: identifier,
-                        as: type,
-                        cachePolicy: cachePolicy
-                    ) {
-                        results.append(item)
-                    }
+        try context.container.securityDelegate?.evaluateList(
+            entity: T.persistableType,
+            limit: identifiers.count,
+            offset: nil,
+            orderBy: nil
+        )
+
+        var results: [T] = []
+        results.reserveCapacity(identifiers.count)
+        if let binding = try partitionBinding(for: type) {
+            for identifier in identifiers {
+                if let item = try await context.model(
+                    for: identifier,
+                    as: type,
+                    partition: binding,
+                    cachePolicy: cachePolicy
+                ) {
+                    results.append(item)
                 }
             }
-            return results
+        } else {
+            for identifier in identifiers {
+                if let item = try await context.model(
+                    for: identifier,
+                    as: type,
+                    cachePolicy: cachePolicy
+                ) {
+                    results.append(item)
+                }
+            }
         }
+        return results
     }
 
     /// Fetch items by their IDs, preserving input order (nil for missing).
@@ -844,40 +411,38 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> [T?] {
-        try await context.withDataOperation { [self] in
-            try authorizeListAccess(
-                entityName: T.persistableType,
-                authorization: IndexReadAuthorization(
-                    limit: ids.count,
-                    offset: nil,
-                    orderBy: nil
-                )
-            )
-            var results: [T?] = []
-            results.reserveCapacity(ids.count)
+        try context.container.securityDelegate?.evaluateList(
+            entity: T.persistableType,
+            limit: ids.count,
+            offset: nil,
+            orderBy: nil
+        )
 
-            if let binding = try partitionBinding(for: type) {
-                for identifierTuple in ids {
-                    let item = try await context.model(
-                        forIdentifierTuple: identifierTuple,
-                        as: type,
-                        partition: binding,
-                        cachePolicy: cachePolicy
-                    )
-                    results.append(item)
-                }
-            } else {
-                for identifierTuple in ids {
-                    let item = try await context.model(
-                        forIdentifierTuple: identifierTuple,
-                        as: type,
-                        cachePolicy: cachePolicy
-                    )
-                    results.append(item)
-                }
+        var results: [T?] = []
+        results.reserveCapacity(ids.count)
+
+        if let binding = try partitionBinding(for: type) {
+            for identifierTuple in ids {
+                let item = try await context.model(
+                    forIdentifierTuple: identifierTuple,
+                    as: type,
+                    partition: binding,
+                    cachePolicy: cachePolicy
+                )
+                results.append(item)
             }
-            return results
+        } else {
+            for identifierTuple in ids {
+                let item = try await context.model(
+                    forIdentifierTuple: identifierTuple,
+                    as: type,
+                    cachePolicy: cachePolicy
+                )
+                results.append(item)
+            }
         }
+
+        return results
     }
 
     /// Fetches index-emitted identifiers without opening nested transactions.
@@ -885,7 +450,7 @@ public struct IndexQueryContext: Sendable {
     package func fetchItemsPreservingOrder<T: Persistable>(
         ids: [Tuple],
         type: T.Type,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [T?] {
         try context.container.securityDelegate?.evaluateList(
             entity: T.persistableType,
@@ -949,19 +514,29 @@ public struct IndexQueryContext: Sendable {
     ///   - type: The item type
     ///   - transaction: The transaction to use
     /// - Returns: The item if found
-    package func fetchItem<T: Persistable>(
+    public func fetchItem<T: Persistable>(
         id: Tuple,
         type: T.Type,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> T? {
         #if DATABASE_MULTI_BASE
         _ = try context.requireOperationDataRoot()
         #endif
-        return try await context.model(
-            forIdentifierTuple: id,
-            as: type,
-            partitions: partitions ?? FieldObject(),
-            transaction: transaction
+        let store: DatabaseDataStore
+        if let binding = try partitionBinding(for: type) {
+            store = try await context.container.store(for: type, path: binding)
+        } else {
+            store = try await context.container.store(for: type)
+        }
+        _ = try PersistableIdentifierKeyCodec.value(
+            from: id,
+            expectedType: T.persistableIdentifierType
+        )
+        return try await store.fetchByIdentifierTupleInTransaction(
+            type,
+            identifier: id,
+            transaction: transaction,
+            snapshot: true
         )
     }
 
@@ -993,6 +568,8 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         configuration: BatchFetchConfiguration = .default
     ) async throws -> [T] {
+        guard !ids.isEmpty else { return [] }
+
         return try await context.withDataOperation { [self] in
 
         // Security: Evaluate LIST before fetching
@@ -1002,37 +579,26 @@ public struct IndexQueryContext: Sendable {
             offset: nil,
             orderBy: nil
         )
-        guard !ids.isEmpty else { return [] }
 
-        let items: [T] = try await context.withReadStorageAccess(
+        let store: DatabaseDataStore
+        if let binding = try partitionBinding(for: type) {
+            store = try await context.container.store(for: type, path: binding)
+        } else {
+            store = try await context.container.store(for: type)
+        }
+        let fetcher = BatchFetcher<T>(
+            itemSubspace: store.itemSubspace,
+            blobsSubspace: store.blobsSubspace,
+            itemType: T.persistableType,
+            itemStorageFactory: context.container.itemStorageFactory,
+            configuration: configuration
+        )
+
+        let items = try await context.withStorageAccess(
+            requiredAccess: .read,
             configuration: .default
         ) { transaction in
-            guard let entity = self.schema.entity(named: T.persistableType)
-            else {
-                throw IndexQueryContextError.entityNotFound(
-                    T.persistableType
-                )
-            }
-            let path: AnyDirectoryPath?
-            if let binding = try self.partitionBinding(for: type) {
-                path = try AnyDirectoryPath(binding)
-            } else {
-                path = nil
-            }
-            guard let store = try await self.context.container.openStore(
-                for: entity,
-                path: path,
-                transaction: transaction
-            ) else {
-                return []
-            }
-            return try await BatchFetcher<T>(
-                itemSubspace: store.itemSubspace,
-                blobsSubspace: store.blobsSubspace,
-                itemType: T.persistableType,
-                itemStorageFactory: self.context.container.itemStorageFactory,
-                configuration: configuration
-            ).fetch(primaryKeys: ids, transaction: transaction)
+            try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
         }
 
         // Security: Evaluate GET for each fetched item
@@ -1118,7 +684,6 @@ public struct IndexQueryContext: Sendable {
 public enum IndexQueryContextError: Error, Sendable, Equatable, CustomStringConvertible {
     case entityNotFound(String)
     case indexNotFound(indexName: String, entityName: String)
-    case indexNotReadable(indexName: String, entityName: String)
     case polymorphicIndexNotFound(indexName: String, groupIdentifier: String)
     case indexTypeMismatch(indexName: String, expected: IndexType, actual: IndexType)
     case missingDirectory(entityName: String)
@@ -1129,8 +694,6 @@ public enum IndexQueryContextError: Error, Sendable, Equatable, CustomStringConv
             return "Entity not found: \(name)"
         case .indexNotFound(let indexName, let entityName):
             return "Index '\(indexName)' is not declared by entity '\(entityName)'"
-        case .indexNotReadable(let indexName, let entityName):
-            return "Index '\(indexName)' for entity '\(entityName)' is not readable"
         case .polymorphicIndexNotFound(let indexName, let groupIdentifier):
             return "Index '\(indexName)' is not declared by polymorphic group '\(groupIdentifier)'"
         case .indexTypeMismatch(let indexName, let expected, let actual):

@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateOptionalBatchedSingleTriple(
         leftBindings: borrowing SPARQLRetainedBindings,
         rightTriple: ExecutionTriple,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         resultLimit: Int?
     ) async throws -> EvaluationResult {
@@ -21,10 +21,9 @@ extension SPARQLQueryExecutor {
             stage: .joinCandidate,
             expectedCount: 0
         )
-        let scanCache = try SPARQLRetainedScanCache.make(
-            workMeter: try requiredWorkMeter()
-        )
-        defer { scanCache.shutdown() }
+        var scanCache: [
+            ScanSignature: SPARQLSharedBindingSnapshot
+        ] = [:]
 
         for leftIndex in 0..<leftBindings.count {
             try requiredWorkMeter().consume(at: .deduplication)
@@ -32,12 +31,13 @@ extension SPARQLQueryExecutor {
                 at: leftIndex
             ) { leftBinding in
                 let substitutedTriple = rightTriple.substitute(leftBinding)
-                let rightBindings: SPARQLRetainedBindings
-                if let cached = try scanCache.value(
+                let signature = makeScanSignature(
                     for: substitutedTriple,
                     graphTarget: activeGraph.graphTarget
-                ) {
-                    rightBindings = cached
+                )
+                let rightBindings: SPARQLRetainedBindings
+                if let cached = scanCache[signature] {
+                    rightBindings = cached.retainedBindings()
                 } else {
                     let rightResult = try await evaluate(
                         pattern: .basic([substitutedTriple]),
@@ -52,11 +52,7 @@ extension SPARQLQueryExecutor {
                     ).sharingForFanOut(
                         at: .joinCandidate
                     )
-                    try scanCache.store(
-                        sharedOwnership.snapshot,
-                        for: substitutedTriple,
-                        graphTarget: activeGraph.graphTarget
-                    )
+                    scanCache[signature] = sharedOwnership.snapshot
                     rightBindings = consume sharedOwnership.retained
                 }
 

@@ -408,48 +408,6 @@ struct DBConfigurationOwnershipTests {
         #expect(engine.shutdownCount == 1)
     }
 
-    @Test("Range cursor preserves the shutting-down lifecycle failure")
-    func rangeCursorPreservesShuttingDownFailure() async throws {
-        let engine = ShutdownRecordingEngine()
-        let container = try await makeContainer(engine: engine)
-        var transaction: (any Transaction)? = try container.engine
-            .createOwnedTransaction()
-        var admittedCursor = try #require(transaction).rangeCursor(
-            from: .firstGreaterOrEqual([]),
-            to: .firstGreaterOrEqual([0xff]),
-            limit: 0,
-            reverse: false,
-            snapshot: true,
-            streamingMode: .wantAll
-        )
-
-        let shutdown = Task {
-            await container.shutdown()
-        }
-        try await waitUntilAdmissionCloses(container)
-
-        var rejectedCursor = try #require(transaction).rangeCursor(
-            from: .firstGreaterOrEqual([]),
-            to: .firstGreaterOrEqual([0xff]),
-            limit: 0,
-            reverse: false,
-            snapshot: true,
-            streamingMode: .wantAll
-        )
-        await #expect(
-            throws: DatabaseContainerLifecycleError.shuttingDown
-        ) {
-            _ = try await rejectedCursor.next()
-        }
-        try await rejectedCursor.finish()
-
-        try await #require(transaction).cancel()
-        transaction = nil
-        try await admittedCursor.finish()
-        await shutdown.value
-        #expect(engine.shutdownCount == 1)
-    }
-
     @Test("Namespace operations reject bare and foreign container transactions")
     func namespaceOperationsRequireOwnedTransaction() async throws {
         let firstEngine = ShutdownRecordingEngine()

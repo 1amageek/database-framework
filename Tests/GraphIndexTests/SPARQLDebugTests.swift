@@ -87,14 +87,12 @@ struct SPARQLDebugTests {
         let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
         let indexName = "debug_rdf"
 
-        try await container.withTestBaseOperation {
-            let currentState = try await indexLifecycleStore.state(of: indexName)
-            if currentState == .disabled {
-                try await indexLifecycleStore.enable(indexName)
-                try await indexLifecycleStore.makeReadable(indexName)
-            } else if currentState == .writeOnly {
-                try await indexLifecycleStore.makeReadable(indexName)
-            }
+        let currentState = try await indexLifecycleStore.state(of: indexName)
+        if currentState == .disabled {
+            try await indexLifecycleStore.enable(indexName)
+            try await indexLifecycleStore.makeReadable(indexName)
+        } else if currentState == .writeOnly {
+            try await indexLifecycleStore.makeReadable(indexName)
         }
 
         // Insert test data
@@ -188,14 +186,12 @@ struct SPARQLDebugTests {
         let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
         let indexName = "debug_graph"
 
-        try await container.withTestBaseOperation {
-            let currentState = try await indexLifecycleStore.state(of: indexName)
-            if currentState == .disabled {
-                try await indexLifecycleStore.enable(indexName)
-                try await indexLifecycleStore.makeReadable(indexName)
-            } else if currentState == .writeOnly {
-                try await indexLifecycleStore.makeReadable(indexName)
-            }
+        let currentState = try await indexLifecycleStore.state(of: indexName)
+        if currentState == .disabled {
+            try await indexLifecycleStore.enable(indexName)
+            try await indexLifecycleStore.makeReadable(indexName)
+        } else if currentState == .writeOnly {
+            try await indexLifecycleStore.makeReadable(indexName)
         }
 
         // Insert test data
@@ -240,7 +236,7 @@ struct SPARQLDebugTests {
             "✓ GraphPropertyScanner includedFieldNames: \(indexDescriptor.includedFieldNames)"
         )
 
-        let (edgeCount, propertiesFound) = try await container.withTestBaseTransaction {
+        let (edgeCount, propertiesFound) = try await database.withTransaction {
             transaction in
             var edgeCount = 0
             var propertiesFound = false

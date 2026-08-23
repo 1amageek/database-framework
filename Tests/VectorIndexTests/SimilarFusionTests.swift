@@ -2,7 +2,6 @@ import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
 import StorageKit
-import StorageKitSystemClock
 import TestSupport
 import Testing
 @testable import DatabaseEngine
@@ -57,10 +56,7 @@ struct SimilarFusionTests {
                 .nearest(to: try Vector(float32: [1, 0]), k: 2)
                 .metric(.dotProduct)
 
-                let results = try await query.execute(
-                    candidates: nil,
-                    execution: makeReadExecutionContext()
-                ).promoteToOutput()
+                let results = try await query.execute(candidates: nil)
 
                 #expect(results.map(\.item.id) == ["strongest", "weaker"])
                 #expect(results.map(\.score) == [1, 0])
@@ -85,12 +81,7 @@ struct SimilarFusionTests {
             .nearest(to: [1, 0], k: 1)
             .metric(.dotProduct)
 
-            #expect(
-                try await query.execute(
-                    candidates: [],
-                    execution: makeReadExecutionContext()
-                ).isEmpty
-            )
+            #expect(try await query.execute(candidates: []).isEmpty)
         } catch {
             await container.shutdown()
             throw error
@@ -134,10 +125,7 @@ struct SimilarFusionTests {
             )
             .nearest(to: [1, 0], k: 1)
             .metric(.dotProduct)
-            .execute(
-                candidates: candidateIDs,
-                execution: makeReadExecutionContext()
-            ).promoteToOutput()
+            .execute(candidates: candidateIDs)
 
             #expect(results.count == 1)
             #expect(results.first.map { candidateIDs.contains($0.item.id) } == true)
@@ -159,10 +147,7 @@ struct SimilarFusionTests {
         ).metric(.dotProduct)
 
         do {
-            _ = try await query.execute(
-                candidates: nil,
-                execution: makeReadExecutionContext()
-            )
+            _ = try await query.execute(candidates: nil)
             Issue.record("Expected missing vector query failure")
         } catch FusionQueryError.invalidConfiguration(let reason) {
             #expect(reason.contains("required"))
@@ -185,12 +170,7 @@ struct SimilarFusionTests {
             .withReadableIndex(
                 named: indexName,
                 indexType: .vector,
-                for: SimilarFusionDocument.self,
-                authorization: IndexReadAuthorization(
-                    limit: 1,
-                    offset: nil,
-                    orderBy: ["similarity"]
-                )
+                for: SimilarFusionDocument.self
             ) { readableIndex, _ in
                 guard let readableIndex else {
                     throw VectorQueryError.indexNotFound(indexName)
@@ -213,10 +193,7 @@ struct SimilarFusionTests {
             )
             .nearest(to: [1, 0], k: 1)
             .metric(.dotProduct)
-            .execute(
-                candidates: nil,
-                execution: makeReadExecutionContext()
-            )
+            .execute(candidates: nil)
             Issue.record("Expected an orphaned vector index entry failure")
         } catch VectorQueryError.indexedItemMissing(
             let reportedIndex,
@@ -260,9 +237,5 @@ struct SimilarFusionTests {
             ),
             security: .testingDisabled
         )
-    }
-
-    private func makeReadExecutionContext() -> ReadExecutionContext {
-        ReadExecutionContext(monotonicClock: SystemStorageClock())
     }
 }

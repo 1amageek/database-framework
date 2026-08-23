@@ -37,13 +37,13 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         targetVersion: Schema.Version?
     ) async throws -> DatabaseMigrationStatus {
         try await container.withMigrationMaintenanceAccess {
-            try await self.context.withReadStorageAccess(
-                requiredAccess: .administer,
-                configuration: .readOnly
-            ) { transaction in
-                try await self.container.migrationStatus(
-                    targetVersion: targetVersion,
-                    transaction: transaction
+            try await self.context.withTransaction(
+            requiredAccess: .administer,
+            configuration: .readOnly
+        ) { transaction in
+            try await self.container.migrationStatus(
+                targetVersion: targetVersion,
+                transaction: transaction.storageAccess
                 )
             }
         }
@@ -76,7 +76,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     private func getIndexBuildState(
         _ indexName: String,
         entitySubspace: Subspace,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> AdminIndexState {
         let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: entitySubspace)
         let internalState = try await indexLifecycleStore.state(
@@ -105,7 +105,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let (begin, end) = itemSubspace.range()
 
         // Use server-side estimation for size and count
-        let (documentCount, storageSize) = try await context.withReadStorageAccess(
+        let (documentCount, storageSize) = try await context.withStorageAccess(
+            requiredAccess: .read,
             configuration: .batch
         ) { transaction in
             // Get estimated range size
@@ -168,7 +169,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let (begin, end) = indexSubspace.range()
 
         // Get index statistics
-        let (entryCount, storageSize, state) = try await context.withReadStorageAccess(
+        let (entryCount, storageSize, state) = try await context.withStorageAccess(
+            requiredAccess: .read,
             configuration: .batch
         ) { transaction in
             let sizeBytes = try await transaction.getEstimatedRangeSizeBytes(
@@ -316,7 +318,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             )
         let indexRange = indexDataSubspace.range()
 
-        try await context.withWriteStorageAccess(
+        try await context.withStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -353,7 +355,6 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         try await EntityIndexBuilder.buildIndex(
             for: entityRuntime,
-            transactionAuthority: .databaseContext(context),
             container: container,
             storeSubspace: subspace,
             index: index,
@@ -397,7 +398,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         // Get statistics subspace from metadata
         let statisticsSubspace = try await getStatisticsSubspace()
         let statisticsService = QueryStatisticsService(
-            context: context,
+            container: container,
             subspace: statisticsSubspace,
             configuration: .default
         )
@@ -437,7 +438,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         // Get statistics subspace from metadata
         let statisticsSubspace = try await getStatisticsSubspace()
         let statisticsService = QueryStatisticsService(
-            context: context,
+            container: container,
             subspace: statisticsSubspace,
             configuration: .default
         )
@@ -465,9 +466,12 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     // MARK: - FDB-Specific Features
 
     public func currentReadVersion() async throws -> UInt64 {
-        let version = try await context.currentStorageReadVersion(
+        let version: Int64 = try await context.withStorageAccess(
+            requiredAccess: .read,
             configuration: .batch
-        )
+        ) { transaction in
+            try await transaction.getReadVersion()
+        }
         return UInt64(version)
     }
 
@@ -477,7 +481,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(T.persistableType)
         let (begin, end) = itemSubspace.range()
 
-        let sizeBytes = try await context.withReadStorageAccess(
+        let sizeBytes = try await context.withStorageAccess(
+            requiredAccess: .read,
             configuration: .batch
         ) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
@@ -538,7 +543,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     }
 
     private func requireAdministerAccess() async throws {
-        try await context.withReadStorageAccess(
+        try await context.withStorageAccess(
             requiredAccess: .administer
         ) { _ in () }
     }

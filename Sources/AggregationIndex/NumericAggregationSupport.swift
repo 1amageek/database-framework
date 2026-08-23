@@ -806,7 +806,7 @@ extension CountAggregationMaintainer {
     /// Get count for a specific grouping
     public func getCountValue(
         groupingValues: [FieldValue],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Int64 {
         guard groupingValues.count == groupingFieldCount else {
             throw AggregationIndexError.invalidArgument(
@@ -827,7 +827,7 @@ extension CountAggregationMaintainer {
     ///
     /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
     func scanAllCounts(
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [(grouping: [any TupleElement], count: Int64)] {
         // An empty tuple packs to the subspace prefix itself. Subspace range
         // scans intentionally begin after that prefix, so a global count must

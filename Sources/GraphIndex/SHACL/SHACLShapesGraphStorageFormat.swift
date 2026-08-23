@@ -74,23 +74,6 @@ enum SHACLShapesGraphStorageFormat {
         )
     }
 
-    /// Conservative admission for decoding one bounded shapes frame.
-    ///
-    /// The frame remains live while strings, recursive enum boxes, collection
-    /// buffers, and the detached input owner are created. Every retained node
-    /// contributes at least a tag or length byte to the canonical frame. The
-    /// multiplier covers that overlap before decoding starts; the caller
-    /// reconciles the reservation to the measured retained graph afterwards.
-    static func validationDecodeAdmissionByteCount(
-        encodedByteCount: Int
-    ) throws -> UInt64 {
-        return try DatabaseIntermediateFootprint(bytes: 4_096).adding(
-            try DatabaseIntermediateFootprint(
-                bytes: UInt64(encodedByteCount)
-            ).multiplied(by: 64)
-        ).bytes
-    }
-
     private static func writeShapes(
         _ shapes: [SHACLShape],
         to encoder: inout StorageFrameEncoder

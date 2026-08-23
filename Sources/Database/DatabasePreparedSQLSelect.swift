@@ -26,7 +26,8 @@ public struct DatabasePreparedSQLSelect: Sendable {
     public func execute(
         in context: DatabaseContext,
         execution: ReadExecutionContext,
-        graphPartitions: FieldObject = FieldObject()
+        graphPartitions: FieldObject = FieldObject(),
+        transaction: any TransactionAccess
     ) async throws -> QueryResponse {
         guard execution.workMeter === workMeter else {
             throw DatabasePreparedSQLSelectError.workMeterMismatch
@@ -36,26 +37,8 @@ public struct DatabasePreparedSQLSelect: Sendable {
         return try await context.executeCanonicalQuery(
             query,
             execution: execution,
-            graphPartitions: graphPartitions
-        )
-    }
-
-    /// Executes while retaining request-accounted response ownership for a
-    /// downstream internal stage such as durable continuation persistence.
-    public func executeRetained(
-        in context: DatabaseContext,
-        execution: ReadExecutionContext,
-        graphPartitions: FieldObject = FieldObject()
-    ) async throws -> DatabaseRetainedQueryResponse {
-        guard execution.workMeter === workMeter else {
-            throw DatabasePreparedSQLSelectError.workMeterMismatch
-        }
-        let lifetimeOwner = retainedStorage
-        defer { withExtendedLifetime(lifetimeOwner) {} }
-        return try await context.executeRetainedCanonicalQuery(
-            query,
-            execution: execution,
-            graphPartitions: graphPartitions
+            graphPartitions: graphPartitions,
+            transaction: transaction
         )
     }
 }

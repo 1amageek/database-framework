@@ -332,14 +332,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         var (bindings, stats) = try await queryContext.withReadableIndex(
             named: selection.indexName,
             indexType: selection.indexType,
-            for: T.self,
-            authorization: IndexReadAuthorization(
-                limit: limitCount,
-                offset: offsetCount,
-                orderBy: sortKeys.isEmpty
-                    ? nil
-                    : sortKeys.map(\.authorizationName)
-            )
+            for: T.self
         ) {
             readableIndex,
             transaction -> ([VariableBinding], ExecutionStatistics) in
@@ -356,6 +349,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
                 sources = []
             }
             let executor = SPARQLQueryExecutor(
+                database: queryContext.context.container.engine,
                 monotonicClock: queryContext.context.container.monotonicClock,
                 wallClock: queryContext.context.container.wallClock,
                 sources: sources

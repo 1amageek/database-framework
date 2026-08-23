@@ -57,29 +57,26 @@ public struct IndexReadResult: Sendable {
 
     package let rows: [IndexReadRow]
     public let ordering: Ordering
-    private let metadata: [String: FieldValue]
+    public let metadata: [String: FieldValue]
 
     // Both reservations are reference owners. Copying IndexReadResult shares
     // their exactly-once release state and therefore cannot double-release the
     // request ledger.
     private let rowReservation: DatabaseIntermediateReservation?
     private let metadataReservation: DatabaseIntermediateReservation?
-    private let workMeter: DatabaseWorkMeter?
 
     fileprivate init(
         rows: consuming [IndexReadRow],
         ordering: Ordering,
         metadata: [String: FieldValue],
         rowReservation: DatabaseIntermediateReservation?,
-        metadataReservation: DatabaseIntermediateReservation?,
-        workMeter: DatabaseWorkMeter?
+        metadataReservation: DatabaseIntermediateReservation?
     ) {
         self.rows = rows
         self.ordering = ordering
         self.metadata = metadata
         self.rowReservation = rowReservation
         self.metadataReservation = metadataReservation
-        self.workMeter = workMeter
     }
 
     /// Builds a result whose owned rows remain charged to the request budget
@@ -112,37 +109,8 @@ public struct IndexReadResult: Sendable {
         ordering: .orderedByIndex,
         metadata: [:],
         rowReservation: nil,
-        metadataReservation: nil,
-        workMeter: nil
+        metadataReservation: nil
     )
-
-    package func validateWorkMeter(
-        _ expected: DatabaseWorkMeter,
-        sourceName: String
-    ) throws {
-        guard let workMeter else {
-            guard rows.isEmpty && metadata.isEmpty else {
-                throw CanonicalReadError.executorWorkMeterMismatch(
-                    sourceName: sourceName
-                )
-            }
-            return
-        }
-        guard workMeter === expected else {
-            throw CanonicalReadError.executorWorkMeterMismatch(
-                sourceName: sourceName
-            )
-        }
-    }
-
-    package func retainedMetadata() -> DatabaseRetainedQueryMetadata {
-        DatabaseRetainedQueryMetadata(
-            values: metadata,
-            reservation: metadataReservation,
-            workMeter: workMeter
-        )
-    }
-
 }
 
 /// Scoped producer for a budgeted `IndexReadResult`.
@@ -205,8 +173,7 @@ public struct IndexReadResultBuilder: ~Copyable {
             ordering: ordering,
             metadata: metadata,
             rowReservation: retained.reservation,
-            metadataReservation: metadataReservation,
-            workMeter: workMeter
+            metadataReservation: metadataReservation
         )
     }
 }

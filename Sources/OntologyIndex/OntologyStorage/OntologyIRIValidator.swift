@@ -37,7 +37,7 @@ public struct OntologyIRIValidator: Sendable {
     public func validateClass(
         _ classIRI: String,
         in ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws {
         let classDef = try await store.getClass(
             classIRI,
@@ -64,7 +64,7 @@ public struct OntologyIRIValidator: Sendable {
     public func validateObjectProperty(
         _ propertyIRI: String,
         in ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws {
         let propDef = try await store.getProperty(
             propertyIRI,
@@ -99,7 +99,7 @@ public struct OntologyIRIValidator: Sendable {
     public func validateDataProperty(
         _ propertyIRI: String,
         in ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws {
         let propDef = try await store.getProperty(
             propertyIRI,

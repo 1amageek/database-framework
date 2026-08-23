@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateNestedLoopJoinStep(
         pattern: ExecutionTriple,
         leftBindings: borrowing SPARQLRetainedBindings,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression?,
         resultLimit: Int?

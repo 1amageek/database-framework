@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateBatchedNestedLoopJoinStep(
         pattern: ExecutionTriple,
         leftBindings: borrowing SPARQLRetainedBindings,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression?,
         resultLimit: Int?
@@ -20,21 +20,22 @@ extension SPARQLQueryExecutor {
         var stats = ExecutionStatistics()
         stats.joinStrategies.append(.batchedNestedLoop)
 
-        let scanCache = try SPARQLRetainedScanCache.make(
-            workMeter: try requiredWorkMeter()
-        )
-        defer { scanCache.shutdown() }
+        var scanCache: [
+            ScanSignature: SPARQLSharedBindingSnapshot
+        ] = [:]
 
         for leftIndex in 0..<leftBindings.count {
             try requiredWorkMeter().consume(at: .bindingCandidate)
             try await leftBindings.withElement(at: leftIndex) { binding in
                 let substituted = pattern.substitute(binding)
-                let matches: SPARQLRetainedBindings
-                if let cachedMatches = try scanCache.value(
+                let signature = makeScanSignature(
                     for: substituted,
                     graphTarget: activeGraph.graphTarget
-                ) {
-                    matches = cachedMatches
+                )
+
+                let matches: SPARQLRetainedBindings
+                if let cachedMatches = scanCache[signature] {
+                    matches = cachedMatches.retainedBindings()
                 } else {
                     let scannedMatches = try await executePattern(
                         substituted,
@@ -49,11 +50,7 @@ extension SPARQLQueryExecutor {
                     ).sharingForFanOut(
                         at: .joinCandidate
                     )
-                    try scanCache.store(
-                        sharedOwnership.snapshot,
-                        for: substituted,
-                        graphTarget: activeGraph.graphTarget
-                    )
+                    scanCache[signature] = sharedOwnership.snapshot
                     matches = consume sharedOwnership.retained
                 }
 

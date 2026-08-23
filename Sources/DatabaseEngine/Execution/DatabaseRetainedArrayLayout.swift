@@ -1,8 +1,9 @@
 /// Platform-independent admission model for retained Array storage.
 ///
-/// Capacity slots are reconciled with the Swift Array's actual retained
-/// capacity after every allocation. Element payload is admitted separately for
-/// each append.
+/// Byte values are canonical budget units, not allocator introspection. The
+/// capacity-slot value covers the inline Array slot and deterministic spare
+/// capacity selected for that element type. Element payload is admitted
+/// separately for each append.
 package struct DatabaseRetainedArrayLayout: Sendable, Equatable {
     package let containerByteCount: UInt64
     package let elementCapacitySlotByteCount: UInt64
@@ -83,16 +84,5 @@ package struct DatabaseRetainedArrayLayout: Sendable, Equatable {
             bytes: elementCapacitySlotByteCount
         ).multiplied(by: additionalSlots).bytes
         return (capacity, additionalBytes)
-    }
-
-    package func capacityByteCount(_ capacity: Int) throws -> UInt64 {
-        guard capacity >= 0 else {
-            throw DatabaseRetainedArrayLayoutError.invalidCurrentCapacity(
-                capacity
-            )
-        }
-        return try DatabaseIntermediateFootprint(
-            bytes: elementCapacitySlotByteCount
-        ).multiplied(by: UInt64(capacity)).bytes
     }
 }

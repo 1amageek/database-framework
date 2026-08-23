@@ -34,7 +34,7 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: meter
             )
-            #expect(graphsAfterCreate.map(\.graph) == [graph])
+            #expect(graphsAfterCreate == [graph])
             let inserted = try await store.insert(
                 quad,
                 transaction: transaction,
@@ -65,7 +65,7 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: meter
             )
-            #expect(graphsAfterClear.map(\.graph) == [graph])
+            #expect(graphsAfterClear == [graph])
             let scan = try await store.scan(
                 subject: nil,
                 predicate: nil,
@@ -100,33 +100,28 @@ struct CanonicalRDFGraphStoreTests {
         }
 
         let executor = SPARQLQueryExecutor(
+            database: engine,
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: store
         )
-        let (emptyBindings, _) = try await executeSPARQLTest(
-            executor: executor,
+        let (emptyBindings, _) = try await executor.execute(
             pattern: .graph(.named(empty), .basic([])),
             limit: nil,
             offset: 0,
-            workMeter: makeMeter(),
-            database: engine
+            workMeter: makeMeter()
         )
-        let (missingBindings, _) = try await executeSPARQLTest(
-            executor: executor,
+        let (missingBindings, _) = try await executor.execute(
             pattern: .graph(.named(missing), .basic([])),
             limit: nil,
             offset: 0,
-            workMeter: makeMeter(),
-            database: engine
+            workMeter: makeMeter()
         )
-        let (variableBindings, _) = try await executeSPARQLTest(
-            executor: executor,
+        let (variableBindings, _) = try await executor.execute(
             pattern: .graph(.variable("?graph"), .basic([])),
             limit: nil,
             offset: 0,
-            workMeter: makeMeter(),
-            database: engine
+            workMeter: makeMeter()
         )
 
         #expect(emptyBindings.count == 1)
@@ -187,7 +182,7 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: makeMeter()
             )
-            #expect(graphs.map(\.graph) == [graph])
+            #expect(graphs == [graph])
         }
     }
 
@@ -272,7 +267,7 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: meter
             )
-            #expect(graphs.map(\.graph) == [first])
+            #expect(graphs == [first])
             #expect(defaultScan.map(\.quad) == [defaultQuad])
             #expect(namedScan.isEmpty)
         }
@@ -337,7 +332,7 @@ struct CanonicalRDFGraphStoreTests {
                 workMeter: meter
             )
             #expect(cleared == 3)
-            #expect(graphsAfterClear.map(\.graph) == [first, second])
+            #expect(graphsAfterClear == [first, second])
             #expect(dropped == 0)
             #expect(graphsAfterDrop.isEmpty)
         }
@@ -430,7 +425,7 @@ struct CanonicalRDFGraphStoreTests {
             #expect(defaultResult.count == 1)
             #expect(defaultResult.first?.quad == defaultQuad)
             #expect(namedResult.isEmpty)
-            #expect(Set(catalogs.map(\.graph)) == Set([iriGraph, blankGraph]))
+            #expect(Set(catalogs) == Set([iriGraph, blankGraph]))
         }
     }
 

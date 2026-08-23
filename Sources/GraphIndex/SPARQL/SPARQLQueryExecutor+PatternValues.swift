@@ -6,7 +6,7 @@ import StorageKit
 extension SPARQLQueryExecutor {
     func evaluateValuesPattern(
         _ table: SPARQLValuesTable,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression?,
         seed: VariableBinding,

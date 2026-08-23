@@ -36,10 +36,10 @@ private func versionLabel(_ version: Schema.Version?) -> String {
 
 private func countKeys(
     in subspace: Subspace,
-    container: DBContainer
+    engine: any StorageEngine
 ) async throws -> Int {
     let range = subspace.range()
-    return try await container.withTestBaseTransaction { transaction in
+    return try await engine.withTransaction { transaction in
         var count = 0
         for _ in try await transaction.collectRange(
             from: .firstGreaterOrEqual(range.begin),
@@ -54,9 +54,9 @@ private func countKeys(
 
 private func value(
     for key: ByteString,
-    container: DBContainer
+    engine: any StorageEngine
 ) async throws -> ByteString? {
-    try await container.withTestBaseTransaction { transaction in
+    try await engine.withTransaction { transaction in
         try await transaction.getValue(for: key, snapshot: true)
     }
 }
@@ -506,7 +506,7 @@ struct MigrationExecutionSQLiteTests {
         #expect(
             try await countKeys(
                 in: ageIndexSubspace,
-                container: initialContainer
+                engine: initialContainer.engine
             ) > 0
         )
         await initialContainer.shutdown()
@@ -535,7 +535,7 @@ struct MigrationExecutionSQLiteTests {
             .pack(Tuple("SQLiteIndexLifecycleUser_age"))
         let formerIndexValue = try await value(
             for: formerIndexKey,
-            container: migratedContainer
+            engine: migratedContainer.engine
         )
         let migratedUsers = try await migratedContainer.testBaseContext()
             .fetch(SQLiteIndexLifecycleUserV3.self)
@@ -549,19 +549,19 @@ struct MigrationExecutionSQLiteTests {
         #expect(
             try await countKeys(
                 in: ageIndexSubspace,
-                container: migratedContainer
+                engine: migratedContainer.engine
             ) == 0
         )
         #expect(
             try await countKeys(
                 in: ageIndexStateSubspace,
-                container: migratedContainer
+                engine: migratedContainer.engine
             ) == 0
         )
         #expect(
             try await countKeys(
                 in: createdAtIndexSubspace,
-                container: migratedContainer
+                engine: migratedContainer.engine
             ) > 0
         )
         #expect(migratedUser?.age == 42)

@@ -99,10 +99,7 @@ package final class IndexLifecycleStore: Sendable {
     /// - Returns: Current IndexState (defaults to .disabled if not found)
     /// - Throws: Error if state value is invalid
     public func state(of indexName: String) async throws -> IndexState {
-        return try await container.withDatabaseTransaction(
-            requiredAccess: .read,
-            configuration: .batch
-        ) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.state(
                 of: indexName,
                 transaction: transaction
@@ -120,7 +117,7 @@ package final class IndexLifecycleStore: Sendable {
     ///   - transaction: The transaction to use
     /// - Returns: Current IndexState (defaults to .disabled if not found)
     /// - Throws: Error if state value is invalid
-    public func state(of indexName: String, transaction: any TransactionReadAccess) async throws -> IndexState {
+    public func state(of indexName: String, transaction: any TransactionAccess) async throws -> IndexState {
         try await storedState(
             of: indexName,
             transaction: transaction,
@@ -132,7 +129,7 @@ package final class IndexLifecycleStore: Sendable {
     /// externally visible disabled state.
     package func persistedState(
         of indexName: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> IndexState? {
         try await storedState(
             of: indexName,
@@ -153,10 +150,7 @@ package final class IndexLifecycleStore: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
     public func enable(_ indexName: String) async throws {
-        try await container.withDatabaseTransaction(
-            requiredAccess: .administer,
-            configuration: .batch
-        ) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.enable(
                 indexName,
                 transaction: transaction
@@ -171,10 +165,7 @@ package final class IndexLifecycleStore: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: IndexStateError.invalidTransition if not in WRITE_ONLY state
     public func makeReadable(_ indexName: String) async throws {
-        try await container.withDatabaseTransaction(
-            requiredAccess: .administer,
-            configuration: .batch
-        ) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.makeReadable(indexName, transaction: transaction)
         }
     }
@@ -225,10 +216,7 @@ package final class IndexLifecycleStore: Sendable {
         _ indexNames: [String],
         entityRange: (begin: ByteString, end: ByteString)
     ) async throws {
-        try await container.withDatabaseTransaction(
-            requiredAccess: .administer,
-            configuration: .batch
-        ) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.ensureReadable(
                 indexNames,
                 entityRange: entityRange,
@@ -323,9 +311,9 @@ package final class IndexLifecycleStore: Sendable {
         _ indexNames: [String],
         entityRange: (begin: ByteString, end: ByteString)
     ) async throws {
-        try await container.withDatabaseTransaction(
-            requiredAccess: .administer,
-            configuration: .batch
+        try await container.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: container.monotonicClock
         ) { transaction in
             try await self.initializeMissingStates(
                 indexNames,
@@ -458,7 +446,7 @@ package final class IndexLifecycleStore: Sendable {
     /// method by the partition catalog and therefore never reach admission.
     func validateReadableForRead(
         _ indexNames: [String],
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws {
         for indexName in indexNames {
             guard let currentState = try await storedState(
@@ -488,10 +476,7 @@ package final class IndexLifecycleStore: Sendable {
     ///
     /// - Parameter indexName: Name of the index
     public func disable(_ indexName: String) async throws {
-        try await container.withDatabaseTransaction(
-            requiredAccess: .administer,
-            configuration: .batch
-        ) { transaction in
+        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.disable(indexName, transaction: transaction)
         }
     }
@@ -556,10 +541,7 @@ package final class IndexLifecycleStore: Sendable {
     /// - Parameter indexNames: List of index names
     /// - Returns: Dictionary mapping index names to states
     public func states(of indexNames: [String]) async throws -> [String: IndexState] {
-        return try await container.withDatabaseTransaction(
-            requiredAccess: .read,
-            configuration: .batch
-        ) { transaction in
+        return try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
             try await self.states(
                 of: indexNames,
                 transaction: transaction
@@ -576,7 +558,7 @@ package final class IndexLifecycleStore: Sendable {
     ///   - indexNames: List of index names
     ///   - transaction: The transaction to use
     /// - Returns: Dictionary mapping index names to states
-    public func states(of indexNames: [String], transaction: any TransactionReadAccess) async throws -> [String: IndexState] {
+    public func states(of indexNames: [String], transaction: any TransactionAccess) async throws -> [String: IndexState] {
         var states: [String: IndexState] = [:]
         states.reserveCapacity(indexNames.count)
 
@@ -619,7 +601,7 @@ package final class IndexLifecycleStore: Sendable {
     /// present value must contain exactly one known `IndexState` byte.
     private func storedState(
         of indexName: String,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         snapshot: Bool
     ) async throws -> IndexState? {
         let stateKey = try makeStateKey(for: indexName)

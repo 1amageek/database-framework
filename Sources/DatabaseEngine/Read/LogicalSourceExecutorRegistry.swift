@@ -3,33 +3,36 @@ import DatabaseKit
 import StorageKit
 
 public protocol GraphTableSourceExecutor: Sendable {
-    @_spi(DatabaseExecution)
     func execute(
         context: DatabaseContext,
         graphTableSource: GraphTableSource,
-        authorization: IndexReadAuthorization,
         options: ReadExecutionContext,
-        partitions: FieldObject,
-        transaction: any TransactionReadAccess
-    ) async throws -> DatabaseRetainedQueryRows
+        partitions: FieldObject
+    ) async throws -> [QueryRow]
 }
 
 public protocol SPARQLSourceExecutor: Sendable {
-    @_spi(DatabaseExecution)
+    func execute(
+        context: DatabaseContext,
+        selectQuery: SelectQuery,
+        options: ReadExecutionContext,
+        partitions: FieldObject
+    ) async throws -> QueryResponse
+
     func executeInTransaction(
         context: DatabaseContext,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         partitions: FieldObject,
-        transaction: any TransactionReadAccess
-    ) async throws -> DatabaseRetainedQueryResponse
+        transaction: any TransactionAccess
+    ) async throws -> QueryResponse
 
     func executeAskInTransaction(
         context: DatabaseContext,
         askQuery: AskQuery,
         options: ReadExecutionContext,
         partitions: FieldObject,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Bool
 
     func executeConstructInTransaction(
@@ -38,7 +41,7 @@ public protocol SPARQLSourceExecutor: Sendable {
         nodeNamespace: GraphResultNodeNamespace,
         options: ReadExecutionContext,
         partitions: FieldObject,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph
 
     func executeDescribeInTransaction(
@@ -46,7 +49,7 @@ public protocol SPARQLSourceExecutor: Sendable {
         describeQuery: DescribeQuery,
         options: ReadExecutionContext,
         partitions: FieldObject,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRetainedRDFGraph
 
 }

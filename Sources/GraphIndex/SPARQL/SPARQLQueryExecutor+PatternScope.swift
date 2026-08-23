@@ -9,7 +9,7 @@ extension SPARQLQueryExecutor {
         grouping: SPARQLGroupingPlan,
         aggregates aggs: [AggregateExpression],
         having havingExpr: FilterExpression?,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         seed: VariableBinding,
         resultLimit: Int?,

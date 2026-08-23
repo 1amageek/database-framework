@@ -235,9 +235,7 @@ public struct EntityRuntimeDefinition: Sendable {
             } else {
                 items = try await context.fetch(plan.typedQuery)
             }
-            var retainedRows = try DatabaseRetainedArrayBuilder<
-                CanonicalSourceRow
-            >(
+            var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
                 stage: .resultMaterialization,
                 layout: try CanonicalRelationalFootprintMeter
@@ -643,7 +641,7 @@ public struct EntityRuntimeDefinition: Sendable {
         sourceName: String,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        transaction: (any TransactionReadAccess)?
+        transaction: (any TransactionAccess)?
     ) async throws -> EntityTableRows {
         guard case .table(let table) = selectQuery.source,
               table.table == entity.name else {
@@ -655,7 +653,7 @@ public struct EntityRuntimeDefinition: Sendable {
             selectQuery: selectQuery,
             options: options
         )
-        let budgetReadLimit = try options.workMeter.storageWorkReadLimitWithSentinel(
+        let budgetReadLimit = try options.workMeter.storageReadLimitWithSentinel(
             at: .storageRow
         )
         let readLimit = min(
@@ -867,32 +865,21 @@ extension EntityRuntimeIndexOperationBuilding {
                         idExpression: idExpression,
                         configurations: configurations
                     )
-                    try await withIndexMaintenanceTransaction(
-                        transaction: transaction,
-                        indexSubspace: subspace
-                    ) { maintenanceTransaction in
-                        try await IndexUniquenessConstraint.enforce(
-                            index: index,
-                            item: newModel,
-                            id: id,
-                            state: state,
-                            maintainer: uniquenessMaintainer,
-                            violationTracker: violationTracker,
-                            maintenanceTransaction: maintenanceTransaction,
-                            violationTransaction: transaction
-                        )
-                    }
-                }
-                try await withIndexMaintenanceTransaction(
-                    transaction: transaction,
-                    indexSubspace: subspace
-                ) { maintenanceTransaction in
-                    try await maintainer.updateIndex(
-                        oldItem: oldModel,
-                        newItem: newModel,
-                        transaction: maintenanceTransaction
+                    try await IndexUniquenessConstraint.enforce(
+                        index: index,
+                        item: newModel,
+                        id: id,
+                        state: state,
+                        maintainer: uniquenessMaintainer,
+                        violationTracker: violationTracker,
+                        transaction: transaction
                     )
                 }
+                try await maintainer.updateIndex(
+                    oldItem: oldModel,
+                    newItem: newModel,
+                    transaction: transaction
+                )
             }
         }
     }
@@ -903,7 +890,6 @@ extension EntityRuntimeIndexOperationBuilding {
         canonicalizeModel: @escaping EntityRuntimeRegistration.CanonicalizeModel
     ) -> EntityRuntimeRegistration.BuildIndex {
         {
-            transactionAuthority,
             container,
             storeSubspace,
             index,
@@ -939,7 +925,6 @@ extension EntityRuntimeIndexOperationBuilding {
                 uniquenessMaintainer = nil
             }
             let indexer = try OnlineIndexer<PersistedModel>(
-                transactionAuthority: transactionAuthority,
                 container: container,
                 storeSubspace: storeSubspace,
                 itemType: entity.name,
@@ -1009,7 +994,7 @@ extension EntityRuntimeIndexOperationBuilding {
                 .subspace(entity.name)
             let range = itemTypeSubspace.range()
             let begin = lastProcessedKey.map { $0.appending(0) } ?? range.begin
-            let storage = container.itemStorageFactory.makeWriter(
+            let storage = container.itemStorageFactory.make(
                 transaction: transaction,
                 blobsSubspace: storeSubspace.subspace(SubspaceKey.blobs)
             )
@@ -1051,7 +1036,6 @@ extension EntityRuntimeIndexOperationBuilding {
                     try await OnlineIndexBatchWriter.write(
                         batch,
                         index: index,
-                        indexSubspace: subspace,
                         maintainer: maintainer,
                         uniquenessMaintainer: uniquenessMaintainer,
                         violationTracker: violationTracker,
@@ -1064,7 +1048,6 @@ extension EntityRuntimeIndexOperationBuilding {
                 try await OnlineIndexBatchWriter.write(
                     batch,
                     index: index,
-                    indexSubspace: subspace,
                     maintainer: maintainer,
                     uniquenessMaintainer: uniquenessMaintainer,
                     violationTracker: violationTracker,
@@ -1089,25 +1072,17 @@ extension EntityRuntimeIndexOperationBuilding {
                     indexName: index.name
                 )
             }
-            let indexSubspace = try IndexLifecycleStore(
-                container: container,
-                subspace: storeSubspace
-            ).indexSubspace(for: index.name)
             let maintainer = try provider.makeMaintainer(
                 index: index,
-                subspace: indexSubspace,
+                subspace: try IndexLifecycleStore(
+                    container: container,
+                    subspace: storeSubspace
+                ).indexSubspace(for: index.name),
                 idExpression: FieldKeyExpression(fieldName: "id"),
                 configurations: configurations,
                 wallClock: container.wallClock
             )
-            try await withIndexMaintenanceTransaction(
-                transaction: transaction,
-                indexSubspace: indexSubspace
-            ) { maintenanceTransaction in
-                try await maintainer.finalizeBuild(
-                    transaction: maintenanceTransaction
-                )
-            }
+            try await maintainer.finalizeBuild(transaction: transaction)
         }
     }
 }
@@ -1153,7 +1128,7 @@ public struct EntityRuntimeRegistration: Sendable {
         _ sourceName: String,
         _ selectQuery: SelectQuery,
         _ options: ReadExecutionContext,
-        _ transaction: (any TransactionReadAccess)?
+        _ transaction: (any TransactionAccess)?
     ) async throws -> EntityTableRows
 
     fileprivate typealias CanonicalizeModel = @Sendable (
@@ -1182,7 +1157,6 @@ public struct EntityRuntimeRegistration: Sendable {
     ) async throws -> Void
 
     fileprivate typealias BuildIndex = @Sendable (
-        IndexBuildTransactionAuthority,
         DBContainer,
             Subspace,
             ResolvedIndex,
@@ -1331,7 +1305,7 @@ public struct EntityRuntimeRegistration: Sendable {
         sourceName: String,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        transaction: (any TransactionReadAccess)? = nil
+        transaction: (any TransactionAccess)? = nil
     ) async throws -> EntityTableRows {
         try await fetchTableRowsOperation(
             context,
@@ -1369,7 +1343,6 @@ public struct EntityRuntimeRegistration: Sendable {
     }
 
     func buildIndex(
-        transactionAuthority: IndexBuildTransactionAuthority,
         container: DBContainer,
         storeSubspace: Subspace,
         index: ResolvedIndex,
@@ -1378,7 +1351,6 @@ public struct EntityRuntimeRegistration: Sendable {
         configurations: [any IndexRuntimeConfiguration]
     ) async throws {
         try await buildIndexOperation(
-            transactionAuthority,
             container,
             storeSubspace,
             index,

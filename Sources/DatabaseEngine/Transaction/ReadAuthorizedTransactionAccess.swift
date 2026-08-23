@@ -1,34 +1,43 @@
 import DatabaseTypes
 import StorageKit
 
-/// A storage transaction that keeps its database container lifecycle active
-/// until the owned transaction is released.
-final class ContainerTransaction: Transaction, Sendable {
-    private let transaction: any Transaction
-    private let operationLease: DatabaseStorageOperationLease
+/// Storage access admitted for reads while retaining the underlying snapshot
+/// and container-operation lifetime.
+///
+/// `TransactionAccess` combines reads and mutations in StorageKit. Database
+/// authorization is narrower: a caller admitted with only Base read access
+/// must not inherit the mutation methods of that storage protocol. This
+/// adapter preserves read behavior and rejects every persistent mutation.
+final class ReadAuthorizedTransactionAccess:
+    TransactionAccess,
+    Sendable
+{
+    private let transaction: any TransactionAccess
 
-    init(
-        transaction: any Transaction,
-        operationLease: DatabaseStorageOperationLease
-    ) {
+    private init(transaction: any TransactionAccess) {
         self.transaction = transaction
-        self.operationLease = operationLease
     }
 
-    /// The backend-owned access used only when the container delegates a
-    /// backend-specific namespace operation. The wrapper remains retained by
-    /// the caller, so its operation lease stays active for the entire borrow.
+    static func admitted(
+        _ transaction: any TransactionAccess
+    ) -> any TransactionAccess {
+        if transaction is ReadAuthorizedTransactionAccess {
+            return transaction
+        }
+        return ReadAuthorizedTransactionAccess(transaction: transaction)
+    }
+
     func namespaceTransactionBorrow(
         for lifecycle: DatabaseStorageLifecycle
     ) throws -> ContainerNamespaceTransactionBorrow {
-        guard operationLease.belongs(to: lifecycle) else {
-            throw StorageError.invalidOperation(
-                "Namespace operations require a transaction admitted by the same database container"
-            )
+        if let transaction = transaction as? ContainerTransactionAccess {
+            return try transaction.namespaceTransactionBorrow(for: lifecycle)
         }
-        return ContainerNamespaceTransactionBorrow(
-            transaction: transaction,
-            operationLease: operationLease
+        if let transaction = transaction as? ContainerTransaction {
+            return try transaction.namespaceTransactionBorrow(for: lifecycle)
+        }
+        throw StorageError.invalidOperation(
+            "Namespace reads require a transaction admitted by the same database container"
         )
     }
 
@@ -36,20 +45,10 @@ final class ContainerTransaction: Transaction, Sendable {
         transaction.capabilities
     }
 
+    /// Physical compaction is a mutation capability and is not exposed through
+    /// read-authorized access.
     var compaction: StorageCompactionAccess? {
-        transaction.compaction
-    }
-
-    var transactionDomain: StorageTransactionDomain {
-        transaction.transactionDomain
-    }
-
-    var storageFailure: StorageError? {
-        transaction.storageFailure
-    }
-
-    var mutationByteLimit: Int? {
-        transaction.mutationByteLimit
+        nil
     }
 
     func getValue(
@@ -88,19 +87,19 @@ final class ContainerTransaction: Transaction, Sendable {
             reverse: reverse,
             snapshot: snapshot,
             streamingMode: streamingMode
-        ).retainingLifetime(of: operationLease)
+        )
     }
 
     func setValue(_ value: ByteString, for key: ByteString) throws {
-        try transaction.setValue(value, for: key)
+        throw DatabaseReadTransactionError.mutationRequiresWriteAccess
     }
 
     func clear(key: ByteString) throws {
-        try transaction.clear(key: key)
+        throw DatabaseReadTransactionError.mutationRequiresWriteAccess
     }
 
     func clearRange(beginKey: ByteString, endKey: ByteString) throws {
-        try transaction.clearRange(beginKey: beginKey, endKey: endKey)
+        throw DatabaseReadTransactionError.mutationRequiresWriteAccess
     }
 
     func atomicOp(
@@ -108,11 +107,7 @@ final class ContainerTransaction: Transaction, Sendable {
         param: ByteString,
         mutationType: MutationType
     ) throws {
-        try transaction.atomicOp(
-            key: key,
-            param: param,
-            mutationType: mutationType
-        )
+        throw DatabaseReadTransactionError.mutationRequiresWriteAccess
     }
 
     func setReadVersion(_ version: Int64) throws {
@@ -134,7 +129,10 @@ final class ContainerTransaction: Transaction, Sendable {
         try transaction.setOption(to: value, forOption: option)
     }
 
-    func setOption(to value: Int, forOption option: TransactionOption) throws {
+    func setOption(
+        to value: Int,
+        forOption option: TransactionOption
+    ) throws {
         try transaction.setOption(to: value, forOption: option)
     }
 
@@ -174,23 +172,5 @@ final class ContainerTransaction: Transaction, Sendable {
 
     func requestVersionstamp() -> any PendingTransactionVersionstamp {
         transaction.requestVersionstamp()
-    }
-
-    func configureMutationByteLimit(maximumBytes: Int?) throws {
-        try transaction.configureMutationByteLimit(
-            maximumBytes: maximumBytes
-        )
-    }
-
-    func commit() async throws {
-        try await transaction.commit()
-    }
-
-    func cancel() async throws {
-        try await transaction.cancel()
-    }
-
-    func getCommittedVersion() throws -> Int64 {
-        try transaction.getCommittedVersion()
     }
 }

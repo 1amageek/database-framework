@@ -37,7 +37,7 @@ struct CompositionSnapshotAuthorizationIsolationTests {
             try await outsiderSource.withReadSnapshot { _ in () }
         }
         try await readerSource.withReadSnapshot { snapshot in
-            let member = try #require(snapshot.members.first)
+            let member = try #require(snapshot.lease.members.first)
             await #expect(throws: DatabaseCompositionAccessError.self) {
                 try await outsiderSource.withMemberContext(
                     member,
@@ -57,19 +57,14 @@ struct CompositionSnapshotAuthorizationIsolationTests {
         let secondSource = try fixture.container.session(
             authorization: fixture.readerAuthorization
         ).composition(bases: [fixture.secondBaseID])
-        let foreignMember = try await secondSource.withReadSnapshot {
-            try #require($0.members.first)
-        }
+        let secondLease = try await secondSource.acquireReadLease()
+        let foreignMember = try #require(secondLease.members.first)
 
         try await firstSource.withReadSnapshot { snapshot in
-            let member = try #require(snapshot.members.first)
-            let readTransaction = try snapshot.transaction(for: member)
-            #expect(!(readTransaction is any TransactionAccess))
-            let admittedTransaction = try snapshot.admittedTransaction(
-                for: member
-            )
+            let member = try #require(snapshot.lease.members.first)
+            let transaction = try snapshot.transaction(for: member)
             #expect(throws: DatabaseReadTransactionError.self) {
-                try admittedTransaction.setValue(
+                try transaction.setValue(
                     ByteString(utf8: "value"),
                     for: ByteString(utf8: "composition-read-snapshot")
                 )
@@ -80,7 +75,7 @@ struct CompositionSnapshotAuthorizationIsolationTests {
         }
     }
 
-    @Test("Admitted transaction remains bound to its Base data root")
+    @Test("Admitted transaction cannot be rebound to another Base context")
     func admittedTransactionRejectsForeignBaseContext() async throws {
         let fixture = try await makeFixture()
         defer { await fixture.container.shutdown() }
@@ -98,9 +93,7 @@ struct CompositionSnapshotAuthorizationIsolationTests {
             monotonicClock: fixture.container.monotonicClock
         )
 
-        await #expect(
-            throws: DatabaseTransactionExecutionScopeError.dataRootMismatch
-        ) {
+        await #expect(throws: DatabaseGrantAuthorizationError.self) {
             try await firstContext.executeCanonicalRead { transaction in
                 try await secondContext.executeCanonicalQuery(
                     query,
@@ -119,10 +112,15 @@ struct CompositionSnapshotAuthorizationIsolationTests {
             authorization: fixture.readerAuthorization
         ).base(fixture.firstBaseID).newContext()
 
-        try await readerContext.withExecutionReadTransaction(
-            requiredAccess: .read
-        ) { transaction in
-            #expect(!(transaction.storageAccess is any TransactionAccess))
+        await #expect(throws: DatabaseReadTransactionError.self) {
+            try await readerContext.withExecutionTransaction(
+                requiredAccess: .read
+            ) { transaction in
+                try await transaction.save(
+                    Anchor(id: "direct-read-transaction"),
+                    precondition: .none
+                )
+            }
         }
 
         let ownerContext = fixture.container.session(
@@ -131,10 +129,15 @@ struct CompositionSnapshotAuthorizationIsolationTests {
         _ = try await ownerContext.withExecutionTransaction(
             requiredAccess: .all
         ) { _ in
-            try await ownerContext.withExecutionReadTransaction(
-                requiredAccess: .read
-            ) { transaction in
-                #expect(!(transaction.storageAccess is any TransactionAccess))
+            await #expect(throws: DatabaseReadTransactionError.self) {
+                try await ownerContext.withExecutionTransaction(
+                    requiredAccess: .read
+                ) { transaction in
+                    try await transaction.save(
+                        Anchor(id: "nested-read-transaction"),
+                        precondition: .none
+                    )
+                }
             }
         }
 
@@ -203,61 +206,6 @@ struct CompositionSnapshotAuthorizationIsolationTests {
             )
         }
         #expect(response.rows.isEmpty)
-    }
-
-    @Test("Write execution transaction rejects foreign Base and control roots")
-    func writeExecutionTransactionRejectsForeignRoots() async throws {
-        let fixture = try await makeFixture()
-        defer { await fixture.container.shutdown() }
-        let firstLease = try fixture.container.acquireBaseLease(
-            fixture.firstBaseID
-        )
-        let secondLease = try fixture.container.acquireBaseLease(
-            fixture.secondBaseID
-        )
-        let firstKey = firstLease.root.subspace("data").pack(Tuple("inside"))
-        let secondKey = secondLease.root.subspace("data").pack(Tuple("outside"))
-        let controlKey = fixture.container.controlStorage().root
-            .pack(Tuple("outside"))
-        let value = ByteString(utf8: "value")
-        let context = fixture.container.session(
-            authorization: fixture.ownerAuthorization
-        ).base(fixture.firstBaseID).newContext()
-
-        try await context.withExecutionTransaction(
-            requiredAccess: [.read, .write]
-        ) { transaction in
-            try transaction.executionStorageAccess.setValue(
-                value,
-                for: firstKey
-            )
-            #expect(
-                throws: DatabaseReadTransactionError.keyOutsideDataRoot
-            ) {
-                try transaction.executionStorageAccess.setValue(
-                    value,
-                    for: secondKey
-                )
-            }
-            #expect(
-                throws: DatabaseReadTransactionError.keyOutsideDataRoot
-            ) {
-                try transaction.executionStorageAccess.setValue(
-                    value,
-                    for: controlKey
-                )
-            }
-        }
-
-        let readBack = try await context.withExecutionTransaction(
-            requiredAccess: .read
-        ) { transaction in
-            try await transaction.executionStorageAccess.getValue(
-                for: firstKey,
-                snapshot: true
-            )
-        }
-        #expect(readBack == value)
     }
 
     private func makeFixture() async throws -> Fixture {

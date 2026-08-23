@@ -175,6 +175,7 @@ struct SHACLBoundedRegularExpressionTests {
     ) async throws -> SHACLValidationReport {
         let engine = InMemoryEngine()
         let executor = SPARQLQueryExecutor(
+            database: engine,
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(
                 now: Timestamp(secondsSinceUnixEpoch: 0)

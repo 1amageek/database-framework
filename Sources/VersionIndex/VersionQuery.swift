@@ -145,11 +145,6 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
                 named: indexName,
                 indexType: .history,
                 for: T.self,
-                authorization: IndexReadAuthorization(
-                    limit: limitCount,
-                    offset: nil,
-                    orderBy: ["version"]
-                ),
                 configuration: configuration
             ) { readableIndex, transaction in
             guard let readableIndex else {

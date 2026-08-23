@@ -67,24 +67,6 @@ struct CompositionQueryExecutorTests {
                 && $0.composition.generation == 1
         })
 
-        let source = fixture.container.session(
-            authorization: fixture.readerAuthorization
-        ).composition(fixture.compositionID)
-        let escapedDescriptor = try await source
-            .withAuthorizedReadDescriptor { descriptor in
-                #expect(descriptor.selection.namedID == fixture.compositionID)
-                #expect(descriptor.resolution.namedID == fixture.compositionID)
-                #expect(descriptor.namedRecord?.generation == 1)
-                #expect(
-                    Set(descriptor.basePlacementGenerations.keys) == Set([
-                        fixture.primaryBaseID,
-                        fixture.secondaryBaseID,
-                    ])
-                )
-                return descriptor
-            }
-        #expect(escapedDescriptor.namedRecord?.generation == 1)
-
         let count = try await fixture.container.session(
             authorization: fixture.readerAuthorization
         ).composition(fixture.compositionID)
@@ -93,43 +75,6 @@ struct CompositionQueryExecutorTests {
             .limit(2)
             .count()
         #expect(count == 2)
-
-        let descriptorEntered = CompositionDescriptorGate()
-        let releaseDescriptor = CompositionDescriptorGate()
-        let retirement = CompositionRetirementObservation()
-        let descriptorTask = Task {
-            try await source.withAuthorizedReadDescriptor { descriptor in
-                await descriptorEntered.open()
-                await releaseDescriptor.waitUntilOpen()
-                return descriptor
-            }
-        }
-        await descriptorEntered.waitUntilOpen()
-        let namedRecord = try #require(escapedDescriptor.namedRecord)
-        _ = try await fixture.container.withControlMetadataTransaction {
-            transaction in
-            try await fixture.container.compositionCatalog.delete(
-                fixture.compositionID,
-                expectedRevision: namedRecord.revision,
-                transaction: transaction.storageAccess
-            )
-        }
-        let retirementTask = Task {
-            let record = try await fixture.container.retireBase(
-                fixture.secondaryBaseID,
-                expectedRevision: fixture.secondaryBaseRevision
-            )
-            await retirement.markCompleted()
-            return record
-        }
-        for _ in 0..<20 { await Task.yield() }
-        #expect(!(await retirement.isCompleted()))
-
-        await releaseDescriptor.open()
-        let descriptorAfterCallback = try await descriptorTask.value
-        let retired = try await retirementTask.value
-        #expect(descriptorAfterCallback.namedRecord?.generation == 1)
-        #expect(retired.lifecycle == .retired)
     }
 
     @Test("Composition validates structure before opening a read snapshot")
@@ -227,7 +172,7 @@ struct CompositionQueryExecutorTests {
         ).composition(fixture.compositionID)
 
         do {
-            _ = try await source.withAuthorizedReadDescriptor { $0 }
+            _ = try await source.acquireReadLease()
             Issue.record("Expected the stopped storage domain to fail")
         } catch is DatabaseCompositionAccessError {
             Issue.record("Storage failure was incorrectly hidden as access denial")
@@ -533,7 +478,6 @@ struct CompositionQueryExecutorTests {
         let ownerAuthorization: AuthorizationContext
         let readerAuthorization: AuthorizationContext
         let secondaryEngine: InMemoryEngine
-        let secondaryBaseRevision: UInt64
     }
 
     private func makeFixture(
@@ -614,7 +558,6 @@ struct CompositionQueryExecutorTests {
         )
         let ownerAuthorization: AuthorizationContext = .authenticated(owner)
         let readerAuthorization: AuthorizationContext = .authenticated(reader)
-        let secondaryBaseRevision: UInt64
         do {
             _ = try await container.provisionBase(
                 primaryBaseID,
@@ -649,13 +592,12 @@ struct CompositionQueryExecutorTests {
                     )
                 )
             }
-            let secondaryRecord = try await container.provisionBase(
+            _ = try await container.provisionBase(
                 secondaryBaseID,
                 placementID: secondaryPlacementID,
                 initialGrants: secondaryGrants,
                 expectedRevision: 0
             )
-            secondaryBaseRevision = secondaryRecord.revision
             _ = try await container.withControlMetadataTransaction {
                 transaction in
                 try await container.compositionCatalog.create(
@@ -678,8 +620,7 @@ struct CompositionQueryExecutorTests {
             compositionID: compositionID,
             ownerAuthorization: ownerAuthorization,
             readerAuthorization: readerAuthorization,
-            secondaryEngine: secondaryEngine,
-            secondaryBaseRevision: secondaryBaseRevision
+            secondaryEngine: secondaryEngine
         )
     }
 
@@ -770,37 +711,6 @@ struct CompositionQueryExecutorTests {
             query,
             options: readOptions
         )
-    }
-}
-
-private actor CompositionDescriptorGate {
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var isOpen = false
-
-    func waitUntilOpen() async {
-        guard !isOpen else { return }
-        await withCheckedContinuation { continuation in
-            self.continuation = continuation
-        }
-    }
-
-    func open() {
-        guard !isOpen else { return }
-        isOpen = true
-        continuation?.resume()
-        continuation = nil
-    }
-}
-
-private actor CompositionRetirementObservation {
-    private var completed = false
-
-    func markCompleted() {
-        completed = true
-    }
-
-    func isCompleted() -> Bool {
-        completed
     }
 }
 #endif

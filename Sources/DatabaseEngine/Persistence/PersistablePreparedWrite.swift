@@ -6,7 +6,7 @@ import DatabaseTypes
 struct PersistablePreparedWrite: Sendable {
     let result: PersistableWriteResult
     let key: ByteString
-    let storage: ItemStorageWriter
+    let storage: ItemStorage
     let runtime: EntityRuntimeRegistration
     let transientReservation: DatabaseIntermediateReservation?
 }

@@ -10,13 +10,12 @@ enum IndexUniquenessConstraint {
         state: IndexState,
         maintainer: any IndexUniquenessMaintainer<Item>,
         violationTracker: UniquenessViolationTracker,
-        maintenanceTransaction: any TransactionAccess,
-        violationTransaction: any TransactionAccess
+        transaction: any TransactionAccess
     ) async throws {
         let conflicts = try await maintainer.uniquenessConflicts(
             for: item,
             id: id,
-            transaction: maintenanceTransaction
+            transaction: transaction
         )
         for conflict in conflicts {
             switch state {
@@ -36,7 +35,7 @@ enum IndexUniquenessConstraint {
                     conflictingValues: conflict.conflictingValues,
                     existingPrimaryKey: conflict.existingPrimaryKey,
                     newPrimaryKey: id,
-                    transaction: violationTransaction
+                    transaction: transaction
                 )
             case .disabled:
                 return

@@ -25,7 +25,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         identifier: String,
         offset: Int,
         limit: Int,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> DatabaseRDFStoredDocumentPage? {
         try validate(identifier: identifier)
         guard offset >= 0, limit > 0 else {
@@ -164,7 +164,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
 
     private func metadata(
         identifier: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Metadata? {
         guard let bytes = try await transaction.getValue(
             for: try metadataKey(identifier),
@@ -202,7 +202,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
     private func readAuxiliaryIdentifiers(
         identifier: String,
         count: Int,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [String] {
         guard count > 0 else { return [] }
         let range = try documentSubspace(identifier)
@@ -238,7 +238,7 @@ public struct DatabaseRDFDocumentStore: Sendable {
         offset: Int,
         limit: Int,
         totalCount: Int,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [RDFQuad] {
         guard offset < totalCount else { return [] }
         guard let encodedOffset = Int64(exactly: offset) else {

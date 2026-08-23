@@ -39,7 +39,7 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
         case descending
     }
 
-    private let queryContext: IndexQueryContext!
+    private let queryContext: IndexQueryContext
     private let field: FieldIdentity
     private var order: Order = .descending
 
@@ -57,14 +57,18 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
     /// }
     /// ```
     public init<Value: RankNumericValue>(_ field: Field<T, Value>) {
-        let context = FusionContext.current
+        guard let context = FusionContext.current else {
+            fatalError("Rank must be used within context.fuse { } block")
+        }
         self.field = field.identity
         self.queryContext = context
     }
 
     /// Create a Rank query for an optional exact numeric field.
     public init<Value: RankNumericValue>(_ field: Field<T, Value?>) {
-        let context = FusionContext.current
+        guard let context = FusionContext.current else {
+            fatalError("Rank must be used within context.fuse { } block")
+        }
         self.field = field.identity
         self.queryContext = context
     }
@@ -103,179 +107,55 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - FusionQuery
 
-    public var fusionQueryPlan: FusionQueryPlan<T> {
-        guard let queryContext else {
-            return FusionQueryPlan(
-                configurationError: .invalidConfiguration(
-                    "Rank requires an IndexQueryContext or context.fuse"
-                )
-            )
-        }
-        return FusionQueryPlan(
-            context: queryContext,
-            authorization: IndexReadAuthorization(
-                limit: nil,
-                offset: nil,
-                orderBy: ["rank"]
-            ),
-            fieldNames: [field.name],
-            operation: { [self] candidates, execution in
-                try await executeBound(
-                    candidates: candidates,
-                    execution: execution
-                )
-            }
-        )
-    }
-
-    private func executeBound(
-        candidates: Set<T.ID>?,
-        execution: ReadExecutionContext
-    ) async throws -> FusionQueryResult<T> {
+    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
         // Rank query requires candidates from previous stages
         // It should not be used as the first stage
-        guard let candidateIDs = candidates else {
-            throw FusionQueryError.missingCandidates(stage: "Rank")
-        }
-        guard !candidateIDs.isEmpty else {
-            return try FusionQueryResultBuilder<T>(
-                execution: execution
-            ).finish()
+        guard let candidateIDs = candidates, !candidateIDs.isEmpty else {
+            // Return empty - Rank is designed for reranking, not initial search
+            // If used as first stage, it contributes nothing to the fusion
+            return []
         }
 
-        guard let entity = queryContext.schema.entity(
-            named: T.persistableType
-        ) else {
-            throw FusionQueryError.invalidConfiguration(
-                "Entity '\(T.persistableType)' is not present in the active schema"
+        // Fetch items
+        let items = try await queryContext.fetchItems(
+            identifiers: Array(candidateIDs),
+            type: T.self
+        )
+
+        var entries: [RankValueEntry<T>] = []
+        entries.reserveCapacity(items.count)
+        for item in items {
+            let value = try RankValueOrdering.numericValue(
+                from: try item.persistedFieldValue(for: field),
+                fieldName: field.name
+            )
+            let identifierKey = try RankValueOrdering.identifierKey(for: item.id)
+            entries.append(
+                RankValueEntry(
+                    item: item,
+                    value: value,
+                    identifierKey: identifierKey
+                )
             )
         }
 
-        return try await queryContext.withPersistenceRead { transaction in
-            let identifierReservation = try execution.workMeter
-                .reserveIntermediate(
-                    bytes: try DatabaseIntermediateCollectionMeter
-                        .arrayFootprint(
-                            count: candidateIDs.count,
-                            element: T.ID.self
-                        ).bytes,
-                    at: .indexScan
-                )
-            defer { identifierReservation.release() }
-            var orderedIdentifiers: [T.ID] = []
-            orderedIdentifiers.reserveCapacity(candidateIDs.count)
-            orderedIdentifiers.append(contentsOf: candidateIDs)
-            orderedIdentifiers.sort {
-                $0.persistableIdentifierValue < $1.persistableIdentifierValue
-            }
+        let direction: RankValueDirection
+        switch order {
+        case .ascending:
+            direction = .ascending
+        case .descending:
+            direction = .descending
+        }
+        let sorted = try RankValueOrdering.sorted(
+            consume entries,
+            direction: direction
+        )
 
-            let primaryKeyReservation = try execution.workMeter
-                .reserveIntermediate(
-                    bytes: try DatabaseIntermediateCollectionMeter
-                        .arrayFootprint(
-                            count: orderedIdentifiers.count,
-                            element: Tuple.self
-                        ).bytes,
-                    at: .indexScan
-                )
-            defer { primaryKeyReservation.release() }
-            var primaryKeys: [Tuple] = []
-            primaryKeys.reserveCapacity(orderedIdentifiers.count)
-            for identifier in orderedIdentifiers {
-                let primaryKey = try PersistableIdentifierKeyCodec.tuple(
-                    for: identifier
-                )
-                try primaryKeyReservation.reserveAdditional(
-                    rows: 1,
-                    bytes: UInt64(primaryKey.pack().count) + 32,
-                    at: .indexScan
-                )
-                primaryKeys.append(primaryKey)
-            }
-
-            let models = try await transaction
-                .fetchPersistedModelsPreservingOrder(
-                    entity: entity,
-                    primaryKeys: primaryKeys,
-                    partitions: queryContext.partitionValues,
-                    workMeter: execution.workMeter
-                )
-            let entryReservation = try execution.workMeter.reserveIntermediate(
-                bytes: try DatabaseIntermediateCollectionMeter.arrayFootprint(
-                    count: models.count,
-                    element: RankValueEntry<T>.self
-                ).bytes,
-                at: .indexScan
-            )
-            defer { entryReservation.release() }
-            var entries: [RankValueEntry<T>] = []
-            entries.reserveCapacity(models.count)
-            for index in models.indices {
-                guard let model = models[index] else {
-                    throw FusionQueryError.danglingCandidate(
-                        entity: T.persistableType,
-                        primaryKey: primaryKeys[index].pack()
-                    )
-                }
-                try execution.workMeter.consume(at: .storageRow)
-                let modelFootprint = try CanonicalRelationalFootprintMeter
-                    .footprint(
-                        of: model,
-                        workMeter: execution.workMeter
-                    )
-                try entryReservation.reserveAdditional(
-                    rows: modelFootprint.rows,
-                    bytes: modelFootprint.bytes,
-                    at: .indexScan
-                )
-                let item = try model.decode(as: T.self)
-                let value = try RankValueOrdering.numericValue(
-                    from: try item.persistedFieldValue(for: field),
-                    fieldName: field.name
-                )
-                let identifierKey = try RankValueOrdering.identifierKey(
-                    for: item.id
-                )
-                try entryReservation.reserveAdditional(
-                    bytes: UInt64(identifierKey.count) + 64,
-                    at: .indexScan
-                )
-                entries.append(
-                    RankValueEntry(
-                        item: item,
-                        value: value,
-                        identifierKey: identifierKey
-                    )
-                )
-            }
-
-            let direction: RankValueDirection
-            switch order {
-            case .ascending:
-                direction = .ascending
-            case .descending:
-                direction = .descending
-            }
-            let sorted = try RankValueOrdering.sorted(
-                consume entries,
-                direction: direction,
-                workMeter: execution.workMeter
-            )
-
-            let count = Double(sorted.count)
-            var output = try FusionQueryResultBuilder<T>(
-                execution: execution,
-                expectedCount: sorted.count
-            )
-            for (index, tuple) in sorted.enumerated() {
-                let score = count > 1
-                    ? 1.0 - Double(index) / (count - 1)
-                    : 1.0
-                try output.append(
-                    ScoredResult(item: tuple.item, score: score)
-                )
-            }
-            return try output.finish()
+        // Convert rank to score (1st = 1.0, last = 0.0)
+        let count = Double(sorted.count)
+        return sorted.enumerated().map { index, tuple in
+            let score = count > 1 ? 1.0 - Double(index) / (count - 1) : 1.0
+            return ScoredResult(item: tuple.item, score: score)
         }
     }
 }

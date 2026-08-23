@@ -105,7 +105,7 @@ struct NamedGraphStoreSQLiteTests {
         let context = try await seededContext()
         let scanner = try await makeScanner(context: context)
 
-        try await context.container.withTestBaseTransaction { transaction in
+        try await context.container.engine.withTransaction { transaction in
             let meter = DatabaseWorkMeter(
                 budget: ExecutionBudget(
                     maximumRows: 10_000,
@@ -162,7 +162,7 @@ struct NamedGraphStoreSQLiteTests {
         let context = try await seededContext()
         let scanner = try await makeScanner(context: context)
 
-        try await context.container.withTestBaseTransaction { transaction in
+        try await context.container.engine.withTransaction { transaction in
             let meter = DatabaseWorkMeter(
                 budget: ExecutionBudget(
                     maximumRows: 10_000,
@@ -178,7 +178,7 @@ struct NamedGraphStoreSQLiteTests {
                 workMeter: meter
             )
 
-            #expect(Set(graphs.map(\.graph)) == Set([
+            #expect(Set(graphs) == Set([
                 try RDFGraphName(iri: invoiceGraphIRI),
                 try RDFGraphName(iri: receiptGraphIRI),
                 try RDFGraphName(iri: mailGraphIRI),
@@ -228,12 +228,7 @@ struct NamedGraphStoreSQLiteTests {
         let readableIndex = try await context.indexQueryContext.withReadableIndex(
             named: "rdf_quad",
             indexType: .graph(.rdf),
-            for: SQLiteNamedGraphStatement.self,
-            authorization: IndexReadAuthorization(
-                limit: nil,
-                offset: nil,
-                orderBy: nil
-            )
+            for: SQLiteNamedGraphStatement.self
         ) { index, _ in
             index
         }

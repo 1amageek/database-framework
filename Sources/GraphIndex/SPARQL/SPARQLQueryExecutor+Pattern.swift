@@ -9,7 +9,7 @@ extension SPARQLQueryExecutor {
     /// Evaluate a graph pattern recursively
     func evaluate(
         pattern: ExecutionPattern,
-        transaction: any TransactionReadAccess,
+        transaction: any TransactionAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression? = nil,
         seed: VariableBinding = VariableBinding(),

@@ -2,113 +2,43 @@ import DatabaseTypes
 import StorageKit
 
 enum FullTextStorageDecoder {
-    static func termFrequency(
-        from value: ByteString,
-        positionsStored: Bool,
-        term: String
-    ) throws -> Int {
-        var decoded = try postingCursor(
-            from: value,
-            term: term
-        )
-        try validatePostingTail(
-            cursor: &decoded.cursor,
-            expectedPositionCount: positionsStored ? decoded.termFrequency : 0,
-            term: term,
-            consume: { _ in }
-        )
-        return decoded.termFrequency
-    }
-
     static func posting(
         from value: ByteString,
         positionsStored: Bool,
         term: String
     ) throws -> (termFrequency: Int, positions: [Int]) {
-        try posting(
-            from: value,
-            positionsStored: positionsStored,
-            term: term,
-            reservingPositionsWith: { _ in }
-        )
-    }
-
-    static func posting(
-        from value: ByteString,
-        positionsStored: Bool,
-        term: String,
-        reservingPositionsWith reservePositions: (Int) throws -> Void
-    ) throws -> (termFrequency: Int, positions: [Int]) {
-        var decoded = try postingCursor(
-            from: value,
-            term: term
-        )
-        let positionCount = positionsStored ? decoded.termFrequency : 0
-        try reservePositions(positionCount)
-        var positions: [Int] = []
-        positions.reserveCapacity(positionCount)
-        try validatePostingTail(
-            cursor: &decoded.cursor,
-            expectedPositionCount: positionCount,
-            term: term
-        ) { position in
-            positions.append(position)
-        }
-        return (
-            termFrequency: decoded.termFrequency,
-            positions: positions
-        )
-    }
-
-    private static func postingCursor(
-        from value: ByteString,
-        term: String
-    ) throws -> (cursor: TupleCursor, termFrequency: Int) {
-        var cursor = TupleCursor(bytes: value)
-        let rawFrequency: Int64
         do {
-            guard let decodedFrequency = try cursor.next() as? Int64 else {
+            let tuple = try Tuple.unpack(from: value)
+            guard let rawFrequency = tuple.first as? Int64,
+                  let termFrequency = Int(exactly: rawFrequency),
+                  termFrequency > 0 else {
                 throw FullTextStorageError.corruptedPosting(term: term)
             }
-            rawFrequency = decodedFrequency
-        } catch {
-            throw FullTextStorageError.corruptedPosting(term: term)
-        }
 
-        guard let termFrequency = Int(exactly: rawFrequency),
-              termFrequency > 0 else {
-            throw FullTextStorageError.corruptedPosting(term: term)
-        }
-        return (cursor: cursor, termFrequency: termFrequency)
-    }
-
-    private static func validatePostingTail(
-        cursor: inout TupleCursor,
-        expectedPositionCount: Int,
-        term: String,
-        consume: (Int) throws -> Void
-    ) throws {
-        var previousPosition: Int?
-        var decodedPositionCount = 0
-        do {
-            while let element = try cursor.next() {
-                guard decodedPositionCount < expectedPositionCount,
-                      let rawPosition = element as? Int64,
-                  let position = Int(exactly: rawPosition),
-                  position >= 0,
-                  previousPosition.map({ position > $0 }) ?? true else {
+            if positionsStored {
+                guard tuple.count == termFrequency + 1 else {
                     throw FullTextStorageError.corruptedPosting(term: term)
                 }
-                try consume(position)
-                previousPosition = position
-                decodedPositionCount += 1
+            } else {
+                guard tuple.count == 1 else {
+                    throw FullTextStorageError.corruptedPosting(term: term)
+                }
             }
+
+            var positions: [Int] = []
+            positions.reserveCapacity(tuple.count - 1)
+            for index in 1..<tuple.count {
+                guard let rawPosition = tuple[index] as? Int64,
+                      let position = Int(exactly: rawPosition),
+                      position >= 0 else {
+                    throw FullTextStorageError.corruptedPosting(term: term)
+                }
+                positions.append(position)
+            }
+            return (termFrequency: termFrequency, positions: positions)
         } catch let error as FullTextStorageError {
             throw error
         } catch {
-            throw FullTextStorageError.corruptedPosting(term: term)
-        }
-        guard decodedPositionCount == expectedPositionCount else {
             throw FullTextStorageError.corruptedPosting(term: term)
         }
     }

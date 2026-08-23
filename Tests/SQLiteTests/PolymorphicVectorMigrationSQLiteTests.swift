@@ -455,7 +455,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         try await container.withTestBaseOperation {
         let indexSubspace = try await entityVectorIndexSubspace(container: container)
 
-        return try await container.withTestBaseTransaction { transaction -> Int in
+        return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
             return try await transaction.collectRange(
                 begin: begin,
@@ -471,7 +471,7 @@ struct PolymorphicVectorMigrationSQLiteTests {
         let indexSubspace = try await entityVectorIndexSubspace(container: container)
         let range = indexSubspace.range()
 
-        try await container.withTestBaseTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             try transaction.clearRange(beginKey: range.begin, endKey: range.end)
         }
         }

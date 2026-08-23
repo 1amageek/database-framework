@@ -47,10 +47,6 @@ private enum BaseIsolationMigrationPlan: SchemaMigrationPlan {
     }
 }
 
-private enum BaseIsolationOperationOwnershipError: Error {
-    case leaseMismatch
-}
-
 @Suite("Base isolation and persisted Grants", .heartbeat)
 struct BaseIsolationSQLiteTests {
     @Test("Composition reads across two SQLite storage domains")
@@ -158,19 +154,6 @@ struct BaseIsolationSQLiteTests {
             try await context.save()
         }
 
-        let secondaryContext = container.session(
-            authorization: TestBaseEnvironment.authorization
-        ).base(secondaryBaseID).newContext()
-        await #expect(
-            throws: DatabaseControlMetadataTransactionError
-                .storageDomainMismatch
-        ) {
-            try await secondaryContext
-                .withExecutionDataAndControlMetadataTransaction(
-                    requiredAccess: .administer
-                ) { _, _ in () }
-        }
-
         let results = try await container.session(
             authorization: TestBaseEnvironment.authorization
         ).composition(compositionID)
@@ -210,142 +193,6 @@ struct BaseIsolationSQLiteTests {
         )
         try await primary.save()
         try await other.save()
-
-        let controlMarkerKey = container.controlStorage().root
-            .subspace("base-isolation-tests")
-            .pack(Tuple("atomic-control-marker"))
-        try await primary.withExecutionDataAndControlMetadataTransaction(
-            requiredAccess: .administer
-        ) { transaction, controlMetadata in
-            try await transaction.save(
-                BaseIsolationDocument(id: "atomic", value: "data"),
-                precondition: .notExists
-            )
-            try controlMetadata.setValue(
-                ByteString(utf8: "control"),
-                for: controlMarkerKey
-            )
-        }
-
-        let controlMarker = try await container.withControlMetadataTransaction(
-            configuration: .readOnly
-        ) { transaction in
-            try await transaction.executionStorageAccess.getValue(
-                for: controlMarkerKey,
-                snapshot: true
-            )
-        }
-        #expect(controlMarker == ByteString(utf8: "control"))
-        #expect(
-            try await primary.model(
-                for: "atomic",
-                as: BaseIsolationDocument.self
-            )?.value == "data"
-        )
-
-        let ownerMarkerKey = container.controlStorage().root
-            .subspace("base-isolation-tests")
-            .pack(Tuple("operation-owner"))
-        try await container.withControlMetadataTransaction { transaction in
-            try transaction.executionStorageAccess.setValue(
-                ByteString(utf8: "leased"),
-                for: ownerMarkerKey
-            )
-        }
-        let operationOwned = container.session(
-            authorization: .anonymous
-        ).base(try TestBaseEnvironment.id()).newContext()
-        await #expect(throws: BaseIsolationOperationOwnershipError.leaseMismatch) {
-            try await operationOwned
-                .withExecutionOperationOwnedDataAndControlMetadataTransaction(
-                    validateOwnership: { _ in
-                        throw BaseIsolationOperationOwnershipError.leaseMismatch
-                    }
-                ) { _, transaction, _ in
-                    try await transaction.save(
-                        BaseIsolationDocument(
-                            id: "invalid-operation-owner",
-                            value: "must-not-commit"
-                        ),
-                        precondition: .notExists
-                    )
-                }
-        }
-        #expect(
-            try await primary.model(
-                for: "invalid-operation-owner",
-                as: BaseIsolationDocument.self
-            ) == nil
-        )
-        await #expect(throws: BaseIsolationOperationOwnershipError.leaseMismatch) {
-            try await operationOwned
-                .withExecutionCheckpointedOperationOwnedTransaction(
-                    validateOwnership: {
-                        throw BaseIsolationOperationOwnershipError.leaseMismatch
-                    }
-                ) { _, transaction in
-                    try await transaction.save(
-                        BaseIsolationDocument(
-                            id: "invalid-checkpoint-owner",
-                            value: "must-not-commit"
-                        ),
-                        precondition: .notExists
-                    )
-                }
-        }
-        #expect(
-            try await primary.model(
-                for: "invalid-checkpoint-owner",
-                as: BaseIsolationDocument.self
-            ) == nil
-        )
-        try await operationOwned
-            .withExecutionCheckpointedOperationOwnedTransaction(
-                validateOwnership: { "validated-checkpoint-owner" }
-            ) { ownership, transaction in
-                try await transaction.save(
-                    BaseIsolationDocument(
-                        id: "checkpoint-operation-owned",
-                        value: ownership
-                    ),
-                    precondition: .notExists
-                )
-            }
-        #expect(
-            try await primary.model(
-                for: "checkpoint-operation-owned",
-                as: BaseIsolationDocument.self
-            )?.value == "validated-checkpoint-owner"
-        )
-        try await operationOwned
-            .withExecutionOperationOwnedDataAndControlMetadataTransaction(
-                validateOwnership: { controlMetadata in
-                    guard try await controlMetadata.getValue(
-                        for: ownerMarkerKey,
-                        snapshot: false
-                    ) == ByteString(utf8: "leased") else {
-                        throw BaseIsolationOperationOwnershipError.leaseMismatch
-                    }
-                }
-            ) { _, transaction, controlMetadata in
-                try await transaction.save(
-                    BaseIsolationDocument(
-                        id: "operation-owned",
-                        value: "committed"
-                    ),
-                    precondition: .notExists
-                )
-                try controlMetadata.setValue(
-                    ByteString(utf8: "completed"),
-                    for: ownerMarkerKey
-                )
-            }
-        #expect(
-            try await primary.model(
-                for: "operation-owned",
-                as: BaseIsolationDocument.self
-            )?.value == "committed"
-        )
 
         let primaryValue = try await primary.model(
             for: "same",

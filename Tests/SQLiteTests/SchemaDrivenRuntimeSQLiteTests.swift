@@ -625,7 +625,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
                 subspace: entitySubspace
             ).indexSubspace(for: indexName)
         let range = indexSubspace.range()
-        return try await container.withTestBaseTransaction { transaction in
+        return try await container.engine.withTransaction { transaction in
             try await transaction.collectRange(
                 begin: range.begin,
                 end: range.end,

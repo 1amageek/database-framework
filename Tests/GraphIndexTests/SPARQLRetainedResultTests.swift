@@ -40,6 +40,7 @@ struct SPARQLRetainedResultTests {
             )
             let plan = try SPARQLSelectPlanCompiler.compile(query)
             let result = try await SPARQLQueryExecutor(
+                database: engine,
                 monotonicClock: clock,
                 wallClock: FixedTestWallClock(),
                 sources: []

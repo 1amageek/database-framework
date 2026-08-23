@@ -100,11 +100,11 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-types.git",
-            revision: "6ff1742926d6618e44eb9f6c0ef2a2719c88c645"
+            from: "26.0730.0"
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            revision: "3711dffa3b187eff491f97681f0889bea67e19c0",
+            from: "26.0819.0",
             traits: databaseKitTraits
         ),
         .package(
@@ -113,7 +113,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            revision: "17b4de4f8d532ebf613e50678752aa7ff44f49e3"
+            revision: "00d4c48e824f1055e02f51ebdffe5b8dc42645d3"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
@@ -649,7 +649,6 @@ let package = Package(
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "DatabaseKitFoundation", package: "database-kit"),
                 .product(name: "DatabaseTypes", package: "database-types"),
-                .product(name: "StorageKitSystemClock", package: "storage-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [

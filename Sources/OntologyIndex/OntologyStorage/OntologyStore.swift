@@ -5,7 +5,6 @@
 //
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/
 
-import DatabaseEngine
 import StorageKit
 import DatabaseKit
 import DatabaseTypes
@@ -35,11 +34,6 @@ import DatabaseTypes
 /// ```
 public struct OntologyStore: Sendable {
 
-    package struct RetainedOntology: Sendable {
-        package let ontology: OWLOntology
-        package let reservation: DatabaseIntermediateReservation
-    }
-
     // MARK: - Properties
 
     /// Subspace for ontology storage
@@ -64,7 +58,7 @@ public struct OntologyStore: Sendable {
     /// - Returns: Metadata if exists, nil otherwise
     public func getMetadata(
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> OntologyMetadata? {
         let key = subspace.metadata(ontologyIRI).pack(Tuple())
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
@@ -100,7 +94,7 @@ public struct OntologyStore: Sendable {
 
     /// List all ontology IRIs
     public func listOntologies(
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [String] {
         let (beginKey, endKey) = subspace.base.range()
         var seen = Set<String>()
@@ -136,7 +130,7 @@ public struct OntologyStore: Sendable {
     public func getClass(
         _ classIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> StoredClassDefinition? {
         let key = subspace.classKey(ontologyIRI, classIRI: classIRI)
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
@@ -171,7 +165,7 @@ public struct OntologyStore: Sendable {
     /// List all classes in an ontology
     public func listClasses(
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [StoredClassDefinition] {
         let (beginKey, endKey) = subspace.classes(ontologyIRI).range()
         var classes: [StoredClassDefinition] = []
@@ -199,7 +193,7 @@ public struct OntologyStore: Sendable {
     public func getProperty(
         _ propertyIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> StoredPropertyDefinition? {
         let key = subspace.propertyKey(ontologyIRI, propertyIRI: propertyIRI)
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
@@ -234,7 +228,7 @@ public struct OntologyStore: Sendable {
     /// List all properties in an ontology
     public func listProperties(
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [StoredPropertyDefinition] {
         let (beginKey, endKey) = subspace.properties(ontologyIRI).range()
         var properties: [StoredPropertyDefinition] = []
@@ -278,7 +272,7 @@ public struct OntologyStore: Sendable {
     /// List all axioms in an ontology
     public func listAxioms(
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [OWLAxiom] {
         let (beginKey, endKey) = subspace.axioms(ontologyIRI).range()
         var axioms: [OWLAxiom] = []
@@ -341,7 +335,7 @@ public struct OntologyStore: Sendable {
     public func getSuperClasses(
         of classIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         let (beginKey, endKey) = subspace.classSuperOf(ontologyIRI).subspace(classIRI).range()
         var superClasses: Set<String> = []
@@ -369,7 +363,7 @@ public struct OntologyStore: Sendable {
     public func getSubClasses(
         of classIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         let (beginKey, endKey) = subspace.classSubOf(ontologyIRI).subspace(classIRI).range()
         var subClasses: Set<String> = []
@@ -413,7 +407,7 @@ public struct OntologyStore: Sendable {
     public func getSuperProperties(
         of propertyIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         let (beginKey, endKey) = subspace.propertySuperOf(ontologyIRI).subspace(propertyIRI).range()
         var superProperties: Set<String> = []
@@ -441,7 +435,7 @@ public struct OntologyStore: Sendable {
     public func getSubProperties(
         of propertyIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         let (beginKey, endKey) = subspace.propertySubOf(ontologyIRI).subspace(propertyIRI).range()
         var subProperties: Set<String> = []
@@ -486,7 +480,7 @@ public struct OntologyStore: Sendable {
     public func getInverse(
         of property: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> String? {
         let key = subspace.inverseKey(ontologyIRI, property: property)
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
@@ -511,7 +505,7 @@ public struct OntologyStore: Sendable {
     public func isTransitive(
         property: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         let key = subspace.transitiveKey(ontologyIRI, property: property)
         return try await transaction.getValue(for: key, snapshot: true) != nil
@@ -520,7 +514,7 @@ public struct OntologyStore: Sendable {
     /// Get all transitive properties
     public func getTransitiveProperties(
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         let (beginKey, endKey) = subspace.transitive(ontologyIRI).range()
         var properties: Set<String> = []
@@ -589,7 +583,7 @@ public struct OntologyStore: Sendable {
     public func getPropertyChains(
         for targetProperty: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [[String]] {
         let (beginKey, endKey) = subspace.chains(ontologyIRI).subspace(targetProperty).range()
         var chains: [[String]] = []
@@ -614,7 +608,7 @@ public struct OntologyStore: Sendable {
     /// Get all property chains in an ontology
     public func getAllPropertyChains(
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> [String: [[String]]] {
         let (beginKey, endKey) = subspace.chains(ontologyIRI).range()
         var result: [String: [[String]]] = [:]
@@ -895,7 +889,7 @@ public struct OntologyStore: Sendable {
     public func getEquivalentClasses(
         of classIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         // Get class definition and return equivalent classes
         if let classDef = try await getClass(classIRI, ontologyIRI: ontologyIRI, transaction: transaction) {
@@ -908,7 +902,7 @@ public struct OntologyStore: Sendable {
     public func isSymmetric(
         property propertyIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         if let propDef = try await getProperty(propertyIRI, ontologyIRI: ontologyIRI, transaction: transaction) {
             return propDef.isSymmetric
@@ -920,7 +914,7 @@ public struct OntologyStore: Sendable {
     public func isIrreflexive(
         property propertyIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Bool {
         if let propDef = try await getProperty(propertyIRI, ontologyIRI: ontologyIRI, transaction: transaction) {
             return propDef.isIrreflexive
@@ -932,7 +926,7 @@ public struct OntologyStore: Sendable {
     public func getDomains(
         of propertyIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         if let propDef = try await getProperty(propertyIRI, ontologyIRI: ontologyIRI, transaction: transaction) {
             return propDef.domains
@@ -944,7 +938,7 @@ public struct OntologyStore: Sendable {
     public func getRanges(
         of propertyIRI: String,
         ontologyIRI: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> Set<String> {
         if let propDef = try await getProperty(propertyIRI, ontologyIRI: ontologyIRI, transaction: transaction) {
             return propDef.ranges
@@ -965,7 +959,7 @@ public struct OntologyStore: Sendable {
     /// - Returns: Reconstructed OWLOntology, or nil if not found
     public func reconstruct(
         iri: String,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionAccess
     ) async throws -> OWLOntology? {
         guard let metadata = try await getMetadata(
             ontologyIRI: iri,
@@ -1054,110 +1048,6 @@ public struct OntologyStore: Sendable {
         return ontology
     }
 
-    /// Preflights every persisted input row before reconstructing an ontology
-    /// retained by SHACL validation. The preflight and reconstruction use the
-    /// same caller-owned snapshot; no semantic collection is materialized
-    /// until the request budget admits its bounded peak footprint.
-    package func reconstructRetainedForValidation(
-        iri: String,
-        transaction: any TransactionReadAccess,
-        workMeter: DatabaseWorkMeter
-    ) async throws -> RetainedOntology? {
-        let metadataKey = subspace.metadata(iri).pack(Tuple())
-        guard let metadataBytes = try await transaction.getValue(
-            for: metadataKey,
-            snapshot: true
-        ) else {
-            try workMeter.consume(at: .storageRow)
-            return nil
-        }
-
-        var storageBytes = try DatabaseIntermediateFootprint(
-            rows: 1,
-            bytes: UInt64(metadataKey.count)
-        ).adding(
-            DatabaseIntermediateFootprint(
-                bytes: UInt64(metadataBytes.count)
-            )
-        )
-        // Each input is read once by this preflight and once by reconstruction.
-        try workMeter.consume(2, at: .storageRow)
-        for inputSubspace in [
-            subspace.classes(iri),
-            subspace.properties(iri),
-            subspace.axioms(iri),
-        ] {
-            let range = inputSubspace.range()
-            var cursor = transaction.rangeCursor(
-                from: .firstGreaterOrEqual(range.begin),
-                to: .firstGreaterOrEqual(range.end),
-                limit: Int.max,
-                reverse: false,
-                snapshot: true,
-                streamingMode: .iterator
-            )
-            do {
-                while let (key, value) = try await cursor.next() {
-                    try workMeter.consume(2, at: .storageRow)
-                    storageBytes = try storageBytes.adding(
-                        DatabaseIntermediateFootprint(
-                            rows: 1,
-                            bytes: UInt64(key.count) + UInt64(value.count)
-                        )
-                    )
-                }
-            } catch {
-                let iterationError = error
-                do {
-                    try await cursor.finish()
-                } catch {
-                    throw StorageRangeCleanupError(
-                        iterationError: iterationError,
-                        cleanupError: error
-                    )
-                }
-                throw iterationError
-            }
-            try await cursor.finish()
-        }
-
-        let admittedByteCount = try DatabaseIntermediateFootprint(
-            bytes: 4_096
-        ).adding(
-            try DatabaseIntermediateFootprint(
-                bytes: storageBytes.bytes
-            ).multiplied(by: 64)
-        ).adding(
-            try DatabaseIntermediateFootprint(bytes: 512)
-                .multiplied(by: storageBytes.rows)
-        ).bytes
-        let reservation = try workMeter.reserveIntermediate(
-            rows: storageBytes.rows,
-            bytes: admittedByteCount,
-            at: .storageRow
-        )
-        do {
-            guard let ontology = try await reconstruct(
-                iri: iri,
-                transaction: transaction
-            ) else {
-                reservation.release()
-                return nil
-            }
-            // Keep the conservative reconstruction admission for the complete
-            // ontology lifetime. Encoded rows cannot measure nested collection
-            // capacity, enum boxes, or allocator overhead precisely enough to
-            // justify reducing the retained reservation.
-            return RetainedOntology(
-                ontology: ontology,
-                reservation: reservation
-            )
-        } catch {
-            reservation.release()
-            throw error
-        }
-    }
-
     // MARK: - Factory
 
     /// Create an OntologyStore with the standard subspace prefix
@@ -1165,5 +1055,4 @@ public struct OntologyStore: Sendable {
         let baseSubspace = Subspace(prefix: ByteString(utf8: "O"))
         return OntologyStore(subspace: OntologySubspace(base: baseSubspace))
     }
-
 }
