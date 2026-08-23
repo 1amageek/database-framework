@@ -1542,6 +1542,26 @@ extension DatabaseContext {
             DatabaseTransaction
         ) async throws -> T
     ) async throws -> T {
+        try await withModelTransactionCapabilities(
+            requiredAccess: requiredAccess,
+            configuration: configuration,
+            executionDeadline: executionDeadline,
+            exposesControlMetadata: false
+        ) { transaction, _ in
+            try await operation(transaction)
+        }
+    }
+
+    private func withModelTransactionCapabilities<T: Sendable>(
+        requiredAccess: Security.Access,
+        configuration: TransactionConfiguration,
+        executionDeadline: TransactionExecutionDeadline?,
+        exposesControlMetadata: Bool,
+        _ operation: @Sendable @escaping (
+            DatabaseTransaction,
+            (any TransactionAccess)?
+        ) async throws -> T
+    ) async throws -> T {
         // A DatabaseTransaction exposes both model reads and model mutations.
         // Every callback receiving that capability must therefore be admitted
         // for both operations, in addition to any domain-specific access such
@@ -1550,6 +1570,10 @@ extension DatabaseContext {
         try ensureUsable()
         return try await withDataOperation {
             if let binding = ActiveDatabaseTransactionContext.binding {
+                guard !exposesControlMetadata else {
+                    throw DatabaseControlMetadataTransactionError
+                        .requiresIndependentTransaction
+                }
                 try binding.identity.validateReuse(by: self)
                 guard binding.accessMode.allowsMutation else {
                     throw DatabaseReadTransactionError
@@ -1583,7 +1607,7 @@ extension DatabaseContext {
                 else {
                     throw DatabaseTransactionError.invalidOperationContext
                 }
-                return try await operation(databaseTransaction)
+                return try await operation(databaseTransaction, nil)
             }
             #if DATABASE_MULTI_BASE
             let lease = try self.requireOperationDataRoot()
@@ -1616,6 +1640,13 @@ extension DatabaseContext {
                 let executionIdentity = try DatabaseTransactionExecutionIdentity(
                     context: self
                 )
+                let controlStorage = self.container.controlStorage()
+                if exposesControlMetadata,
+                   executionIdentity.storageDomainIdentifier
+                    != controlStorage.domainIdentifier {
+                    throw DatabaseControlMetadataTransactionError
+                        .storageDomainMismatch
+                }
                 let operationScope = DatabaseReadScopeGate()
                 let validationScope = DatabaseReadScopeGate()
                 let accessMode: DatabaseTransactionAccessMode = requiredAccess
@@ -1637,6 +1668,14 @@ extension DatabaseContext {
                     validationStorageAccess: validationStorageAccess,
                     container: self.container
                 )
+                let controlMetadataAccess = exposesControlMetadata
+                    ? DataRootTransactionAccess.admitted(
+                        storageAccess,
+                        dataRoot: controlStorage.root,
+                        accessMode: .readWrite,
+                        readScope: operationScope
+                    )
+                    : nil
                 #if DATABASE_MULTI_BASE
                 let executionBinding = DatabaseTransactionExecutionBinding(
                     identity: executionIdentity,
@@ -1661,8 +1700,12 @@ extension DatabaseContext {
                 return try await ActiveDatabaseTransactionContext.$binding
                     .withValue(executionBinding) {
                         do {
-                            let result = try await operation(transaction)
+                            let result = try await operation(
+                                transaction,
+                                controlMetadataAccess
+                            )
                             try await operationScope.closeAndWait()
+                            controlMetadataAccess?.revoke()
                             admittedStorageAccess.revoke()
                             try await transaction.prepareForCommit()
                             try await validationScope.closeAndWait()
@@ -1679,6 +1722,7 @@ extension DatabaseContext {
                                     )
                                 }
                             }
+                            controlMetadataAccess?.revoke()
                             admittedStorageAccess.revoke()
                             validationStorageAccess.revoke()
                             await transaction.invalidate()
@@ -1767,6 +1811,7 @@ extension DatabaseContext {
             operation
         )
     }
+
     #else
     /// Executes server-owned read work with a capability that cannot express
     /// model or storage mutation.
@@ -1802,6 +1847,37 @@ extension DatabaseContext {
         )
     }
     #endif
+
+    /// Executes data semantics and control-metadata mutations in one physical
+    /// transaction while preserving independent root-scoped capabilities.
+    ///
+    /// This is the framework-owned atomic boundary used by an execution host
+    /// for durable control state that must commit with one data operation. It
+    /// rejects cross-domain composition; those operations require a durable
+    /// checkpoint protocol instead of weakening either root boundary.
+    @_spi(DatabaseExecution)
+    public func withExecutionDataAndControlMetadataTransaction<T: Sendable>(
+        requiredAccess: Security.Access = .write,
+        configuration: TransactionConfiguration = .default,
+        executionDeadline: TransactionExecutionDeadline? = nil,
+        _ operation: @Sendable @escaping (
+            DatabaseTransaction,
+            any TransactionAccess
+        ) async throws -> T
+    ) async throws -> T {
+        try await withModelTransactionCapabilities(
+            requiredAccess: requiredAccess,
+            configuration: configuration,
+            executionDeadline: executionDeadline,
+            exposesControlMetadata: true
+        ) { transaction, controlMetadataAccess in
+            guard let controlMetadataAccess else {
+                throw DatabaseControlMetadataTransactionError
+                    .requiresIndependentTransaction
+            }
+            return try await operation(transaction, controlMetadataAccess)
+        }
+    }
 
     private func withExecutionReadTransactionImplementation<T: Sendable>(
         requiredAccess: Security.Access,

@@ -154,6 +154,19 @@ struct BaseIsolationSQLiteTests {
             try await context.save()
         }
 
+        let secondaryContext = container.session(
+            authorization: TestBaseEnvironment.authorization
+        ).base(secondaryBaseID).newContext()
+        await #expect(
+            throws: DatabaseControlMetadataTransactionError
+                .storageDomainMismatch
+        ) {
+            try await secondaryContext
+                .withExecutionDataAndControlMetadataTransaction(
+                    requiredAccess: .administer
+                ) { _, _ in () }
+        }
+
         let results = try await container.session(
             authorization: TestBaseEnvironment.authorization
         ).composition(compositionID)
@@ -193,6 +206,38 @@ struct BaseIsolationSQLiteTests {
         )
         try await primary.save()
         try await other.save()
+
+        let controlMarkerKey = container.controlStorage().root
+            .subspace("base-isolation-tests")
+            .pack(Tuple("atomic-control-marker"))
+        try await primary.withExecutionDataAndControlMetadataTransaction(
+            requiredAccess: .administer
+        ) { transaction, controlMetadata in
+            try await transaction.save(
+                BaseIsolationDocument(id: "atomic", value: "data"),
+                precondition: .notExists
+            )
+            try controlMetadata.setValue(
+                ByteString(utf8: "control"),
+                for: controlMarkerKey
+            )
+        }
+
+        let controlMarker = try await container.withControlMetadataTransaction(
+            configuration: .readOnly
+        ) { transaction in
+            try await transaction.executionStorageAccess.getValue(
+                for: controlMarkerKey,
+                snapshot: true
+            )
+        }
+        #expect(controlMarker == ByteString(utf8: "control"))
+        #expect(
+            try await primary.model(
+                for: "atomic",
+                as: BaseIsolationDocument.self
+            )?.value == "data"
+        )
 
         let primaryValue = try await primary.model(
             for: "same",
