@@ -1882,6 +1882,39 @@ extension DatabaseContext {
         }
     }
 
+    /// Runs one checkpointed durable-operation mutation without applying the
+    /// originating request's persisted Grant.
+    ///
+    /// The execution host must validate the current durable operation lease in
+    /// `validateOwnership`. No data capability is passed to host code until
+    /// that validation succeeds for the current transaction attempt. Because
+    /// control and data may occupy different storage domains, the mutation must
+    /// be idempotent and retain evidence that the final control-domain commit
+    /// can validate.
+    @_spi(DatabaseExecution)
+    public func withExecutionCheckpointedOperationOwnedTransaction<
+        Ownership: Sendable,
+        T: Sendable
+    >(
+        configuration: TransactionConfiguration = .default,
+        executionDeadline: TransactionExecutionDeadline? = nil,
+        validateOwnership: @Sendable @escaping () async throws -> Ownership,
+        _ operation: @Sendable @escaping (
+            Ownership,
+            DatabaseTransaction
+        ) async throws -> T
+    ) async throws -> T {
+        try await withModelTransactionCapabilities(
+            authorization: .durableOperationOwner,
+            configuration: configuration,
+            executionDeadline: executionDeadline,
+            exposesControlMetadata: false
+        ) { transaction, _ in
+            let ownership = try await validateOwnership()
+            return try await operation(ownership, transaction)
+        }
+    }
+
     /// Atomically commits durable-operation cleanup with its control state.
     ///
     /// The execution host receives no data mutation capability until

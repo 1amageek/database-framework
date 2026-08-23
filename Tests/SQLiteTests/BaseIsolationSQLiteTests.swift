@@ -277,6 +277,46 @@ struct BaseIsolationSQLiteTests {
                 as: BaseIsolationDocument.self
             ) == nil
         )
+        await #expect(throws: BaseIsolationOperationOwnershipError.leaseMismatch) {
+            try await operationOwned
+                .withExecutionCheckpointedOperationOwnedTransaction(
+                    validateOwnership: {
+                        throw BaseIsolationOperationOwnershipError.leaseMismatch
+                    }
+                ) { _, transaction in
+                    try await transaction.save(
+                        BaseIsolationDocument(
+                            id: "invalid-checkpoint-owner",
+                            value: "must-not-commit"
+                        ),
+                        precondition: .notExists
+                    )
+                }
+        }
+        #expect(
+            try await primary.model(
+                for: "invalid-checkpoint-owner",
+                as: BaseIsolationDocument.self
+            ) == nil
+        )
+        try await operationOwned
+            .withExecutionCheckpointedOperationOwnedTransaction(
+                validateOwnership: { "validated-checkpoint-owner" }
+            ) { ownership, transaction in
+                try await transaction.save(
+                    BaseIsolationDocument(
+                        id: "checkpoint-operation-owned",
+                        value: ownership
+                    ),
+                    precondition: .notExists
+                )
+            }
+        #expect(
+            try await primary.model(
+                for: "checkpoint-operation-owned",
+                as: BaseIsolationDocument.self
+            )?.value == "validated-checkpoint-owner"
+        )
         try await operationOwned
             .withExecutionOperationOwnedDataAndControlMetadataTransaction(
                 validateOwnership: { controlMetadata in
