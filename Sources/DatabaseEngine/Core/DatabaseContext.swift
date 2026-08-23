@@ -1891,14 +1891,16 @@ extension DatabaseContext {
     /// protocol.
     @_spi(DatabaseExecution)
     public func withExecutionOperationOwnedDataAndControlMetadataTransaction<
+        Ownership: Sendable,
         T: Sendable
     >(
         configuration: TransactionConfiguration = .default,
         executionDeadline: TransactionExecutionDeadline? = nil,
         validateOwnership: @Sendable @escaping (
             any TransactionReadAccess
-        ) async throws -> Void,
+        ) async throws -> Ownership,
         _ operation: @Sendable @escaping (
+            Ownership,
             DatabaseTransaction,
             any TransactionAccess
         ) async throws -> T
@@ -1913,8 +1915,12 @@ extension DatabaseContext {
                 throw DatabaseControlMetadataTransactionError
                     .requiresIndependentTransaction
             }
-            try await validateOwnership(controlMetadataAccess)
-            return try await operation(transaction, controlMetadataAccess)
+            let ownership = try await validateOwnership(controlMetadataAccess)
+            return try await operation(
+                ownership,
+                transaction,
+                controlMetadataAccess
+            )
         }
     }
 

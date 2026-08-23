@@ -261,7 +261,7 @@ struct BaseIsolationSQLiteTests {
                     validateOwnership: { _ in
                         throw BaseIsolationOperationOwnershipError.leaseMismatch
                     }
-                ) { transaction, _ in
+                ) { _, transaction, _ in
                     try await transaction.save(
                         BaseIsolationDocument(
                             id: "invalid-operation-owner",
@@ -287,7 +287,7 @@ struct BaseIsolationSQLiteTests {
                         throw BaseIsolationOperationOwnershipError.leaseMismatch
                     }
                 }
-            ) { transaction, controlMetadata in
+            ) { _, transaction, controlMetadata in
                 try await transaction.save(
                     BaseIsolationDocument(
                         id: "operation-owned",
