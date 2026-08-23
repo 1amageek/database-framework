@@ -233,6 +233,35 @@ struct RequestAuthorizationPolicyTests {
 
     @Test("Logical LIST admission covers only the exact query shape")
     func logicalListAdmissionRequiresExactShape() async throws {
+        let sparqlAuthorization = try IndexReadAuthorization(
+            sparqlSelectQuery: SelectQuery(
+                projection: .all,
+                source: .graphPattern(.basic([])),
+                orderBy: [
+                    SortKey(
+                        .function(
+                            FunctionCall(
+                                name: "CONCAT",
+                                arguments: [
+                                    .variable(Variable("subject")),
+                                    .variable(Variable("label")),
+                                ]
+                            )
+                        )
+                    ),
+                    SortKey(.variable(Variable("subject"))),
+                ]
+            )
+        )
+        #expect(sparqlAuthorization.orderBy == ["label", "subject"])
+
+        let sparqlModifierAuthorization = try IndexReadAuthorization(
+            modifiers: SPARQLSolutionModifiers(
+                orderBy: [SortKey(.variable(Variable("subject")))]
+            )
+        )
+        #expect(sparqlModifierAuthorization.orderBy == ["subject"])
+
         let schema = try Schema(
             entities: [try ExactQueryShapeRecord.schemaEntity],
             version: Schema.Version(1, 0, 0)

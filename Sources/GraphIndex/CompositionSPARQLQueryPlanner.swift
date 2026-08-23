@@ -27,7 +27,7 @@ private struct CompositionSPARQLMemberQueryExecutor:
         )
         return try context.admitLogicalRead(
             listAuthorization: try IndexReadAuthorization(
-                selectQuery: query
+                sparqlSelectQuery: query
             ),
             fieldPlan: .rdfDataset(schema: context.container.schema),
             restrictingTo: selectedEntities

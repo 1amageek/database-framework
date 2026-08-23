@@ -1122,10 +1122,18 @@ extension DatabaseContext {
             query: selectQuery,
             schema: container.schema
         )
-        let admission = try admitLogicalRead(
-            listAuthorization: try IndexReadAuthorization(
+        let listAuthorization: IndexReadAuthorization
+        if isSPARQLSource(selectQuery.source) {
+            listAuthorization = try IndexReadAuthorization(
+                sparqlSelectQuery: selectQuery
+            )
+        } else {
+            listAuthorization = try IndexReadAuthorization(
                 selectQuery: selectQuery
-            ),
+            )
+        }
+        let admission = try admitLogicalRead(
+            listAuthorization: listAuthorization,
             fieldPlan: plan
         )
         return try await withReadAuthorizationAdmission(admission) {

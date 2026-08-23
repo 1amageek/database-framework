@@ -104,7 +104,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            revision: "8d5ef0d9d072669336774b71f2f86937a47d26af",
+            revision: "ea5bd7356bf7240297eca04210f3139e6aac66ae",
             traits: databaseKitTraits
         ),
         .package(

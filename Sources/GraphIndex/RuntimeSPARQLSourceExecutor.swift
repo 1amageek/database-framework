@@ -23,7 +23,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             context: context,
             partitions: partitions,
             authorization: try IndexReadAuthorization(
-                selectQuery: selectQuery
+                sparqlSelectQuery: selectQuery
             ),
             transaction: transaction
         )

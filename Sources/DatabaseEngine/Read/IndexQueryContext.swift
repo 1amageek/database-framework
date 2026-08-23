@@ -33,6 +33,19 @@ public struct IndexReadAuthorization: Sendable, Hashable {
         self.orderBy = try selectQuery.requiredOrderByColumnNames()
     }
 
+    package init(sparqlSelectQuery: SelectQuery) throws {
+        self.limit = try Self.runtimeWindowValue(
+            sparqlSelectQuery.limit,
+            name: "limit"
+        )
+        self.offset = try Self.runtimeWindowValue(
+            sparqlSelectQuery.offset,
+            name: "offset"
+        )
+        self.orderBy = sparqlSelectQuery
+            .orderByVariableNamesForAuthorization()
+    }
+
     package init(modifiers: SPARQLSolutionModifiers) throws {
         self.limit = try Self.runtimeWindowValue(
             modifiers.limit,
@@ -42,7 +55,7 @@ public struct IndexReadAuthorization: Sendable, Hashable {
             modifiers.offset,
             name: "offset"
         )
-        self.orderBy = try modifiers.requiredOrderByColumnNames()
+        self.orderBy = modifiers.orderByVariableNamesForAuthorization()
     }
 
     private static func runtimeWindowValue(
