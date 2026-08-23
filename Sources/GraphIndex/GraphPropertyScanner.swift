@@ -129,14 +129,14 @@ public struct PropertyFilter: Sendable {
 ///
 /// Structural key planning and decoding remain owned by GraphEdgeScanner, so
 /// graph layout semantics cannot diverge between algorithm and property reads.
-package struct GraphPropertyScanner: Sendable {
+public struct GraphPropertyScanner: Sendable {
     private let indexSubspace: Subspace
     private let strategy: GraphIndexStrategy
     private let includedFieldNames: [String]
     private let snapshot: GraphReadSnapshot?
     private let workMeter: DatabaseWorkMeter?
 
-    package init(
+    public init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         includedFieldNames: [String]
@@ -148,7 +148,8 @@ package struct GraphPropertyScanner: Sendable {
         self.workMeter = nil
     }
 
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         includedFieldNames: [String],
@@ -177,7 +178,7 @@ package struct GraphPropertyScanner: Sendable {
     }
 
     /// Scans a structural pattern inside an explicit graph target.
-    package func scanEdges(
+    public func scanEdges(
         from source: GraphIdentity?,
         edge edgeLabel: GraphIdentity?,
         to target: GraphIdentity?,
@@ -243,8 +244,8 @@ public enum GraphPropertyFilterError: Error, Sendable, Equatable {
     case operatorTypeMismatch(field: String, operation: ComparisonOperator)
 }
 
-package struct GraphPropertyScan: Sendable {
-    package typealias Element = GraphEdgeWithProperties
+public struct GraphPropertyScan: Sendable {
+    public typealias Element = GraphEdgeWithProperties
 
     private let scanner: GraphPropertyScanner
     private let entries: GraphEdgeEntryScan
@@ -260,7 +261,7 @@ package struct GraphPropertyScan: Sendable {
         self.filters = filters
     }
 
-    package func makeCursor() -> Cursor {
+    public func makeCursor() -> Cursor {
         Cursor(
             scanner: scanner,
             entryCursor: entries.makeCursor(),
@@ -268,7 +269,7 @@ package struct GraphPropertyScan: Sendable {
         )
     }
 
-    package struct Cursor {
+    public struct Cursor {
         private let scanner: GraphPropertyScanner
         private var entryCursor: GraphEdgeEntryScan.Cursor
         private let filters: [PropertyFilter]?
@@ -283,7 +284,7 @@ package struct GraphPropertyScan: Sendable {
             self.filters = filters
         }
 
-        package mutating func next() async throws -> GraphEdgeWithProperties? {
+        public mutating func next() async throws -> GraphEdgeWithProperties? {
             while let entry = try await entryCursor.next() {
                 let properties = try scanner.decodeProperties(entry.value)
                 guard try scanner.matches(properties, filters: filters) else {

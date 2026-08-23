@@ -10,7 +10,7 @@ public struct EdgeInfo: Sendable, Equatable {
     public let edgeLabel: GraphIdentity
     public let graph: GraphIdentity?
 
-    package init(
+    public init(
         source: GraphIdentity,
         target: GraphIdentity,
         edgeLabel: GraphIdentity,
@@ -69,7 +69,8 @@ public struct GraphEdgeScanner: Sendable {
         self.workMeter = workMeter
     }
 
-    package init(
+    @_spi(DatabaseExecution)
+    public init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         graphTarget: GraphScanTarget,
