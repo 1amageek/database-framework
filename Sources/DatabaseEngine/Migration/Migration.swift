@@ -236,21 +236,29 @@ public struct MigrationContext: Sendable {
             indexPhysicalLayouts: targetIndexPhysicalLayouts
         )
 
-        // 5. Enable index (disabled → writeOnly)
-        // Check current state first to ensure idempotency
-        let currentState = try await lifecycleStore.state(of: index.name)
-
-        switch currentState {
-        case .disabled:
-            // Normal case: enable the index
-            try await lifecycleStore.enable(index.name)
-        case .readable:
-            // Index already built - nothing to do
-            return
-        case .writeOnly:
-            // Index enabled but not built - continue to build
-            break
+        // 5. Enable index (disabled → writeOnly) in the same authorized
+        // attempt that observes its lifecycle state.
+        let requiresBuild = try await withAuthorizedTransaction(
+            configuration: .batch
+        ) { transaction in
+            let currentState = try await lifecycleStore.state(
+                of: index.name,
+                transaction: transaction
+            )
+            switch currentState {
+            case .disabled:
+                try await lifecycleStore.enable(
+                    index.name,
+                    transaction: transaction
+                )
+                return true
+            case .readable:
+                return false
+            case .writeOnly:
+                return true
+            }
         }
+        guard requiresBuild else { return }
 
         // 6. Build the index from the target generation's runtime registry.
 
@@ -268,6 +276,9 @@ public struct MigrationContext: Sendable {
         }
         try await EntityIndexBuilder.buildIndex(
             for: entityRuntime,
+            transactionAuthority: .requestAuthorization(
+                RequestAuthorization.context
+            ),
             container: container,
             storeSubspace: info.subspace,
             index: index,
@@ -516,6 +527,9 @@ public struct MigrationContext: Sendable {
         }
         try await EntityIndexBuilder.buildIndex(
             for: entityRuntime,
+            transactionAuthority: .requestAuthorization(
+                RequestAuthorization.context
+            ),
             container: container,
             storeSubspace: info.subspace,
             index: index,
@@ -535,16 +549,27 @@ public struct MigrationContext: Sendable {
             schema: schema,
             indexPhysicalLayouts: targetIndexPhysicalLayouts
         )
-        let currentState = try await lifecycleStore.state(of: indexName)
-
-        switch currentState {
-        case .disabled:
-            try await lifecycleStore.enable(indexName)
-        case .readable:
-            return
-        case .writeOnly:
-            break
+        let requiresBuild = try await withAuthorizedTransaction(
+            configuration: .batch
+        ) { transaction in
+            let currentState = try await lifecycleStore.state(
+                of: indexName,
+                transaction: transaction
+            )
+            switch currentState {
+            case .disabled:
+                try await lifecycleStore.enable(
+                    indexName,
+                    transaction: transaction
+                )
+                return true
+            case .readable:
+                return false
+            case .writeOnly:
+                return true
+            }
         }
+        guard requiresBuild else { return }
 
         try await buildPolymorphicIndexEntries(
             indexName: indexName,
@@ -553,7 +578,13 @@ public struct MigrationContext: Sendable {
             lifecycleStore: lifecycleStore,
             batchSize: batchSize
         )
-        try await lifecycleStore.makeReadable(indexName)
+        try await withAuthorizedTransaction(configuration: .batch) {
+            transaction in
+            try await lifecycleStore.makeReadable(
+                indexName,
+                transaction: transaction
+            )
+        }
     }
 
     private func removePolymorphicIndex(
@@ -645,7 +676,13 @@ public struct MigrationContext: Sendable {
             lifecycleStore: lifecycleStore,
             batchSize: batchSize
         )
-        try await lifecycleStore.makeReadable(indexName)
+        try await withAuthorizedTransaction(configuration: .batch) {
+            transaction in
+            try await lifecycleStore.makeReadable(
+                indexName,
+                transaction: transaction
+            )
+        }
     }
 
     private func buildPolymorphicIndexEntries(
@@ -713,7 +750,7 @@ public struct MigrationContext: Sendable {
                 let (itemsInBatch, lastProcessedKey) = try await withAuthorizedTransaction(
                     configuration: .batch
                 ) { transaction -> (Int, ByteString?) in
-                    let storage = self.container.itemStorageFactory.make(
+                    let storage = self.container.itemStorageFactory.makeWriter(
                         transaction: transaction,
                         blobsSubspace: blobsSubspace
                     )
@@ -898,7 +935,7 @@ public struct MigrationContext: Sendable {
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         try await withAuthorizedTransaction(configuration: .default) { transaction in
-            let storage = self.container.itemStorageFactory.make(
+            let storage = self.container.itemStorageFactory.makeWriter(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
@@ -922,7 +959,7 @@ public struct MigrationContext: Sendable {
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         try await withAuthorizedTransaction(configuration: .default) { transaction in
-            let storage = self.container.itemStorageFactory.make(
+            let storage = self.container.itemStorageFactory.makeWriter(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
@@ -951,7 +988,7 @@ public struct MigrationContext: Sendable {
             let batch = Array(items[batchStart..<batchEnd])
 
             try await withAuthorizedTransaction(configuration: .batch) { transaction in
-                let storage = self.container.itemStorageFactory.make(
+                let storage = self.container.itemStorageFactory.makeWriter(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
                 )
@@ -987,7 +1024,7 @@ public struct MigrationContext: Sendable {
             let batch = items[batchStart..<batchEnd]
 
             try await withAuthorizedTransaction(configuration: .batch) { transaction in
-                let storage = self.container.itemStorageFactory.make(
+                let storage = self.container.itemStorageFactory.makeWriter(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
                 )
@@ -1275,7 +1312,7 @@ public enum DatabaseRuntimeError: Error, CustomStringConvertible {
 	                        ) { transaction in
 	                            let rangeBegin = currentLastKey.map { $0.appending(0x00) } ?? beginKey
 
-	                            let storage = self.container.itemStorageFactory.make(
+	                            let storage = self.container.itemStorageFactory.makeWriter(
 	                                transaction: transaction,
 	                                blobsSubspace: blobsSubspace
 	                            )

@@ -17,6 +17,9 @@ public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConver
     case malformedWindowMetadataKey(indexName: String)
     case malformedWindowIdentifier(indexName: String)
     case malformedScoreEntry(indexName: String)
+    case invalidPercentile(Double)
+    case invalidWindowDuration(indexName: String, duration: Double)
+    case windowTimestampOverflow(indexName: String)
 
     public var description: String {
         switch self {
@@ -32,6 +35,12 @@ public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConver
             return "Time-window leaderboard '\(indexName)' has a non-Int64 window identifier"
         case .malformedScoreEntry(let indexName):
             return "Time-window leaderboard '\(indexName)' has a malformed score entry"
+        case .invalidPercentile(let percentile):
+            return "Leaderboard percentile must be finite and between 0 and 1: \(percentile)"
+        case .invalidWindowDuration(let indexName, let duration):
+            return "Time-window leaderboard '\(indexName)' requires a positive whole-second Int64 duration; received \(duration)"
+        case .windowTimestampOverflow(let indexName):
+            return "Time-window leaderboard '\(indexName)' produced a window timestamp outside Int64"
         }
     }
 }
@@ -135,7 +144,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         newItem: Item?,
         transaction: any TransactionAccess
     ) async throws {
-        let currentWindowId = currentWindowId()
+        let currentWindowId = try currentWindowId()
 
         // Get primary keys
         let oldPK: Tuple? = try oldItem.map { try DataAccess.extractId(from: $0, using: idExpression) }
@@ -244,7 +253,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
             return
         }
 
-        let currentWindowId = currentWindowId()
+        let currentWindowId = try currentWindowId()
 
         try await insertEntry(
             pk: id,
@@ -274,7 +283,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
             return []
         }
 
-        let currentWindowId = currentWindowId()
+        let currentWindowId = try currentWindowId()
 
         return [try makeWindowEntryKey(
             windowId: currentWindowId,
@@ -287,8 +296,19 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     // MARK: - Private Helpers
 
     /// Calculates the active window from the injected database clock.
-    private func currentWindowId() -> Int64 {
-        wallClock.now.secondsSinceUnixEpoch / Int64(window.durationSeconds)
+    private func currentWindowId() throws -> Int64 {
+        wallClock.now.secondsSinceUnixEpoch / (try windowDurationSeconds())
+    }
+
+    private func windowDurationSeconds() throws -> Int64 {
+        guard let duration = Int64(exactly: window.durationSeconds),
+              duration > 0 else {
+            throw TimeWindowLeaderboardIndexError.invalidWindowDuration(
+                indexName: index.name,
+                duration: window.durationSeconds
+            )
+        }
+        return duration
     }
 
     /// Invert score for descending order storage
@@ -499,7 +519,14 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     ) async throws {
         let startKey = metaSubspace.subspace("start").pack(Tuple(windowId))
         if try await transaction.getValue(for: startKey) == nil {
-            let startTime = windowId * Int64(window.durationSeconds)
+            let (startTime, overflow) = windowId.multipliedReportingOverflow(
+                by: try windowDurationSeconds()
+            )
+            guard !overflow else {
+                throw TimeWindowLeaderboardIndexError.windowTimestampOverflow(
+                    indexName: index.name
+                )
+            }
             try transaction.setValue(ByteConversion.int64ToBytes(startTime), for: startKey)
         }
     }
@@ -536,9 +563,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     public func getTopK(
         k: Int,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
-        let currentWindowId = currentWindowId()
+        let currentWindowId = try currentWindowId()
 
         return try await getTopK(
             k: k,
@@ -560,7 +587,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         k: Int,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Build range for this window (optionally with grouping)
         var prefixElements: [any TupleElement] = [windowId]
@@ -632,9 +659,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     public func getRank(
         pk: Tuple,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int? {
-        let currentWindowId = currentWindowId()
+        let currentWindowId = try currentWindowId()
 
         // Get current position
         let posKey = posSubspace.pack(pk)
@@ -683,7 +710,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of window IDs (newest first)
     public func getAvailableWindows(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [Int64] {
         let range = metaSubspace.subspace("start").range()
         var windowIds: [Int64] = []
@@ -737,9 +764,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     public func getBottomK(
         k: Int,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
-        let currentWindowId = currentWindowId()
+        let currentWindowId = try currentWindowId()
 
         return try await getBottomK(
             k: k,
@@ -763,7 +790,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         k: Int,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Build range for this window (optionally with grouping)
         var prefixElements: [any TupleElement] = [windowId]
@@ -843,15 +870,16 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     public func getPercentile(
         _ percentile: Double,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int64? {
-        let currentWindowId = currentWindowId()
+        let currentWindowId = try currentWindowId()
 
         return try await getPercentile(
             percentile,
             windowId: currentWindowId,
             grouping: grouping,
-            transaction: transaction
+            transaction: transaction,
+            workMeter: nil
         )
     }
 
@@ -867,17 +895,69 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         _ percentile: Double,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int64? {
-        guard percentile >= 0 && percentile <= 1 else {
-            return nil
+        try await getPercentile(
+            percentile,
+            windowId: windowId,
+            grouping: grouping,
+            transaction: transaction,
+            workMeter: nil
+        )
+    }
+
+    package func getPercentile(
+        _ percentile: Double,
+        grouping: [any TupleElement]? = nil,
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> Int64? {
+        try await getPercentile(
+            percentile,
+            windowId: try currentWindowId(),
+            grouping: grouping,
+            transaction: transaction,
+            workMeter: Optional(workMeter)
+        )
+    }
+
+    package func getPercentile(
+        _ percentile: Double,
+        windowId: Int64,
+        grouping: [any TupleElement]? = nil,
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> Int64? {
+        try await getPercentile(
+            percentile,
+            windowId: windowId,
+            grouping: grouping,
+            transaction: transaction,
+            workMeter: Optional(workMeter)
+        )
+    }
+
+    private func getPercentile(
+        _ percentile: Double,
+        windowId: Int64,
+        grouping: [any TupleElement]?,
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter?
+    ) async throws -> Int64? {
+        guard percentile.isFinite,
+              percentile >= 0,
+              percentile <= 1 else {
+            throw TimeWindowLeaderboardIndexError.invalidPercentile(
+                percentile
+            )
         }
 
         // First, count total entries
         let totalCount = try await getTotalCount(
             windowId: windowId,
             grouping: grouping,
-            transaction: transaction
+            transaction: transaction,
+            workMeter: workMeter
         )
 
         guard totalCount > 0 else {
@@ -892,22 +972,21 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
             Int(DatabaseMath.ceiling((1.0 - percentile) * Double(totalCount)))
         )
 
-        // Get the entry at target rank
-        let entries = try await getTopK(
-            k: targetRank,
+        return try await score(
+            atRank: targetRank,
             windowId: windowId,
             grouping: grouping,
-            transaction: transaction
+            transaction: transaction,
+            workMeter: workMeter
         )
-
-        return entries.last?.score
     }
 
     /// Get total count of entries in a window
     private func getTotalCount(
         windowId: Int64,
         grouping: [any TupleElement]?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter?
     ) async throws -> Int {
         var prefixElements: [any TupleElement] = [windowId]
         if let g = grouping {
@@ -922,7 +1001,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
             rangeEnd = rangeStart.appending(0xFF)
         }
 
-        let sequence = try await TransactionRangeCollection.collect(using: transaction,
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(rangeStart),
             to: .firstGreaterOrEqual(rangeEnd),
             limit: 0,
@@ -932,11 +1011,56 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         )
 
         var count = 0
-        for _ in sequence {
+        try await cursor.consume { _, _ in
+            try workMeter?.consume(at: .indexScan)
+            guard count < Int.max else {
+                throw TimeWindowLeaderboardIndexError.malformedScoreEntry(
+                    indexName: index.name
+                )
+            }
             count += 1
         }
-
         return count
+    }
+
+    private func score(
+        atRank rank: Int,
+        windowId: Int64,
+        grouping: [any TupleElement]?,
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter?
+    ) async throws -> Int64? {
+        var prefixElements: [any TupleElement] = [windowId]
+        if let grouping { prefixElements.append(contentsOf: grouping) }
+        let rangeStart = windowSubspace.pack(Tuple(prefixElements))
+        let rangeEnd = try strinc(rangeStart)
+        var cursor = transaction.rangeCursor(
+            from: .firstGreaterOrEqual(rangeStart),
+            to: .firstGreaterOrEqual(rangeEnd),
+            limit: rank,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .iterator
+        )
+        var position = 0
+        var selectedScore: Int64?
+        try await cursor.consume { key, _ in
+            try workMeter?.consume(at: .indexScan)
+            position += 1
+            guard position == rank else { return }
+            let tuple = try windowSubspace.unpack(key)
+            let scoreIndex = 1 + (grouping?.count ?? 0)
+            guard let element = tuple[scoreIndex] else {
+                throw TimeWindowLeaderboardIndexError.malformedScoreEntry(
+                    indexName: index.name
+                )
+            }
+            let invertedScore = try decodeInt64(element)
+            selectedScore = Int64(
+                bitPattern: UInt64.max - UInt64(bitPattern: invertedScore)
+            )
+        }
+        return selectedScore
     }
 
     // MARK: - Dense Ranking
@@ -972,9 +1096,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     public func getRankDense(
         pk: Tuple,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int? {
-        let currentWindowId = currentWindowId()
+        let currentWindowId = try currentWindowId()
 
         // Get current position
         let posKey = posSubspace.pack(pk)
@@ -1008,7 +1132,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         pk: Tuple,
         strategy: RankingStrategy,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int? {
         switch strategy {
         case .competition:
@@ -1023,7 +1147,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         score: Int64,
         windowId: Int64,
         grouping: [any TupleElement]?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int {
         var prefixElements: [any TupleElement] = [windowId]
         if let g = grouping {

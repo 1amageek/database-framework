@@ -22,22 +22,10 @@ import StorageKit
 /// public struct HNSWBuildStrategy<Item: Sendable>: IndexBuildStrategy {
 ///     private let maintainer: HNSWIndexMaintainer<Item>
 ///
-///     public func buildIndex(
-///         container: DBContainer,
-///         itemSubspace: Subspace,
-///         indexSubspace: Subspace,
-///         itemType: String,
-///         index: ResolvedIndex,
-///         dataAccess: any DataAccess<Item>
-///     ) async throws {
-///         // 1. Load all vectors
-///         let allVectors = try await loadAllVectors(...)
-///
-///         // 2. Save to flat index
-///         try await saveVectorsToFlatIndex(allVectors)
-///
-///         // 3. Build HNSW graph efficiently
-///         try await buildHNSWGraph(allVectors)
+///     public func buildIndex(context: IndexBuildContext) async throws {
+///         // Read count- and byte-bounded pages with context.readItems(...),
+///         // then persist physical index state.
+///         // physical state with context.withIndexTransaction(...).
 ///     }
 /// }
 /// ```
@@ -48,29 +36,19 @@ public protocol IndexBuildStrategy<Item>: Sendable {
     ///
     /// This method is called by OnlineIndexer when the associated IndexMaintainer
     /// provides a custom build strategy. Implementations should:
-    /// 1. Load all necessary data from itemSubspace
+    /// 1. Load entity data through count- and byte-bounded `readItems` pages
     /// 2. Build index data structures efficiently
-    /// 3. Write index data to indexSubspace
+    /// 3. Write index data through `withIndexTransaction`
     ///
     /// **Important**:
     /// - Use multiple transactions if needed (avoid timeouts)
     /// - Be mindful of transaction size limits
     /// - Consider batch processing for large datasets
     ///
-    /// - Parameters:
-    ///   - container: DBContainer for transaction execution
-    ///   - itemSubspace: Subspace where items are stored ([R]/)
-    ///   - indexSubspace: Subspace where index data is stored ([I]/)
-    ///   - itemType: Type name of items to index (e.g., "User", "Product")
-    ///   - index: ResolvedIndex definition (name, kind, rootExpression)
+    /// - Parameter context:
+    ///   The entity-read and index-write capabilities for this build.
     /// - Throws: Error if build fails
     ///
     /// **Note**: Use `DataAccess.serialize()`, `DataAccess.deserialize()`, and `DataAccess.evaluate()` to work with items
-    func buildIndex(
-        container: DBContainer,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        itemType: String,
-        index: ResolvedIndex
-    ) async throws
+    func buildIndex(context: IndexBuildContext) async throws
 }

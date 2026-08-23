@@ -27,7 +27,7 @@ import StorageKit
 public struct Search<T: Persistable>: FusionQuery, Sendable {
     public typealias Item = T
 
-    private let queryContext: IndexQueryContext
+    private let queryContext: IndexQueryContext!
     private let field: FieldIdentity
     private var searchTerms: [String] = []
     private var matchMode: TextMatchMode = .all
@@ -49,9 +49,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     /// }
     /// ```
     public init(_ field: Field<T, String>) {
-        guard let context = FusionContext.current else {
-            fatalError("Search must be used within context.fuse { } block")
-        }
+        let context = FusionContext.current
         self.field = field.identity
         self.queryContext = context
     }
@@ -62,9 +60,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     ///
     /// - Parameter keyPath: KeyPath to the optional String field to search
     public init(_ field: Field<T, String?>) {
-        guard let context = FusionContext.current else {
-            fatalError("Search must be used within context.fuse { } block")
-        }
+        let context = FusionContext.current
         self.field = field.identity
         self.queryContext = context
     }
@@ -166,417 +162,52 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - FusionQuery
 
-    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
-        guard !searchTerms.isEmpty else { return [] }
-
-        // Find index descriptor
-        let descriptor = try resolveIndexDescriptor()
-        let configuration = try FullTextIndexConfiguration(
-            definition: descriptor.declaration.definition
-        )
-
-        let indexName = descriptor.name
-
-        // Execute full-text search
-        let scoredIds: [(id: Tuple, score: Double)] = try await queryContext
-            .withReadableIndex(
-                named: indexName,
-                indexType: .text(.fullText),
-                for: T.self
-            ) { readableIndex, transaction in
-            guard let readableIndex else {
-                return []
-            }
-            return try await self.searchFullText(
-                terms: self.searchTerms,
-                matchMode: self.matchMode,
-                configuration: configuration,
-                indexSubspace: readableIndex.subspace,
-                transaction: transaction
-            )
-        }
-
-        // Fetch items by primary keys
-        var items = try await queryContext.fetchItems(
-            ids: scoredIds.map { $0.id },
-            type: T.self
-        )
-
-        // Filter to candidates if provided
-        if let candidateIDs = candidates {
-            items = items.filter { candidateIDs.contains($0.id) }
-        }
-
-        // Match items with scores
-        var scoresByIdentifier: [ByteString: Double] = [:]
-        scoresByIdentifier.reserveCapacity(scoredIds.count)
-        for result in scoredIds {
-            scoresByIdentifier[
-                FullTextDocumentLookupKey.key(for: result.id)
-            ] = result.score
-        }
-        var results: [ScoredResult<T>] = []
-        results.reserveCapacity(items.count)
-        for item in items {
-            let key = try FullTextDocumentLookupKey.key(for: item)
-            if let score = scoresByIdentifier[key] {
-                results.append(ScoredResult(item: item, score: score))
-            }
-        }
-
-        // Sort by score descending
-        return results.sorted { $0.score > $1.score }
-    }
-
-    // MARK: - FullText Index Reading
-
-    /// Index structure:
-    /// - `[indexSubspace]["terms"][term][primaryKey]` → (termFrequency, positions...)
-    /// - `[indexSubspace]["docs"][primaryKey]` → (uniqueTermCount, docLength)
-    /// - `[indexSubspace]["stats"]["N"]` → total document count
-    /// - `[indexSubspace]["stats"]["totalLength"]` → sum of document lengths
-    /// - `[indexSubspace]["df"][term]` → document frequency
-
-    /// Search full-text index and return scored results
-    private func searchFullText(
-        terms: [String],
-        matchMode: TextMatchMode,
-        configuration: FullTextIndexConfiguration,
-        indexSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> [(id: Tuple, score: Double)] {
-        let termsSubspace = indexSubspace.subspace("terms")
-        let docsSubspace = indexSubspace.subspace("docs")
-        let statsSubspace = indexSubspace.subspace("stats")
-        let dfSubspace = indexSubspace.subspace("df")
-
-        let termGroups = normalizeQueryTermGroups(
-            terms,
-            configuration: configuration
-        )
-        let normalizedTerms = uniqueTerms(termGroups.flatMap { $0 })
-
-        // Get matching document IDs based on match mode
-        let matchingIds: [[any TupleElement]]
-        switch matchMode {
-        case .all:
-            matchingIds = try await searchTermsAND(
-                normalizedTerms,
-                termsSubspace: termsSubspace,
-                transaction: transaction
-            )
-        case .any:
-            var union: [[any TupleElement]] = []
-            for group in termGroups {
-                let matches = try await searchTermsAND(
-                    group,
-                    termsSubspace: termsSubspace,
-                    transaction: transaction
+    public var fusionQueryPlan: FusionQueryPlan<T> {
+        guard let queryContext else {
+            return FusionQueryPlan(
+                configurationError: .invalidConfiguration(
+                    "Search requires an IndexQueryContext or context.fuse"
                 )
-                union = try FullTextPostingListAlgebra.union(union, matches)
-            }
-            matchingIds = union
-        case .phrase:
-            // Position-verified phrase search via FullTextIndexMaintainer.searchPhrase()
-            matchingIds = try await searchPhraseIds(
-                indexSubspace: indexSubspace,
-                transaction: transaction
             )
         }
-
-        guard !matchingIds.isEmpty else { return [] }
-
-        // Get BM25 statistics
-        let stats = try await getBM25Statistics(
-            statsSubspace: statsSubspace,
-            transaction: transaction
-        )
-        guard stats.totalDocuments > 0, stats.totalLength > 0 else {
-            throw FullTextStorageError.corruptedCorpusStatistics
-        }
-
-        // Get document frequencies for all terms
-        var documentFrequencies: [String: Int64] = [:]
-        for term in normalizedTerms {
-            documentFrequencies[term] = try await getDocumentFrequency(
-                term: term,
-                dfSubspace: dfSubspace,
-                transaction: transaction
-            )
-        }
-
-        // Calculate BM25 scores for each document
-        var scoredResults: [(id: Tuple, score: Double)] = []
-
-        for docElements in matchingIds {
-            let docId = Tuple(docElements)
-
-            // Get document metadata
-            guard let metadata = try await getDocumentMetadata(
-                id: docId,
-                docsSubspace: docsSubspace,
-                transaction: transaction
-            ) else {
-                throw FullTextStorageError.missingDocumentMetadata
-            }
-
-            // Get term frequencies in this document
-            var termFrequencies: [String: Int] = [:]
-            for term in normalizedTerms {
-                let termSubspace = termsSubspace.subspace(term)
-                let termKey = termSubspace.pack(docId)
-                if let value = try await transaction.getValue(for: termKey, snapshot: true) {
-                    let posting = try FullTextStorageDecoder.posting(
-                        from: value,
-                        positionsStored: configuration.storePositions,
-                        term: term
-                    )
-                    termFrequencies[term] = posting.termFrequency
-                }
-            }
-
-            // Calculate BM25 score
-            let score = calculateBM25Score(
-                termFrequencies: termFrequencies,
-                documentFrequencies: documentFrequencies,
-                docLength: Int(metadata.docLength),
-                stats: stats
-            )
-
-            scoredResults.append((id: docId, score: score))
-        }
-
-        // Sort by score descending
-        scoredResults.sort { $0.score > $1.score }
-
-        return scoredResults
-    }
-
-    /// Search for documents containing all terms (AND query)
-    private func searchTermsAND(
-        _ terms: [String],
-        termsSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
-        guard !terms.isEmpty else { return [] }
-
-        var intersection: [[any TupleElement]]?
-
-        for term in terms {
-            let results = try await searchTerm(
-                term,
-                termsSubspace: termsSubspace,
-                transaction: transaction
-            )
-            if let existing = intersection {
-                let reduced = try FullTextPostingListAlgebra.intersection(
-                    existing,
-                    results
+        return FusionQueryPlan(
+            context: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: ["score"]
+            ),
+            indexDescriptor: { try self.resolveIndexDescriptor() },
+            operation: { [self] candidates, execution in
+                try await executeBound(
+                    candidates: candidates,
+                    execution: execution
                 )
-                if reduced.isEmpty {
-                    return []
-                }
-                intersection = reduced
-            } else {
-                intersection = results
             }
-        }
-
-        return intersection ?? []
-    }
-
-    /// Search for documents containing a term
-    private func searchTerm(
-        _ term: String,
-        termsSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
-        let termSubspace = termsSubspace.subspace(term)
-        let (begin, end) = termSubspace.range()
-
-        var results: [[any TupleElement]] = []
-
-        let sequence = try await TransactionRangeCollection.collect(using: transaction,
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            limit: 0,
-            reverse: false,
-            snapshot: true,
-            streamingMode: .wantAll
         )
-
-        for (key, _) in sequence {
-            guard termSubspace.contains(key) else { break }
-
-            let keyTuple = try termSubspace.unpack(key)
-            let elements = try keyTuple.elements()
-            results.append(elements)
-        }
-
-        return results
     }
 
-    // MARK: - Phrase Search
-
-    /// Search for exact phrase matches using position-verified matching
-    ///
-    /// Creates a `FullTextIndexMaintainer` and delegates to `searchPhrase()`,
-    /// which verifies term positions form a consecutive sequence.
-    /// Requires `storePositions=true` on the index — throws
-    /// `FullTextIndexError.invalidQuery` otherwise.
-    private func searchPhraseIds(
-        indexSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
+    private func executeBound(
+        candidates: Set<T.ID>?,
+        execution: ReadExecutionContext
+    ) async throws -> FusionQueryResult<T> {
         let descriptor = try resolveIndexDescriptor()
-        let configuration = try FullTextIndexConfiguration(
-            definition: descriptor.declaration.definition
+        let parameters = try BM25Parameters.validated(
+            k1: Double(k1),
+            b: Double(b)
         )
-
-        let index = ResolvedIndex(
+        return try await FullTextReadExecutor().executeScoredFusion(
+            queryContext: queryContext,
             descriptor: descriptor,
-            rootExpression: KeyExpressionFactory.from(keyPaths: descriptor.fieldNames),
+            configuration: try FullTextIndexConfiguration(
+                definition: descriptor.declaration.definition
+            ),
+            terms: searchTerms,
+            matchMode: matchMode,
+            parameters: parameters,
+            candidates: candidates,
+            execution: execution
         )
-
-        let maintainer = FullTextIndexMaintainer<T>(
-            index: index,
-            tokenizer: configuration.tokenizer,
-            storePositions: configuration.storePositions,
-            ngramSize: configuration.ngramSize,
-            minTermLength: configuration.minTermLength,
-            subspace: indexSubspace,
-            idExpression: FieldKeyExpression(fieldName: "id")
-        )
-
-        let phraseString = searchTerms.joined(separator: " ")
-        return try await maintainer.searchPhrase(phraseString, transaction: transaction)
     }
 
-    // MARK: - BM25 Scoring
-
-    private struct BM25Stats {
-        let totalDocuments: Int64
-        let totalLength: Int64
-        var avgDocLength: Double {
-            totalDocuments > 0 ? Double(totalLength) / Double(totalDocuments) : 0
-        }
-    }
-
-    private func getBM25Statistics(
-        statsSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> BM25Stats {
-        let nKey = statsSubspace.pack(Tuple("N"))
-        let lengthKey = statsSubspace.pack(Tuple("totalLength"))
-
-        let nValue = try await transaction.getValue(for: nKey, snapshot: true)
-        let lengthValue = try await transaction.getValue(for: lengthKey, snapshot: true)
-
-        let n: Int64
-        if let nValue {
-            n = try bytesToInt64(nValue)
-        } else {
-            n = 0
-        }
-        let totalLength: Int64
-        if let lengthValue {
-            totalLength = try bytesToInt64(lengthValue)
-        } else {
-            totalLength = 0
-        }
-
-        return BM25Stats(totalDocuments: n, totalLength: totalLength)
-    }
-
-    private func getDocumentFrequency(
-        term: String,
-        dfSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> Int64 {
-        let dfKey = dfSubspace.pack(Tuple(term))
-        let value = try await transaction.getValue(for: dfKey, snapshot: true)
-        guard let value else { return 0 }
-        return try bytesToInt64(value)
-    }
-
-    private func getDocumentMetadata(
-        id: Tuple,
-        docsSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> (uniqueTermCount: Int64, docLength: Int64)? {
-        let docKey = docsSubspace.pack(id)
-        guard let value = try await transaction.getValue(for: docKey, snapshot: true) else {
-            return nil
-        }
-        return try FullTextStorageDecoder.documentMetadata(from: value)
-    }
-
-    /// Calculate BM25 score for a document
-    ///
-    /// BM25 formula:
-    /// score = Σ IDF(t) * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl/avgdl))
-    private func calculateBM25Score(
-        termFrequencies: [String: Int],
-        documentFrequencies: [String: Int64],
-        docLength: Int,
-        stats: BM25Stats
-    ) -> Double {
-        var score: Double = 0.0
-
-        for (term, tf) in termFrequencies {
-            let df = documentFrequencies[term] ?? 0
-
-            // Standard BM25 IDF: log((N - df + 0.5) / (df + 0.5))
-            // Reference: Robertson & Zaragoza (2009), "The Probabilistic Relevance Framework: BM25 and Beyond"
-            let idf = DatabaseMath.naturalLogarithm(
-                (Double(stats.totalDocuments) - Double(df) + 0.5) /
-                    (Double(df) + 0.5)
-            )
-
-            // TF component with length normalization
-            let tfDouble = Double(tf)
-            let k1Double = Double(k1)
-            let bDouble = Double(b)
-            let dlNorm = stats.avgDocLength > 0 ? Double(docLength) / stats.avgDocLength : 1.0
-
-            let tfNormalized = (tfDouble * (k1Double + 1)) /
-                               (tfDouble + k1Double * (1 - bDouble + bDouble * dlNorm))
-
-            score += idf * tfNormalized
-        }
-
-        return score
-    }
-
-    // MARK: - Helpers
-
-    private func normalizeQueryTermGroups(
-        _ terms: [String],
-        configuration: FullTextIndexConfiguration
-    ) -> [[String]] {
-        let normalizer = FullTextTermNormalizer(
-            tokenizer: configuration.tokenizer,
-            ngramSize: configuration.ngramSize,
-            minTermLength: configuration.minTermLength
-        )
-        return terms.map { term in
-            uniqueTerms(normalizer.normalizedTerms(from: term))
-        }
-        .filter { !$0.isEmpty }
-    }
-
-    private func uniqueTerms(_ terms: [String]) -> [String] {
-        var seen: Set<String> = []
-        var result: [String] = []
-        result.reserveCapacity(terms.count)
-        for term in terms where !seen.contains(term) {
-            seen.insert(term)
-            result.append(term)
-        }
-        return result
-    }
-
-    private func bytesToInt64(_ bytes: ByteString) throws -> Int64 {
-        try ByteConversion.bytesToInt64(bytes)
-    }
 }

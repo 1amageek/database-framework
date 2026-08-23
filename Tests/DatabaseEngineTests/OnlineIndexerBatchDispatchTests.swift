@@ -13,11 +13,7 @@ struct OnlineIndexerBatchDispatchTests {
     @Test("Unique build records existing duplicates before readable transition")
     func uniqueBuildRejectsExistingDuplicates() async throws {
         let database = InMemoryEngine()
-        let storeSubspace = Subspace(
-            prefix: Tuple("test", "onlineindexer", "unique", UUID().uuidString).pack()
-        )
-        let itemSubspace = storeSubspace.subspace(SubspaceKey.items)
-        let blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
+        let testID = UUID().uuidString
         let index = try ResolvedIndex(
             for: Player.self,
             name: "unique_player_name_idx",
@@ -54,6 +50,12 @@ struct OnlineIndexerBatchDispatchTests {
             ),
             security: .testingDisabled
         )
+        let storeSubspace = try await container.testBaseDataRoot()
+            .subspace("onlineindexer")
+            .subspace("unique")
+            .subspace(testID)
+        let itemSubspace = storeSubspace.subspace(SubspaceKey.items)
+        let blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
         let lifecycleStore = IndexLifecycleStore(
             container: container,
             subspace: storeSubspace
@@ -63,15 +65,13 @@ struct OnlineIndexerBatchDispatchTests {
             subspace: try lifecycleStore.indexSubspace(for: index.name),
             idExpression: FieldKeyExpression(fieldName: "id")
         )
-        try await lifecycleStore.enable(index.name)
-
         var first = Player(name: "duplicate", score: 1, level: 1)
         first.id = "first"
         var second = Player(name: "duplicate", score: 2, level: 1)
         second.id = "second"
         let players = [first, second]
-        try await database.withTransaction { transaction in
-            let storage = ItemStorage(
+        try await container.withTestBaseTransaction { transaction in
+            let storage = ItemStorageWriter(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace,
                 configuration: .v1
@@ -87,42 +87,45 @@ struct OnlineIndexerBatchDispatchTests {
             }
         }
 
-        let indexer = try OnlineIndexer(
-            container: container,
-            storeSubspace: storeSubspace,
-            itemType: Player.persistableType,
-            index: index,
-            indexMaintainer: maintainer,
-            uniquenessMaintainer: maintainer,
-            indexLifecycleStore: lifecycleStore,
-            batchSize: 10
-        )
-        await #expect(
-            throws: OnlineIndexBuildError.uniquenessViolationsDetected(
-                indexName: index.name,
-                violationCount: 1,
-                totalConflictingEntities: 2
+        try await container.withTestBaseOperation {
+            try await lifecycleStore.enable(index.name)
+            let indexer = try OnlineIndexer(
+                transactionAuthority: .requestAuthorization(
+                    TestBaseEnvironment.authorization
+                ),
+                container: container,
+                storeSubspace: storeSubspace,
+                itemType: Player.persistableType,
+                index: index,
+                indexMaintainer: maintainer,
+                uniquenessMaintainer: maintainer,
+                indexLifecycleStore: lifecycleStore,
+                batchSize: 10
             )
-        ) {
-            try await indexer.buildIndex(clearFirst: true)
+            await #expect(
+                throws: OnlineIndexBuildError.uniquenessViolationsDetected(
+                    indexName: index.name,
+                    violationCount: 1,
+                    totalConflictingEntities: 2
+                )
+            ) {
+                try await indexer.buildIndex(clearFirst: true)
+            }
+            #expect(try await lifecycleStore.state(of: index.name) == .writeOnly)
+            let tracker = UniquenessViolationTracker(
+                container: container,
+                metadataSubspace: storeSubspace.subspace(SubspaceKey.metadata)
+            )
+            let summary = try await tracker.violationSummary(indexName: index.name)
+            #expect(summary.violationCount == 1)
+            #expect(summary.totalConflictingEntities == 2)
         }
-        #expect(try await lifecycleStore.state(of: index.name) == .writeOnly)
-        let tracker = UniquenessViolationTracker(
-            container: container,
-            metadataSubspace: storeSubspace.subspace(SubspaceKey.metadata)
-        )
-        let summary = try await tracker.violationSummary(indexName: index.name)
-        #expect(summary.violationCount == 1)
-        #expect(summary.totalConflictingEntities == 2)
     }
 
     @Test("Invalid build configuration fails before index state changes")
     func invalidBuildConfigurationFailsBeforeStateChanges() async throws {
         let database = InMemoryEngine()
         let testId = String(UUID().uuidString.prefix(8))
-        let storeSubspace = Subspace(
-            prefix: Tuple("test", "onlineindexer", "configuration", testId).pack()
-        )
         let index = try PlayerIdentifierIndexDefinition.make(
             name: "invalid_configuration_idx"
         )
@@ -152,6 +155,10 @@ struct OnlineIndexerBatchDispatchTests {
             ),
             security: .testingDisabled
         )
+        let storeSubspace = try await container.testBaseDataRoot()
+            .subspace("onlineindexer")
+            .subspace("configuration")
+            .subspace(testId)
         let lifecycleStore = IndexLifecycleStore(
             container: container,
             subspace: storeSubspace
@@ -160,8 +167,10 @@ struct OnlineIndexerBatchDispatchTests {
             indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
         )
 
+        try await container.withTestBaseOperation {
         #expect(throws: OnlineIndexBuildError.invalidBatchSize(0)) {
             _ = try OnlineIndexer<Player>(
+                transactionAuthority: .requestAuthorization(TestBaseEnvironment.authorization),
                 container: container,
                 storeSubspace: storeSubspace,
                 itemType: Player.persistableType,
@@ -175,6 +184,7 @@ struct OnlineIndexerBatchDispatchTests {
             throws: OnlineIndexBuildError.invalidThrottleDelayMilliseconds(-1)
         ) {
             _ = try OnlineIndexer<Player>(
+                transactionAuthority: .requestAuthorization(TestBaseEnvironment.authorization),
                 container: container,
                 storeSubspace: storeSubspace,
                 itemType: Player.persistableType,
@@ -201,6 +211,7 @@ struct OnlineIndexerBatchDispatchTests {
             )
         ) {
             _ = try OnlineIndexer<Player>(
+                transactionAuthority: .requestAuthorization(TestBaseEnvironment.authorization),
                 container: container,
                 storeSubspace: storeSubspace,
                 itemType: Player.persistableType,
@@ -211,6 +222,7 @@ struct OnlineIndexerBatchDispatchTests {
         }
 
         let indexer = try OnlineIndexer<Player>(
+            transactionAuthority: .requestAuthorization(TestBaseEnvironment.authorization),
             container: container,
             storeSubspace: storeSubspace,
             itemType: Player.persistableType,
@@ -230,15 +242,13 @@ struct OnlineIndexerBatchDispatchTests {
         }
 
         #expect(try await lifecycleStore.state(of: index.name) == .disabled)
+        }
     }
 
     @Test("Build index dispatches complete batches to scanItems")
     func buildIndexDispatchesBatchesToScanItems() async throws {
         let database = InMemoryEngine()
         let testId = String(UUID().uuidString.prefix(8))
-        let storeSubspace = Subspace(prefix: Tuple("test", "onlineindexer", "batch", testId).pack())
-        let itemSubspace = storeSubspace.subspace(SubspaceKey.items)
-        let blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
         let index = try PlayerIdentifierIndexDefinition.make(
             name: "batch_hook_idx"
         )
@@ -266,6 +276,12 @@ struct OnlineIndexerBatchDispatchTests {
                 ]),
             security: .testingDisabled
         )
+        let storeSubspace = try await container.testBaseDataRoot()
+            .subspace("onlineindexer")
+            .subspace("batch")
+            .subspace(testId)
+        let itemSubspace = storeSubspace.subspace(SubspaceKey.items)
+        let blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
 
         let batchSize = 5
         let players = PlayerDatasetGenerator.generateForBatchTesting(
@@ -274,8 +290,8 @@ struct OnlineIndexerBatchDispatchTests {
             remainder: 2
         )
 
-        try await database.withTransaction { transaction in
-            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
+        try await container.withTestBaseTransaction { transaction in
+            let storage = ItemStorageWriter(transaction: transaction, blobsSubspace: blobsSubspace, configuration: .v1)
             for player in players {
                 let key = itemSubspace.subspace(Player.persistableType).pack(Tuple(player.id))
                 let value = try DataAccess.serialize(player)
@@ -291,23 +307,28 @@ struct OnlineIndexerBatchDispatchTests {
             indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
         )
 
-        try await lifecycleStore.enable(index.name)
+        try await container.withTestBaseOperation {
+            try await lifecycleStore.enable(index.name)
 
-        let indexer = try OnlineIndexer(
-            container: container,
-            storeSubspace: storeSubspace,
-            itemType: Player.persistableType,
-            index: index,
-            indexMaintainer: maintainer,
-            indexLifecycleStore: lifecycleStore,
-            batchSize: batchSize
-        )
+            let indexer = try OnlineIndexer(
+                transactionAuthority: .requestAuthorization(
+                    TestBaseEnvironment.authorization
+                ),
+                container: container,
+                storeSubspace: storeSubspace,
+                itemType: Player.persistableType,
+                index: index,
+                indexMaintainer: maintainer,
+                indexLifecycleStore: lifecycleStore,
+                batchSize: batchSize
+            )
 
-        try await indexer.buildIndex(clearFirst: true)
+            try await indexer.buildIndex(clearFirst: true)
 
-        #expect(maintainer.getBatchSizes() == [5, 5, 2])
-        #expect(maintainer.getScanItemCallCount() == 0)
-        #expect(maintainer.getUniqueProcessedCount() == players.count)
+            #expect(maintainer.getBatchSizes() == [5, 5, 2])
+            #expect(maintainer.getScanItemCallCount() == 0)
+            #expect(maintainer.getUniqueProcessedCount() == players.count)
+        }
     }
 
 }

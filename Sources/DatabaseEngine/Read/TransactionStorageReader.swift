@@ -4,9 +4,9 @@ import StorageKit
 
 /// Raw storage reads bound to one caller-owned transaction.
 package struct TransactionStorageReader: StorageReader {
-    private let transaction: any TransactionAccess
+    private let transaction: any TransactionReadAccess
 
-    package init(transaction: any TransactionAccess) {
+    package init(transaction: any TransactionReadAccess) {
         self.transaction = transaction
     }
 

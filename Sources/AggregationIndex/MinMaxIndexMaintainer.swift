@@ -167,7 +167,7 @@ public struct MinIndexMaintainer<Item: PersistedEntityValue, Value: IndexCompara
     /// **Performance**: O(1) - Direct read from Layer 2
     public func getMin(
         groupingValues: [FieldValue],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Value {
         let expectedGroupingCount = index.rootExpression.columnCount - 1
         guard groupingValues.count == expectedGroupingCount else {
@@ -196,7 +196,7 @@ public struct MinIndexMaintainer<Item: PersistedEntityValue, Value: IndexCompara
     /// - `min`: Minimum value for the group
     /// - `itemId`: Primary key of the item with minimum value
     public func getAllMins(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], min: Value, itemId: Tuple)] {
         var results: [(grouping: [FieldValue], min: Value, itemId: Tuple)] = []
         guard index.rootExpression.columnCount >= 1 else {
@@ -535,7 +535,7 @@ public struct MaxIndexMaintainer<Item: PersistedEntityValue, Value: IndexCompara
     /// **Performance**: O(1) - Direct read from Layer 2
     public func getMax(
         groupingValues: [FieldValue],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Value {
         let expectedGroupingCount = index.rootExpression.columnCount - 1
         guard groupingValues.count == expectedGroupingCount else {
@@ -564,7 +564,7 @@ public struct MaxIndexMaintainer<Item: PersistedEntityValue, Value: IndexCompara
     /// - `max`: Maximum value for the group
     /// - `itemId`: Primary key of the item with maximum value
     public func getAllMaxs(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], max: Value, itemId: Tuple)] {
         var results: [(grouping: [FieldValue], max: Value, itemId: Tuple)] = []
         guard index.rootExpression.columnCount >= 1 else {

@@ -4,6 +4,12 @@ extension DatabaseContext {
     package func authorizeFieldReads(
         _ plan: DatabaseFieldReadAuthorizationPlan
     ) throws {
+        if try ActiveDatabaseReadAuthorizationAdmission.admission?.coversFields(
+            plan.fieldsByEntity,
+            context: self
+        ) == true {
+            return
+        }
         for entity in plan.fieldsByEntity.keys.sorted() {
             guard let fields = plan.fieldsByEntity[entity] else { continue }
             try container.securityDelegate?.evaluateFieldRead(

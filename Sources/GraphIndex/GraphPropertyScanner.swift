@@ -129,13 +129,14 @@ public struct PropertyFilter: Sendable {
 ///
 /// Structural key planning and decoding remain owned by GraphEdgeScanner, so
 /// graph layout semantics cannot diverge between algorithm and property reads.
-public struct GraphPropertyScanner: Sendable {
+package struct GraphPropertyScanner: Sendable {
     private let indexSubspace: Subspace
     private let strategy: GraphIndexStrategy
     private let includedFieldNames: [String]
     private let snapshot: GraphReadSnapshot?
+    private let workMeter: DatabaseWorkMeter?
 
-    public init(
+    package init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         includedFieldNames: [String]
@@ -144,10 +145,10 @@ public struct GraphPropertyScanner: Sendable {
         self.strategy = strategy
         self.includedFieldNames = includedFieldNames
         self.snapshot = nil
+        self.workMeter = nil
     }
 
-    @_spi(DatabaseExecution)
-    public init(
+    package init(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         includedFieldNames: [String],
@@ -157,16 +158,32 @@ public struct GraphPropertyScanner: Sendable {
         self.strategy = strategy
         self.includedFieldNames = includedFieldNames
         self.snapshot = snapshot
+        self.workMeter = nil
+    }
+
+    /// Canonical relational reads share their request work meter with the
+    /// physical graph scanner instead of opening an unmetered adapter path.
+    package init(
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        includedFieldNames: [String],
+        workMeter: DatabaseWorkMeter
+    ) {
+        self.indexSubspace = indexSubspace
+        self.strategy = strategy
+        self.includedFieldNames = includedFieldNames
+        self.snapshot = nil
+        self.workMeter = workMeter
     }
 
     /// Scans a structural pattern inside an explicit graph target.
-    public func scanEdges(
+    package func scanEdges(
         from source: GraphIdentity?,
         edge edgeLabel: GraphIdentity?,
         to target: GraphIdentity?,
         graphTarget: GraphScanTarget = .all,
         propertyFilters: [PropertyFilter]?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> GraphPropertyScan {
         let scanner: GraphEdgeScanner
         if let snapshot {
@@ -180,7 +197,8 @@ public struct GraphPropertyScanner: Sendable {
             scanner = GraphEdgeScanner(
                 indexSubspace: indexSubspace,
                 strategy: strategy,
-                graphTarget: graphTarget
+                graphTarget: graphTarget,
+                workMeter: workMeter
             )
         }
         return GraphPropertyScan(
@@ -225,8 +243,8 @@ public enum GraphPropertyFilterError: Error, Sendable, Equatable {
     case operatorTypeMismatch(field: String, operation: ComparisonOperator)
 }
 
-public struct GraphPropertyScan: Sendable {
-    public typealias Element = GraphEdgeWithProperties
+package struct GraphPropertyScan: Sendable {
+    package typealias Element = GraphEdgeWithProperties
 
     private let scanner: GraphPropertyScanner
     private let entries: GraphEdgeEntryScan
@@ -242,7 +260,7 @@ public struct GraphPropertyScan: Sendable {
         self.filters = filters
     }
 
-    public func makeCursor() -> Cursor {
+    package func makeCursor() -> Cursor {
         Cursor(
             scanner: scanner,
             entryCursor: entries.makeCursor(),
@@ -250,7 +268,7 @@ public struct GraphPropertyScan: Sendable {
         )
     }
 
-    public struct Cursor {
+    package struct Cursor {
         private let scanner: GraphPropertyScanner
         private var entryCursor: GraphEdgeEntryScan.Cursor
         private let filters: [PropertyFilter]?
@@ -265,7 +283,7 @@ public struct GraphPropertyScan: Sendable {
             self.filters = filters
         }
 
-        public mutating func next() async throws -> GraphEdgeWithProperties? {
+        package mutating func next() async throws -> GraphEdgeWithProperties? {
             while let entry = try await entryCursor.next() {
                 let properties = try scanner.decodeProperties(entry.value)
                 guard try scanner.matches(properties, filters: filters) else {

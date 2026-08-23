@@ -36,7 +36,7 @@ import Synchronization
 /// **Context-Centric Design**:
 /// - DBContainer does NOT create application transactions
 /// - DatabaseContext owns ReadVersionCache and creates transactions via TransactionRunner
-/// - System operations (DirectoryLayer, Migration) use `transactionExecutor.withTransaction()` directly
+/// - System operations use container-owned transaction execution boundaries
 ///
 /// **Usage**:
 /// ```swift
@@ -107,10 +107,11 @@ public final class DBContainer: Sendable {
     #if DATABASE_MULTI_BASE
     private let controlEngine: any StorageEngine
 
-    /// Storage selected by the current Base lease, or the control domain while
-    /// executing a database-scoped MultiBase operation.
-    package var engine: any StorageEngine {
-        ActiveDatabaseDataRootContext.lease?.domain.engine
+    /// Storage selected by DatabaseEngine's active data-root binding.
+    /// This remains internal for physical lifecycle and layout verification;
+    /// feature and server targets consume semantic capabilities instead.
+    internal var engine: any StorageEngine {
+        ActiveDatabaseDataRootContext.binding?.lease.domain.engine
             ?? controlEngine
     }
 
@@ -121,7 +122,9 @@ public final class DBContainer: Sendable {
     package let storageTopology: DatabaseStorageRuntimeTopology
     #else
     /// The single storage engine exclusively owned by this container.
-    public let engine: any StorageEngine
+    /// Raw storage is module-internal so feature and application callers cannot bypass
+    /// DatabaseContext authorization and transaction identity.
+    internal let engine: any StorageEngine
 
     /// Root resolved once for the container's one ordinary database.
     ///
@@ -138,26 +141,30 @@ public final class DBContainer: Sendable {
     #if DATABASE_MULTI_BASE
     package let controlTransactionExecutor: StorageTransactionExecutor
 
-    /// Transaction execution selected by the current Base lease.
-    package var transactionExecutor: StorageTransactionExecutor {
-        ActiveDatabaseDataRootContext.lease?.transactionExecutor
+    /// Transaction execution selected by DatabaseEngine's active data root.
+    /// Cross-target execution enters through DatabaseContext capabilities.
+    internal var transactionExecutor: StorageTransactionExecutor {
+        ActiveDatabaseDataRootContext.binding?.lease.transactionExecutor
             ?? controlTransactionExecutor
     }
 
-    /// Optional transaction semantics guaranteed by the selected backend.
-    private let controlTransactionCapabilities: TransactionCapabilities
-
-    package var transactionCapabilities: TransactionCapabilities {
-        ActiveDatabaseDataRootContext.lease?
-            .domain.transactionCapabilities
-            ?? controlTransactionCapabilities
+    package func requireDataTransactionExecutor() throws
+        -> StorageTransactionExecutor {
+        try requireActiveDataRoot().transactionExecutor
     }
     #else
     /// Typed transaction execution over the container's single engine.
-    public let transactionExecutor: StorageTransactionExecutor
+    internal let transactionExecutor: StorageTransactionExecutor
 
-    /// Optional transaction semantics guaranteed by the single backend.
-    public let transactionCapabilities: TransactionCapabilities
+    /// Storage semantics retained for synchronous schema-generation validation.
+    /// The value is inspected from this container's exclusively owned engine
+    /// during bootstrap and cannot be supplied by an operation-local caller.
+    internal let transactionCapabilities: TransactionCapabilities
+
+    package func requireDataTransactionExecutor() throws
+        -> StorageTransactionExecutor {
+        transactionExecutor
+    }
     #endif
 
     /// Schema (version, entities, indexes) from the request's retained
@@ -309,6 +316,14 @@ public final class DBContainer: Sendable {
                 indexPhysicalLayouts: indexPhysicalLayouts
             )
 
+            #if DATABASE_MULTI_BASE
+            let transactionCapabilities = try await
+                inspectAndValidateStorageRequirements(
+                    schema: schema,
+                    runtimeConfiguration: runtimeConfiguration,
+                    storageTopology: storageTopology
+                )
+            #else
             let transactionCapabilities = try await inspectTransactionCapabilities(
                 storageEngine: storageEngine
             )
@@ -316,6 +331,7 @@ public final class DBContainer: Sendable {
                 schema: schema,
                 transactionCapabilities: transactionCapabilities
             )
+            #endif
 
             #if DATABASE_MULTI_BASE
             let preparedStorage = try await prepareStorage(
@@ -480,10 +496,18 @@ public final class DBContainer: Sendable {
                 throw DatabaseSchemaRestorationError
                     .indexPhysicalFingerprintMismatch
             }
+            #if DATABASE_MULTI_BASE
+            try validateStorageRequirements(
+                schema: restored.schema,
+                runtimeConfiguration: runtimeConfiguration,
+                storageTopology: preparedStorage.topology
+            )
+            #else
             try runtimeConfiguration.validateStorageRequirements(
                 schema: restored.schema,
                 transactionCapabilities: preparedStorage.transactionCapabilities
             )
+            #endif
             let container = DBContainer(
                 schema: restored.schema,
                 schemaFingerprint: restored.fingerprint,
@@ -784,6 +808,70 @@ public final class DBContainer: Sendable {
         return capabilities
     }
 
+    #if DATABASE_MULTI_BASE
+    /// Validates a database-wide schema against every domain that can receive
+    /// a Base. Publication is a control-domain operation and therefore cannot
+    /// depend on an operation-local Base binding.
+    private static func inspectAndValidateStorageRequirements(
+        schema: Schema,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
+        storageTopology: ClaimedDatabaseStorageTopology
+    ) async throws -> TransactionCapabilities {
+        let placementDomainIDs = Set(
+            storageTopology.placements.values.map(\.domainID)
+        ).sorted()
+        var capabilitiesByDomain: [
+            DatabaseStorageDomain.ID: TransactionCapabilities
+        ] = [:]
+        capabilitiesByDomain.reserveCapacity(placementDomainIDs.count + 1)
+        for domainID in placementDomainIDs {
+            guard let domain = storageTopology.domains[domainID] else {
+                preconditionFailure(
+                    "A validated placement must reference a claimed domain"
+                )
+            }
+            let capabilities = try await inspectTransactionCapabilities(
+                storageEngine: domain.engine
+            )
+            try runtimeConfiguration.validateStorageRequirements(
+                schema: schema,
+                transactionCapabilities: capabilities
+            )
+            capabilitiesByDomain[domainID] = capabilities
+        }
+        if let capabilities = capabilitiesByDomain[
+            storageTopology.controlDomainID
+        ] {
+            return capabilities
+        }
+        return try await inspectTransactionCapabilities(
+            storageEngine: storageTopology.controlDomain.engine
+        )
+    }
+
+    private static func validateStorageRequirements(
+        schema: Schema,
+        runtimeConfiguration: DatabaseRuntimeConfiguration,
+        storageTopology: DatabaseStorageRuntimeTopology
+    ) throws {
+        let placementDomainIDs = Set(
+            storageTopology.placements.values.map(\.domainID)
+        ).sorted()
+        for domainID in placementDomainIDs {
+            guard let domain = storageTopology.domain(identifiedBy: domainID)
+            else {
+                preconditionFailure(
+                    "A prepared placement must reference a runtime domain"
+                )
+            }
+            try runtimeConfiguration.validateStorageRequirements(
+                schema: schema,
+                transactionCapabilities: domain.transactionCapabilities
+            )
+        }
+    }
+    #endif
+
     private static func loadSchemaGeneration(
         storageEngine: any StorageEngine,
         metadataSubspace: Subspace,
@@ -837,8 +925,6 @@ public final class DBContainer: Sendable {
         self.controlTransactionExecutor = StorageTransactionExecutor(
             engine: preparedStorage.engine
         )
-        self.controlTransactionCapabilities =
-            preparedStorage.transactionCapabilities
         #else
         self.engine = preparedStorage.engine
         self.databaseRoot = preparedStorage.databaseRoot
@@ -970,12 +1056,37 @@ public final class DBContainer: Sendable {
     package func withBaseLease<Result: Sendable>(
         _ lease: DatabaseBaseLease,
         _ operation: @Sendable () async throws -> Result
-    ) async rethrows -> Result {
-        try await ActiveDatabaseDataRootContext.$lease.withValue(
-            lease.dataRoot
+    ) async throws -> Result {
+        let operationScope = DatabaseReadScopeGate()
+        let binding = DatabaseBaseExecutionBinding(
+            lease: lease,
+            operationScope: operationScope
+        )
+        defer { withExtendedLifetime(lease) {} }
+        let dataRootBinding = DatabaseDataRootExecutionBinding(
+            lease: binding.dataRoot,
+            operationScope: operationScope
+        )
+        return try await ActiveDatabaseDataRootContext.$binding.withValue(
+            dataRootBinding
         ) {
-            try await ActiveDatabaseBaseContext.$lease.withValue(lease) {
-                try await operation()
+            try await ActiveDatabaseBaseContext.$binding.withValue(binding) {
+                let result: Result
+                do {
+                    result = try await operation()
+                } catch {
+                    let operationError = error
+                    do {
+                        try await operationScope.closeAndWait()
+                    } catch let cleanupError as DatabaseReadScopeCleanupError {
+                        throw cleanupError.preserving(
+                            operationError: operationError
+                        )
+                    }
+                    throw operationError
+                }
+                try await operationScope.closeAndWait()
+                return result
             }
         }
     }
@@ -1004,32 +1115,53 @@ public final class DBContainer: Sendable {
         try await baseGenerationStore.stopAdmissionAndDrain(id)
     }
 
-    package func requireActiveBaseLease() throws -> DatabaseBaseLease {
-        let lease = try requireBoundBaseLease()
-        guard lease.permitsDataOperations,
-              lease.generation.record.lifecycle == .active
-                || lease.permitsInactiveMaintenance else {
+    package func requireActiveBaseLease() throws -> DatabaseBaseExecutionBinding {
+        let binding = try requireBoundBaseLease()
+        guard binding.permitsDataOperations,
+              binding.generation.record.lifecycle == .active
+                || binding.permitsInactiveMaintenance else {
             throw DatabaseBaseExecutionError.baseTargetRequired
         }
-        return lease
+        return binding
     }
 
-    package func requireBoundBaseLease() throws -> DatabaseBaseLease {
-        guard let lease = ActiveDatabaseBaseContext.lease else {
+    package func requireBoundBaseLease() throws -> DatabaseBaseExecutionBinding {
+        guard let binding = ActiveDatabaseBaseContext.binding else {
             throw DatabaseBaseExecutionError.baseTargetRequired
         }
-        return lease
+        try binding.operationScope.validateOpen()
+        return binding
     }
     #endif
 
     package func withDatabaseDataRoot<Result: Sendable>(
         _ operation: @Sendable () async throws -> Result
-    ) async rethrows -> Result {
+    ) async throws -> Result {
         #if DATABASE_MULTI_BASE
-        try await ActiveDatabaseDataRootContext.$lease.withValue(
-            databaseDataRoot
+        let operationScope = DatabaseReadScopeGate()
+        let binding = DatabaseDataRootExecutionBinding(
+            lease: databaseDataRoot,
+            operationScope: operationScope
+        )
+        return try await ActiveDatabaseDataRootContext.$binding.withValue(
+            binding
         ) {
-            try await operation()
+            let result: Result
+            do {
+                result = try await operation()
+            } catch {
+                let operationError = error
+                do {
+                    try await operationScope.closeAndWait()
+                } catch let cleanupError as DatabaseReadScopeCleanupError {
+                    throw cleanupError.preserving(
+                        operationError: operationError
+                    )
+                }
+                throw operationError
+            }
+            try await operationScope.closeAndWait()
+            return result
         }
         #else
         try await operation()
@@ -1039,18 +1171,19 @@ public final class DBContainer: Sendable {
     @_spi(DatabaseExecution)
     public func withExecutionDataRoot<Result: Sendable>(
         _ operation: @Sendable () async throws -> Result
-    ) async rethrows -> Result {
+    ) async throws -> Result {
         try await withDatabaseDataRoot(operation)
     }
 
     #if DATABASE_MULTI_BASE
     package func requireActiveDataRoot() throws -> DatabaseDataRootLease {
-        guard let lease = ActiveDatabaseDataRootContext.lease else {
+        guard let binding = ActiveDatabaseDataRootContext.binding else {
             throw DatabaseRuntimeError.internalError(
                 "A target-bound data root is required"
             )
         }
-        return lease
+        try binding.operationScope.validateOpen()
+        return binding.lease
     }
 
     #endif
@@ -1073,8 +1206,6 @@ public final class DBContainer: Sendable {
         #if DATABASE_MULTI_BASE
         let lease = try requireActiveDataRoot()
         return DatabaseExecutionStorage(
-            engine: lease.domain.engine,
-            transactionExecutor: lease.transactionExecutor,
             root: lease.root,
             resource: lease.resource,
             generation: lease.generation,
@@ -1082,8 +1213,6 @@ public final class DBContainer: Sendable {
         )
         #else
         return DatabaseExecutionStorage(
-            engine: engine,
-            transactionExecutor: transactionExecutor,
             root: databaseRoot,
             generation: 0,
             domainIdentifier: "database"
@@ -1096,8 +1225,6 @@ public final class DBContainer: Sendable {
         #if DATABASE_MULTI_BASE
         let domain = storageTopology.controlDomain
         return DatabaseExecutionStorage(
-            engine: domain.engine,
-            transactionExecutor: domain.transactionExecutor,
             root: domain.root,
             resource: .database,
             generation: 0,
@@ -1105,8 +1232,6 @@ public final class DBContainer: Sendable {
         )
         #else
         return DatabaseExecutionStorage(
-            engine: engine,
-            transactionExecutor: transactionExecutor,
             root: databaseRoot,
             generation: 0,
             domainIdentifier: "database"
@@ -1363,7 +1488,7 @@ public final class DBContainer: Sendable {
             let subspace = try await resolveDirectory(for: entity)
             let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
             let indexNames = entity.indexDescriptors.map { $0.name }
-            try await transactionExecutor.withTransaction(
+            try await (try requireDataTransactionExecutor()).withTransaction(
                 configuration: .batch,
                 clock: monotonicClock
             ) { transaction in
@@ -1388,7 +1513,7 @@ public final class DBContainer: Sendable {
             let subspace = try await resolvePolymorphicDirectory(for: group.identifier)
             let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
             let indexNames = group.indexes.map { $0.name }
-            try await transactionExecutor.withTransaction(
+            try await (try requireDataTransactionExecutor()).withTransaction(
                 configuration: .batch,
                 clock: monotonicClock
             ) { transaction in
@@ -1552,7 +1677,7 @@ public final class DBContainer: Sendable {
         }
     }
     #else
-    public func resolveDirectory<T: Persistable>(
+    package func resolveDirectory<T: Persistable>(
         for type: T.Type,
         path: DirectoryPath<T> = DirectoryPath()
     ) async throws -> Subspace {
@@ -1562,11 +1687,11 @@ public final class DBContainer: Sendable {
         )
     }
 
-    public func resolveDirectory(
+    package func resolveDirectory(
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil
     ) async throws -> Subspace {
-        try await transactionExecutor.withTransaction(
+        try await (try requireDataTransactionExecutor()).withTransaction(
             configuration: .default,
             clock: monotonicClock
         ) { transaction in
@@ -1631,7 +1756,7 @@ public final class DBContainer: Sendable {
     package func openDirectory(
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Subspace {
         let entity = try canonicalEntity(entity)
         let directoryPath: AnyDirectoryPath
@@ -1654,7 +1779,7 @@ public final class DBContainer: Sendable {
         named indexName: String,
         for type: Model.Type,
         path: AnyDirectoryPath? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Subspace? {
         try await readableIndexSubspace(
             named: indexName,
@@ -1668,7 +1793,7 @@ public final class DBContainer: Sendable {
         named indexName: String,
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Subspace? {
         let entity = try canonicalEntity(entity)
         let directoryPath: AnyDirectoryPath
@@ -1717,7 +1842,7 @@ public final class DBContainer: Sendable {
         entity: String,
         continuation: ByteString? = nil,
         limit: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> DatabasePartitionCatalogPage {
         try await activePartitionCatalog().page(
             entity: entity,
@@ -1732,7 +1857,7 @@ public final class DBContainer: Sendable {
         entity: String,
         continuation: ByteString? = nil,
         limit: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> DatabasePartitionCatalogPage {
         let page = try await partitionCatalogPage(
             entity: entity,
@@ -1812,6 +1937,38 @@ public final class DBContainer: Sendable {
         )
     }
 
+    /// Opens a read-only store without creating partition catalog entries or
+    /// initializing index lifecycle state. A missing dynamic partition is an
+    /// empty logical source and therefore returns `nil`.
+    internal func openStore(
+        for entity: Schema.Entity,
+        path: AnyDirectoryPath? = nil,
+        transaction: any TransactionReadAccess
+    ) async throws -> DatabaseDataStore? {
+        let entity = try canonicalEntity(entity)
+        let directoryPath = try path ?? AnyDirectoryPath(for: entity)
+        try directoryPath.validate()
+        if entity.hasDynamicDirectory {
+            guard try await activePartitionCatalog().contains(
+                entity: entity.name,
+                partitions: directoryPath.canonicalPartitions(),
+                transaction: transaction
+            ) else {
+                return nil
+            }
+        }
+        let subspace = try operationDataSubspace(
+            relativePath: directoryPath.resolve()
+        )
+        return DatabaseDataStore(
+            container: self,
+            subspace: subspace,
+            entity: entity,
+            securityDelegate: securityDelegate,
+            indexConfigurations: runtimeConfiguration.indexConfigurations
+        )
+    }
+
     /// Build a store whose directory and index state participate in the
     /// caller's transaction.
     internal func store(
@@ -1847,7 +2004,7 @@ public final class DBContainer: Sendable {
         guard !indexNames.isEmpty else { return }
 
         let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
-        try await transactionExecutor.withTransaction(
+        try await (try requireDataTransactionExecutor()).withTransaction(
             configuration: .batch,
             clock: monotonicClock
         ) { transaction in
@@ -1997,7 +2154,7 @@ public final class DBContainer: Sendable {
     /// metadata. An absent directory represents an empty projection.
     package func openPolymorphicDirectory(
         for identifier: String,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Subspace? {
         let group = try polymorphicGroup(identifier: identifier)
         let path = try group.resolvedDirectoryPath()
@@ -2011,7 +2168,7 @@ public final class DBContainer: Sendable {
     package func readablePolymorphicIndex(
         _ descriptor: IndexDeclaration<String>,
         in group: PolymorphicGroup,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> ReadablePolymorphicIndex? {
         guard group.indexes.contains(descriptor) else {
             throw IndexQueryContextError.polymorphicIndexNotFound(
@@ -2059,7 +2216,7 @@ extension DBContainer {
 
     /// Get the current schema version from storage
     package func getCurrentSchemaVersion() async throws -> Schema.Version? {
-        return try await transactionExecutor.withTransaction(
+        return try await (try requireDataTransactionExecutor()).withTransaction(
             configuration: .default,
             clock: monotonicClock
         ) { transaction -> Schema.Version? in
@@ -2068,7 +2225,7 @@ extension DBContainer {
     }
 
     package func getCurrentSchemaVersion(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Schema.Version? {
         #if DATABASE_MULTI_BASE
         let metadataSubspace = try requireActiveDataRoot().root
@@ -2355,7 +2512,7 @@ extension DBContainer {
     @_spi(DatabaseExecution)
     public func migrationStatus(
         targetVersion requestedTarget: Schema.Version? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> DatabaseMigrationStatus {
         let targetVersion = try migrationTarget(requestedTarget)
         let currentVersion = try await getCurrentSchemaVersion(
@@ -2838,7 +2995,8 @@ extension DBContainer {
             let lease = try acquireBaseLease(record.id)
             let matchesGeneration = try await withBaseLease(lease) {
                 let metadataSubspace = try await self.getMetadataSubspace()
-                return try await self.transactionExecutor.withTransaction(
+                return try await (try self.requireDataTransactionExecutor())
+                    .withTransaction(
                     configuration: .readOnly,
                     clock: self.monotonicClock
                 ) { transaction in
@@ -2918,7 +3076,7 @@ extension DBContainer {
 
     private func validatePersistedSchemaFingerprint(
         _ expectedSchema: Schema,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws {
         #if DATABASE_MULTI_BASE
         let metadataSubspace = try requireActiveDataRoot().root

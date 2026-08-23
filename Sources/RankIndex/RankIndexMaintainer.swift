@@ -133,7 +133,7 @@ public struct RankIndexMaintainer<
     /// - Returns: Array of (score, primaryKey) tuples, sorted by score descending
     public func getTopK(
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
         let scanner = RankScanner(scoresSubspace: scoresSubspace, transaction: transaction)
         let entries = try await scanner.top(k: k)
@@ -166,7 +166,7 @@ public struct RankIndexMaintainer<
     /// - Returns: Rank (0-based, 0 = highest)
     public func getRank(
         score: Score,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int64 {
         // Count entries with score strictly greater than target.
         // Key structure: [scoresSubspace][score][pk]
@@ -212,7 +212,7 @@ public struct RankIndexMaintainer<
     /// - Parameter transaction: Storage transaction
     /// - Returns: Total number of entries
     public func getCount(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int64 {
         guard let bytes = try await transaction.getValue(for: countKey, snapshot: true) else {
             return 0
@@ -233,7 +233,7 @@ public struct RankIndexMaintainer<
     /// - Returns: Score at the given percentile, or nil if empty
     public func getPercentile(
         _ percentile: Double,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Score? {
         guard percentile >= 0.0 && percentile <= 1.0 else {
             throw RankIndexMaintenanceError.invalidPercentile(percentile)

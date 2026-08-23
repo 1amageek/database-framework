@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateUnionPattern(
         left: ExecutionPattern,
         right: ExecutionPattern,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression?,
         seed: VariableBinding,

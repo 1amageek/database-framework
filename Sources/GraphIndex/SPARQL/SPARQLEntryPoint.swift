@@ -242,7 +242,14 @@ extension DatabaseContext {
             .withReadableIndex(
                 named: selection.indexName,
                 indexType: selection.indexType,
-                for: T.self
+                for: T.self,
+                authorization: IndexReadAuthorization(
+                    limit: limit,
+                    offset: offset,
+                    orderBy: orderBy.isEmpty
+                        ? nil
+                        : orderBy.map(\.authorizationName)
+                )
             ) {
                 readableIndex,
                 transaction -> ([VariableBinding], ExecutionStatistics) in
@@ -259,7 +266,6 @@ extension DatabaseContext {
                     sources = []
                 }
                 let executor = SPARQLQueryExecutor(
-                    database: self.container.engine,
                     monotonicClock: self.container.monotonicClock,
                     wallClock: self.container.wallClock,
                     sources: sources,
@@ -359,7 +365,14 @@ extension DatabaseContext {
             .withReadableIndex(
                 named: selection.indexName,
                 indexType: selection.indexType,
-                for: T.self
+                for: T.self,
+                authorization: IndexReadAuthorization(
+                    limit: plan.slice.limit,
+                    offset: plan.slice.offset,
+                    orderBy: Self.authorizationOrderBy(
+                        plan.ordered.orderKeys
+                    )
+                )
             ) {
                 readableIndex,
                 transaction -> ([VariableBinding], ExecutionStatistics) in
@@ -376,7 +389,6 @@ extension DatabaseContext {
                     sources = []
                 }
                 let executor = SPARQLQueryExecutor(
-                    database: self.container.engine,
                     monotonicClock: self.container.monotonicClock,
                     wallClock: self.container.wallClock,
                     sources: sources
@@ -409,6 +421,21 @@ extension DatabaseContext {
             limitReason: reachedLimit ? .explicitLimit : nil,
             statistics: statistics
         )
+    }
+
+    private static func authorizationOrderBy(
+        _ keys: [SPARQLOrderKeyPlan]
+    ) -> [String]? {
+        guard !keys.isEmpty else { return nil }
+        var orderedNames: [String] = []
+        var seen: Set<String> = []
+        for key in keys {
+            for variable in key.expression.referencedVariables.sorted()
+            where seen.insert(variable).inserted {
+                orderedNames.append(variable)
+            }
+        }
+        return orderedNames
     }
 }
 

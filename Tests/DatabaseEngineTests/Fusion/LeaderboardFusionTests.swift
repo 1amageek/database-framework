@@ -282,6 +282,103 @@ struct LeaderboardIntegrationTests {
         }
     }
 
+    @Test("Candidate filtering scans past the global top K and preserves ties")
+    func candidatesOutsideGlobalTopKAreReturned() async throws {
+        let container = try await createContainer()
+        defer { await container.shutdown() }
+        try await cleanup(container: container)
+        let context = container.testBaseContext()
+        let scores = [
+            LeaderboardFusionScore(
+                id: "a",
+                playerId: "a",
+                playerName: "Global first",
+                score: 1_000
+            ),
+            LeaderboardFusionScore(
+                id: "b",
+                playerId: "b",
+                playerName: "Global second",
+                score: 900
+            ),
+            LeaderboardFusionScore(
+                id: "c",
+                playerId: "c",
+                playerName: "Candidate first",
+                score: 800
+            ),
+            LeaderboardFusionScore(
+                id: "d",
+                playerId: "d",
+                playerName: "Candidate second",
+                score: 800
+            ),
+        ]
+        for score in scores {
+            try context.insert(score)
+        }
+        try await context.save()
+
+        let result = try await Leaderboard(
+            LeaderboardFusionScore.fields.score,
+            context: context.indexQueryContext
+        )
+        .top(2)
+        .execute(
+            candidates: Set(["c", "d"]),
+            execution: ReadExecutionContext(
+                monotonicClock: TestProcessMonotonicClock()
+            )
+        )
+        .promoteToOutput()
+
+        #expect(result.map(\.item.id) == ["c", "d"])
+    }
+
+    @Test("Sparse candidate scan is independent of retained row budget")
+    func sparseCandidateScansPastNonCandidates() async throws {
+        let container = try await createContainer()
+        defer { await container.shutdown() }
+        try await cleanup(container: container)
+        let context = container.testBaseContext()
+        for index in 0..<12 {
+            try context.insert(
+                LeaderboardFusionScore(
+                    id: "score-\(index)",
+                    playerId: "player-\(index)",
+                    playerName: "Player \(index)",
+                    score: Int64(12 - index)
+                )
+            )
+        }
+        try await context.save()
+        let execution = ReadExecutionContext(
+            options: ReadExecutionOptions(
+                budget: ExecutionBudget(
+                    maximumRows: 10,
+                    maximumWorkUnits: 1_000,
+                    maximumIntermediateRows: 8,
+                    maximumIntermediateBytes: 1_048_576,
+                    timeoutMilliseconds: 30_000
+                )
+            ),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+
+        let result = try await Leaderboard(
+            LeaderboardFusionScore.fields.score,
+            context: context.indexQueryContext
+        )
+        .top(1)
+        .execute(
+            candidates: Set(["score-11"]),
+            execution: execution
+        )
+        .promoteToOutput()
+
+        #expect(result.map(\.item.id) == ["score-11"])
+    }
+
     @Test("Scores with different regions")
     func testScoresWithDifferentRegions() async throws {
         let container = try await createContainer()

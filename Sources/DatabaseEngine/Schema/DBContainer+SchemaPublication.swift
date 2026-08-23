@@ -497,9 +497,9 @@ extension DBContainer {
         runtimeConfiguration: DatabaseRuntimeConfiguration
     ) throws -> DatabasePreparedSchemaGeneration {
         try runtimeConfiguration.validate(schema: schema)
-        try runtimeConfiguration.validateStorageRequirements(
-            schema: schema,
-            transactionCapabilities: transactionCapabilities
+        try validateSchemaStorageRequirements(
+            schema,
+            runtimeConfiguration: runtimeConfiguration
         )
         let layouts = try IndexRuntimeConfigurationValidator.validate(
             schema: schema,
@@ -519,6 +519,10 @@ extension DBContainer {
     package func prepareMigrationSchemaGeneration(
         _ schema: Schema
     ) throws -> DatabasePreparedSchemaGeneration {
+        try validateSchemaStorageRequirements(
+            schema,
+            runtimeConfiguration: runtimeConfiguration
+        )
         let layouts = try IndexRuntimeConfigurationValidator.validate(
             schema: schema,
             runtimeConfiguration: runtimeConfiguration,
@@ -530,6 +534,36 @@ extension DBContainer {
             securityConfiguration: securityConfiguration,
             indexPhysicalLayouts: layouts
         )
+    }
+
+    /// Validates a generation against every configured execution placement.
+    /// A database-wide schema transition has no operation-local Base binding.
+    private func validateSchemaStorageRequirements(
+        _ schema: Schema,
+        runtimeConfiguration: DatabaseRuntimeConfiguration
+    ) throws {
+        #if DATABASE_MULTI_BASE
+        let placementDomainIDs = Set(
+            storageTopology.placements.values.map(\.domainID)
+        ).sorted()
+        for domainID in placementDomainIDs {
+            guard let domain = storageTopology.domain(identifiedBy: domainID)
+            else {
+                preconditionFailure(
+                    "A prepared placement must reference a runtime domain"
+                )
+            }
+            try runtimeConfiguration.validateStorageRequirements(
+                schema: schema,
+                transactionCapabilities: domain.transactionCapabilities
+            )
+        }
+        #else
+        try runtimeConfiguration.validateStorageRequirements(
+            schema: schema,
+            transactionCapabilities: transactionCapabilities
+        )
+        #endif
     }
 
     @_spi(DatabaseExecution)
@@ -656,7 +690,7 @@ extension DBContainer {
     package func pendingSchemaIndexBuilds(
         entity: String,
         indexes: [String],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Set<String> {
         let schemaMetadataSubspace = try dataRootSchemaMetadataSubspace()
         guard let entityDeclaration = schema.entity(named: entity) else {

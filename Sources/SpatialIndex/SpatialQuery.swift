@@ -3,7 +3,7 @@
 //
 // Design: Follows GraphIndex Query patterns with SpatialCellScanner integration.
 
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -67,9 +67,12 @@ public struct SpatialKNNResult<T: Persistable>: Sendable {
     /// Reason why less than K results were returned, if applicable
     public let limitReason: LimitReason?
 
-    /// Whether K or more items were found
+    /// Whether the source exhausted without a resource limit.
+    ///
+    /// A complete result may contain fewer than `k` items when the index has
+    /// fewer matching entities.
     public var isComplete: Bool {
-        items.count >= k
+        limitReason == nil
     }
 
     /// Number of items returned
@@ -141,6 +144,26 @@ public struct PolygonQueryOptions: Sendable {
     }
 }
 
+// MARK: - Spatial KNN Resource Limits
+
+public struct SpatialKNNResourceLimits: Sendable, Equatable {
+    public let maximumIterations: Int
+    public let maximumKeysPerIteration: Int
+    public let maximumTotalKeys: Int
+
+    public init(
+        maximumIterations: Int = 10,
+        maximumKeysPerIteration: Int = 10_000,
+        maximumTotalKeys: Int = 50_000
+    ) {
+        self.maximumIterations = maximumIterations
+        self.maximumKeysPerIteration = maximumKeysPerIteration
+        self.maximumTotalKeys = maximumTotalKeys
+    }
+
+    public static let `default` = SpatialKNNResourceLimits()
+}
+
 // MARK: - Spatial Query Builder
 
 /// Builder for spatial search queries
@@ -172,6 +195,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     private var shouldOrderByDistance: Bool = false
     private var referencePoint: GeographicPoint?
     private var polygonOptions: PolygonQueryOptions = PolygonQueryOptions()
+    private var configurationError: SpatialQueryError?
 
     // KNN parameters
     private var knnK: Int?
@@ -270,16 +294,18 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     /// Limit is applied during index scanning for efficiency,
     /// not after fetching all items.
     ///
-    /// **Note**: Values ≤ 0 are ignored (no limit applied).
-    ///
     /// - Parameter count: Maximum number of results (must be > 0)
     /// - Returns: Updated query builder
     public func limit(_ count: Int) -> Self {
-        guard count > 0 else {
-            // Invalid limit values are ignored (no limit applied)
-            return self
-        }
         var copy = self
+        guard count > 0 else {
+            copy.configurationError = .invalidLimit(
+                "limit must be positive, got \(count)"
+            )
+            copy.fetchLimit = nil
+            return copy
+        }
+        copy.configurationError = nil
         copy.fetchLimit = count
         return copy
     }
@@ -289,8 +315,19 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: SpatialQueryResult with items and metadata
     /// - Throws: Error if search fails or constraint not set
     public func execute() async throws -> SpatialQueryResult<T> {
+        if let configurationError {
+            throw configurationError
+        }
         guard let constraint = spatialConstraint else {
             throw SpatialQueryError.noConstraint
+        }
+
+        if case .withinDistance(_, let radiusMeters) = constraint.type {
+            guard radiusMeters.isFinite, radiusMeters >= 0 else {
+                throw SpatialQueryError.invalidRadius(
+                    "radius must be finite and non-negative"
+                )
+            }
         }
 
         // Validate polygon if applicable
@@ -309,65 +346,189 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             descriptor
         )
 
-        let indexName = descriptor.name
-
-        // Execute spatial search with SpatialCellScanner
-        let scanResult: SpatialScanResult = try await queryContext
-            .withReadableIndex(
-                named: indexName,
-                indexType: descriptor.type,
-                for: T.self
-            ) { readableIndex, transaction in
+        let authorization = IndexReadAuthorization(
+            limit: fetchLimit,
+            offset: nil,
+            orderBy: nil
+        )
+        return try await withAuthorizedSpatialIndexRead(
+            descriptor: descriptor,
+            authorization: authorization
+        ) { readableIndex, transaction, execution in
             guard let readableIndex else {
-                return SpatialScanResult(keys: [], limitReason: nil)
+                return SpatialQueryResult(items: [], limitReason: nil)
             }
-            return try await self.searchSpatial(
+            let scanResult = try await self.searchSpatial(
                 constraint: constraint,
                 level: level,
                 encoding: encoding,
                 indexSubspace: readableIndex.subspace,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: execution.workMeter
+            )
+            // Fetch and validate candidates on the same transaction snapshot as
+            // the index scan. An index reference that has no target is physical
+            // corruption, not an empty result.
+            let items = try await fetchIndexedItems(
+                primaryKeys: scanResult.keys,
+                indexName: descriptor.name,
+                transaction: transaction,
+                execution: execution
+            )
+            var output = try DatabaseRetainedArrayBuilder<(
+                item: T,
+                distance: Double?
+            )>(
+                workMeter: execution.workMeter,
+                stage: .projection,
+                layout: try CanonicalRelationalFootprintMeter
+                    .retainedArrayLayout(
+                        for: (item: T, distance: Double?).self
+                    ),
+                expectedCount: items.count
+            )
+            for item in items {
+                guard try matches(item, constraint: constraint) else {
+                    continue
+                }
+                let distance = try referencePoint.flatMap { reference in
+                    try extractGeographicPoint(from: item).map {
+                        distanceInMeters(from: reference, to: $0)
+                    }
+                }
+                let admission = try output.prepareAppend(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: item,
+                        workMeter: execution.workMeter
+                    ).adding(DatabaseIntermediateFootprint(bytes: 16)),
+                    at: .projection
+                )
+                output.append((item: item, distance: distance), using: admission)
+            }
+            var retainedOutput = output.finish()
+            if shouldOrderByDistance {
+                retainedOutput = retainedOutput.sortingElements {
+                    ($0.distance ?? Double.infinity)
+                        < ($1.distance ?? Double.infinity)
+                }
+            }
+            var limitReason = scanResult.limitReason
+            if let fetchLimit, retainedOutput.count > fetchLimit {
+                retainedOutput = retainedOutput.retainingSubrange(0..<fetchLimit)
+                limitReason = .maxResultsReached(
+                    returned: fetchLimit,
+                    limit: fetchLimit
+                )
+            }
+            guard let outputRows = UInt32(exactly: retainedOutput.count) else {
+                throw DatabaseWorkLimitError.maximumRows(
+                    stage: .resultMaterialization,
+                    consumed: execution.workMeter.consumedRows,
+                    requested: UInt32.max,
+                    maximum: execution.workMeter.budget.maximumRows
+                )
+            }
+            try execution.workMeter.recordOutputRows(outputRows)
+            return SpatialQueryResult(
+                items: retainedOutput.promoteToOutput(),
+                limitReason: limitReason
             )
         }
+    }
 
-        // Fetch candidates by primary keys. User-facing limits are applied only
-        // after exact coordinate filtering because covering cells are supersets.
-        var items = try await queryContext.fetchItems(ids: scanResult.keys, type: T.self)
-        var limitReason = scanResult.limitReason
-
-        items = try filterItems(items, matching: constraint)
-
-        if let fetchLimit, items.count > fetchLimit {
-            items = Array(items.prefix(fetchLimit))
-            limitReason = .maxResultsReached(returned: fetchLimit, limit: fetchLimit)
-        }
-
-        // Calculate distances if we have a reference point
-        // Distance is always calculated when referencePoint exists (e.g., radius query)
-        // orderByDistance() only controls whether results are sorted by distance
-        let resultsWithDistance: [(item: T, distance: Double?)]
-        if let ref = referencePoint {
-            var itemsWithDistances: [(item: T, distance: Double?)] = []
-            itemsWithDistances.reserveCapacity(items.count)
-            for item in items {
-                let distance = try extractGeographicPoint(from: item).map {
-                    distanceInMeters(from: ref, to: $0)
-                }
-                itemsWithDistances.append((item: item, distance: distance))
+    private func withAuthorizedSpatialIndexRead<Result: Sendable>(
+        descriptor: IndexDescriptor,
+        authorization: IndexReadAuthorization,
+        _ operation: @Sendable @escaping (
+            ReadableIndex?,
+            any IndexQueryReadAccess,
+            ReadExecutionContext
+        ) async throws -> Result
+    ) async throws -> Result {
+        let execution = ReadExecutionContext(
+            monotonicClock: queryContext.context.container.monotonicClock
+        )
+        return try await queryContext.context.withDataOperation {
+            guard let entity = queryContext.schema.entity(
+                named: T.persistableType
+            ) else {
+                throw SpatialQueryError.indexNotFound(
+                    requestedIndexIdentity
+                )
             }
-
-            if shouldOrderByDistance {
-                resultsWithDistance = itemsWithDistances.sorted {
-                    ($0.distance ?? Double.infinity) < ($1.distance ?? Double.infinity)
+            let admission = try queryContext.context.admitLogicalRead(
+                listAuthorization: authorization,
+                fieldPlan: .fullEntity(
+                    entity,
+                    including: Set(descriptor.fieldNames).union(
+                        descriptor.includedFieldNames
+                    )
+                ),
+                restrictingTo: [T.persistableType]
+            )
+            return try await queryContext.context
+                .withReadAuthorizationAdmission(admission) {
+                    try await queryContext.withReadableIndex(
+                        named: descriptor.name,
+                        indexType: descriptor.type,
+                        for: T.self,
+                        authorization: authorization
+                    ) { readableIndex, transaction in
+                        try await operation(
+                            readableIndex,
+                            transaction,
+                            execution
+                        )
+                    }
                 }
-            } else {
-                resultsWithDistance = itemsWithDistances
-            }
-        } else {
-            resultsWithDistance = items.map { (item: $0, distance: nil) }
         }
+    }
 
-        return SpatialQueryResult(items: resultsWithDistance, limitReason: limitReason)
+    private func fetchIndexedItems<PrimaryKeys>(
+        primaryKeys: PrimaryKeys,
+        indexName: String,
+        transaction: any IndexQueryReadAccess,
+        execution: ReadExecutionContext
+    ) async throws -> DatabaseSharedRetainedArray<T>
+    where PrimaryKeys: RandomAccessCollection & Sendable,
+          PrimaryKeys.Element == Tuple {
+        guard let entity = queryContext.schema.entity(
+            named: T.persistableType
+        ) else {
+            throw SpatialQueryError.indexNotFound(requestedIndexIdentity)
+        }
+        let models = try await transaction
+            .fetchPersistedModelsPreservingOrder(
+                entity: entity,
+                primaryKeys: primaryKeys,
+                partitions: queryContext.partitionValues,
+                workMeter: execution.workMeter
+            )
+        var items = try DatabaseRetainedArrayBuilder<T>(
+            workMeter: execution.workMeter,
+            stage: .projection,
+            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+                for: T.self
+            ),
+            expectedCount: primaryKeys.count
+        )
+        for (primaryKey, model) in zip(primaryKeys, models) {
+            guard let model else {
+                throw SpatialQueryError.indexedItemMissing(
+                    index: indexName,
+                    primaryKey: primaryKey.pack()
+                )
+            }
+            let admission = try items.prepareAppend(
+                footprint: try CanonicalRelationalFootprintMeter.footprint(
+                    of: model,
+                    workMeter: execution.workMeter
+                ),
+                at: .projection
+            )
+            items.append(try model.decode(as: T.self), using: admission)
+        }
+        return try items.finish().moveToSharedOwnership(at: .projection)
     }
 
     // MARK: - Spatial Index Reading
@@ -381,12 +542,14 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         level: Int,
         encoding: SpatialEncoding,
         indexSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> SpatialScanResult {
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> RetainedSpatialScanResult {
         let plan = try SpatialScanPlanner.plan(
             for: constraint,
             encoding: encoding,
-            level: level
+            level: level,
+            workMeter: workMeter
         )
 
         let scanner = SpatialCellScanner(
@@ -395,13 +558,12 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             level: level
         )
 
-        let (keys, limitReason) = try await scanner.scan(
+        return try await scanner.scanRetained(
             plan: plan,
             limit: SpatialScanBudget.candidateLimit(forFetchLimit: fetchLimit),
-            transaction: transaction
+            transaction: transaction,
+            workMeter: workMeter
         )
-
-        return SpatialScanResult(keys: keys, limitReason: limitReason)
     }
 
     /// Execute and return only items (without distance)
@@ -458,41 +620,32 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
-    private func filterItems(
-        _ items: [T],
-        matching constraint: SpatialConstraint
-    ) throws -> [T] {
-        var matches: [T] = []
-        matches.reserveCapacity(items.count)
-        for item in items {
-            guard let location = try extractGeographicPoint(from: item) else {
-                continue
-            }
-            let isMatch: Bool
-            switch constraint.type {
-            case .withinDistance(let center, let radiusMeters):
-                isMatch = distanceInMeters(
-                    from: center,
-                    to: location
-                ) <= radiusMeters
-
-            case .withinBounds(let minLat, let minLon, let maxLat, let maxLon):
-                isMatch = location.latitude >= minLat &&
-                    location.latitude <= maxLat &&
-                    location.longitude >= minLon &&
-                    location.longitude <= maxLon
-
-            case .withinPolygon(let points):
-                isMatch = isPointInPolygon(
-                    point: location,
-                    polygon: points
-                )
-            }
-            if isMatch {
-                matches.append(item)
-            }
+    private func matches(
+        _ item: borrowing T,
+        constraint: SpatialConstraint
+    ) throws -> Bool {
+        guard let location = try extractGeographicPoint(from: item) else {
+            return false
         }
-        return matches
+        switch constraint.type {
+        case .withinDistance(let center, let radiusMeters):
+            return distanceInMeters(
+                from: center,
+                to: location
+            ) <= radiusMeters
+
+        case .withinBounds(let minLat, let minLon, let maxLat, let maxLon):
+            return location.latitude >= minLat &&
+                location.latitude <= maxLat &&
+                location.longitude >= minLon &&
+                location.longitude <= maxLon
+
+        case .withinPolygon(let points):
+            return isPointInPolygon(
+                point: location,
+                polygon: points
+            )
+        }
     }
 
     // MARK: - Distance Calculation
@@ -690,6 +843,17 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
+    /// Applies explicit work limits to adaptive and best-first KNN execution.
+    public func resourceLimits(
+        _ limits: SpatialKNNResourceLimits
+    ) -> Self {
+        var copy = self
+        copy.knnMaxIterations = limits.maximumIterations
+        copy.knnMaxKeysPerIteration = limits.maximumKeysPerIteration
+        copy.knnMaxTotalKeys = limits.maximumTotalKeys
+        return copy
+    }
+
     /// Execute K-nearest neighbors search
     ///
     /// Finds the K nearest items to the center point specified in `nearest(k:from:)`.
@@ -713,6 +877,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: SpatialKNNResult with K nearest items sorted by distance
     /// - Throws: SpatialQueryError if KNN not configured, parameters invalid, or index not found
     public func executeKNN() async throws -> SpatialKNNResult<T> {
+        if let configurationError {
+            throw configurationError
+        }
         guard let k = knnK else {
             throw SpatialQueryError.noConstraint
         }
@@ -732,126 +899,178 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             descriptor
         )
 
-        let indexName = descriptor.name
-
-        // Adaptive radius expansion algorithm
-        var currentRadiusMeters = knnInitialRadiusKm * 1000.0
-        let maxRadiusMeters = knnMaxRadiusKm * 1000.0
-        var allCandidates: [(item: T, distance: Double)] = []
-        var seenIds: Set<T.ID> = []
-        var iterations = 0
-        var totalKeysScanned = 0
-        var lastUsedRadiusMeters = currentRadiusMeters  // Track actual last used radius
-        var limitReason: LimitReason? = nil
-
-        while allCandidates.count < k && currentRadiusMeters <= maxRadiusMeters && iterations < knnMaxIterations {
-            iterations += 1
-            lastUsedRadiusMeters = currentRadiusMeters
-
-            let radiusConstraint = SpatialConstraint(
-                type: .withinDistance(
-                    center: center,
-                    radiusMeters: currentRadiusMeters
+        let authorization = IndexReadAuthorization(
+            limit: k,
+            offset: nil,
+            orderBy: ["distance"]
+        )
+        return try await withAuthorizedSpatialIndexRead(
+            descriptor: descriptor,
+            authorization: authorization
+        ) { readableIndex, transaction, execution in
+            guard let readableIndex else {
+                return SpatialKNNResult(
+                    items: [],
+                    k: k,
+                    searchRadiusMeters: knnInitialRadiusKm * 1000.0,
+                    limitReason: nil
                 )
+            }
+            var currentRadiusMeters = knnInitialRadiusKm * 1000.0
+            let maxRadiusMeters = knnMaxRadiusKm * 1000.0
+            var allCandidates = try DatabaseRetainedArrayBuilder<(
+                item: T,
+                distance: Double
+            )>(
+                workMeter: execution.workMeter,
+                stage: .projection,
+                layout: try CanonicalRelationalFootprintMeter
+                    .retainedArrayLayout(for: (item: T, distance: Double).self)
             )
-            let plan = try SpatialScanPlanner.plan(
-                for: radiusConstraint,
-                encoding: encoding,
-                level: level
+            var seenIds = try SpatialRetainedIdentifierSet(
+                workMeter: execution.workMeter
             )
+            var iterations = 0
+            var totalKeysScanned = 0
+            var lastUsedRadiusMeters = currentRadiusMeters
+            var limitReason: LimitReason?
 
-            // Scan cells with per-iteration limit to prevent DoS
-            let scanResult: SpatialScanResult? = try await queryContext
-                .withReadableIndex(
-                    named: indexName,
-                    indexType: descriptor.type,
-                    for: T.self
-                ) { readableIndex, transaction in
-                guard let readableIndex else {
-                    return nil
+            while allCandidates.count < k,
+                  currentRadiusMeters <= maxRadiusMeters,
+                  iterations < knnMaxIterations {
+                iterations += 1
+                lastUsedRadiusMeters = currentRadiusMeters
+                let remainingKeyBudget = knnMaxTotalKeys - totalKeysScanned
+                guard remainingKeyBudget > 0 else {
+                    limitReason = .maxCandidatesReached(
+                        scanned: totalKeysScanned,
+                        limit: knnMaxTotalKeys
+                    )
+                    break
                 }
+                let radiusConstraint = SpatialConstraint(
+                    type: .withinDistance(
+                        center: center,
+                        radiusMeters: currentRadiusMeters
+                    )
+                )
+                let plan = try SpatialScanPlanner.plan(
+                    for: radiusConstraint,
+                    encoding: encoding,
+                    level: level,
+                    workMeter: execution.workMeter
+                )
                 let scanner = SpatialCellScanner(
                     indexSubspace: readableIndex.subspace,
                     encoding: encoding,
                     level: level
                 )
-                let (keys, scanLimitReason) = try await scanner.scan(
+                let scan = try await scanner.scanRetained(
                     plan: plan,
-                    limit: knnMaxKeysPerIteration,
-                    transaction: transaction
+                    limit: min(knnMaxKeysPerIteration, remainingKeyBudget),
+                    transaction: transaction,
+                    workMeter: execution.workMeter
                 )
-                return SpatialScanResult(keys: keys, limitReason: scanLimitReason)
+                totalKeysScanned += scan.keys.count
+                if let scanLimitReason = scan.limitReason {
+                    switch scanLimitReason {
+                    case .maxResultsReached(let returned, let limit):
+                        limitReason = .maxCandidatesReached(
+                            scanned: returned,
+                            limit: limit
+                        )
+                    default:
+                        limitReason = scanLimitReason
+                    }
+                }
+                let items = try await fetchIndexedItems(
+                    primaryKeys: scan.keys,
+                    indexName: descriptor.name,
+                    transaction: transaction,
+                    execution: execution
+                )
+                for item in items {
+                    guard let location = try extractGeographicPoint(
+                        from: item
+                    ) else {
+                        continue
+                    }
+                    let distanceMeters = distanceInMeters(
+                        from: center,
+                        to: location
+                    )
+                    if distanceMeters <= currentRadiusMeters {
+                        guard try seenIds.insert(
+                            item.id.persistableIdentifierValue
+                        ) else {
+                            continue
+                        }
+                        let admission = try allCandidates.prepareAppend(
+                            footprint: try CanonicalRelationalFootprintMeter
+                                .footprint(
+                                    of: item,
+                                    workMeter: execution.workMeter
+                                ).adding(
+                                    DatabaseIntermediateFootprint(bytes: 8)
+                                ),
+                            at: .projection
+                        )
+                        allCandidates.append(
+                            (item: item, distance: distanceMeters),
+                            using: admission
+                        )
+                    }
+                }
+                if allCandidates.count >= k { break }
+                if totalKeysScanned >= knnMaxTotalKeys {
+                    limitReason = .maxCandidatesReached(
+                        scanned: totalKeysScanned,
+                        limit: knnMaxTotalKeys
+                    )
+                    break
+                }
+                currentRadiusMeters *= knnExpansionFactor
             }
-            guard let scanResult else {
-                return SpatialKNNResult(
-                    items: [],
-                    k: k,
-                    searchRadiusMeters: lastUsedRadiusMeters,
-                    limitReason: nil
+            let sorted = allCandidates.finish().sortingElements {
+                lhs,
+                rhs in
+                if lhs.distance != rhs.distance {
+                    return lhs.distance < rhs.distance
+                }
+                return lhs.item.id.persistableIdentifierValue
+                    < rhs.item.id.persistableIdentifierValue
+            }
+            let topKCount = min(k, sorted.count)
+            let topK = sorted.retainingSubrange(0..<topKCount)
+            if limitReason == nil && topK.count < k {
+                if iterations >= knnMaxIterations {
+                    limitReason = .maxIterationsReached(
+                        iterations: iterations,
+                        limit: knnMaxIterations
+                    )
+                } else {
+                    limitReason = .maxRadiusReached(
+                        radiusMeters: lastUsedRadiusMeters,
+                        limitMeters: maxRadiusMeters
+                    )
+                }
+            }
+            guard let outputRows = UInt32(exactly: topK.count) else {
+                throw DatabaseWorkLimitError.maximumRows(
+                    stage: .resultMaterialization,
+                    consumed: execution.workMeter.consumedRows,
+                    requested: UInt32.max,
+                    maximum: execution.workMeter.budget.maximumRows
                 )
             }
-
-            totalKeysScanned += scanResult.keys.count
-            if limitReason == nil {
-                limitReason = scanResult.limitReason
-            }
-
-            // Check total keys budget
-            if totalKeysScanned >= knnMaxTotalKeys {
-                limitReason = .maxCellsReached(scanned: totalKeysScanned, limit: knnMaxTotalKeys)
-                break
-            }
-
-            // Fetch items
-            let items = try await queryContext.fetchItems(ids: scanResult.keys, type: T.self)
-
-            // Calculate distances once for each statically typed identifier.
-            for item in items {
-                let itemId = item.id
-                guard !seenIds.contains(itemId) else { continue }
-                seenIds.insert(itemId)
-
-                guard let location = try extractGeographicPoint(from: item) else {
-                    continue
-                }
-
-                let distanceMeters = distanceInMeters(from: center, to: location)
-
-                // Only include if within current radius (covering cells may extend beyond)
-                if distanceMeters <= currentRadiusMeters {
-                    allCandidates.append((item: item, distance: distanceMeters))
-                }
-            }
-
-            // If we have enough candidates, we can stop
-            if allCandidates.count >= k {
-                break
-            }
-
-            // Expand radius for next iteration
-            currentRadiusMeters *= knnExpansionFactor
+            try execution.workMeter.recordOutputRows(outputRows)
+            return SpatialKNNResult(
+                items: topK.promoteToOutput(),
+                k: k,
+                searchRadiusMeters: lastUsedRadiusMeters,
+                limitReason: limitReason
+            )
         }
-
-        // Sort by distance and take top K
-        let sorted = allCandidates.sorted { $0.distance < $1.distance }
-        let topK = Array(sorted.prefix(k))
-
-        // Determine limit reason if not already set
-        if limitReason == nil && topK.count < k {
-            if iterations >= knnMaxIterations {
-                limitReason = .maxCellsReached(scanned: iterations, limit: knnMaxIterations)
-            } else {
-                // maxRadiusMeters exceeded or insufficient data in search area
-                limitReason = .maxResultsReached(returned: topK.count, limit: k)
-            }
-        }
-
-        return SpatialKNNResult(
-            items: topK,
-            k: k,
-            searchRadiusMeters: lastUsedRadiusMeters,  // Use actual last used radius
-            limitReason: limitReason
-        )
     }
 
     /// Validate KNN parameters
@@ -879,25 +1098,23 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         guard knnExpansionFactor > 1.0 && knnExpansionFactor.isFinite else {
             throw SpatialQueryError.invalidKNNParameters("expansionFactor must be > 1.0 and finite, got \(knnExpansionFactor)")
         }
+        guard knnMaxIterations > 0,
+              knnMaxKeysPerIteration > 0,
+              knnMaxTotalKeys > 0 else {
+            throw SpatialQueryError.invalidKNNParameters(
+                "KNN resource limits must all be positive"
+            )
+        }
     }
 
-    // MARK: - True K-Nearest Neighbors (Priority Queue + Cell Pruning)
+    // MARK: - Exact K-Nearest Neighbors
 
-    /// Execute True K-Nearest Neighbors search using Priority Queue + Cell Pruning
+    /// Execute exact K-nearest-neighbor search over the spatial index snapshot.
     ///
-    /// This method uses a more efficient algorithm than `executeKNN()`:
-    ///
-    /// **Algorithm** (Samet, 2006):
-    /// 1. Start with the cell containing the query point
-    /// 2. Use a priority queue ordered by minimum distance to query
-    /// 3. For each cell, if minDistance > k-th best distance, prune
-    /// 4. Continue until k results found or no more cells to explore
-    ///
-    /// **Advantages over Adaptive Radius**:
-    /// - Guaranteed to find k nearest (if they exist)
-    /// - No arbitrary radius parameter needed
-    /// - Efficient pruning reduces unnecessary cell scans
-    /// - Works well with sparse data
+    /// The implementation scans the index to exhaustion, or to the configured
+    /// candidate cap, and computes distances from the retained snapshot. This
+    /// reference path is encoding-independent and never claims completeness
+    /// after approximate cell pruning.
     ///
     /// **Usage**:
     /// ```swift
@@ -912,6 +1129,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: SpatialKNNResult with K nearest items sorted by distance
     /// - Throws: SpatialQueryError if KNN not configured or index not found
     public func executeTrueKNN() async throws -> SpatialKNNResult<T> {
+        if let configurationError {
+            throw configurationError
+        }
         guard let k = knnK else {
             throw SpatialQueryError.noConstraint
         }
@@ -919,10 +1139,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             throw SpatialQueryError.noConstraint
         }
 
-        // Validate k
-        guard k > 0 else {
-            throw SpatialQueryError.invalidKNNParameters("k must be positive, got \(k)")
-        }
+        try validateKNNParameters(k: k)
 
         // Find index descriptor
         guard let descriptor = findIndexDescriptor() else {
@@ -933,51 +1150,62 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             descriptor
         )
 
-        let indexName = descriptor.name
-
-        // Execute true KNN search
-        let results: [(item: T, distance: Double)] = try await queryContext
-            .withReadableIndex(
-                named: indexName,
-                indexType: descriptor.type,
-                for: T.self
-            ) { readableIndex, transaction in
+        return try await withAuthorizedSpatialIndexRead(
+                descriptor: descriptor,
+                authorization: IndexReadAuthorization(
+                    limit: k,
+                    offset: nil,
+                    orderBy: ["distance"]
+                )
+            ) { readableIndex, transaction, execution in
             guard let readableIndex else {
-                return []
+                return SpatialKNNResult(
+                    items: [],
+                    k: k,
+                    searchRadiusMeters: 0,
+                    limitReason: nil
+                )
+            }
+            guard let entity = queryContext.schema.entity(
+                named: T.persistableType
+            ) else {
+                throw SpatialQueryError.indexNotFound(requestedIndexIdentity)
             }
             let knnSearch = SpatialKNNSearch<T>(
-                queryContext: queryContext,
+                entity: entity,
+                indexName: descriptor.name,
                 indexSubspace: readableIndex.subspace,
                 encoding: encoding,
                 level: level,
                 fieldName: field.name,
-                maxCellsToScan: knnMaxKeysPerIteration,
-                maxPointsToScan: knnMaxTotalKeys
+                maximumCandidatesToScan: knnMaxTotalKeys
             )
-            return try await knnSearch.findKNearest(
+            let retained = try await knnSearch.findKNearest(
                 k: k,
                 from: center,
-                transaction: transaction
+                transaction: transaction,
+                partitions: queryContext.partitionValues,
+                workMeter: execution.workMeter
+            )
+            let outputCount = retained.count
+            let limitReason = retained.limitReason
+            guard let outputRows = UInt32(exactly: outputCount) else {
+                throw DatabaseWorkLimitError.maximumRows(
+                    stage: .resultMaterialization,
+                    consumed: execution.workMeter.consumedRows,
+                    requested: UInt32.max,
+                    maximum: execution.workMeter.budget.maximumRows
+                )
+            }
+            try execution.workMeter.recordOutputRows(outputRows)
+            let items = retained.promoteToOutput()
+            return SpatialKNNResult(
+                items: items,
+                k: k,
+                searchRadiusMeters: items.last?.distance ?? 0,
+                limitReason: limitReason
             )
         }
-
-        // Determine limit reason if not enough results
-        let limitReason: LimitReason?
-        if results.count < k {
-            limitReason = .maxResultsReached(returned: results.count, limit: k)
-        } else {
-            limitReason = nil
-        }
-
-        // Get the search radius (maximum distance found)
-        let searchRadius = results.last?.distance ?? 0
-
-        return SpatialKNNResult(
-            items: results,
-            k: k,
-            searchRadiusMeters: searchRadius,
-            limitReason: limitReason
-        )
     }
 }
 
@@ -1058,7 +1286,7 @@ extension DatabaseContext {
 // MARK: - Spatial Query Error
 
 /// Errors for spatial query operations
-public enum SpatialQueryError: Error, CustomStringConvertible {
+public enum SpatialQueryError: Error, Sendable, CustomStringConvertible {
     /// No spatial constraint provided
     case noConstraint
 
@@ -1077,6 +1305,9 @@ public enum SpatialQueryError: Error, CustomStringConvertible {
     /// Invalid radius value
     case invalidRadius(String)
 
+    /// The index referenced a model missing from the same read snapshot.
+    case indexedItemMissing(index: String, primaryKey: ByteString)
+
     public var description: String {
         switch self {
         case .noConstraint:
@@ -1091,6 +1322,8 @@ public enum SpatialQueryError: Error, CustomStringConvertible {
             return "Invalid limit: \(reason)"
         case .invalidRadius(let reason):
             return "Invalid radius: \(reason)"
+        case .indexedItemMissing(let index, let primaryKey):
+            return "Spatial index '\(index)' references missing item \(primaryKey)"
         }
     }
 }

@@ -3,6 +3,51 @@
 
 import DatabaseKit
 
+public struct FusionStagePlan<Item: Persistable>: Sendable {
+    public typealias Operation = @Sendable (
+        Set<Item.ID>?,
+        ReadExecutionContext
+    ) async throws -> FusionStageResult<Item>
+
+    private let queryContext: IndexQueryContext?
+    private let operation: Operation
+
+    public init(operation: @escaping Operation) {
+        self.queryContext = nil
+        self.operation = operation
+    }
+
+    public init(
+        context: IndexQueryContext,
+        operation: @escaping Operation
+    ) {
+        self.queryContext = context
+        self.operation = operation
+    }
+
+    public func execute(
+        candidates: Set<Item.ID>?,
+        execution: ReadExecutionContext
+    ) async throws -> FusionStageResult<Item> {
+        guard let queryContext else {
+            let result = try await operation(candidates, execution)
+            try result.validateWorkMeter(execution.workMeter)
+            return result
+        }
+        let canonicalRead = CanonicalReadExecution.resolve(
+            requested: execution.options.consistency,
+            default: .snapshot
+        )
+        return try await queryContext.withReadSnapshot(
+            configuration: canonicalRead.transactionConfiguration
+        ) {
+            let result = try await operation(candidates, execution)
+            try result.validateWorkMeter(execution.workMeter)
+            return result
+        }
+    }
+}
+
 /// Protocol for execution stages in a fusion pipeline
 ///
 /// A stage represents one or more queries that execute together.
@@ -16,7 +61,19 @@ public protocol FusionStage<Item>: Sendable {
     ///
     /// - Parameter candidates: Optional candidate IDs from previous stages
     /// - Returns: Array of result arrays (one per query in the stage)
-    func execute(candidates: Set<Item.ID>?) async throws -> [[ScoredResult<Item>]]
+    var fusionStagePlan: FusionStagePlan<Item> { get }
+}
+
+public extension FusionStage {
+    func execute(
+        candidates: Set<Item.ID>?,
+        execution: ReadExecutionContext
+    ) async throws -> FusionStageResult<Item> {
+        try await fusionStagePlan.execute(
+            candidates: candidates,
+            execution: execution
+        )
+    }
 }
 
 // MARK: - SingleStage
@@ -33,9 +90,25 @@ public struct SingleStage<T: Persistable>: FusionStage {
         self.query = query
     }
 
-    public func execute(candidates: Set<T.ID>?) async throws -> [[ScoredResult<T>]] {
-        let results = try await query.execute(candidates: candidates)
-        return [results]
+    public var fusionStagePlan: FusionStagePlan<T> {
+        let operation: FusionStagePlan<T>.Operation = {
+            candidates,
+            execution in
+            let results = try await query.execute(
+                candidates: candidates,
+                execution: execution
+            )
+            var output = try FusionStageResultBuilder<T>(
+                execution: execution,
+                expectedCount: 1
+            )
+            try output.append(results)
+            return try output.finish()
+        }
+        if let context = query.fusionQueryPlan.executionContext {
+            return FusionStagePlan(context: context, operation: operation)
+        }
+        return FusionStagePlan(operation: operation)
     }
 }
 
@@ -77,29 +150,79 @@ public struct Parallel<T: Persistable>: FusionStage {
         self.queries = queries
     }
 
-    public func execute(candidates: Set<T.ID>?) async throws -> [[ScoredResult<T>]] {
-        guard !queries.isEmpty else { return [] }
+    public var fusionStagePlan: FusionStagePlan<T> {
+        let operation: FusionStagePlan<T>.Operation = {
+            candidates,
+            execution in
+            try await executeBound(
+                candidates: candidates,
+                execution: execution
+            )
+        }
+        if let context = queries.lazy.compactMap({
+            $0.fusionQueryPlan.executionContext
+        }).first {
+            return FusionStagePlan(context: context, operation: operation)
+        }
+        return FusionStagePlan(operation: operation)
+    }
 
-        return try await withThrowingTaskGroup(of: (Int, [ScoredResult<T>]).self) { group in
+    private func executeBound(
+        candidates: Set<T.ID>?,
+        execution: ReadExecutionContext
+    ) async throws -> FusionStageResult<T> {
+        guard !queries.isEmpty else {
+            return try FusionStageResultBuilder<T>(
+                execution: execution,
+                expectedCount: 0
+            ).finish()
+        }
+
+        let indexedReservation = try execution.workMeter.reserveIntermediate(
+            bytes: try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: queries.count,
+                element: FusionQueryResult<T>?.self
+            ).bytes,
+            at: .indexScan
+        )
+        defer { indexedReservation.release() }
+        let indexedResults = try await withThrowingTaskGroup(
+            of: (Int, FusionQueryResult<T>).self
+        ) { group in
             // Launch all queries in parallel with index tracking
             for (index, query) in queries.enumerated() {
                 group.addTask {
-                    let results = try await query.execute(candidates: candidates)
+                    let results = try await query.execute(
+                        candidates: candidates,
+                        execution: execution
+                    )
                     return (index, results)
                 }
             }
 
             // Collect results maintaining order
-            var indexedResults: [(Int, [ScoredResult<T>])] = []
+            var indexedResults = [FusionQueryResult<T>?](
+                repeating: nil,
+                count: queries.count
+            )
             while let result = try await group.next() {
-                indexedResults.append(result)
+                indexedResults[result.0] = result.1
             }
-
-            // Sort by original index and return results only
             return indexedResults
-                .sorted { $0.0 < $1.0 }
-                .map { $0.1 }
         }
+        var output = try FusionStageResultBuilder<T>(
+            execution: execution,
+            expectedCount: indexedResults.count
+        )
+        for (index, result) in indexedResults.enumerated() {
+            guard let result else {
+                throw FusionQueryError.invalidConfiguration(
+                    "Parallel fusion source \(index) produced no result"
+                )
+            }
+            try output.append(result)
+        }
+        return try output.finish()
     }
 }
 

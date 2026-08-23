@@ -307,6 +307,7 @@ struct UniquenessEnforcementTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
+            try await container.withTestBaseOperation {
 
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
@@ -315,7 +316,7 @@ struct UniquenessEnforcementTests {
             try await tracker.clearAllViolations(indexName: indexName)
 
             // Entity a violation
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 try await tracker.recordViolation(
                     indexName: indexName,
                     persistableType: "TestType",
@@ -334,6 +335,7 @@ struct UniquenessEnforcementTests {
 
             // Cleanup
             try await tracker.clearAllViolations(indexName: indexName)
+            }
         }
     }
 
@@ -342,6 +344,7 @@ struct UniquenessEnforcementTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
+            try await container.withTestBaseOperation {
 
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
@@ -354,7 +357,7 @@ struct UniquenessEnforcementTests {
             #expect(hasBefore == false)
 
             // Add a violation
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 try await tracker.recordViolation(
                     indexName: indexName,
                     persistableType: "TestType",
@@ -372,6 +375,7 @@ struct UniquenessEnforcementTests {
 
             // Cleanup
             try await tracker.clearAllViolations(indexName: indexName)
+            }
         }
     }
 
@@ -380,6 +384,7 @@ struct UniquenessEnforcementTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
+            try await container.withTestBaseOperation {
 
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
@@ -388,7 +393,7 @@ struct UniquenessEnforcementTests {
             try await tracker.clearAllViolations(indexName: indexName)
 
             // Add multiple violations
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 for i in 0..<5 {
                     try await tracker.recordViolation(
                         indexName: indexName,
@@ -407,6 +412,7 @@ struct UniquenessEnforcementTests {
 
             // Cleanup
             try await tracker.clearAllViolations(indexName: indexName)
+            }
         }
     }
 
@@ -415,6 +421,7 @@ struct UniquenessEnforcementTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
+            try await container.withTestBaseOperation {
 
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
@@ -424,7 +431,7 @@ struct UniquenessEnforcementTests {
             let valueKey = Tuple("clearme").pack()
 
             // Add violation
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 try await tracker.recordViolation(
                     indexName: indexName,
                     persistableType: "TestType",
@@ -446,6 +453,7 @@ struct UniquenessEnforcementTests {
             // Verify it's gone
             let countAfter = try await tracker.countViolations(indexName: indexName)
             #expect(countAfter == 0)
+            }
         }
     }
 
@@ -454,6 +462,7 @@ struct UniquenessEnforcementTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
+            try await container.withTestBaseOperation {
 
             let databaseStore = try await container.testBaseStore(
                 for: UniquenessConstrainedUser.self
@@ -463,9 +472,10 @@ struct UniquenessEnforcementTests {
             try await tracker.clearAllViolations(indexName: indexName)
             let duplicateValue = "duplicate@example.com"
             let valueKey = Tuple(duplicateValue).pack()
-            let indexSubspace = Subspace(
-                Tuple("test", "uniqueness", indexName).pack()
-            )
+            let indexSubspace = try databaseStore.indexLifecycleStore
+                .indexSubspace(
+                    for: indexName
+                )
             let firstIndexKey = indexSubspace.pack(
                 Tuple(duplicateValue, "pk1")
             )
@@ -473,7 +483,7 @@ struct UniquenessEnforcementTests {
                 Tuple(duplicateValue, "pk2")
             )
 
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 try transaction.setValue(ByteString(), for: firstIndexKey)
                 try transaction.setValue(ByteString(), for: secondIndexKey)
                 try await tracker.recordViolation(
@@ -500,7 +510,7 @@ struct UniquenessEnforcementTests {
                 Issue.record("Expected the duplicate index entries to remain unresolved")
             }
 
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 try transaction.clear(key: secondIndexKey)
             }
 
@@ -516,10 +526,11 @@ struct UniquenessEnforcementTests {
                 Issue.record("Expected one remaining index entry to resolve the violation")
             }
 
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 try transaction.clear(key: firstIndexKey)
             }
             try await tracker.clearAllViolations(indexName: indexName)
+            }
         }
     }
 
@@ -528,6 +539,7 @@ struct UniquenessEnforcementTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
+            try await container.withTestBaseOperation {
 
             let databaseStore = try await container.testBaseStore(for: UniquenessConstrainedUser.self)
 
@@ -536,7 +548,7 @@ struct UniquenessEnforcementTests {
             try await tracker.clearAllViolations(indexName: indexName)
 
             // Add violations with different conflict counts
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 // Violation 1: 2 conflicts
                 try await tracker.recordViolation(
                     indexName: indexName,
@@ -568,6 +580,7 @@ struct UniquenessEnforcementTests {
 
             // Cleanup
             try await tracker.clearAllViolations(indexName: indexName)
+            }
         }
     }
 
@@ -578,6 +591,7 @@ struct UniquenessEnforcementTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
+            try await container.withTestBaseOperation {
 
             let context = container.testBaseContext()
             let indexName = "UniqueTestUser_email"
@@ -588,7 +602,7 @@ struct UniquenessEnforcementTests {
                 indexName: indexName
             )
 
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
                     indexName: indexName,
                     persistableType: "UniquenessConstrainedUser",
@@ -612,6 +626,7 @@ struct UniquenessEnforcementTests {
                 for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
+            }
         }
     }
 
@@ -620,6 +635,7 @@ struct UniquenessEnforcementTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
+            try await container.withTestBaseOperation {
 
             let context = container.testBaseContext()
             let indexName = "UniqueTestUser_email"
@@ -639,7 +655,7 @@ struct UniquenessEnforcementTests {
             #expect(hasBefore == false)
 
             // Add a violation
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
                     indexName: indexName,
                     persistableType: "UniquenessConstrainedUser",
@@ -663,6 +679,7 @@ struct UniquenessEnforcementTests {
                 for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
+            }
         }
     }
 
@@ -671,6 +688,7 @@ struct UniquenessEnforcementTests {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
+            try await container.withTestBaseOperation {
 
             let context = container.testBaseContext()
             let indexName = "UniqueTestUser_email"
@@ -681,7 +699,7 @@ struct UniquenessEnforcementTests {
                 indexName: indexName
             )
 
-            try await container.engine.withTransaction { transaction in
+            try await container.withTestBaseTransaction { transaction in
                 try await databaseStore.violationTracker.recordViolation(
                     indexName: indexName,
                     persistableType: "UniquenessConstrainedUser",
@@ -706,6 +724,7 @@ struct UniquenessEnforcementTests {
                 for: UniquenessConstrainedUser.self,
                 indexName: indexName
             )
+            }
         }
     }
 

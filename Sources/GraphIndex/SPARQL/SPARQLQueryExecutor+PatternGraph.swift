@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateGraphPattern(
         selector: ExecutionGraphSelector,
         innerPattern: ExecutionPattern,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         filter: FilterExpression?,
         seed: VariableBinding,
         resultLimit: Int?,
@@ -47,6 +47,7 @@ extension SPARQLQueryExecutor {
             if let selectedGraphs = dataset.selectedNamedGraphs {
                 return try await evaluateVariableGraphPattern(
                     graphNames: selectedGraphs,
+                    graphName: { $0 },
                     variable: variable,
                     innerPattern: innerPattern,
                     transaction: transaction,
@@ -64,6 +65,7 @@ extension SPARQLQueryExecutor {
             )
             return try await evaluateVariableGraphPattern(
                 graphNames: discoveredGraphs,
+                graphName: { $0.graph },
                 variable: variable,
                 innerPattern: innerPattern,
                 transaction: transaction,
@@ -77,22 +79,23 @@ extension SPARQLQueryExecutor {
 
     private func evaluateVariableGraphPattern<GraphNames: Sequence & Sendable>(
         graphNames: GraphNames,
+        graphName: @Sendable (GraphNames.Element) -> RDFGraphName,
         variable: String,
         innerPattern: ExecutionPattern,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         filter: FilterExpression?,
         seed: VariableBinding,
         resultLimit: Int?,
         statistics: ExecutionStatistics
-    ) async throws -> EvaluationResult
-    where GraphNames.Element == RDFGraphName {
+    ) async throws -> EvaluationResult {
         var bindings = try SPARQLRetainedBindingBuilder.make(
             workMeter: try requiredWorkMeter(),
             stage: .joinCandidate,
             expectedCount: 0
         )
         var mergedStats = statistics
-        for graph in graphNames {
+        for element in graphNames {
+            let graph = graphName(element)
             let remainingLimit = resultLimit.map {
                 max(0, $0 - bindings.count)
             }

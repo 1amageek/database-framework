@@ -9,7 +9,7 @@ extension SPARQLQueryExecutor {
     /// Execute one triple atom against the active RDF graph.
     func executePattern(
         _ pattern: ExecutionTriple,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression? = nil,
         resultLimit: Int? = nil
@@ -266,7 +266,7 @@ extension SPARQLQueryExecutor {
         object: ExecutionTerm,
         seed: consuming VariableBinding,
         resultLimit: Int?,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         config: ExecutionPropertyPathConfiguration = .default
     ) async throws -> EvaluationResult {

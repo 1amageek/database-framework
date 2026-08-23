@@ -1,4 +1,4 @@
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -62,7 +62,8 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             selectQuery: selectQuery
         )
         let operation = try requireString(BitmapReadParameter.operation, from: indexScan.parameters)
-        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let budgetLimit = try options.workMeter
+            .storageWorkReadLimitWithSentinel()
         let requestedLimit = indexScan.parameters[
             BitmapReadParameter.limit
         ]?.uint64Value.flatMap { Int(exactly: $0) }
@@ -76,11 +77,14 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
+            authorization: try IndexReadAuthorization(
+                selectQuery: selectQuery
+            ),
             configuration: execution.transactionConfiguration
         ) { readableIndex, transaction -> IndexReadResult in
             guard let readableIndex else { return .empty }
             let reader = BitmapIndexReader(subspace: readableIndex.subspace)
-            let bitmap: RoaringBitmap
+            let bitmap: BitmapIndexRetainedBitmap
             switch operation {
             case BitmapReadParameter.equalsOperation:
                 let values = try decodeTupleArray(
@@ -91,7 +95,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
                         BitmapReadParameter.values
                     )
                 }
-                bitmap = try await reader.bitmap(
+                bitmap = try await reader.retainedBitmap(
                     for: [first],
                     transaction: transaction,
                     workMeter: options.workMeter
@@ -100,13 +104,13 @@ private struct BitmapReadExecutor: IndexReadExecutor {
                 let values = try decodeTupleArray(
                     indexScan.parameters[BitmapReadParameter.values]
                 )
-                bitmap = try await reader.union(
+                bitmap = try await reader.retainedUnion(
                     of: values.map { [$0] as [any TupleElement] },
                     transaction: transaction,
                     workMeter: options.workMeter
                 )
             case BitmapReadParameter.andOperation:
-                bitmap = try await reader.intersection(
+                bitmap = try await reader.retainedIntersection(
                     of: try decodeTupleMatrix(
                         indexScan.parameters[BitmapReadParameter.valueSets]
                     ).map { $0 as [any TupleElement] },
@@ -119,33 +123,18 @@ private struct BitmapReadExecutor: IndexReadExecutor {
                 )
             }
 
-            let primaryKeys = try await reader.primaryKeys(
+            let primaryKeys = try await reader.retainedPrimaryKeys(
                 for: bitmap,
                 transaction: transaction,
                 limit: resultLimit,
                 workMeter: options.workMeter
             )
-            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
-                .reserveTuples(
-                    primaryKeys,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { primaryKeyReservation.release() }
             let fetched = try await context.fetchPersistedModelsPreservingOrder(
                 entity: entity,
                 primaryKeys: primaryKeys,
                 partitions: partitions,
-                transaction: transaction,
                 workMeter: options.workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
             return try IndexReadResult.build(
                 workMeter: options.workMeter,
                 ordering: .unordered,
@@ -179,7 +168,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
         guard let values = value?.arrayValue else {
             throw BitmapReadError.missingParameter(BitmapReadParameter.values)
         }
-        return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
+        return try FieldValue.toTupleElements(values)
     }
 
     private func decodeTupleMatrix(
@@ -192,7 +181,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             guard let values = row.arrayValue else {
                 throw BitmapReadError.invalidParameter(BitmapReadParameter.valueSets)
             }
-            return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
+            return try FieldValue.toTupleElements(values)
         }
     }
 }
@@ -236,7 +225,8 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
         )
 
         let operation = try requireString(BitmapReadParameter.operation, from: indexScan.parameters)
-        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let budgetLimit = try options.workMeter
+            .storageWorkReadLimitWithSentinel()
         let requestedLimit = indexScan.parameters[
             BitmapReadParameter.limit
         ]?.uint64Value.flatMap { Int(exactly: $0) }
@@ -260,14 +250,14 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
                 subspace: readableIndex.subspace
             )
 
-            let bitmap: RoaringBitmap
+            let bitmap: BitmapIndexRetainedBitmap
             switch operation {
             case BitmapReadParameter.equalsOperation:
                 let values = try decodeTupleArray(indexScan.parameters[BitmapReadParameter.values])
                 guard let first = values.first else {
                     throw BitmapReadError.invalidParameter(BitmapReadParameter.values)
                 }
-                bitmap = try await reader.bitmap(
+                bitmap = try await reader.retainedBitmap(
                     for: [first],
                     transaction: transaction,
                     workMeter: options.workMeter
@@ -276,7 +266,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             case BitmapReadParameter.inOperation:
                 let values = try decodeTupleArray(indexScan.parameters[BitmapReadParameter.values])
                 let valueSets = values.map { [$0] as [any TupleElement] }
-                bitmap = try await reader.union(
+                bitmap = try await reader.retainedUnion(
                     of: valueSets,
                     transaction: transaction,
                     workMeter: options.workMeter
@@ -285,7 +275,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             case BitmapReadParameter.andOperation:
                 let valueSets = try decodeTupleMatrix(indexScan.parameters[BitmapReadParameter.valueSets])
                 let converted = valueSets.map { $0 as [any TupleElement] }
-                bitmap = try await reader.intersection(
+                bitmap = try await reader.retainedIntersection(
                     of: converted,
                     transaction: transaction,
                     workMeter: options.workMeter
@@ -295,32 +285,17 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
                 throw BitmapReadError.invalidParameter(BitmapReadParameter.operation)
             }
 
-            let primaryKeys = try await reader.primaryKeys(
+            let primaryKeys = try await reader.retainedPrimaryKeys(
                 for: bitmap,
                 transaction: transaction,
                 limit: resultLimit,
                 workMeter: options.workMeter
             )
-            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
-                .reserveTuples(
-                    primaryKeys,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { primaryKeyReservation.release() }
             let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
                 group: group,
                 ids: primaryKeys,
-                transaction: transaction,
                 workMeter: options.workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePolymorphicEntities(
-                    fetched,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
             return try IndexReadResult.build(
                 workMeter: options.workMeter,
                 ordering: .unordered,
@@ -364,7 +339,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
         guard let values = value?.arrayValue else {
             throw BitmapReadError.missingParameter(BitmapReadParameter.values)
         }
-        return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
+        return try FieldValue.toTupleElements(values)
     }
 
     private func decodeTupleMatrix(
@@ -377,7 +352,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             guard let values = row.arrayValue else {
                 throw BitmapReadError.invalidParameter(BitmapReadParameter.valueSets)
             }
-            return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
+            return try FieldValue.toTupleElements(values)
         }
     }
 

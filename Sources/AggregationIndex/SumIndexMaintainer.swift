@@ -115,7 +115,7 @@ public struct SumIndexMaintainer<Item: PersistedEntityValue, Value: IndexNumeric
     /// - Returns: The exact sum, or `nil` when the group has no indexed values.
     public func getSum(
         groupingValues: [FieldValue],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> FieldValue? {
         let storedGrouping = try FieldValue.toTupleElements(groupingValues)
         let sumKey = try buildSumKey(storedGroupingElements: storedGrouping)
@@ -146,7 +146,7 @@ public struct SumIndexMaintainer<Item: PersistedEntityValue, Value: IndexNumeric
     /// Get a lossless Double view of the sum for a specific grouping.
     public func getSumAsDouble(
         groupingValues: [FieldValue],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Double? {
         guard let sum = try await getSum(
             groupingValues: groupingValues,
@@ -167,7 +167,7 @@ public struct SumIndexMaintainer<Item: PersistedEntityValue, Value: IndexNumeric
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of (groupingValues, sum) tuples
     public func getAllSumsAsDouble(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], sum: Double)] {
         let exactResults = try await getAllSums(transaction: transaction)
         var results: [(grouping: [FieldValue], sum: Double)] = []
@@ -182,7 +182,7 @@ public struct SumIndexMaintainer<Item: PersistedEntityValue, Value: IndexNumeric
     }
 
     public func getAllSums(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], sum: FieldValue)] {
         var groupingByIdentity: [ByteString: [any TupleElement]] = [:]
         var sums: [ByteString: FieldValue] = [:]

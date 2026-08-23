@@ -48,8 +48,11 @@ semantics.
 ## Fusion
 
 Fusion combines independent index queries using the public FusionQuery and
-FusionBuilder contracts. Typical combinations include full-text search with
-vector similarity or a bitmap filter with a ranked result.
+FusionBuilder contracts. `FusionStrategy` is owned by DatabaseKit and is also
+the strategy carried by canonical `FusionSource` QueryIR, so local builders and
+DatabaseWire requests cannot assign different meanings to the same operation.
+Typical combinations include full-text search with vector similarity or a
+bitmap filter with a ranked result.
 
 ~~~swift
 let results = try await context.fuse(Document.self) {
@@ -62,7 +65,22 @@ let results = try await context.fuse(Document.self) {
 ~~~
 
 Concrete query types are provided by index modules. DatabaseEngine does not
-hard-code feature-specific index cases.
+hard-code feature-specific index cases. The builder admits one canonical read
+transaction for the complete execution. Each feature reader receives an
+`IndexReadAccess` constrained to its schema-admitted physical subspace; model
+fetches re-enter the same active transaction through DatabaseEngine instead of
+receiving an unrestricted storage transaction.
+
+~~~text
+FusionSource / FusionBuilder
+            |
+            v
+one DatabaseEngine read transaction + one work meter
+            |
+            +--> scoped full-text index read
+            +--> scoped vector index read
+            `--> scoped rank/bitmap/... index read
+~~~
 
 ## Error Behavior
 

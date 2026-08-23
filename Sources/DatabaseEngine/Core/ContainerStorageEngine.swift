@@ -123,10 +123,7 @@ final class ContainerStorageEngine:
         path: [String],
         transaction: any TransactionAccess
     ) async throws -> Subspace {
-        let borrow = try namespaceTransactionBorrow(
-            for: transaction,
-            requiresMutation: true
-        )
+        let borrow = try namespaceWriteTransactionBorrow(for: transaction)
         defer { borrow.end(for: lifecycle) }
         return try await lifecycle.underlyingStorageEngine.namespaceResolver
             .resolveOrCreate(
@@ -137,12 +134,9 @@ final class ContainerStorageEngine:
 
     func resolveExisting(
         path: [String],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Subspace {
-        let borrow = try namespaceTransactionBorrow(
-            for: transaction,
-            requiresMutation: false
-        )
+        let borrow = try namespaceReadTransactionBorrow(for: transaction)
         defer { borrow.end(for: lifecycle) }
         return try await lifecycle.underlyingStorageEngine.namespaceResolver
             .resolveExisting(
@@ -153,12 +147,9 @@ final class ContainerStorageEngine:
 
     func namespaceExists(
         path: [String],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Bool {
-        let borrow = try namespaceTransactionBorrow(
-            for: transaction,
-            requiresMutation: false
-        )
+        let borrow = try namespaceReadTransactionBorrow(for: transaction)
         defer { borrow.end(for: lifecycle) }
         return try await lifecycle.underlyingStorageEngine.namespaceResolver
             .namespaceExists(
@@ -169,7 +160,7 @@ final class ContainerStorageEngine:
 
     func listNamespaces(
         path: [String],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [String] {
         guard let catalog = lifecycle.underlyingStorageEngine.namespaceCatalog
         else {
@@ -177,10 +168,7 @@ final class ContainerStorageEngine:
                 "The storage backend does not provide a namespace catalog"
             )
         }
-        let borrow = try namespaceTransactionBorrow(
-            for: transaction,
-            requiresMutation: false
-        )
+        let borrow = try namespaceReadTransactionBorrow(for: transaction)
         defer { borrow.end(for: lifecycle) }
         return try await catalog.listNamespaces(
             path: path,
@@ -198,10 +186,7 @@ final class ContainerStorageEngine:
                 "The storage backend does not provide a namespace catalog"
             )
         }
-        let borrow = try namespaceTransactionBorrow(
-            for: transaction,
-            requiresMutation: true
-        )
+        let borrow = try namespaceWriteTransactionBorrow(for: transaction)
         defer { borrow.end(for: lifecycle) }
         try await catalog.removeNamespace(
             path: path,
@@ -209,21 +194,32 @@ final class ContainerStorageEngine:
         )
     }
 
-    private func namespaceTransactionBorrow(
-        for transaction: any TransactionAccess,
-        requiresMutation: Bool
-    ) throws -> ContainerNamespaceTransactionBorrow {
-        if let transaction = transaction as? ReadAuthorizedTransactionAccess {
-            guard !requiresMutation else {
-                throw DatabaseReadTransactionError.mutationRequiresWriteAccess
-            }
-            return try transaction.namespaceTransactionBorrow(for: lifecycle)
+    private func namespaceReadTransactionBorrow(
+        for transaction: any TransactionReadAccess
+    ) throws -> ContainerNamespaceReadTransactionBorrow {
+        if let transaction = transaction as?
+            any ContainerNamespaceReadTransactionBorrowing {
+            return try transaction.namespaceReadTransactionBorrow(
+                for: lifecycle
+            )
         }
+        throw StorageError.invalidOperation(
+            "Namespace operations require a transaction admitted by this database container"
+        )
+    }
+
+    private func namespaceWriteTransactionBorrow(
+        for transaction: any TransactionAccess
+    ) throws -> ContainerNamespaceWriteTransactionBorrow {
         if let transaction = transaction as? ContainerTransactionAccess {
-            return try transaction.namespaceTransactionBorrow(for: lifecycle)
+            return try transaction.namespaceWriteTransactionBorrow(
+                for: lifecycle
+            )
         }
         if let transaction = transaction as? ContainerTransaction {
-            return try transaction.namespaceTransactionBorrow(for: lifecycle)
+            return try transaction.namespaceWriteTransactionBorrow(
+                for: lifecycle
+            )
         }
         throw StorageError.invalidOperation(
             "Namespace operations require a transaction admitted by this database container"

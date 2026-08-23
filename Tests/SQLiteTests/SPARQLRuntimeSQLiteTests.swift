@@ -117,7 +117,6 @@ struct SPARQLRuntimeSQLiteTests {
             ),
         ]
         let executor = SPARQLQueryExecutor(
-            database: context.container.engine,
             monotonicClock: context.container.monotonicClock,
             wallClock: context.container.wallClock,
             sources: sources
@@ -135,12 +134,16 @@ struct SPARQLRuntimeSQLiteTests {
             ),
         ])
 
-        let (bindings, _) = try await executor.execute(
-            pattern: pattern,
-            limit: nil,
-            offset: 0,
-            workMeter: makeWorkMeter(for: context)
-        )
+        let (bindings, _) = try await context.container
+            .withTestBaseTransaction { transaction in
+                try await executor.executeInTransaction(
+                    pattern: pattern,
+                    transaction: transaction,
+                    limit: nil,
+                    offset: 0,
+                    workMeter: makeWorkMeter(for: context)
+                )
+            }
 
         #expect(bindings.count == 1)
         #expect(
@@ -296,7 +299,12 @@ struct SPARQLRuntimeSQLiteTests {
         let readableIndex = try await context.indexQueryContext.withReadableIndex(
             named: selection.indexName,
             indexType: selection.indexType,
-            for: type
+            for: type,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            )
         ) { index, _ in
             index
         }

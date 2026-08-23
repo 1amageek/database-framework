@@ -44,7 +44,7 @@ struct DatabaseRetainedBufferTests {
 
     @Test("failed creation rolls back only its claim")
     func failedCreationRollsBackClaim() throws {
-        let meter = makeMeter(rows: 2, bytes: 13)
+        let meter = makeMeter(rows: 2, bytes: 1_024)
         do {
             var builder = try DatabaseRetainedArrayBuilder<Int>(
                 workMeter: meter,
@@ -68,12 +68,14 @@ struct DatabaseRetainedBufferTests {
             let builderCount = builder.count
             #expect(builderCount == 1)
             #expect(meter.retainedIntermediateRows == 1)
-            #expect(meter.retainedIntermediateBytes == 8)
+            let retainedBytes = meter.retainedIntermediateBytes
             let retained = builder.finish()
             let containsExpectedElement = retained.withSpan { span in
                 span.count == 1 && span[0] == 1
             }
             #expect(containsExpectedElement)
+            let output = retained.promoteToOutput()
+            #expect(retainedBytes == 2 + UInt64(output.capacity) + 4)
         }
 
         #expect(meter.retainedIntermediateRows == 0)
@@ -82,7 +84,7 @@ struct DatabaseRetainedBufferTests {
 
     @Test("finished storage retains and shares one reservation")
     func finishedStorageOwnsReservation() throws {
-        let meter = makeMeter(rows: 2, bytes: 15)
+        let meter = makeMeter(rows: 2, bytes: 1_024)
         do {
             var builder = try DatabaseRetainedArrayBuilder<Int>(
                 workMeter: meter,
@@ -101,6 +103,7 @@ struct DatabaseRetainedBufferTests {
                 2
             }
             let retained = builder.finish()
+            let retainedBytes = meter.retainedIntermediateBytes
             let admission = try retained.prepareToShare(at: .subqueryCache)
             let first = retained.share(using: admission)
             do {
@@ -121,7 +124,7 @@ struct DatabaseRetainedBufferTests {
                 #expect(containsExpectedElements)
                 #expect(secondAddress == firstAddress)
                 #expect(meter.retainedIntermediateRows == 2)
-                #expect(meter.retainedIntermediateBytes == 15)
+                #expect(meter.retainedIntermediateBytes == retainedBytes + 3)
             }
             #expect(meter.retainedIntermediateRows == 2)
         }
@@ -132,7 +135,7 @@ struct DatabaseRetainedBufferTests {
 
     @Test("sharing preserves contiguous element storage")
     func sharingReusesBackingStorage() throws {
-        let meter = makeMeter(rows: 2, bytes: 15)
+        let meter = makeMeter(rows: 2, bytes: 1_024)
         var builder = try DatabaseRetainedArrayBuilder<Int>(
             workMeter: meter,
             stage: .resultMaterialization,
@@ -147,6 +150,7 @@ struct DatabaseRetainedBufferTests {
             }
         }
         let retained = builder.finish()
+        let retainedBytes = meter.retainedIntermediateBytes
         let retainedAddress = retained.withSpan { span in
             span.withUnsafeBufferPointer { buffer in
                 UInt(bitPattern: buffer.baseAddress)
@@ -162,27 +166,29 @@ struct DatabaseRetainedBufferTests {
 
         #expect(sharedAddress == retainedAddress)
         #expect(meter.retainedIntermediateRows == 2)
-        #expect(meter.retainedIntermediateBytes == 15)
+        #expect(meter.retainedIntermediateBytes == retainedBytes + 3)
     }
 
     @Test("operator hand-off retains reservation through every shared alias")
     func operatorHandOffRetainsReservation() throws {
-        let meter = makeMeter(rows: 2, bytes: 15)
+        let meter = makeMeter(rows: 2, bytes: 1_024)
         do {
             let builder = try makeTwoElementBuilder(meter: meter)
-            let shared = try builder.finish().moveToSharedOwnership(
+            let retained = builder.finish()
+            let retainedBytes = meter.retainedIntermediateBytes
+            let shared = try retained.moveToSharedOwnership(
                 at: .joinCandidate
             )
             do {
                 let downstream = shared
                 #expect(Array(downstream) == [1, 2])
                 #expect(meter.retainedIntermediateRows == 2)
-                #expect(meter.retainedIntermediateBytes == 15)
+                #expect(meter.retainedIntermediateBytes == retainedBytes + 3)
 
                 let output = shared.promoteToOutput()
                 #expect(output == [1, 2])
                 #expect(meter.retainedIntermediateRows == 2)
-                #expect(meter.retainedIntermediateBytes == 15)
+                #expect(meter.retainedIntermediateBytes == retainedBytes + 3)
             }
         }
 
@@ -192,8 +198,11 @@ struct DatabaseRetainedBufferTests {
 
     @Test("failed operator hand-off releases the consumed unique owner")
     func failedOperatorHandOffReleasesReservation() throws {
-        let meter = makeMeter(rows: 2, bytes: 14)
-        let builder = try makeTwoElementBuilder(meter: meter)
+        let meter = makeMeter(rows: 2, bytes: 512)
+        let builder = try makeTwoElementBuilder(
+            meter: meter,
+            layout: try testLayout(sharedOwnerByteCount: 1_024)
+        )
 
         do {
             _ = try builder.finish().moveToSharedOwnership(at: .joinCandidate)
@@ -209,11 +218,11 @@ struct DatabaseRetainedBufferTests {
 
     @Test("failed sharing admission preserves the unique buffer")
     func failedSharingAdmissionPreservesUniqueBuffer() throws {
-        let meter = makeMeter(rows: 2, bytes: 13)
+        let meter = makeMeter(rows: 2, bytes: 512)
         var builder = try DatabaseRetainedArrayBuilder<Int>(
             workMeter: meter,
             stage: .resultMaterialization,
-            layout: try testLayout(),
+            layout: try testLayout(sharedOwnerByteCount: 1_024),
             expectedCount: 2
         )
         for value in 1...2 {
@@ -237,20 +246,21 @@ struct DatabaseRetainedBufferTests {
 
     @Test("abandoned sharing admission releases only owner storage")
     func abandonedSharingAdmissionReleasesOnlyOwnerStorage() throws {
-        let meter = makeMeter(rows: 2, bytes: 15)
+        let meter = makeMeter(rows: 2, bytes: 1_024)
         do {
             let builder = try makeTwoElementBuilder(meter: meter)
             let retained = builder.finish()
+            let retainedBytes = meter.retainedIntermediateBytes
             do {
                 let admission = try retained.prepareToShare(
                     at: .subqueryCache
                 )
                 _ = consumeWithoutCommitting(admission)
                 #expect(meter.retainedIntermediateRows == 2)
-                #expect(meter.retainedIntermediateBytes == 12)
+                #expect(meter.retainedIntermediateBytes == retainedBytes)
             }
             #expect(meter.retainedIntermediateRows == 2)
-            #expect(meter.retainedIntermediateBytes == 12)
+            #expect(meter.retainedIntermediateBytes == retainedBytes)
             let output = retained.promoteToOutput()
             #expect(output == [1, 2])
         }
@@ -261,7 +271,7 @@ struct DatabaseRetainedBufferTests {
 
     @Test("sharing admission lifetime is independent from promotion")
     func sharingAdmissionOutlivesPromotedSource() throws {
-        let meter = makeMeter(rows: 2, bytes: 15)
+        let meter = makeMeter(rows: 2, bytes: 1_024)
         do {
             let builder = try makeTwoElementBuilder(meter: meter)
             let retained = builder.finish()
@@ -280,7 +290,7 @@ struct DatabaseRetainedBufferTests {
 
     @Test("append admission accounts for a candidate before construction")
     func appendAdmissionPrecedesCandidateConstruction() throws {
-        let meter = makeMeter(rows: 1, bytes: 6)
+        let meter = makeMeter(rows: 1, bytes: 1_024)
         do {
             var builder = try DatabaseRetainedArrayBuilder<Int>(
                 workMeter: meter,
@@ -290,15 +300,16 @@ struct DatabaseRetainedBufferTests {
             let admission = try builder.prepareAppend(
                 footprint: DatabaseIntermediateFootprint(rows: 1, bytes: 2)
             )
+            let admittedBytes = meter.retainedIntermediateBytes
 
             #expect(meter.retainedIntermediateRows == 1)
-            #expect(meter.retainedIntermediateBytes == 6)
+            #expect(admittedBytes >= 5)
 
             let candidate = 42
             builder.append(candidate, using: admission)
 
             #expect(meter.retainedIntermediateRows == 1)
-            #expect(meter.retainedIntermediateBytes == 5)
+            #expect(meter.retainedIntermediateBytes == admittedBytes - 1)
             let retained = builder.finish()
             let retainedValue = retained.withSpan { $0[0] }
             #expect(retainedValue == 42)
@@ -310,7 +321,7 @@ struct DatabaseRetainedBufferTests {
 
     @Test("abandoned append admission retains only materialized capacity")
     func abandonedAppendAdmissionRollsBackPayload() throws {
-        let meter = makeMeter(rows: 1, bytes: 6)
+        let meter = makeMeter(rows: 1, bytes: 1_024)
         do {
             var builder = try DatabaseRetainedArrayBuilder<Int>(
                 workMeter: meter,
@@ -320,13 +331,13 @@ struct DatabaseRetainedBufferTests {
             let admission = try builder.prepareAppend(
                 footprint: DatabaseIntermediateFootprint(rows: 1, bytes: 2)
             )
+            let admittedBytes = meter.retainedIntermediateBytes
 
             #expect(meter.retainedIntermediateRows == 1)
-            #expect(meter.retainedIntermediateBytes == 6)
             _ = consumeWithoutAppending(admission)
 
             #expect(meter.retainedIntermediateRows == 0)
-            #expect(meter.retainedIntermediateBytes == 3)
+            #expect(meter.retainedIntermediateBytes == admittedBytes - 3)
             let retained = builder.finish()
             let retainedIsEmpty = retained.isEmpty
             #expect(retainedIsEmpty)
@@ -338,7 +349,7 @@ struct DatabaseRetainedBufferTests {
 
     @Test("append admission lifetime is independent from source promotion")
     func appendAdmissionOutlivesPromotedSource() throws {
-        let meter = makeMeter(rows: 1, bytes: 6)
+        let meter = makeMeter(rows: 1, bytes: 1_024)
         do {
             var builder = try DatabaseRetainedArrayBuilder<Int>(
                 workMeter: meter,
@@ -361,36 +372,36 @@ struct DatabaseRetainedBufferTests {
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
-    @Test("canonical capacity grows geometrically")
-    func canonicalCapacityGrowthIsFullyAccounted() throws {
-        let meter = makeMeter(rows: 1, bytes: 11)
-        do {
+    @Test("actual Array capacity is fully accounted after every growth")
+    func actualCapacityGrowthIsFullyAccounted() throws {
+        for elementCount in 1...5 {
+            let meter = makeMeter(rows: 1, bytes: 1_024)
             var builder = try DatabaseRetainedArrayBuilder<Int>(
                 workMeter: meter,
                 stage: .resultMaterialization,
                 layout: try testLayout()
             )
-            let retainedBytes: [UInt64] = [3, 4, 6, 6, 10]
-            for (value, expectedBytes) in zip(0..<5, retainedBytes) {
+            for value in 0..<elementCount {
                 try builder.append(
                     footprint: DatabaseIntermediateFootprint()
                 ) {
                     value
                 }
-                #expect(meter.retainedIntermediateBytes == expectedBytes)
             }
-            let retained = builder.finish()
-            let retainedCount = retained.count
-            #expect(retainedCount == 5)
-        }
+            let retainedBytes = meter.retainedIntermediateBytes
+            let peakBytes = meter.peakIntermediateBytes
+            let output = builder.finish().promoteToOutput()
 
-        #expect(meter.retainedIntermediateBytes == 0)
-        #expect(meter.peakIntermediateBytes == 11)
+            #expect(output.count == elementCount)
+            #expect(retainedBytes == 2 + UInt64(output.capacity))
+            #expect(peakBytes >= retainedBytes)
+            #expect(meter.retainedIntermediateBytes == 0)
+        }
     }
 
     @Test("expected count reserves canonical spare capacity")
     func expectedCountReservesCanonicalCapacity() throws {
-        let meter = makeMeter(rows: 1, bytes: 6)
+        let meter = makeMeter(rows: 1, bytes: 1_024)
         do {
             let builder = try DatabaseRetainedArrayBuilder<Int>(
                 workMeter: meter,
@@ -398,11 +409,40 @@ struct DatabaseRetainedBufferTests {
                 layout: try testLayout(),
                 expectedCount: 3
             )
-            #expect(meter.retainedIntermediateBytes == 6)
+            let accountedBytes = meter.retainedIntermediateBytes
             let retained = builder.finish()
             let retainedIsEmpty = retained.isEmpty
             #expect(retainedIsEmpty)
+            let output = retained.promoteToOutput()
+            #expect(accountedBytes == 2 + UInt64(output.capacity))
         }
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("reservation follows the Array buffer's actual capacity")
+    func actualArrayCapacityIsAccounted() throws {
+        let containerBytes: UInt64 = 11
+        let slotBytes: UInt64 = 17
+        let layout = try DatabaseRetainedArrayLayout.validated(
+            containerByteCount: containerBytes,
+            elementCapacitySlotByteCount: slotBytes,
+            sharedOwnerByteCount: 3,
+            appendAdmissionByteCount: 1
+        )
+        let meter = makeMeter(rows: 1, bytes: 1_024)
+        let builder = try DatabaseRetainedArrayBuilder<Int>(
+            workMeter: meter,
+            stage: .resultMaterialization,
+            layout: layout,
+            expectedCount: 3
+        )
+        let accountedBytes = meter.retainedIntermediateBytes
+        let output = builder.finish().promoteToOutput()
+
+        #expect(
+            accountedBytes
+                == containerBytes + UInt64(output.capacity) * slotBytes
+        )
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
@@ -469,7 +509,7 @@ struct DatabaseRetainedBufferTests {
 
     @Test("top-level promotion preserves contiguous element storage")
     func promotionReusesBackingStorage() throws {
-        let meter = makeMeter(rows: 2, bytes: 13)
+        let meter = makeMeter(rows: 2, bytes: 1_024)
         var builder = try DatabaseRetainedArrayBuilder<Int>(
             workMeter: meter,
             stage: .resultMaterialization,
@@ -608,22 +648,26 @@ struct DatabaseRetainedBufferTests {
         )
     }
 
-    private func testLayout() throws -> DatabaseRetainedArrayLayout {
+    private func testLayout(
+        sharedOwnerByteCount: UInt64 = 3
+    ) throws -> DatabaseRetainedArrayLayout {
         try DatabaseRetainedArrayLayout.validated(
             containerByteCount: 2,
             elementCapacitySlotByteCount: 1,
-            sharedOwnerByteCount: 3,
+            sharedOwnerByteCount: sharedOwnerByteCount,
             appendAdmissionByteCount: 1
         )
     }
 
     private func makeTwoElementBuilder(
-        meter: DatabaseWorkMeter
+        meter: DatabaseWorkMeter,
+        layout: DatabaseRetainedArrayLayout? = nil
     ) throws -> DatabaseRetainedArrayBuilder<Int> {
+        let selectedLayout = try layout ?? testLayout()
         var builder = try DatabaseRetainedArrayBuilder<Int>(
             workMeter: meter,
             stage: .resultMaterialization,
-            layout: try testLayout(),
+            layout: selectedLayout,
             expectedCount: 2
         )
         for value in 1...2 {

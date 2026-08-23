@@ -430,7 +430,7 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
         queryVector: [Float],
         k: Int,
         searchParams: HNSWSearchParameters,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let retainedQuery = try Vector(float32: queryVector)
         return try await search(
@@ -445,7 +445,7 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
         queryVector: Vector,
         k: Int,
         searchParams: HNSWSearchParameters,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         try await HNSWIndexReader(storage: storage).search(
             queryVector: queryVector,
@@ -459,7 +459,7 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     public func search(
         queryVector: [Float],
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let searchParams = HNSWSearchParameters(ef: max(k, parameters.efSearch))
         return try await search(
@@ -473,7 +473,7 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
     func search(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let searchParams = HNSWSearchParameters(
             ef: max(k, parameters.efSearch)
@@ -505,10 +505,10 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
         queryVector: [Float],
         k: Int,
         predicate: @escaping @Sendable (Item) async throws -> Bool,
-        fetchItem: @escaping @Sendable (Tuple, any TransactionAccess) async throws -> Item?,
+        fetchItem: @escaping @Sendable (Tuple) async throws -> Item?,
         postFilterParameters: HNSWPostFilterParameters = .default,
         searchParams: HNSWSearchParameters = HNSWSearchParameters(),
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let retainedQuery = try Vector(float32: queryVector)
         return try await searchWithPostFilter(
@@ -526,10 +526,10 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
         queryVector: Vector,
         k: Int,
         predicate: @escaping @Sendable (Item) async throws -> Bool,
-        fetchItem: @escaping @Sendable (Tuple, any TransactionAccess) async throws -> Item?,
+        fetchItem: @escaping @Sendable (Tuple) async throws -> Item?,
         postFilterParameters: HNSWPostFilterParameters = .default,
         searchParams: HNSWSearchParameters = HNSWSearchParameters(),
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
@@ -605,7 +605,7 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
             }
 
             // Fetch item and evaluate predicate
-            if let item = try await fetchItem(pk, transaction) {
+            if let item = try await fetchItem(pk) {
                 predicateEvaluations += 1
                 let passes = try await predicate(item)
 

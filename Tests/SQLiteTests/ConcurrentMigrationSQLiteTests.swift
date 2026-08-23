@@ -303,20 +303,15 @@ struct ConcurrentMigrationSQLiteTests {
             .pack(try alreadyMigrated.persistableIdentifierTuple())
         let alreadyMigratedBytes = try DataAccess.serialize(alreadyMigrated)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        try await initialContainer.withTestBaseOperation {
-            try await initialContainer.transactionExecutor.withTransaction(
-                configuration: .batch,
-                clock: initialContainer.monotonicClock
-            ) { transaction in
-                let storage = initialContainer.itemStorageFactory.make(
-                    transaction: transaction,
-                    blobsSubspace: blobsSubspace
-                )
-                try await storage.write(
-                    alreadyMigratedBytes,
-                    for: alreadyMigratedKey
-                )
-            }
+        try await initialContainer.withTestBaseTransaction { transaction in
+            let storage = initialContainer.itemStorageFactory.makeWriter(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            try await storage.write(
+                alreadyMigratedBytes,
+                for: alreadyMigratedKey
+            )
         }
         await initialContainer.shutdown()
 
@@ -397,17 +392,12 @@ struct ConcurrentMigrationSQLiteTests {
             .pack(try user.persistableIdentifierTuple())
         let malformedBytes = ByteString([0xFF])
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        try await initialContainer.withTestBaseOperation {
-            try await initialContainer.transactionExecutor.withTransaction(
-                configuration: .batch,
-                clock: initialContainer.monotonicClock
-            ) { transaction in
-                let storage = initialContainer.itemStorageFactory.make(
-                    transaction: transaction,
-                    blobsSubspace: blobsSubspace
-                )
-                try await storage.write(malformedBytes, for: itemKey)
-            }
+        try await initialContainer.withTestBaseTransaction { transaction in
+            let storage = initialContainer.itemStorageFactory.makeWriter(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            try await storage.write(malformedBytes, for: itemKey)
         }
         await initialContainer.shutdown()
 
@@ -445,17 +435,14 @@ struct ConcurrentMigrationSQLiteTests {
             try await migratedContainer.testBaseCurrentSchemaVersion()
                 == Schema.Version(1, 0, 0)
         )
-        let persistedPayload = try await migratedContainer.transactionExecutor
-            .withTransaction(
-                configuration: .readOnly,
-                clock: migratedContainer.monotonicClock
-            ) { transaction in
-                let storage = migratedContainer.itemStorageFactory.make(
-                    transaction: transaction,
-                    blobsSubspace: blobsSubspace
-                )
-                return try await storage.read(for: itemKey, snapshot: true)
-            }
+        let persistedPayload = try await migratedContainer
+            .withTestBaseMigrationMaintenanceTransaction { transaction in
+            let storage = migratedContainer.itemStorageFactory.makeReader(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            return try await storage.read(for: itemKey, snapshot: true)
+        }
         #expect(persistedPayload == malformedBytes)
     }
 }

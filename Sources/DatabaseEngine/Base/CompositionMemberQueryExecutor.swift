@@ -12,15 +12,21 @@ import StorageKit
 public protocol CompositionMemberQueryExecutor: Sendable {
     func validate(_ query: SelectQuery) throws
 
+    func admitLogicalRead(
+        context: DatabaseContext,
+        query: SelectQuery,
+        restrictingTo entityNames: Set<String>?
+    ) throws -> DatabaseReadAuthorizationAdmission
+
     func execute(
         context: DatabaseContext,
         query: SelectQuery,
         execution: ReadExecutionContext,
-        transaction: any TransactionAccess
-    ) async throws -> QueryResponse
+        transaction: any TransactionReadAccess
+    ) async throws -> DatabaseRetainedQueryResponse
 
     func prepare(
-        _ row: QueryRow,
+        _ row: DatabaseRetainedQueryRow,
         sourceBaseID: Base.ID
     ) throws -> QueryRow
 }

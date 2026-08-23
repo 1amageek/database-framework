@@ -9,7 +9,7 @@ struct AutocompleteIndexReader: Sendable {
         field: String,
         prefix: String,
         limit: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [AutocompleteSuggestion] {
         let normalizedPrefix = normalize(prefix)
         guard normalizedPrefix.count >= minPrefixLength else {
@@ -58,7 +58,7 @@ struct AutocompleteIndexReader: Sendable {
     func popularTerms(
         field: String,
         limit: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [AutocompleteSuggestion] {
         let termsSubspace = subspace.subspace("terms").subspace(field)
         let (begin, end) = termsSubspace.range()

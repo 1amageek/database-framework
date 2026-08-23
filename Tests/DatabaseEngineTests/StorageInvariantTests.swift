@@ -25,8 +25,6 @@ struct StorageInvariantTests {
             let database = try await openDB()
 
             let testId = String(UUID().uuidString.prefix(8))
-            let storeSubspace = Subspace(prefix: Tuple("test", "onlineindexer", "violations", testId).pack())
-            let metadataSubspace = storeSubspace.subspace(SubspaceKey.metadata)
             let indexName = "unique_clearFirst_idx"
             let index = try ResolvedIndex(
                 for: Player.self,
@@ -63,55 +61,64 @@ struct StorageInvariantTests {
                         )
                     ]),
                 security: .testingDisabled)
+            let storeSubspace = try await container.testBaseDataRoot()
+                .subspace("storage-invariant")
+                .subspace(testId)
+            let metadataSubspace = storeSubspace.subspace(SubspaceKey.metadata)
 
             let tracker = UniquenessViolationTracker(
                 container: container, metadataSubspace: metadataSubspace)
 
-            // Seed a violation in the correct metadata subspace.
-            try await database.withTransaction { tx in
-                try await tracker.recordViolation(
-                    indexName: indexName,
-                    persistableType: "TestType",
-                    valueKey: Tuple("dup").pack(),
-                    conflictingValues: [.string("dup")],
-                    existingPrimaryKey: Tuple("pk1"),
-                    newPrimaryKey: Tuple("pk2"),
-                    transaction: tx
-                )
-            }
+            try await container.withTestBaseOperation {
+                // Seed a violation in the correct metadata subspace.
+                try await container.withTestBaseTransaction { tx in
+                    try await tracker.recordViolation(
+                        indexName: indexName,
+                        persistableType: "TestType",
+                        valueKey: Tuple("dup").pack(),
+                        conflictingValues: [.string("dup")],
+                        existingPrimaryKey: Tuple("pk1"),
+                        newPrimaryKey: Tuple("pk2"),
+                        transaction: tx
+                    )
+                }
 
-            #expect(try await tracker.hasViolations(indexName: indexName) == true)
+                #expect(try await tracker.hasViolations(indexName: indexName) == true)
 
             // Build an OnlineIndexer with clearFirst=true. For unique indexes, it must clear violations.
-            let lifecycleStore = IndexLifecycleStore(
-                container: container,
-                subspace: storeSubspace
-            )
-            let maintainer = ScalarIndexMaintainer<Player>(
-                index: index,
-                subspace: try lifecycleStore.indexSubspace(for: index.name),
-                idExpression: FieldKeyExpression(fieldName: "id")
-            )
-            try await lifecycleStore.enable(index.name)
+                let lifecycleStore = IndexLifecycleStore(
+                    container: container,
+                    subspace: storeSubspace
+                )
+                let maintainer = ScalarIndexMaintainer<Player>(
+                    index: index,
+                    subspace: try lifecycleStore.indexSubspace(for: index.name),
+                    idExpression: FieldKeyExpression(fieldName: "id")
+                )
+                try await lifecycleStore.enable(index.name)
 
-            let indexer = try OnlineIndexer(
-                container: container,
-                storeSubspace: storeSubspace,
-                itemType: Player.persistableType,
-                index: index,
-                indexMaintainer: maintainer,
-                uniquenessMaintainer: maintainer,
-                indexLifecycleStore: lifecycleStore,
-                batchSize: 10
-            )
+                let indexer = try OnlineIndexer(
+                    transactionAuthority: .requestAuthorization(
+                        TestBaseEnvironment.authorization
+                    ),
+                    container: container,
+                    storeSubspace: storeSubspace,
+                    itemType: Player.persistableType,
+                    index: index,
+                    indexMaintainer: maintainer,
+                    uniquenessMaintainer: maintainer,
+                    indexLifecycleStore: lifecycleStore,
+                    batchSize: 10
+                )
 
-            try await indexer.buildIndex(clearFirst: true)
+                try await indexer.buildIndex(clearFirst: true)
 
-            // If OnlineIndexer targets the wrong metadata subspace, this stays true.
-            #expect(try await tracker.hasViolations(indexName: indexName) == false)
+                // If OnlineIndexer targets the wrong metadata subspace, this stays true.
+                #expect(try await tracker.hasViolations(indexName: indexName) == false)
+            }
 
             // Cleanup
-            try await database.withTransaction { tx in
+            try await container.withTestBaseTransaction { tx in
                 let (b, e) = storeSubspace.range()
                 try tx.clearRange(beginKey: b, endKey: e)
             }
@@ -141,7 +148,7 @@ struct StorageInvariantTests {
 
             // Overwrite via ItemStorage.
             try await database.withTransaction { tx in
-                let storage = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
+                let storage = ItemStorageWriter(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
                 try await storage.write(ByteString(utf8: "new"), for: key)
             }
 
@@ -189,7 +196,7 @@ struct StorageInvariantTests {
 
             // Delete via ItemStorage.
             try await database.withTransaction { tx in
-                let storage = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
+                let storage = ItemStorageWriter(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
                 try await storage.delete(for: key)
             }
 
@@ -228,7 +235,7 @@ struct StorageInvariantTests {
             // - forces 1 KV per range batch
             // - throws if scan performs > 1 native call (prefetching all results)
             try await database.withTransaction { tx in
-                let writer = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
+                let writer = ItemStorageWriter(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
                 for i in 0..<5 {
                     let key = itemsSubspace.pack(Tuple("k\(i)"))
                     try await writer.write(ByteString(utf8: "v\(i)"), for: key)
@@ -239,7 +246,7 @@ struct StorageInvariantTests {
                     wrapping: tx,
                     maximumRangeCursorCount: 2
                 )
-                let storage = ItemStorage(transaction: limiting, blobsSubspace: blobsSubspace, configuration: .v1)
+                let storage = ItemStorageWriter(transaction: limiting, blobsSubspace: blobsSubspace, configuration: .v1)
                 let (b, e) = itemsSubspace.range()
 
                 var it = storage.scan(begin: b, end: e, snapshot: false, limit: 0, reverse: false).makeAsyncIterator()

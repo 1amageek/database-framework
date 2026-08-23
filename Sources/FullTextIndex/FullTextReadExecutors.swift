@@ -1,4 +1,4 @@
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -39,213 +39,116 @@ private enum FullTextReadError: Error, Sendable {
     case missingFetchedEntity(ByteString)
 }
 
-private func reserveFullTextCandidates(
-    _ candidates: [[any TupleElement]],
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = DatabaseIntermediateFootprint(
-        bytes: UInt64(MemoryLayout<[[any TupleElement]]>.stride)
-    )
-    for elements in candidates {
-        let packed = Tuple(elements).pack()
-        let elementStorage = try DatabaseIntermediateFootprint(
-            bytes: UInt64(
-                max(1, MemoryLayout<any TupleElement>.stride + 16)
-            )
-        ).multiplied(by: UInt64(elements.count))
-        footprint = try footprint.adding(
-            DatabaseIntermediateFootprint(
-                rows: 1,
-                bytes: UInt64(packed.count) + 64
-            ).adding(elementStorage)
-        )
+fileprivate typealias FullTextRetainedArray<Element: Sendable> =
+    DatabaseSharedRetainedArray<Element>
+
+private final class FullTextRetainedFacetedResult<Item: Sendable>: Sendable {
+    let items: FullTextRetainedArray<Item>
+    let facets: [String: [(value: String, count: Int64)]]
+    let totalCount: Int
+    private let facetReservation: DatabaseIntermediateReservation
+
+    init(
+        items: FullTextRetainedArray<Item>,
+        facets: [String: [(value: String, count: Int64)]],
+        totalCount: Int,
+        facetReservation: DatabaseIntermediateReservation
+    ) {
+        self.items = items
+        self.facets = facets
+        self.totalCount = totalCount
+        self.facetReservation = facetReservation
     }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
 }
 
-private func reserveFullTextTuples(
-    _ tuples: [Tuple],
+private func retainFullTextTuples<Elements: Sequence>(
+    _ tuples: Elements,
+    expectedCount: Int,
     workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = DatabaseIntermediateFootprint(
-        bytes: UInt64(MemoryLayout<[Tuple]>.stride)
+) throws -> FullTextRetainedArray<Tuple>
+where Elements.Element == Tuple {
+    var builder = try DatabaseRetainedArrayBuilder<Tuple>(
+        workMeter: workMeter,
+        stage: .indexScan,
+        layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+            for: Tuple.self
+        ),
+        expectedCount: expectedCount
     )
     for tuple in tuples {
-        footprint = try footprint.adding(
-            DatabaseIntermediateFootprint(
+        try builder.append(
+            footprint: DatabaseIntermediateFootprint(
                 rows: 1,
-                bytes: UInt64(tuple.pack().count) + 64
-            )
+                bytes: UInt64(tuple.packedByteCount) + 32
+            ),
+            at: .indexScan,
+            make: { tuple }
         )
     }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
+    return try builder.finish().moveToSharedOwnership(
         at: .indexScan
     )
 }
 
-private func reserveFullTextScoredTuples(
-    _ tuples: [(id: Tuple, score: Double)],
+private func retainFullTextCandidateTuples<Candidates: Collection>(
+    _ candidates: Candidates,
     workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = DatabaseIntermediateFootprint(
-        bytes: UInt64(MemoryLayout<[(id: Tuple, score: Double)]>.stride)
+) throws -> FullTextRetainedArray<Tuple>
+where Candidates.Element == [any TupleElement] {
+    try retainFullTextTuples(
+        candidates.lazy.map(Tuple.init),
+        expectedCount: candidates.count,
+        workMeter: workMeter
+    )
+}
+
+private func limitFullTextTuples(
+    _ values: FullTextRetainedArray<Tuple>,
+    limit: Int?,
+    workMeter: DatabaseWorkMeter
+) throws -> FullTextRetainedArray<Tuple> {
+    guard let limit else { return values }
+    guard limit >= 0 else {
+        throw FullTextReadError.invalidParameter(
+            FullTextReadParameter.limit
+        )
+    }
+    guard values.count > limit else { return values }
+    return try retainFullTextTuples(
+        values.prefix(limit),
+        expectedCount: limit,
+        workMeter: workMeter
+    )
+}
+
+private func retainFullTextScoredTuples<Elements: Sequence>(
+    _ tuples: Elements,
+    expectedCount: Int,
+    workMeter: DatabaseWorkMeter
+) throws -> FullTextRetainedArray<(id: Tuple, score: Double)>
+where Elements.Element == (id: Tuple, score: Double) {
+    var builder = try DatabaseRetainedArrayBuilder<(
+        id: Tuple,
+        score: Double
+    )>(
+        workMeter: workMeter,
+        stage: .indexScan,
+        layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+            for: (id: Tuple, score: Double).self
+        ),
+        expectedCount: expectedCount
     )
     for tuple in tuples {
-        footprint = try footprint.adding(
-            DatabaseIntermediateFootprint(
+        try builder.append(
+            footprint: DatabaseIntermediateFootprint(
                 rows: 1,
-                bytes: UInt64(tuple.id.pack().count) + 80
-            )
+                bytes: UInt64(tuple.id.packedByteCount) + 32
+            ),
+            at: .indexScan,
+            make: { tuple }
         )
     }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
-}
-
-private func reserveFullTextModels(
-    _ models: [PersistedModel],
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = DatabaseIntermediateFootprint(
-        bytes: UInt64(MemoryLayout<[PersistedModel]>.stride)
-    )
-    for model in models {
-        footprint = try footprint.adding(
-            CanonicalRelationalFootprintMeter.footprint(
-                of: try QueryRowCodec.encode(model),
-                workMeter: workMeter
-            )
-        )
-    }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
-}
-
-private func reserveFullTextEntities(
-    _ entities: [PolymorphicEntity],
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = DatabaseIntermediateFootprint(
-        bytes: UInt64(MemoryLayout<[PolymorphicEntity]>.stride)
-    )
-    for entity in entities {
-        footprint = try footprint.adding(
-            CanonicalRelationalFootprintMeter.footprint(
-                of: try QueryRowCodec.encode(
-                    entity.item,
-                    annotations: [
-                        PolymorphicRowAnnotation.typeName:
-                            .string(entity.typeName),
-                        PolymorphicRowAnnotation.typeCode:
-                            .int64(entity.typeCode),
-                    ]
-                ),
-                workMeter: workMeter
-            )
-        )
-    }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
-}
-
-private func reserveFullTextScoredModels(
-    _ results: [(item: PersistedModel, score: Double)],
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
-        count: results.count,
-        element: (item: PersistedModel, score: Double).self
-    )
-    for result in results {
-        footprint = try footprint.adding(
-            CanonicalRelationalFootprintMeter.footprint(
-                of: try QueryRowCodec.encode(result.item),
-                workMeter: workMeter
-            )
-        )
-    }
-    return try workMeter.reserveIntermediate(
-        rows: UInt64(results.count),
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
-}
-
-private func reserveFullTextScoredEntities(
-    _ results: [(entity: PolymorphicEntity, score: Double)],
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
-        count: results.count,
-        element: (entity: PolymorphicEntity, score: Double).self
-    )
-    for result in results {
-        footprint = try footprint.adding(
-            CanonicalRelationalFootprintMeter.footprint(
-                of: try QueryRowCodec.encode(result.entity.item),
-                workMeter: workMeter
-            )
-        ).adding(
-            DatabaseIntermediateFootprint(
-                bytes: UInt64(result.entity.typeName.utf8.count)
-            )
-        )
-    }
-    return try workMeter.reserveIntermediate(
-        rows: UInt64(results.count),
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
-}
-
-private func reserveFullTextFacets(
-    _ facets: [String: [(value: String, count: Int64)]],
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = DatabaseIntermediateFootprint(
-        bytes: UInt64(
-            MemoryLayout<[String: [(value: String, count: Int64)]]>.stride
-        )
-    )
-    for (field, buckets) in facets {
-        footprint = try footprint.adding(
-            DatabaseIntermediateFootprint(
-                rows: 1,
-                bytes: UInt64(field.utf8.count) + 96
-            )
-        ).adding(
-            try DatabaseIntermediateCollectionMeter.arrayFootprint(
-                count: buckets.count,
-                element: (value: String, count: Int64).self
-            )
-        )
-        for bucket in buckets {
-            footprint = try footprint.adding(
-                DatabaseIntermediateFootprint(
-                    rows: 1,
-                    bytes: UInt64(bucket.value.utf8.count) + 32
-                )
-            )
-        }
-    }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
+    return try builder.finish().moveToSharedOwnership(
         at: .indexScan
     )
 }
@@ -283,22 +186,6 @@ private func reserveFullTextFacetMetadataAdmission(
     )
 }
 
-private func reserveFullTextArrayCopy<Element>(
-    count: Int,
-    element: Element.Type,
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    let footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
-        count: count,
-        element: element
-    )
-    return try workMeter.reserveIntermediate(
-        rows: UInt64(count),
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
-}
-
 private func reserveFullTextMapEntry(
     key: ByteString,
     elements: [any TupleElement],
@@ -329,7 +216,7 @@ private func reserveFullTextFacetEntry(
     )
 }
 
-private struct FullTextReadExecutor: IndexReadExecutor {
+struct FullTextReadExecutor: IndexReadExecutor {
     let indexType: IndexType = .text(.fullText)
 
     func executeRows(
@@ -353,14 +240,11 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 FullTextReadParameter.limit
             )
         }
-        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let budgetLimit = try options.workMeter
+            .storageWorkReadLimitWithSentinel()
         let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
         let includeFacets = indexScan.parameters[FullTextReadParameter.includeFacets]?.boolValue ?? false
         let returnScores = indexScan.parameters[FullTextReadParameter.returnScores]?.boolValue ?? false
-
-        if limit == 0, !includeFacets {
-            return .empty
-        }
 
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
@@ -377,7 +261,26 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             entity: entity,
             selectQuery: selectQuery
         )
+        let authorization = try IndexReadAuthorization(
+            selectQuery: selectQuery
+        )
         let configuration = try FullTextIndexConfiguration(definition: index.declaration.definition)
+        let bm25Parameters: BM25Parameters?
+        if returnScores {
+            let k1 = indexScan.parameters[
+                FullTextReadParameter.bm25K1
+            ]?.float64Value ?? Double(BM25Parameters.default.k1)
+            let b = indexScan.parameters[
+                FullTextReadParameter.bm25B
+            ]?.float64Value ?? Double(BM25Parameters.default.b)
+            bm25Parameters = try BM25Parameters.validated(k1: k1, b: b)
+        } else {
+            bm25Parameters = nil
+        }
+
+        if limit == 0, !includeFacets {
+            return .empty
+        }
 
         if includeFacets {
             let facetFields = try requireStringArray(FullTextReadParameter.facetFields, from: indexScan.parameters)
@@ -396,19 +299,10 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 facetLimit: facetLimit,
                 index: index,
                 partitions: partitions,
+                authorization: authorization,
                 execution: execution,
                 workMeter: options.workMeter
             )
-            let itemReservation = try reserveFullTextModels(
-                result.items,
-                workMeter: options.workMeter
-            )
-            defer { itemReservation.release() }
-            let facetReservation = try reserveFullTextFacets(
-                result.facets,
-                workMeter: options.workMeter
-            )
-            defer { facetReservation.release() }
             let metadataAdmission = try reserveFullTextFacetMetadataAdmission(
                 result.facets,
                 workMeter: options.workMeter
@@ -430,12 +324,11 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         }
 
         if returnScores {
-            let k1 = indexScan.parameters[
-                FullTextReadParameter.bm25K1
-            ]?.float64Value ?? Double(BM25Parameters.default.k1)
-            let b = indexScan.parameters[
-                FullTextReadParameter.bm25B
-            ]?.float64Value ?? Double(BM25Parameters.default.b)
+            guard let bm25Parameters else {
+                throw FullTextReadError.invalidParameter(
+                    FullTextReadParameter.returnScores
+                )
+            }
             let results = try await executeScoredSearch(
                 context: context,
                 entity: entity,
@@ -443,20 +336,13 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 terms: terms,
                 matchMode: matchMode,
                 limit: limit,
-                bm25Parameters: BM25Parameters(
-                    k1: Float(k1),
-                    b: Float(b)
-                ),
+                bm25Parameters: bm25Parameters,
                 index: index,
                 partitions: partitions,
+                authorization: authorization,
                 execution: execution,
                 workMeter: options.workMeter
             )
-            let resultReservation = try reserveFullTextScoredModels(
-                results,
-                workMeter: options.workMeter
-            )
-            defer { resultReservation.release() }
             return try IndexReadResult.build(
                 workMeter: options.workMeter,
                 expectedCount: results.count
@@ -483,14 +369,10 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             limit: limit,
             index: index,
             partitions: partitions,
+            authorization: authorization,
             execution: execution,
             workMeter: options.workMeter
         )
-        let resultReservation = try reserveFullTextModels(
-            results,
-            workMeter: options.workMeter
-        )
-        defer { resultReservation.release() }
         return try IndexReadResult.build(
             workMeter: options.workMeter,
             expectedCount: results.count
@@ -510,19 +392,26 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         limit: Int?,
         index: IndexDescriptor,
         partitions: FieldObject,
+        authorization: IndexReadAuthorization,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [PersistedModel] {
+    ) async throws -> FullTextRetainedArray<PersistedModel> {
         let search = PolymorphicFullTextReadExecutor()
         return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
             indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
+            authorization: authorization,
             configuration: execution.transactionConfiguration
         ) { readableIndex, transaction in
-            guard let readableIndex else { return [] }
-            let identifiers: [Tuple]
+            guard let readableIndex else {
+                return try FullTextRetainedArray.empty(
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
+            }
+            let identifiers: FullTextRetainedArray<Tuple>
             if matchMode == .phrase {
                 identifiers = try await search.searchPhrase(
                     configuration: configuration,
@@ -541,42 +430,21 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                     workMeter: workMeter
                 )
             }
-            let identifierReservation = try reserveFullTextTuples(
+            let limited = try limitFullTextTuples(
                 identifiers,
+                limit: limit,
                 workMeter: workMeter
             )
-            defer { identifierReservation.release() }
-            let limited = try limitIdentifiers(identifiers, limit: limit)
-            let limitedReservation = limited.count == identifiers.count
-                ? nil
-                : try reserveFullTextTuples(
-                    limited,
-                    workMeter: workMeter
-                )
-            defer { limitedReservation?.release() }
             let fetched = try await context.fetchPersistedModelsPreservingOrder(
                 entity: entity,
                 primaryKeys: limited,
                 partitions: partitions,
-                transaction: transaction,
                 workMeter: workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
-            let modelArrayAdmission = try reserveFullTextArrayCopy(
-                count: fetched.count,
-                element: PersistedModel.self,
-                workMeter: workMeter
-            )
-            defer { modelArrayAdmission.release() }
             return try requireModels(
                 identifiers: limited,
-                fetched: fetched
+                fetched: fetched,
+                workMeter: workMeter
             )
         }
     }
@@ -591,18 +459,28 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         bm25Parameters: BM25Parameters,
         index: IndexDescriptor,
         partitions: FieldObject,
+        authorization: IndexReadAuthorization,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [(item: PersistedModel, score: Double)] {
+    ) async throws -> FullTextRetainedArray<(
+        item: PersistedModel,
+        score: Double
+    )> {
         let search = PolymorphicFullTextReadExecutor()
         return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
             indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
+            authorization: authorization,
             configuration: execution.transactionConfiguration
         ) { readableIndex, transaction in
-            guard let readableIndex else { return [] }
+            guard let readableIndex else {
+                return try FullTextRetainedArray.empty(
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
+            }
             let scored = try await search.searchWithScores(
                 terms: terms,
                 matchMode: matchMode,
@@ -613,59 +491,94 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 limit: limit,
                 workMeter: workMeter
             )
-            let scoredReservation = try reserveFullTextScoredTuples(
-                scored,
+            let identifiers = try retainFullTextTuples(
+                scored.lazy.map(\.id),
+                expectedCount: scored.count,
                 workMeter: workMeter
             )
-            defer { scoredReservation.release() }
-            let identifiers = scored.map { $0.id }
-            let identifierReservation = try reserveFullTextTuples(
-                identifiers,
-                workMeter: workMeter
-            )
-            defer { identifierReservation.release() }
             let fetched = try await context.fetchPersistedModelsPreservingOrder(
                 entity: entity,
                 primaryKeys: identifiers,
                 partitions: partitions,
-                transaction: transaction,
                 workMeter: workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
-            let modelArrayAdmission = try reserveFullTextArrayCopy(
-                count: fetched.count,
-                element: PersistedModel.self,
-                workMeter: workMeter
-            )
-            defer { modelArrayAdmission.release() }
             let models = try requireModels(
                 identifiers: identifiers,
-                fetched: fetched
-            )
-            let modelReservation = try reserveFullTextModels(
-                models,
+                fetched: fetched,
                 workMeter: workMeter
             )
-            defer { modelReservation.release() }
-            let combinedReservation = try reserveFullTextArrayCopy(
-                count: models.count,
-                element: (item: PersistedModel, score: Double).self,
+            return try retainScoredModels(
+                models: models,
+                scores: scored,
                 workMeter: workMeter
             )
-            defer { combinedReservation.release() }
-            var combined: [(item: PersistedModel, score: Double)] = []
-            combined.reserveCapacity(models.count)
-            for (model, score) in zip(models, scored) {
-                combined.append((item: model, score: score.score))
-            }
-            return combined
         }
+    }
+
+    /// Builds a Fusion source directly from the request-accounted scored-model
+    /// path. This avoids promoting canonical QueryRows to an unmetered public
+    /// response and then retaining a second decoded result collection.
+    func executeScoredFusion<T: Persistable>(
+        queryContext: IndexQueryContext,
+        descriptor: IndexDescriptor,
+        configuration: FullTextIndexConfiguration,
+        terms: [String],
+        matchMode: TextMatchMode,
+        parameters: BM25Parameters,
+        candidates: Set<T.ID>?,
+        execution: ReadExecutionContext
+    ) async throws -> FusionQueryResult<T> {
+        guard let entity = queryContext.schema.entity(named: T.persistableType)
+        else {
+            throw IndexQueryContextError.entityNotFound(T.persistableType)
+        }
+        try queryContext.authorizeListAccess(
+            entityName: entity.name,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: ["score"]
+            )
+        )
+        guard !terms.isEmpty else {
+            return try FusionQueryResultBuilder<T>(
+                execution: execution
+            ).finish()
+        }
+        let canonicalRead = CanonicalReadExecution.resolve(
+            requested: execution.options.consistency,
+            default: .snapshot
+        )
+        let retained = try await executeScoredSearch(
+            context: queryContext.context,
+            entity: entity,
+            configuration: configuration,
+            terms: terms,
+            matchMode: matchMode,
+            limit: nil,
+            bm25Parameters: parameters,
+            index: descriptor,
+            partitions: queryContext.partitionValues,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: ["score"]
+            ),
+            execution: canonicalRead,
+            workMeter: execution.workMeter
+        )
+        var output = try FusionQueryResultBuilder<T>(
+            execution: execution,
+            expectedCount: retained.count
+        )
+        for scored in retained {
+            try output.appendDecodedModel(
+                scored.item,
+                score: scored.score,
+                where: { candidates?.contains($0.id) ?? true }
+            )
+        }
+        return try output.finish()
     }
 
     private func executeFacetedSearch(
@@ -679,13 +592,10 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         facetLimit: Int,
         index: IndexDescriptor,
         partitions: FieldObject,
+        authorization: IndexReadAuthorization,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
-    ) async throws -> (
-        items: [PersistedModel],
-        facets: [String: [(value: String, count: Int64)]],
-        totalCount: Int
-    ) {
+    ) async throws -> FullTextRetainedFacetedResult<PersistedModel> {
         guard facetLimit >= 0 else {
             throw FullTextReadError.invalidParameter(
                 FullTextReadParameter.facetLimit
@@ -697,12 +607,30 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
+            authorization: authorization,
             configuration: execution.transactionConfiguration
         ) { readableIndex, transaction in
             guard let readableIndex else {
-                return (items: [], facets: [:], totalCount: 0)
+                let items = try FullTextRetainedArray<PersistedModel>.empty(
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
+                let reservation = try workMeter.reserveIntermediate(
+                    bytes: UInt64(
+                        MemoryLayout<[
+                            String: [(value: String, count: Int64)]
+                        ]>.stride
+                    ) + 64,
+                    at: .indexScan
+                )
+                return FullTextRetainedFacetedResult(
+                    items: items,
+                    facets: [:],
+                    totalCount: 0,
+                    facetReservation: reservation
+                )
             }
-            let identifiers: [Tuple]
+            let identifiers: FullTextRetainedArray<Tuple>
             if matchMode == .phrase {
                 identifiers = try await search.searchPhrase(
                     configuration: configuration,
@@ -721,50 +649,26 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                     workMeter: workMeter
                 )
             }
-            let identifierReservation = try reserveFullTextTuples(
-                identifiers,
-                workMeter: workMeter
-            )
-            defer { identifierReservation.release() }
             let fetched = try await context.fetchPersistedModelsPreservingOrder(
                 entity: entity,
                 primaryKeys: identifiers,
                 partitions: partitions,
-                transaction: transaction,
                 workMeter: workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
-            let modelArrayAdmission = try reserveFullTextArrayCopy(
-                count: fetched.count,
-                element: PersistedModel.self,
-                workMeter: workMeter
-            )
-            defer { modelArrayAdmission.release() }
             let allModels = try requireModels(
                 identifiers: identifiers,
-                fetched: fetched
-            )
-            let modelReservation = try reserveFullTextModels(
-                allModels,
+                fetched: fetched,
                 workMeter: workMeter
             )
-            defer { modelReservation.release() }
             var facets: [String: [(value: String, count: Int64)]] = [:]
             let facetOutputReservation = try workMeter.reserveIntermediate(
                 bytes: UInt64(
                     MemoryLayout<[
                         String: [(value: String, count: Int64)]
                     ]>.stride
-                ),
+                ) + 64,
                 at: .indexScan
             )
-            defer { facetOutputReservation.release() }
             for fieldName in facetFields {
                 guard let field = entity.fieldMapByName[fieldName] else {
                     throw FullTextReadError.invalidParameter(fieldName)
@@ -828,55 +732,141 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 let visibleBuckets = Array(buckets.prefix(facetLimit))
                 facets[fieldName] = visibleBuckets
             }
-            let visibleCount = min(limit ?? allModels.count, allModels.count)
-            let itemCopyReservation = try reserveFullTextArrayCopy(
-                count: visibleCount,
-                element: PersistedModel.self,
+            let items = try limitModels(
+                allModels,
+                limit: limit,
                 workMeter: workMeter
             )
-            defer { itemCopyReservation.release() }
-            return (
-                items: try limitIdentifiers(allModels, limit: limit),
+            return FullTextRetainedFacetedResult(
+                items: items,
                 facets: facets,
-                totalCount: allModels.count
+                totalCount: allModels.count,
+                facetReservation: facetOutputReservation
             )
         }
     }
 
-    private func requireModels(
-        identifiers: [Tuple],
-        fetched: [PersistedModel?]
-    ) throws -> [PersistedModel] {
+    private func requireModels<Identifiers, Fetched>(
+        identifiers: Identifiers,
+        fetched: Fetched,
+        workMeter: DatabaseWorkMeter
+    ) throws -> FullTextRetainedArray<PersistedModel>
+    where Identifiers: RandomAccessCollection,
+          Identifiers.Element == Tuple,
+          Fetched: RandomAccessCollection,
+          Fetched.Element == PersistedModel? {
         guard identifiers.count == fetched.count else {
             throw FullTextReadError.fetchedItemCountMismatch(
                 expected: identifiers.count,
                 actual: fetched.count
             )
         }
-        var models: [PersistedModel] = []
-        models.reserveCapacity(fetched.count)
+        var builder = try DatabaseRetainedArrayBuilder<PersistedModel>(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+                for: PersistedModel.self
+            ),
+            expectedCount: fetched.count
+        )
         for (identifier, model) in zip(identifiers, fetched) {
             guard let model else {
                 throw FullTextReadError.missingFetchedEntity(
                     identifier.pack()
                 )
             }
-            models.append(model)
+            let footprint = try CanonicalRelationalFootprintMeter.footprint(
+                of: QueryRowCodec.encode(model),
+                workMeter: workMeter
+            )
+            try builder.append(
+                footprint: footprint,
+                at: .indexScan,
+                make: { model }
+            )
         }
-        return models
+        return try builder.finish().moveToSharedOwnership(at: .indexScan)
     }
 
-    private func limitIdentifiers<Value>(
-        _ values: [Value],
-        limit: Int?
-    ) throws -> [Value] {
-        guard let limit else { return values }
+    private func retainScoredModels<Models, Scores>(
+        models: Models,
+        scores: Scores,
+        workMeter: DatabaseWorkMeter
+    ) throws -> FullTextRetainedArray<(
+        item: PersistedModel,
+        score: Double
+    )>
+    where Models: RandomAccessCollection,
+          Models.Element == PersistedModel,
+          Scores: RandomAccessCollection,
+          Scores.Element == (id: Tuple, score: Double) {
+        guard models.count == scores.count else {
+            throw FullTextReadError.fetchedItemCountMismatch(
+                expected: scores.count,
+                actual: models.count
+            )
+        }
+        var builder = try DatabaseRetainedArrayBuilder<(
+            item: PersistedModel,
+            score: Double
+        )>(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+                for: (item: PersistedModel, score: Double).self
+            ),
+            expectedCount: models.count
+        )
+        for (model, scored) in zip(models, scores) {
+            let score = scored.score
+            let footprint = try CanonicalRelationalFootprintMeter.footprint(
+                of: QueryRowCodec.encode(
+                    model,
+                    annotations: ["score": .float64(score)]
+                ),
+                workMeter: workMeter
+            )
+            try builder.append(
+                footprint: footprint,
+                at: .indexScan,
+                make: { (item: model, score: score) }
+            )
+        }
+        return try builder.finish().moveToSharedOwnership(at: .indexScan)
+    }
+
+    private func limitModels(
+        _ models: FullTextRetainedArray<PersistedModel>,
+        limit: Int?,
+        workMeter: DatabaseWorkMeter
+    ) throws -> FullTextRetainedArray<PersistedModel> {
+        guard let limit else { return models }
         guard limit >= 0 else {
             throw FullTextReadError.invalidParameter(
                 FullTextReadParameter.limit
             )
         }
-        return values.count > limit ? Array(values.prefix(limit)) : values
+        guard models.count > limit else { return models }
+        var builder = try DatabaseRetainedArrayBuilder<PersistedModel>(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+                for: PersistedModel.self
+            ),
+            expectedCount: limit
+        )
+        for model in models.prefix(limit) {
+            let footprint = try CanonicalRelationalFootprintMeter.footprint(
+                of: QueryRowCodec.encode(model),
+                workMeter: workMeter
+            )
+            try builder.append(
+                footprint: footprint,
+                at: .indexScan,
+                make: { model }
+            )
+        }
+        return try builder.finish().moveToSharedOwnership(at: .indexScan)
     }
 
     private func facetMetadata(
@@ -992,14 +982,11 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 FullTextReadParameter.limit
             )
         }
-        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let budgetLimit = try options.workMeter
+            .storageWorkReadLimitWithSentinel()
         let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
         let includeFacets = indexScan.parameters[FullTextReadParameter.includeFacets]?.boolValue ?? false
         let returnScores = indexScan.parameters[FullTextReadParameter.returnScores]?.boolValue ?? false
-
-        if limit == 0, !includeFacets {
-            return .empty
-        }
 
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
@@ -1026,6 +1013,22 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         let configuration = try FullTextIndexConfiguration(
             definition: index.definition
         )
+        let bm25Parameters: BM25Parameters?
+        if returnScores {
+            let k1 = indexScan.parameters[
+                FullTextReadParameter.bm25K1
+            ]?.float64Value ?? Double(BM25Parameters.default.k1)
+            let b = indexScan.parameters[
+                FullTextReadParameter.bm25B
+            ]?.float64Value ?? Double(BM25Parameters.default.b)
+            bm25Parameters = try BM25Parameters.validated(k1: k1, b: b)
+        } else {
+            bm25Parameters = nil
+        }
+
+        if limit == 0, !includeFacets {
+            return .empty
+        }
 
         if includeFacets {
             let facetFields = try requireStringArray(FullTextReadParameter.facetFields, from: indexScan.parameters)
@@ -1046,16 +1049,6 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 execution: execution,
                 workMeter: options.workMeter
             )
-            let itemReservation = try reserveFullTextEntities(
-                result.items,
-                workMeter: options.workMeter
-            )
-            defer { itemReservation.release() }
-            let facetReservation = try reserveFullTextFacets(
-                result.facets,
-                workMeter: options.workMeter
-            )
-            defer { facetReservation.release() }
             let metadataAdmission = try reserveFullTextFacetMetadataAdmission(
                 result.facets,
                 workMeter: options.workMeter
@@ -1087,12 +1080,11 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         }
 
         if returnScores {
-            let k1 = indexScan.parameters[
-                FullTextReadParameter.bm25K1
-            ]?.float64Value ?? Double(BM25Parameters.default.k1)
-            let b = indexScan.parameters[
-                FullTextReadParameter.bm25B
-            ]?.float64Value ?? Double(BM25Parameters.default.b)
+            guard let bm25Parameters else {
+                throw FullTextReadError.invalidParameter(
+                    FullTextReadParameter.returnScores
+                )
+            }
             let results = try await executeScoredSearch(
                 context: context,
                 group: group,
@@ -1100,16 +1092,11 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 terms: terms,
                 matchMode: matchMode,
                 limit: limit,
-                bm25Params: BM25Parameters(k1: Float(k1), b: Float(b)),
+                bm25Params: bm25Parameters,
                 index: index,
                 execution: execution,
                 workMeter: options.workMeter
             )
-            let resultReservation = try reserveFullTextScoredEntities(
-                results,
-                workMeter: options.workMeter
-            )
-            defer { resultReservation.release() }
             return try IndexReadResult.build(
                 workMeter: options.workMeter,
                 expectedCount: results.count
@@ -1142,11 +1129,6 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             execution: execution,
             workMeter: options.workMeter
         )
-        let resultReservation = try reserveFullTextEntities(
-            results,
-            workMeter: options.workMeter
-        )
-        defer { resultReservation.release() }
         return try IndexReadResult.build(
             workMeter: options.workMeter,
             expectedCount: results.count
@@ -1206,19 +1188,22 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         index: IndexDeclaration<String>,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [PolymorphicEntity] {
+    ) async throws -> FullTextRetainedArray<PolymorphicEntity> {
         return try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction -> [PolymorphicEntity] in
+        ) { transaction in
             guard let readableIndex = try await context.container
                 .readablePolymorphicIndex(
                     index,
                     in: group,
                     transaction: transaction
                 ) else {
-                return []
+                return try FullTextRetainedArray.empty(
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
             }
-            let matchingIDs: [Tuple]
+            let matchingIDs: FullTextRetainedArray<Tuple>
             if matchMode == .phrase {
                 matchingIDs = try await searchPhrase(
                     configuration: configuration,
@@ -1237,49 +1222,21 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     workMeter: workMeter
                 )
             }
-            let identifierReservation = try reserveFullTextTuples(
+            let limited = try limitFullTextTuples(
                 matchingIDs,
+                limit: limit,
                 workMeter: workMeter
             )
-            defer { identifierReservation.release() }
             let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
                 group: group,
-                ids: matchingIDs,
-                transaction: transaction,
+                ids: limited,
                 workMeter: workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePolymorphicEntities(
-                    fetched,
-                    workMeter: workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
-            let entityArrayAdmission = try reserveFullTextArrayCopy(
-                count: fetched.count,
-                element: PolymorphicEntity.self,
+            return try requireEntities(
+                identifiers: limited,
+                fetched: fetched,
                 workMeter: workMeter
             )
-            defer { entityArrayAdmission.release() }
-            let entities = try requireEntities(
-                identifiers: matchingIDs,
-                fetched: fetched
-            )
-            let entityReservation = try reserveFullTextEntities(
-                entities,
-                workMeter: workMeter
-            )
-            defer { entityReservation.release() }
-            if let limit, entities.count > limit {
-                let limitedReservation = try reserveFullTextArrayCopy(
-                    count: limit,
-                    element: PolymorphicEntity.self,
-                    workMeter: workMeter
-                )
-                defer { limitedReservation.release() }
-                return Array(entities.prefix(limit))
-            }
-            return entities
         }
     }
 
@@ -1294,18 +1251,24 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         index: IndexDeclaration<String>,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [(entity: PolymorphicEntity, score: Double)] {
+    ) async throws -> FullTextRetainedArray<(
+        entity: PolymorphicEntity,
+        score: Double
+    )> {
         return try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) {
-            transaction -> [(entity: PolymorphicEntity, score: Double)] in
+            transaction in
             guard let readableIndex = try await context.container
                 .readablePolymorphicIndex(
                     index,
                     in: group,
                     transaction: transaction
                 ) else {
-                return []
+                return try FullTextRetainedArray.empty(
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
             }
             let scoredResults = try await searchWithScores(
                 terms: terms,
@@ -1317,58 +1280,26 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 limit: limit,
                 workMeter: workMeter
             )
-            let scoredReservation = try reserveFullTextScoredTuples(
-                scoredResults,
+            let identifiers = try retainFullTextTuples(
+                scoredResults.lazy.map(\.id),
+                expectedCount: scoredResults.count,
                 workMeter: workMeter
             )
-            defer { scoredReservation.release() }
-            let identifiers = scoredResults.map { $0.id }
-            let identifierReservation = try reserveFullTextTuples(
-                identifiers,
-                workMeter: workMeter
-            )
-            defer { identifierReservation.release() }
             let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
                 group: group,
                 ids: identifiers,
-                transaction: transaction,
                 workMeter: workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePolymorphicEntities(
-                    fetched,
-                    workMeter: workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
-            let entityArrayAdmission = try reserveFullTextArrayCopy(
-                count: fetched.count,
-                element: PolymorphicEntity.self,
-                workMeter: workMeter
-            )
-            defer { entityArrayAdmission.release() }
             let entities = try requireEntities(
                 identifiers: identifiers,
-                fetched: fetched
-            )
-            let entityReservation = try reserveFullTextEntities(
-                entities,
+                fetched: fetched,
                 workMeter: workMeter
             )
-            defer { entityReservation.release() }
-
-            let combinedReservation = try reserveFullTextArrayCopy(
-                count: scoredResults.count,
-                element: (entity: PolymorphicEntity, score: Double).self,
+            return try retainScoredEntities(
+                entities: entities,
+                scores: scoredResults,
                 workMeter: workMeter
             )
-            defer { combinedReservation.release() }
-            var combined: [(entity: PolymorphicEntity, score: Double)] = []
-            combined.reserveCapacity(scoredResults.count)
-            for (result, entity) in zip(scoredResults, entities) {
-                combined.append((entity: entity, score: result.score))
-            }
-            return combined
         }
     }
 
@@ -1384,7 +1315,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         index: IndexDeclaration<String>,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
-    ) async throws -> (items: [PolymorphicEntity], facets: [String: [(value: String, count: Int64)]], totalCount: Int) {
+    ) async throws -> FullTextRetainedFacetedResult<PolymorphicEntity> {
         guard facetLimit >= 0 else {
             throw FullTextReadError.invalidParameter(
                 FullTextReadParameter.facetLimit
@@ -1393,20 +1324,33 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) {
-            transaction -> (
-                items: [PolymorphicEntity],
-                facets: [String: [(value: String, count: Int64)]],
-                totalCount: Int
-            ) in
+            transaction in
             guard let readableIndex = try await context.container
                 .readablePolymorphicIndex(
                     index,
                     in: group,
                     transaction: transaction
                 ) else {
-                return (items: [], facets: [:], totalCount: 0)
+                let items = try FullTextRetainedArray<PolymorphicEntity>.empty(
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
+                let reservation = try workMeter.reserveIntermediate(
+                    bytes: UInt64(
+                        MemoryLayout<[
+                            String: [(value: String, count: Int64)]
+                        ]>.stride
+                    ) + 64,
+                    at: .indexScan
+                )
+                return FullTextRetainedFacetedResult(
+                    items: items,
+                    facets: [:],
+                    totalCount: 0,
+                    facetReservation: reservation
+                )
             }
-            let matchingIDs: [Tuple]
+            let matchingIDs: FullTextRetainedArray<Tuple>
             if matchMode == .phrase {
                 matchingIDs = try await searchPhrase(
                     configuration: configuration,
@@ -1425,39 +1369,16 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     workMeter: workMeter
                 )
             }
-            let identifierReservation = try reserveFullTextTuples(
-                matchingIDs,
-                workMeter: workMeter
-            )
-            defer { identifierReservation.release() }
             let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
                 group: group,
                 ids: matchingIDs,
-                transaction: transaction,
                 workMeter: workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePolymorphicEntities(
-                    fetched,
-                    workMeter: workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
-            let entityArrayAdmission = try reserveFullTextArrayCopy(
-                count: fetched.count,
-                element: PolymorphicEntity.self,
-                workMeter: workMeter
-            )
-            defer { entityArrayAdmission.release() }
             let allEntities = try requireEntities(
                 identifiers: matchingIDs,
-                fetched: fetched
-            )
-            let entityReservation = try reserveFullTextEntities(
-                allEntities,
+                fetched: fetched,
                 workMeter: workMeter
             )
-            defer { entityReservation.release() }
             let totalCount = allEntities.count
 
             var facets: [String: [(value: String, count: Int64)]] = [:]
@@ -1466,10 +1387,9 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     MemoryLayout<[
                         String: [(value: String, count: Int64)]
                     ]>.stride
-                ),
+                ) + 64,
                 at: .indexScan
             )
-            defer { facetOutputReservation.release() }
             for field in facetFields {
                 var counts: [String: Int64] = [:]
                 let countsReservation = try workMeter.reserveIntermediate(
@@ -1530,52 +1450,172 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 facets[field] = visibleBuckets
             }
 
-            let items: [PolymorphicEntity]
-            if let limit, allEntities.count > limit {
-                let itemCopyReservation = try reserveFullTextArrayCopy(
-                    count: limit,
-                    element: PolymorphicEntity.self,
-                    workMeter: workMeter
-                )
-                defer { itemCopyReservation.release() }
-                items = Array(allEntities.prefix(limit))
-            } else {
-                items = allEntities
-            }
-            return (items: items, facets: facets, totalCount: totalCount)
+            let items = try limitEntities(
+                allEntities,
+                limit: limit,
+                workMeter: workMeter
+            )
+            return FullTextRetainedFacetedResult(
+                items: items,
+                facets: facets,
+                totalCount: totalCount,
+                facetReservation: facetOutputReservation
+            )
         }
     }
 
-    private func requireEntities(
-        identifiers: [Tuple],
-        fetched: [PolymorphicEntity?]
-    ) throws -> [PolymorphicEntity] {
+    private func requireEntities<Identifiers, Fetched>(
+        identifiers: Identifiers,
+        fetched: Fetched,
+        workMeter: DatabaseWorkMeter
+    ) throws -> FullTextRetainedArray<PolymorphicEntity>
+    where Identifiers: RandomAccessCollection,
+          Identifiers.Element == Tuple,
+          Fetched: RandomAccessCollection,
+          Fetched.Element == PolymorphicEntity? {
         guard identifiers.count == fetched.count else {
             throw FullTextReadError.fetchedItemCountMismatch(
                 expected: identifiers.count,
                 actual: fetched.count
             )
         }
-        var entities: [PolymorphicEntity] = []
-        entities.reserveCapacity(fetched.count)
+        var builder = try DatabaseRetainedArrayBuilder<PolymorphicEntity>(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+                for: PolymorphicEntity.self
+            ),
+            expectedCount: fetched.count
+        )
         for (identifier, entity) in zip(identifiers, fetched) {
             guard let entity else {
                 throw FullTextReadError.missingFetchedEntity(
                     identifier.pack()
                 )
             }
-            entities.append(entity)
+            let footprint = try CanonicalRelationalFootprintMeter.footprint(
+                of: QueryRowCodec.encode(
+                    entity.item,
+                    annotations: [
+                        PolymorphicRowAnnotation.typeName:
+                            .string(entity.typeName),
+                        PolymorphicRowAnnotation.typeCode:
+                            .int64(entity.typeCode),
+                    ]
+                ),
+                workMeter: workMeter
+            )
+            try builder.append(
+                footprint: footprint,
+                at: .indexScan,
+                make: { entity }
+            )
         }
-        return entities
+        return try builder.finish().moveToSharedOwnership(at: .indexScan)
+    }
+
+    private func retainScoredEntities<Entities, Scores>(
+        entities: Entities,
+        scores: Scores,
+        workMeter: DatabaseWorkMeter
+    ) throws -> FullTextRetainedArray<(
+        entity: PolymorphicEntity,
+        score: Double
+    )>
+    where Entities: RandomAccessCollection,
+          Entities.Element == PolymorphicEntity,
+          Scores: RandomAccessCollection,
+          Scores.Element == (id: Tuple, score: Double) {
+        guard entities.count == scores.count else {
+            throw FullTextReadError.fetchedItemCountMismatch(
+                expected: scores.count,
+                actual: entities.count
+            )
+        }
+        var builder = try DatabaseRetainedArrayBuilder<(
+            entity: PolymorphicEntity,
+            score: Double
+        )>(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+                for: (entity: PolymorphicEntity, score: Double).self
+            ),
+            expectedCount: entities.count
+        )
+        for (entity, scored) in zip(entities, scores) {
+            let score = scored.score
+            let footprint = try CanonicalRelationalFootprintMeter.footprint(
+                of: QueryRowCodec.encode(
+                    entity.item,
+                    annotations: [
+                        PolymorphicRowAnnotation.typeName:
+                            .string(entity.typeName),
+                        PolymorphicRowAnnotation.typeCode:
+                            .int64(entity.typeCode),
+                        "score": .float64(score),
+                    ]
+                ),
+                workMeter: workMeter
+            )
+            try builder.append(
+                footprint: footprint,
+                at: .indexScan,
+                make: { (entity: entity, score: score) }
+            )
+        }
+        return try builder.finish().moveToSharedOwnership(at: .indexScan)
+    }
+
+    private func limitEntities(
+        _ entities: FullTextRetainedArray<PolymorphicEntity>,
+        limit: Int?,
+        workMeter: DatabaseWorkMeter
+    ) throws -> FullTextRetainedArray<PolymorphicEntity> {
+        guard let limit else { return entities }
+        guard limit >= 0 else {
+            throw FullTextReadError.invalidParameter(
+                FullTextReadParameter.limit
+            )
+        }
+        guard entities.count > limit else { return entities }
+        var builder = try DatabaseRetainedArrayBuilder<PolymorphicEntity>(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+                for: PolymorphicEntity.self
+            ),
+            expectedCount: limit
+        )
+        for entity in entities.prefix(limit) {
+            let footprint = try CanonicalRelationalFootprintMeter.footprint(
+                of: QueryRowCodec.encode(
+                    entity.item,
+                    annotations: [
+                        PolymorphicRowAnnotation.typeName:
+                            .string(entity.typeName),
+                        PolymorphicRowAnnotation.typeCode:
+                            .int64(entity.typeCode),
+                    ]
+                ),
+                workMeter: workMeter
+            )
+            try builder.append(
+                footprint: footprint,
+                at: .indexScan,
+                make: { entity }
+            )
+        }
+        return try builder.finish().moveToSharedOwnership(at: .indexScan)
     }
 
     fileprivate func searchPhrase(
         configuration: FullTextIndexConfiguration,
         terms: [String],
         indexSubspace: Subspace,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [Tuple] {
+    ) async throws -> FullTextRetainedArray<Tuple> {
         guard configuration.storePositions else {
             throw FullTextIndexError.invalidQuery(
                 "Phrase search requires storePositions=true"
@@ -1588,7 +1628,12 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         )
         let normalizedTerms = normalizer
             .normalizedTerms(from: terms.joined(separator: " "))
-        guard !normalizedTerms.isEmpty else { return [] }
+        guard !normalizedTerms.isEmpty else {
+            return try FullTextRetainedArray.empty(
+                workMeter: workMeter,
+                stage: .indexScan
+            )
+        }
 
         let termsSubspace = indexSubspace.subspace("terms")
         let candidates = try await searchTermsAND(
@@ -1597,23 +1642,36 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             transaction: transaction,
             workMeter: workMeter
         )
-        let candidateReservation = try reserveFullTextCandidates(
-            candidates,
-            workMeter: workMeter
+        let matchReservation = try workMeter.reserveIntermediate(
+            bytes: try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: candidates.count,
+                element: Tuple.self
+            ).bytes,
+            at: .indexScan
         )
-        defer { candidateReservation.release() }
+        var transferredMatchReservation = false
+        defer {
+            if !transferredMatchReservation {
+                matchReservation.release()
+            }
+        }
         var matches: [Tuple] = []
         matches.reserveCapacity(candidates.count)
         for elements in candidates {
             try workMeter.consume(at: .indexScan)
             let identifier = Tuple(elements)
+            let positionCollectionFootprint = try DatabaseIntermediateCollectionMeter
+                .arrayFootprint(
+                    count: normalizedTerms.count,
+                    element: [Int].self
+                )
             var positionsByTerm: [[Int]] = []
-            positionsByTerm.reserveCapacity(normalizedTerms.count)
             let positionReservation = try workMeter.reserveIntermediate(
-                bytes: UInt64(MemoryLayout<[[Int]]>.stride),
+                bytes: positionCollectionFootprint.bytes,
                 at: .indexScan
             )
             defer { positionReservation.release() }
+            positionsByTerm.reserveCapacity(normalizedTerms.count)
             for term in normalizedTerms {
                 try workMeter.consume(at: .indexScan)
                 let key = termsSubspace.subspace(term).pack(identifier)
@@ -1623,7 +1681,6 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 ) else {
                     try positionReservation.reserveAdditional(
                         rows: 1,
-                        bytes: UInt64(MemoryLayout<[Int]>.stride) + 16,
                         at: .indexScan
                     )
                     positionsByTerm.append([])
@@ -1632,32 +1689,41 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 let positions = try FullTextStorageDecoder.posting(
                     from: value,
                     positionsStored: true,
-                    term: term
+                    term: term,
+                    reservingPositionsWith: { count in
+                        try positionReservation.reserveAdditional(
+                            rows: 1,
+                            bytes: try DatabaseIntermediateCollectionMeter
+                                .arrayFootprint(
+                                    count: count,
+                                    element: Int.self
+                                ).bytes,
+                            at: .indexScan
+                        )
+                    }
                 ).positions
-                try positionReservation.reserveAdditional(
-                    rows: 1,
-                    bytes: try DatabaseIntermediateFootprint(
-                        bytes: UInt64(max(1, MemoryLayout<Int>.stride))
-                    ).multiplied(by: UInt64(positions.count)).adding(
-                        DatabaseIntermediateFootprint(bytes: 32)
-                    ).bytes,
-                    at: .indexScan
-                )
                 positionsByTerm.append(positions)
             }
             if try containsConsecutivePositions(
                 positionsByTerm,
                 workMeter: workMeter
             ) {
+                try matchReservation.reserveAdditional(
+                    rows: 1,
+                    bytes: UInt64(identifier.packedByteCount) + 32,
+                    at: .indexScan
+                )
                 matches.append(identifier)
             }
         }
-        let matchReservation = try reserveFullTextTuples(
+        let retainedMatches = try FullTextRetainedArray.adopting(
             matches,
-            workMeter: workMeter
+            reservation: matchReservation,
+            workMeter: workMeter,
+            stage: .indexScan
         )
-        defer { matchReservation.release() }
-        return matches
+        transferredMatchReservation = true
+        return retainedMatches
     }
 
     fileprivate func searchWithScores(
@@ -1666,16 +1732,19 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         configuration: FullTextIndexConfiguration,
         bm25Params: BM25Parameters,
         indexSubspace: Subspace,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         limit: Int?,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [(id: Tuple, score: Double)] {
+    ) async throws -> FullTextRetainedArray<(
+        id: Tuple,
+        score: Double
+    )> {
         let termGroups = normalizeQueryTermGroups(
             terms,
             configuration: configuration
         )
         let normalizedTerms = uniqueTerms(termGroups.flatMap { $0 })
-        let matchingIdentifiers: [Tuple]
+        let matchingIdentifiers: FullTextRetainedArray<Tuple>
         switch matchMode {
         case .all:
             matchingIdentifiers = try await searchFullText(
@@ -1704,12 +1773,12 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 workMeter: workMeter
             )
         }
-        guard !matchingIdentifiers.isEmpty else { return [] }
-        let matchingReservation = try reserveFullTextTuples(
-            matchingIdentifiers,
-            workMeter: workMeter
-        )
-        defer { matchingReservation.release() }
+        guard !matchingIdentifiers.isEmpty else {
+            return try FullTextRetainedArray.empty(
+                workMeter: workMeter,
+                stage: .indexScan
+            )
+        }
 
         let statsSubspace = indexSubspace.subspace("stats")
         let totalDocuments = try await statistic(
@@ -1732,13 +1801,20 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         )
 
         let documentFrequencySubspace = indexSubspace.subspace("df")
+        let frequencyCapacityFootprint = try DatabaseIntermediateFootprint(
+            bytes: UInt64(MemoryLayout<[String: Int64]>.stride)
+        ).adding(
+            try DatabaseIntermediateFootprint(
+                bytes: UInt64(max(1, MemoryLayout<(String, Int64)>.stride))
+            ).multiplied(by: UInt64(normalizedTerms.count))
+        )
         var frequencies: [String: Int64] = [:]
-        frequencies.reserveCapacity(normalizedTerms.count)
         let frequencyReservation = try workMeter.reserveIntermediate(
-            bytes: UInt64(MemoryLayout<[String: Int64]>.stride),
+            bytes: frequencyCapacityFootprint.bytes,
             at: .indexScan
         )
         defer { frequencyReservation.release() }
+        frequencies.reserveCapacity(normalizedTerms.count)
         for term in normalizedTerms {
             try reserveFullTextFacetEntry(
                 term,
@@ -1752,15 +1828,21 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
 
         let termsSubspace = indexSubspace.subspace("terms")
         let documentsSubspace = indexSubspace.subspace("docs")
-        var scored: [(id: Tuple, score: Double)] = []
-        scored.reserveCapacity(matchingIdentifiers.count)
         let scoredBuildReservation = try workMeter.reserveIntermediate(
-            bytes: UInt64(
-                MemoryLayout<[(id: Tuple, score: Double)]>.stride
-            ),
+            bytes: try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: matchingIdentifiers.count,
+                element: (id: Tuple, score: Double).self
+            ).bytes,
             at: .indexScan
         )
-        defer { scoredBuildReservation.release() }
+        var transferredScoredReservation = false
+        defer {
+            if !transferredScoredReservation {
+                scoredBuildReservation.release()
+            }
+        }
+        var scored: [(id: Tuple, score: Double)] = []
+        scored.reserveCapacity(matchingIdentifiers.count)
         for identifier in matchingIdentifiers {
             try workMeter.consume(at: .indexScan)
             let metadataKey = documentsSubspace.pack(identifier)
@@ -1791,24 +1873,25 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     term,
                     in: termFrequencyReservation
                 )
-                termFrequencies[term] = try FullTextStorageDecoder.posting(
+                termFrequencies[term] = try FullTextStorageDecoder.termFrequency(
                     from: postingValue,
                     positionsStored: configuration.storePositions,
                     term: term
-                ).termFrequency
+                )
             }
             try scoredBuildReservation.reserveAdditional(
                 rows: 1,
-                bytes: UInt64(identifier.pack().count) + 80,
+                bytes: UInt64(identifier.packedByteCount) + 32,
                 at: .indexScan
             )
             scored.append(
                 (
                     id: identifier,
-                    score: scorer.score(
+                    score: try scorer.score(
                         termFrequencies: termFrequencies,
                         documentFrequencies: frequencies,
-                        docLength: Int(metadata.docLength)
+                        docLength: try documentLength(metadata.docLength),
+                        orderedTerms: normalizedTerms
                     )
                 )
             )
@@ -1839,20 +1922,26 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     FullTextReadParameter.limit
                 )
             }
-            let limited = Array(scored.prefix(limit))
-            let limitedReservation = try reserveFullTextScoredTuples(
-                limited,
+            let limited = try retainFullTextScoredTuples(
+                scored.prefix(limit),
+                expectedCount: min(limit, scored.count),
                 workMeter: workMeter
             )
-            defer { limitedReservation.release() }
             return limited
         }
-        return scored
+        let retainedScores = try FullTextRetainedArray.adopting(
+            scored,
+            reservation: scoredBuildReservation,
+            workMeter: workMeter,
+            stage: .indexScan
+        )
+        transferredScoredReservation = true
+        return retainedScores
     }
 
     private func statistic(
         key: ByteString,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int64 {
         guard let value = try await transaction.getValue(
             for: key,
@@ -1875,7 +1964,14 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             var matches = true
             for (offset, positions) in positionsByTerm.enumerated() {
                 try workMeter.consume(at: .indexScan)
-                if !positions.contains(start + offset) {
+                let (expectedPosition, overflow) = start
+                    .addingReportingOverflow(offset)
+                guard !overflow else {
+                    throw FullTextStorageError.corruptedPosting(
+                        term: "phrase"
+                    )
+                }
+                if !positions.contains(expectedPosition) {
                     matches = false
                     break
                 }
@@ -1887,14 +1983,21 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return false
     }
 
+    private func documentLength(_ value: Int64) throws -> Int {
+        guard let length = Int(exactly: value) else {
+            throw FullTextStorageError.corruptedDocumentMetadata
+        }
+        return length
+    }
+
     fileprivate func searchFullText(
         terms: [String],
         matchMode: TextMatchMode,
         configuration: FullTextIndexConfiguration,
         indexSubspace: Subspace,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [Tuple] {
+    ) async throws -> FullTextRetainedArray<Tuple> {
         let termsSubspace = indexSubspace.subspace("terms")
         let termGroups = normalizeQueryTermGroups(
             terms,
@@ -1902,8 +2005,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         )
         let normalizedTerms = uniqueTerms(termGroups.flatMap { $0 })
 
-        let matchingIDs: [[any TupleElement]]
-        var matchingAdmission: DatabaseIntermediateReservation?
+        let matchingIDs: FullTextRetainedArray<[any TupleElement]>
         switch matchMode {
         case .all:
             matchingIDs = try await searchTermsAND(
@@ -1914,9 +2016,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
         case .any:
             do {
-                var union: [[any TupleElement]] = []
-                var unionReservation: DatabaseIntermediateReservation?
-                defer { unionReservation?.release() }
+                var union: FullTextRetainedArray<[any TupleElement]>?
 
                 for group in termGroups {
                     let matches = try await searchTermsAND(
@@ -1925,29 +2025,25 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                         transaction: transaction,
                         workMeter: workMeter
                     )
-                    let matchReservation = try reserveFullTextCandidates(
-                        matches,
-                        workMeter: workMeter
-                    )
-                    var transferredMatchReservation = false
-                    defer {
-                        if !transferredMatchReservation {
-                            matchReservation.release()
-                        }
-                    }
-
                     guard !matches.isEmpty else { continue }
-                    guard !union.isEmpty else {
+                    guard let existingUnion = union else {
                         union = matches
-                        unionReservation = matchReservation
-                        transferredMatchReservation = true
                         continue
                     }
 
+                    let (mergedCapacity, overflow) = existingUnion.count
+                        .addingReportingOverflow(matches.count)
+                    guard !overflow else {
+                        throw FullTextReadError.invalidExecutionPath(
+                            "Full-text posting union exceeds the runtime range"
+                        )
+                    }
                     let mergedReservation = try workMeter.reserveIntermediate(
-                        bytes: UInt64(
-                            MemoryLayout<[[any TupleElement]]>.stride
-                        ),
+                        bytes: try DatabaseIntermediateCollectionMeter
+                            .arrayFootprint(
+                                count: mergedCapacity,
+                                element: [any TupleElement].self
+                            ).bytes,
                         at: .indexScan
                     )
                     var transferredMergedReservation = false
@@ -1957,7 +2053,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                         }
                     }
                     let merged = try FullTextPostingListAlgebra.union(
-                        union,
+                        existingUnion,
                         matches,
                         reservingCapacity: false
                     ) { elements, key in
@@ -1967,14 +2063,19 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                             in: mergedReservation
                         )
                     }
-                    unionReservation?.release()
-                    union = merged
-                    unionReservation = mergedReservation
+                    let retainedMerged = try FullTextRetainedArray.adopting(
+                        merged,
+                        reservation: mergedReservation,
+                        workMeter: workMeter,
+                        stage: .indexScan
+                    )
                     transferredMergedReservation = true
+                    union = retainedMerged
                 }
-                matchingAdmission = unionReservation
-                matchingIDs = union
-                unionReservation = nil
+                matchingIDs = try union ?? FullTextRetainedArray.empty(
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
             }
         case .phrase:
             throw FullTextReadError.invalidExecutionPath(
@@ -1982,19 +2083,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
         }
 
-        let matchingReservation = try matchingAdmission
-            ?? reserveFullTextCandidates(
-                matchingIDs,
-                workMeter: workMeter
-            )
-        defer { matchingReservation.release() }
-        let tuples = matchingIDs.map(Tuple.init)
-        let tupleReservation = try reserveFullTextTuples(
-            tuples,
+        return try retainFullTextCandidateTuples(
+            matchingIDs,
             workMeter: workMeter
         )
-        defer { tupleReservation.release() }
-        return tuples
     }
 
     private func normalizeQueryTermGroups(
@@ -2026,14 +2118,17 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     private func searchTermsAND(
         _ terms: [String],
         termsSubspace: Subspace,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [[any TupleElement]] {
-        guard !terms.isEmpty else { return [] }
+    ) async throws -> FullTextRetainedArray<[any TupleElement]> {
+        guard !terms.isEmpty else {
+            return try FullTextRetainedArray.empty(
+                workMeter: workMeter,
+                stage: .indexScan
+            )
+        }
 
-        var intersection: [[any TupleElement]]?
-        var intersectionReservation: DatabaseIntermediateReservation?
-        defer { intersectionReservation?.release() }
+        var intersection: FullTextRetainedArray<[any TupleElement]>?
 
         for term in terms {
             let results = try await searchTerm(
@@ -2042,21 +2137,13 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 transaction: transaction,
                 workMeter: workMeter
             )
-            let resultReservation = try reserveFullTextCandidates(
-                results,
-                workMeter: workMeter
-            )
-            var transferredResultReservation = false
-            defer {
-                if !transferredResultReservation {
-                    resultReservation.release()
-                }
-            }
             if let existing = intersection {
                 let reducedReservation = try workMeter.reserveIntermediate(
-                    bytes: UInt64(
-                        MemoryLayout<[[any TupleElement]]>.stride
-                    ),
+                    bytes: try DatabaseIntermediateCollectionMeter
+                        .arrayFootprint(
+                            count: min(existing.count, results.count),
+                            element: [any TupleElement].self
+                        ).bytes,
                     at: .indexScan
                 )
                 var transferredReducedReservation = false
@@ -2073,35 +2160,40 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     try reserveFullTextMapEntry(
                         key: key,
                         elements: elements,
-                        in: reducedReservation
-                    )
-                }
-                intersectionReservation?.release()
-                if reduced.isEmpty {
-                    return []
-                }
-                intersection = reduced
-                intersectionReservation = reducedReservation
+                            in: reducedReservation
+                        )
+                    }
+                let retainedReduced = try FullTextRetainedArray.adopting(
+                    reduced,
+                    reservation: reducedReservation,
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
                 transferredReducedReservation = true
+                if reduced.isEmpty {
+                    return retainedReduced
+                }
+                intersection = retainedReduced
             } else {
                 intersection = results
-                intersectionReservation = resultReservation
-                transferredResultReservation = true
             }
         }
 
-        return intersection ?? []
+        return try intersection ?? FullTextRetainedArray.empty(
+            workMeter: workMeter,
+            stage: .indexScan
+        )
     }
 
     private func searchTerm(
         _ term: String,
         termsSubspace: Subspace,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [[any TupleElement]] {
+    ) async throws -> FullTextRetainedArray<[any TupleElement]> {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()
-        let scanLimit = try workMeter.storageReadLimitWithSentinel()
+        let scanLimit = try workMeter.storageWorkReadLimitWithSentinel()
         var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(begin),
             to: .firstGreaterOrEqual(end),
@@ -2111,25 +2203,32 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             streamingMode: .wantAll
         )
 
-        var results: [[any TupleElement]] = []
-        let resultReservation = try workMeter.reserveIntermediate(
-            bytes: UInt64(MemoryLayout<[[any TupleElement]]>.stride),
-            at: .indexScan
+        var results = try DatabaseRetainedArrayBuilder<[any TupleElement]>(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
+                for: [any TupleElement].self
+            ),
+            expectedCount: min(scanLimit, 256)
         )
-        defer { resultReservation.release() }
         do {
             while let (key, _) = try await cursor.next() {
                 guard termSubspace.contains(key) else { break }
                 try workMeter.consume(at: .indexScan)
                 let keyTuple = try termSubspace.unpack(key)
                 let elements = try keyTuple.elements()
-                try reserveFullTextMapEntry(
-                    key: stableKey(keyTuple),
-                    elements: elements,
-                    in: resultReservation
+                let packedByteCount = keyTuple.packedByteCount
+                try results.append(
+                    footprint: DatabaseIntermediateFootprint(
+                        rows: 1,
+                        bytes: UInt64(packedByteCount) + 48
+                    ),
+                    at: .indexScan,
+                    make: { elements }
                 )
-                results.append(elements)
             }
+        } catch let cleanupError as StorageRangeCleanupError {
+            throw cleanupError
         } catch {
             let iterationError = error
             do {
@@ -2143,7 +2242,9 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             throw iterationError
         }
         try await cursor.finish()
-        return results
+        return try results.finish().moveToSharedOwnership(
+            at: .indexScan
+        )
     }
 
     private func runtimeInteger(

@@ -133,7 +133,7 @@ public struct VersionIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
     public func getVersionHistory(
         primaryKey: [any TupleElement],
         limit: Int? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(version: Version, data: ByteString)] {
         try await VersionIndexReader(subspace: subspace).history(
             primaryKey: primaryKey,
@@ -145,7 +145,7 @@ public struct VersionIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
     /// Get latest version of an item
     public func getLatestVersion(
         primaryKey: [any TupleElement],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> ByteString? {
         try await VersionIndexReader(subspace: subspace).latest(
             primaryKey: primaryKey,

@@ -88,9 +88,9 @@ public struct InverseRelationshipResolver: Sendable {
             )
         }
 
-        return try await context.withTransaction(
-            requiredAccess: .read
-        ) { transaction in
+        return try await context.withPersistenceReadTransaction {
+            transaction,
+            storageAccess in
             let dataRoot = try context.operationDataRoot()
             let page = try await RelationshipReferenceCatalog.referrerPage(
                 of: target.persistableIdentity,
@@ -98,7 +98,7 @@ public struct InverseRelationshipResolver: Sendable {
                 continuation: continuation,
                 limit: limit,
                 baseRoot: dataRoot,
-                transaction: transaction.storageAccess
+                transaction: storageAccess
             )
             var entities: [Owner] = []
             entities.reserveCapacity(page.identities.count)

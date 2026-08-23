@@ -35,12 +35,8 @@ struct OnlineIndexerAtomicityTests {
         let blobsSubspace: Subspace
 
         init(index: ResolvedIndex) async throws {
-            self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+            let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
             let testId = UUID().uuidString.prefix(8)
-            self.testSubspace = Subspace(prefix: Tuple("test", "atomicity", String(testId)).pack())
-            self.itemSubspace = testSubspace.subspace("R")
-            self.indexSubspace = testSubspace.subspace("I")
-            self.blobsSubspace = testSubspace.subspace("B")
 
             // Create container with Player schema
             let schema = try Schema(entities: [
@@ -50,7 +46,7 @@ struct OnlineIndexerAtomicityTests {
                     )
                 ],
                 version: Schema.Version(1, 0, 0))
-            self.container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+            let container = try await DBContainer.open(for: schema, configuration: .testing(storageEngine: database), runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                     executionIdentity: DatabaseExecutionRuntimeIdentity(
                         identifier: "database-tests",
                         revision: 1
@@ -61,10 +57,19 @@ struct OnlineIndexerAtomicityTests {
                             including: [index.descriptor]
                         )
                     ]), security: .testingDisabled)
+            let testSubspace = try await container.testBaseDataRoot()
+                .subspace("online-indexer-atomicity")
+                .subspace(String(testId))
+            self.database = database
+            self.container = container
+            self.testSubspace = testSubspace
+            self.itemSubspace = testSubspace.subspace(SubspaceKey.items)
+            self.indexSubspace = testSubspace.subspace(SubspaceKey.indexes)
+            self.blobsSubspace = testSubspace.subspace(SubspaceKey.blobs)
         }
 
         func cleanup() async throws {
-            try await database.withTransaction { tx in
+            try await container.withTestBaseTransaction { tx in
                 let range = testSubspace.range()
                 try tx.clearRange(beginKey: range.begin, endKey: range.end)
             }
@@ -76,8 +81,8 @@ struct OnlineIndexerAtomicityTests {
             for batchStart in stride(from: 0, to: players.count, by: batchSize) {
                 let batchEnd = min(batchStart + batchSize, players.count)
                 let batch = Array(players[batchStart..<batchEnd])
-                try await database.withTransaction { tx in
-                    let storage = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
+                try await container.withTestBaseTransaction { tx in
+                    let storage = ItemStorageWriter(transaction: tx, blobsSubspace: blobsSubspace, configuration: .v1)
                     for player in batch {
                         let key = itemSubspace.subspace(Player.persistableType).pack(Tuple(player.id))
                         let value = try DataAccess.serialize(player)
@@ -109,24 +114,29 @@ struct OnlineIndexerAtomicityTests {
                 indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
             )
 
-            try await lifecycleStore.enable(index.name)
+            try await ctx.container.withTestBaseOperation {
+                try await lifecycleStore.enable(index.name)
 
-            let indexer = try OnlineIndexer(
-                container: ctx.container,
-                storeSubspace: ctx.testSubspace,
-                itemType: Player.persistableType,
-                index: index,
-                indexMaintainer: maintainer,
-                indexLifecycleStore: lifecycleStore,
-                batchSize: 3
-            )
+                let indexer = try OnlineIndexer(
+                    transactionAuthority: .requestAuthorization(
+                        TestBaseEnvironment.authorization
+                    ),
+                    container: ctx.container,
+                    storeSubspace: ctx.testSubspace,
+                    itemType: Player.persistableType,
+                    index: index,
+                    indexMaintainer: maintainer,
+                    indexLifecycleStore: lifecycleStore,
+                    batchSize: 3
+                )
 
-            try await indexer.buildIndex(clearFirst: true)
+                try await indexer.buildIndex(clearFirst: true)
 
-            // Verify all items were indexed exactly once
-            #expect(maintainer.getUniqueProcessedCount() == players.count)
-            #expect(maintainer.getTotalProcessCount() == players.count)
-            #expect(maintainer.getDuplicateProcessedIds().isEmpty)
+                // Verify all items were indexed exactly once
+                #expect(maintainer.getUniqueProcessedCount() == players.count)
+                #expect(maintainer.getTotalProcessCount() == players.count)
+                #expect(maintainer.getDuplicateProcessedIds().isEmpty)
+            }
 
             try await ctx.cleanup()
         }
@@ -156,26 +166,31 @@ struct OnlineIndexerAtomicityTests {
                 indexSubspace: try lifecycleStore.indexSubspace(for: index.name)
             )
 
-            try await lifecycleStore.enable(index.name)
+            try await ctx.container.withTestBaseOperation {
+                try await lifecycleStore.enable(index.name)
 
-            let indexer = try OnlineIndexer(
-                container: ctx.container,
-                storeSubspace: ctx.testSubspace,
-                itemType: Player.persistableType,
-                index: index,
-                indexMaintainer: maintainer,
-                indexLifecycleStore: lifecycleStore,
-                batchSize: batchSize
-            )
+                let indexer = try OnlineIndexer(
+                    transactionAuthority: .requestAuthorization(
+                        TestBaseEnvironment.authorization
+                    ),
+                    container: ctx.container,
+                    storeSubspace: ctx.testSubspace,
+                    itemType: Player.persistableType,
+                    index: index,
+                    indexMaintainer: maintainer,
+                    indexLifecycleStore: lifecycleStore,
+                    batchSize: batchSize
+                )
 
-            try await indexer.buildIndex(clearFirst: true)
+                try await indexer.buildIndex(clearFirst: true)
 
-            // Verify no duplicates across batch boundaries
-            let duplicates = maintainer.getDuplicateProcessedIds()
-            #expect(duplicates.isEmpty, "Found duplicates: \(duplicates)")
+                // Verify no duplicates across batch boundaries
+                let duplicates = maintainer.getDuplicateProcessedIds()
+                #expect(duplicates.isEmpty, "Found duplicates: \(duplicates)")
 
-            // Verify all items processed
-            #expect(maintainer.getUniqueProcessedCount() == players.count)
+                // Verify all items processed
+                #expect(maintainer.getUniqueProcessedCount() == players.count)
+            }
 
             try await ctx.cleanup()
         }
@@ -203,19 +218,24 @@ struct OnlineIndexerAtomicityTests {
                 indexSubspace: physicalIndexSubspace
             )
 
-            try await lifecycleStore.enable(index.name)
+            try await ctx.container.withTestBaseOperation {
+                try await lifecycleStore.enable(index.name)
 
-            let indexer = try OnlineIndexer(
-                container: ctx.container,
-                storeSubspace: ctx.testSubspace,
-                itemType: Player.persistableType,
-                index: index,
-                indexMaintainer: maintainer,
-                indexLifecycleStore: lifecycleStore,
-                batchSize: 3
-            )
+                let indexer = try OnlineIndexer(
+                    transactionAuthority: .requestAuthorization(
+                        TestBaseEnvironment.authorization
+                    ),
+                    container: ctx.container,
+                    storeSubspace: ctx.testSubspace,
+                    itemType: Player.persistableType,
+                    index: index,
+                    indexMaintainer: maintainer,
+                    indexLifecycleStore: lifecycleStore,
+                    batchSize: 3
+                )
 
-            try await indexer.buildIndex(clearFirst: true)
+                try await indexer.buildIndex(clearFirst: true)
+            }
 
             // Verify progress key is cleared
             let progressKey =
@@ -223,7 +243,7 @@ struct OnlineIndexerAtomicityTests {
                 .subspace("_progress")
                 .pack(Tuple(index.name))
 
-            let progressExists = try await ctx.database.withTransaction { tx in
+            let progressExists = try await ctx.container.withTestBaseTransaction { tx in
                 let value = try await tx.getValue(for: progressKey, snapshot: false)
                 return value != nil
             }

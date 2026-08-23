@@ -440,46 +440,8 @@ private typealias CanonicalRetainedGroups =
 private typealias CanonicalRetainedQueryRows =
     DatabaseSharedRetainedArray<QueryRow>
 
-private struct CanonicalRetainedQueryResponse: Sendable {
-    let rows: CanonicalRetainedQueryRows
-    let visibleRange: Range<Int>
-    let continuation: QueryContinuation?
-    let metadata: [String: FieldValue]
-    let affectedRows: Int?
-
-    var visibleRows: DatabaseSharedRetainedArrayView<QueryRow> {
-        rows.boundedView(visibleRange)
-    }
-
-    consuming func promoteToPublicResponse() -> QueryResponse {
-        let visibleRange = visibleRange
-        let continuation = continuation
-        let metadata = metadata
-        let affectedRows = affectedRows
-        guard !visibleRange.isEmpty else {
-            return QueryResponse(
-                rows: [],
-                continuation: continuation,
-                metadata: metadata,
-                affectedRows: affectedRows
-            )
-        }
-
-        var outputRows = rows.promoteToOutput()
-        if visibleRange.upperBound < outputRows.count {
-            outputRows.removeLast(outputRows.count - visibleRange.upperBound)
-        }
-        if visibleRange.lowerBound > 0 {
-            outputRows.removeFirst(visibleRange.lowerBound)
-        }
-        return QueryResponse(
-            rows: outputRows,
-            continuation: continuation,
-            metadata: metadata,
-            affectedRows: affectedRows
-        )
-    }
-}
+private typealias CanonicalRetainedQueryResponse =
+    DatabaseRetainedQueryResponse
 
 private struct CanonicalRelation: Sendable {
     let schema: CanonicalRelationSchema
@@ -590,7 +552,7 @@ private enum CanonicalPartitionRoutingMode: Sendable {
 
 private struct CanonicalQueryEvaluationContext: Sendable {
     let options: ReadExecutionContext
-    let transaction: any TransactionAccess
+    let transaction: any TransactionReadAccess
     let partitionValues: FieldObject?
     let partitionMode: CanonicalPartitionRoutingMode
     let namedSubqueries: [NamedSubquery]
@@ -637,17 +599,20 @@ extension DatabaseContext {
             requested: execution.consistency,
             default: .serializable
         )
-        return try await withStorageAccess(
-            requiredAccess: .read,
-            configuration: readExecution.transactionConfiguration
-        ) { [self] transaction in
-            try await withFieldReadAuthorization(for: selectQuery) {
-                try await executeTransactionBoundCanonicalQuery(
-                    selectQuery,
-                    options: execution,
-                    graphPartitions: graphPartitions,
-                    transaction: transaction
-                )
+        return try await withDataOperation { [self] in
+            try await withLogicalReadAuthorizationAdmission(
+                for: selectQuery
+            ) {
+                try await withReadStorageAccess(
+                    configuration: readExecution.transactionConfiguration
+                ) { [self] transaction in
+                    try await executeTransactionBoundCanonicalQuery(
+                        selectQuery,
+                        options: execution,
+                        graphPartitions: graphPartitions,
+                        transaction: transaction
+                    )
+                }
             }
         }
     }
@@ -665,6 +630,48 @@ extension DatabaseContext {
         )
     }
 
+    /// Executes a canonical query while retaining request-accounted row
+    /// ownership for an internal downstream stage.
+    ///
+    /// Unlike `executeCanonicalQuery`, this SPI does not promote rows to the
+    /// public output boundary and therefore keeps their reservation alive.
+    @_spi(DatabaseExecution)
+    public func executeRetainedCanonicalQueryRows(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject()
+    ) async throws -> DatabaseRetainedQueryRows {
+        try QueryStructuralValidator.validate(
+            selectQuery,
+            limits: execution.queryStructuralLimits
+        )
+        let readExecution = CanonicalReadExecution.resolve(
+            requested: execution.consistency,
+            default: .serializable
+        )
+        return try await withDataOperation { [self] in
+            try await withLogicalReadAuthorizationAdmission(
+                for: selectQuery
+            ) {
+                try await withReadStorageAccess(
+                    configuration: readExecution.transactionConfiguration
+                ) { [self] transaction in
+                    let response = try await queryCanonical(
+                        selectQuery,
+                        options: execution,
+                        partitionValues: graphPartitions,
+                        partitionMode: .strict,
+                        transaction: transaction
+                    )
+                    return DatabaseRetainedQueryRows(
+                        owner: response.rows,
+                        visibleRange: response.visibleRange
+                    )
+                }
+            }
+        }
+    }
+
     /// Executes a Base-local read through the active storage transaction.
     ///
     /// The transaction argument preserves the source-executor API shape, but
@@ -676,7 +683,7 @@ extension DatabaseContext {
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
         graphPartitions: FieldObject = FieldObject(),
-        transaction _: any TransactionAccess
+        transaction _: any TransactionReadAccess
     ) async throws -> QueryResponse {
         try QueryStructuralValidator.validate(
             selectQuery,
@@ -685,6 +692,7 @@ extension DatabaseContext {
         guard let binding = ActiveDatabaseTransactionContext.binding else {
             throw DatabaseTransactionError.invalidOperationContext
         }
+        try binding.identity.validateReuse(by: self)
         #if DATABASE_MULTI_BASE
         guard binding.resource == self.resource,
               binding.authorization == self.authorization,
@@ -695,23 +703,36 @@ extension DatabaseContext {
             )
         }
         #endif
-        let admittedTransaction = ReadAuthorizedTransactionAccess.admitted(
-            binding.transaction
+        let reuseLease = try binding.operationScope.beginRead()
+        defer { reuseLease.finish() }
+        let admittedTransaction = DataRootTransactionAccess.admitted(
+            binding.transaction,
+            dataRoot: binding.identity.dataRoot,
+            readScope: binding.operationScope
         )
         return try await withDataOperation { [self] in
-            try await withFieldReadAuthorization(for: selectQuery) {
+            try await withLogicalReadAuthorizationAdmission(
+                for: selectQuery
+            ) {
                 #if DATABASE_MULTI_BASE
                 _ = try requireOperationDataRoot()
                 let executionBinding = DatabaseTransactionExecutionBinding(
+                    identity: binding.identity,
                     transaction: admittedTransaction,
+                    grantedAccess: .read,
+                    accessMode: .readOnly,
+                    operationScope: binding.operationScope,
                     resource: binding.resource,
                     authorization: binding.authorization,
-                    grantedAccess: .read,
                     databaseTransaction: nil
                 )
                 #else
                 let executionBinding = DatabaseTransactionExecutionBinding(
+                    identity: binding.identity,
                     transaction: admittedTransaction,
+                    grantedAccess: .read,
+                    accessMode: .readOnly,
+                    operationScope: binding.operationScope,
                     databaseTransaction: nil
                 )
                 #endif
@@ -733,21 +754,96 @@ extension DatabaseContext {
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
         graphPartitions: FieldObject = FieldObject(),
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> QueryResponse {
-        try await query(
+        let response = try await executeRetainedCanonicalQuery(
             selectQuery,
             execution: execution,
             graphPartitions: graphPartitions,
             transaction: transaction
         )
+        return response.promoteToPublicResponse()
+    }
+
+    /// Executes a transaction-bound canonical query without promoting its row
+    /// storage outside request accounting.
+    @_spi(DatabaseExecution)
+    public func executeRetainedCanonicalQuery(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject(),
+        transaction _: any TransactionReadAccess
+    ) async throws -> DatabaseRetainedQueryResponse {
+        try QueryStructuralValidator.validate(
+            selectQuery,
+            limits: execution.queryStructuralLimits
+        )
+        guard let binding = ActiveDatabaseTransactionContext.binding else {
+            throw DatabaseTransactionError.invalidOperationContext
+        }
+        try binding.identity.validateReuse(by: self)
+        #if DATABASE_MULTI_BASE
+        guard binding.resource == self.resource,
+              binding.authorization == self.authorization,
+              binding.grantedAccess.isSuperset(of: .read) else {
+            throw DatabaseGrantAuthorizationError.denied(
+                resource: self.resource,
+                required: .read
+            )
+        }
+        #endif
+        let reuseLease = try binding.operationScope.beginRead()
+        defer { reuseLease.finish() }
+        let admittedTransaction = DataRootTransactionAccess.admitted(
+            binding.transaction,
+            dataRoot: binding.identity.dataRoot,
+            readScope: binding.operationScope
+        )
+        return try await withDataOperation { [self] in
+            try await withLogicalReadAuthorizationAdmission(
+                for: selectQuery
+            ) {
+                #if DATABASE_MULTI_BASE
+                _ = try requireOperationDataRoot()
+                let executionBinding = DatabaseTransactionExecutionBinding(
+                    identity: binding.identity,
+                    transaction: admittedTransaction,
+                    grantedAccess: .read,
+                    accessMode: .readOnly,
+                    operationScope: binding.operationScope,
+                    resource: binding.resource,
+                    authorization: binding.authorization,
+                    databaseTransaction: nil
+                )
+                #else
+                let executionBinding = DatabaseTransactionExecutionBinding(
+                    identity: binding.identity,
+                    transaction: admittedTransaction,
+                    grantedAccess: .read,
+                    accessMode: .readOnly,
+                    operationScope: binding.operationScope,
+                    databaseTransaction: nil
+                )
+                #endif
+                return try await ActiveDatabaseTransactionContext.$binding
+                    .withValue(executionBinding) {
+                        try await queryCanonical(
+                            selectQuery,
+                            options: execution,
+                            partitionValues: graphPartitions,
+                            partitionMode: .strict,
+                            transaction: admittedTransaction
+                        )
+                    }
+            }
+        }
     }
 
     private func executeTransactionBoundCanonicalQuery(
         _ selectQuery: SelectQuery,
         options: ReadExecutionContext,
         graphPartitions: FieldObject,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> QueryResponse {
         let response = try await queryCanonical(
             selectQuery,
@@ -1018,7 +1114,7 @@ extension DatabaseContext {
         return names
     }
 
-    private func withFieldReadAuthorization<Result: Sendable>(
+    private func withLogicalReadAuthorizationAdmission<Result: Sendable>(
         for selectQuery: SelectQuery,
         _ operation: @Sendable () async throws -> Result
     ) async throws -> Result {
@@ -1026,10 +1122,13 @@ extension DatabaseContext {
             query: selectQuery,
             schema: container.schema
         )
-        try authorizeFieldReads(plan)
-        return try await RequestFieldAuthorization.$fieldsByEntity.withValue(
-            plan.fieldsByEntity
-        ) {
+        let admission = try admitLogicalRead(
+            listAuthorization: try IndexReadAuthorization(
+                selectQuery: selectQuery
+            ),
+            fieldPlan: plan
+        )
+        return try await withReadAuthorizationAdmission(admission) {
             try await operation()
         }
     }
@@ -1546,7 +1645,7 @@ extension DatabaseContext {
         rowsAreContinuationRelative: Bool = false,
         continuationPosition: ByteString? = nil,
         prevalidatedQueryFingerprint: ByteString? = nil,
-        metadata: [String: FieldValue] = [:],
+        retainedMetadata: DatabaseRetainedQueryMetadata = .empty,
         options: ReadExecutionContext,
         evaluationContext: CanonicalQueryEvaluationContext? = nil
     ) async throws -> CanonicalRetainedQueryResponse {
@@ -1644,7 +1743,7 @@ extension DatabaseContext {
             rows: distinctRows,
             visibleRange: page.range,
             continuation: page.continuation,
-            metadata: metadata,
+            retainedMetadata: retainedMetadata,
             affectedRows: nil
         )
     }
@@ -1661,7 +1760,7 @@ extension DatabaseContext {
         rightRows: consuming DatabaseRetainedBuffer<QueryRow>,
         rightTable: TableRef,
         options: ReadExecutionContext
-    ) async throws -> QueryResponse {
+    ) async throws -> DatabaseRetainedQueryResponse {
         guard join.type == .inner else {
             throw CompositionQueryError.unsupportedPlan(
                 "bounded cross-Base execution currently requires INNER JOIN"
@@ -1736,7 +1835,7 @@ extension DatabaseContext {
             condition: join.condition,
             workMeter: options.workMeter
         )
-        let response = try await finalizeRelationalRows(
+        return try await finalizeRelationalRows(
             selectQuery,
             sourceRows: joined.rows,
             sourceSchema: joined.schema,
@@ -1744,7 +1843,6 @@ extension DatabaseContext {
             residualOrderBy: selectQuery.orderBy,
             options: options
         )
-        return response.promoteToPublicResponse()
     }
     #endif
 
@@ -1753,7 +1851,7 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         inheritedSubqueries: [NamedSubquery] = [],
         outerRow: CanonicalSourceRow? = nil
     ) async throws -> CanonicalRetainedQueryResponse {
@@ -1828,10 +1926,11 @@ extension DatabaseContext {
                 partitions: partitionValues ?? FieldObject(),
                 transaction: transaction
             )
-            return try retainExternalQueryResponse(
-                response,
-                workMeter: options.workMeter
+            try response.validateWorkMeter(
+                options.workMeter,
+                sourceName: "SPARQL"
             )
+            return response
         }
 
         if case .table = selectQuery.source,
@@ -1862,8 +1961,12 @@ extension DatabaseContext {
         }
 
         let sourceOptions = executionContextWithoutExternalPageWindow(options)
+        let sourceAuthorization = try IndexReadAuthorization(
+            selectQuery: selectQuery
+        )
         let sourceRelation = try await materializeRows(
             for: selectQuery.source,
+            authorization: sourceAuthorization,
             namedSubqueries: namedSubqueries,
             options: sourceOptions,
             partitionValues: partitionValues,
@@ -1889,7 +1992,7 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         evaluationContext: CanonicalQueryEvaluationContext
     ) async throws -> CanonicalRetainedQueryResponse {
         switch selectQuery.source {
@@ -1898,6 +2001,27 @@ extension DatabaseContext {
                 throw CanonicalReadError.invalidPartition(
                     entity: "graph",
                     reason: "graph partitions cannot be applied to a table source"
+                )
+            }
+            if case .fusion(let fusionSource) = accessPath {
+                let rowSet = try await CanonicalFusionExecutor(
+                    workMeter: options.workMeter
+                ).execute(source: fusionSource) { indexScan in
+                    try await dispatchTableIndexExecutor(
+                        tableRef: tableRef,
+                        selectQuery: selectQuery,
+                        indexScan: indexScan,
+                        options: options
+                    )
+                }
+                let sourceName = tableRef.alias ?? tableRef.effectiveName
+                return try await finalizeIndexReadResult(
+                    rowSet,
+                    sourceName: sourceName,
+                    sourceSchema: try tableRelationSchema(tableRef),
+                    selectQuery: selectQuery,
+                    options: options,
+                    evaluationContext: evaluationContext
                 )
             }
             // Non-scalar index access paths (fulltext, vector, rank, etc.) are
@@ -1936,12 +2060,38 @@ extension DatabaseContext {
                     "accessPath queries do not support logical source '\(logicalSource.kindIdentifier)'"
                 )
             }
-            guard case .index(let indexScan) = accessPath else {
-                throw CanonicalReadError.unsupportedAccessPath(
-                    "Polymorphic logical sources currently support only index access paths"
+            let group = try container.polymorphicGroup(
+                identifier: logicalSource.identifier
+            )
+            if case .fusion(let fusionSource) = accessPath {
+                let rowSet = try await CanonicalFusionExecutor(
+                    workMeter: options.workMeter
+                ).execute(source: fusionSource) { indexScan in
+                    try await dispatchPolymorphicIndexExecutor(
+                        selectQuery: selectQuery,
+                        indexScan: indexScan,
+                        group: group,
+                        options: options,
+                        partitions: partitionValues ?? FieldObject()
+                    )
+                }
+                return try await finalizeIndexReadResult(
+                    rowSet,
+                    sourceName: logicalSource.effectiveName,
+                    sourceSchema: try polymorphicRelationSchema(
+                        group,
+                        sourceName: logicalSource.effectiveName
+                    ),
+                    selectQuery: selectQuery,
+                    options: options,
+                    evaluationContext: evaluationContext
                 )
             }
-            let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
+            guard case .index(let indexScan) = accessPath else {
+                throw CanonicalReadError.unsupportedAccessPath(
+                    "Unsupported polymorphic access path"
+                )
+            }
             guard let index = group.indexes.first(
                 where: { $0.name == indexScan.indexName }
             ) else {
@@ -2000,6 +2150,10 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         evaluationContext: CanonicalQueryEvaluationContext
     ) async throws -> CanonicalRetainedQueryResponse {
+        try rowSet.validateWorkMeter(
+            options.workMeter,
+            sourceName: sourceName ?? "index read executor"
+        )
         var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: options.workMeter,
             stage: .projection,
@@ -2036,7 +2190,7 @@ extension DatabaseContext {
             residualOrderBy: selectQuery.orderBy,
             sourceRowsAlreadyOrdered:
                 rowSet.ordering == .orderedByIndex && !hasExplicitOrder,
-            metadata: rowSet.metadata,
+            retainedMetadata: rowSet.retainedMetadata(),
             options: options,
             evaluationContext: evaluationContext
         )
@@ -2045,7 +2199,7 @@ extension DatabaseContext {
     private func executeSingleTableRows(
         _ selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        transaction: (any TransactionAccess)? = nil,
+        transaction: (any TransactionReadAccess)? = nil,
         evaluationContext: CanonicalQueryEvaluationContext? = nil
     ) async throws -> CanonicalRetainedQueryResponse {
         guard case .table(let tableRef) = selectQuery.source else {
@@ -2053,6 +2207,12 @@ extension DatabaseContext {
         }
 
         let entity = try resolveEntity(named: tableRef.table)
+        try indexQueryContext.authorizeListAccess(
+            entityName: entity.name,
+            authorization: try IndexReadAuthorization(
+                selectQuery: selectQuery
+            )
+        )
         guard let runtime = container.runtimeConfiguration
             .entityRuntimes.registration(named: entity.name) else {
             throw CanonicalReadError.unsupportedSelectQuery(
@@ -2137,12 +2297,46 @@ extension DatabaseContext {
         return result
     }
 
+    private func dispatchPolymorphicIndexExecutor(
+        selectQuery: SelectQuery,
+        indexScan: IndexScanSource,
+        group: PolymorphicGroup,
+        options: ReadExecutionContext,
+        partitions: FieldObject
+    ) async throws -> IndexReadResult {
+        guard let index = group.indexes.first(
+            where: { $0.name == indexScan.indexName }
+        ) else {
+            throw CanonicalReadError.indexHintNotFound(
+                "Index '\(indexScan.indexName)' is not declared by polymorphic group '\(group.identifier)'"
+            )
+        }
+        guard index.type == indexScan.indexType else {
+            throw CanonicalReadError.unsupportedAccessPath(
+                "Index '\(index.name)' has type '\(index.type.diagnosticName)', not '\(indexScan.indexType.diagnosticName)'"
+            )
+        }
+        guard let executor = container.runtimeConfiguration.readExecutors
+            .polymorphicIndexExecutor(for: index.type) else {
+            throw CanonicalReadError.executorNotRegistered(index.type)
+        }
+        return try await executor.executeRows(
+            context: self,
+            selectQuery: selectQuery,
+            index: index,
+            indexScan: indexScan,
+            group: group,
+            options: options,
+            partitions: partitions
+        )
+    }
+
     private func fetchTableSourceRows(
         runtime: EntityRuntimeRegistration,
         sourceName: String,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        transaction: (any TransactionAccess)? = nil
+        transaction: (any TransactionReadAccess)? = nil
     ) async throws -> EntityTableRows {
         try await runtime.fetchTableRows(
             context: self,
@@ -2156,7 +2350,7 @@ extension DatabaseContext {
     private func materializeUnwindowedTableSourceRows(
         _ tableRef: TableRef,
         options: ReadExecutionContext,
-        transaction: (any TransactionAccess)?
+        transaction: (any TransactionReadAccess)?
     ) async throws -> CanonicalRetainedRows {
         let entity = try resolveEntity(named: tableRef.table)
         guard let runtime = container.runtimeConfiguration
@@ -2289,11 +2483,12 @@ extension DatabaseContext {
 
     private func materializeRows(
         for source: DataSource,
+        authorization: IndexReadAuthorization,
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -2326,6 +2521,11 @@ extension DatabaseContext {
                 )
             }
 
+            let entity = try resolveEntity(named: tableRef.table)
+            try indexQueryContext.authorizeListAccess(
+                entityName: entity.name,
+                authorization: authorization
+            )
             let rows = try await materializeUnwindowedTableSourceRows(
                 tableRef,
                 options: options,
@@ -2414,6 +2614,7 @@ extension DatabaseContext {
         case .join(let clause):
             return try await materializeJoinRows(
                 clause,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -2427,6 +2628,7 @@ extension DatabaseContext {
             return try await materializeUnionRows(
                 sources,
                 deduplicate: true,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -2440,6 +2642,7 @@ extension DatabaseContext {
             return try await materializeUnionRows(
                 sources,
                 deduplicate: false,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -2452,6 +2655,7 @@ extension DatabaseContext {
         case .intersect(let sources):
             return try await materializeIntersectRows(
                 sources,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -2465,6 +2669,7 @@ extension DatabaseContext {
             return try await materializeExceptRows(
                 lhs,
                 rhs,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -2525,8 +2730,14 @@ extension DatabaseContext {
             let rows = try await executor.execute(
                 context: self,
                 graphTableSource: graphTableSource,
+                authorization: authorization,
                 options: options,
-                partitions: partitionValues ?? FieldObject()
+                partitions: partitionValues ?? FieldObject(),
+                transaction: transaction
+            )
+            try rows.validateWorkMeter(
+                options.workMeter,
+                sourceName: "GRAPH_TABLE"
             )
             var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
@@ -2535,10 +2746,13 @@ extension DatabaseContext {
                     .retainedArrayLayout(for: CanonicalSourceRow.self),
                 expectedCount: rows.count
             )
-            for graphRow in rows {
+            for index in 0..<rows.count {
                 try options.workMeter.consume(at: .bindingCandidate)
+                let retainedGraphRow = rows.row(at: index)
+                let graphFields = retainedGraphRow
+                    .materializeForRetainedTransfer().fields
                 let sourceRow = canonicalGraphTableSourceRow(
-                    from: graphRow.fields,
+                    from: graphFields,
                     graphName: graphTableSource.graphName
                 )
                 let outputRow: CanonicalSourceRow
@@ -2594,7 +2808,7 @@ extension DatabaseContext {
                 transaction: transaction
             )
             let rows = try materializeSourceRows(
-                response.rows,
+                response,
                 sourceName: nil,
                 workMeter: options.workMeter
             )
@@ -2617,7 +2831,7 @@ extension DatabaseContext {
                 transaction: transaction
             )
             let rows = try materializeSourceRows(
-                response.rows,
+                response,
                 sourceName: nil,
                 workMeter: options.workMeter
             )
@@ -2643,11 +2857,12 @@ extension DatabaseContext {
 
     private func materializeJoinRows(
         _ clause: JoinClause,
+        authorization: IndexReadAuthorization,
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         outerRow: CanonicalSourceRow?,
         allowsOuterReferences: Bool
     ) async throws -> CanonicalRelation {
@@ -2678,6 +2893,7 @@ extension DatabaseContext {
             }
             let left = try await materializeRows(
                 for: clause.left,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -2711,6 +2927,7 @@ extension DatabaseContext {
                 let lateralOuter = leftRow.overlaying(outer: outerRow)
                 let right = try await materializeRows(
                     for: clause.right,
+                    authorization: authorization,
                     namedSubqueries: namedSubqueries,
                     options: options,
                     partitionValues: partitionValues,
@@ -2760,6 +2977,7 @@ extension DatabaseContext {
         case .natural, .naturalLeft, .naturalRight, .naturalFull:
             let left = try await materializeRows(
                 for: clause.left,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -2770,6 +2988,7 @@ extension DatabaseContext {
             )
             let right = try await materializeRows(
                 for: clause.right,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -2793,6 +3012,7 @@ extension DatabaseContext {
         default:
             let left = try await materializeRows(
                 for: clause.left,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -2803,6 +3023,7 @@ extension DatabaseContext {
             )
             let right = try await materializeRows(
                 for: clause.right,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -3434,11 +3655,12 @@ extension DatabaseContext {
     private func materializeUnionRows(
         _ sources: [DataSource],
         deduplicate: Bool,
+        authorization: IndexReadAuthorization,
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -3453,6 +3675,7 @@ extension DatabaseContext {
         }
         let first = try await materializeRows(
             for: firstSource,
+            authorization: authorization,
             namedSubqueries: namedSubqueries,
             options: options,
             partitionValues: partitionValues,
@@ -3472,6 +3695,7 @@ extension DatabaseContext {
         )
         let remaining = try await materializeSetOperationInputs(
             Array(sources.dropFirst()),
+            authorization: authorization,
             namedSubqueries: namedSubqueries,
             options: options,
             partitionValues: partitionValues,
@@ -3511,11 +3735,12 @@ extension DatabaseContext {
 
     private func materializeIntersectRows(
         _ sources: [DataSource],
+        authorization: IndexReadAuthorization,
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -3530,6 +3755,7 @@ extension DatabaseContext {
         }
         let firstRelation = try await materializeRows(
             for: first,
+            authorization: authorization,
             namedSubqueries: namedSubqueries,
             options: options,
             partitionValues: partitionValues,
@@ -3549,6 +3775,7 @@ extension DatabaseContext {
         for source in sources.dropFirst() {
             let nextRelation = try await materializeRows(
                 for: source,
+                authorization: authorization,
                 namedSubqueries: namedSubqueries,
                 options: options,
                 partitionValues: partitionValues,
@@ -3617,16 +3844,18 @@ extension DatabaseContext {
     private func materializeExceptRows(
         _ lhs: DataSource,
         _ rhs: DataSource,
+        authorization: IndexReadAuthorization,
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
         let left = try await materializeRows(
             for: lhs,
+            authorization: authorization,
             namedSubqueries: namedSubqueries,
             options: options,
             partitionValues: partitionValues,
@@ -3637,6 +3866,7 @@ extension DatabaseContext {
         )
         let right = try await materializeRows(
             for: rhs,
+            authorization: authorization,
             namedSubqueries: namedSubqueries,
             options: options,
             partitionValues: partitionValues,
@@ -5434,11 +5664,10 @@ extension DatabaseContext {
                 "An empty GRAPH_TABLE source requires an explicit COLUMNS schema"
             )
         }
-        let inferred = try rows.withElement(at: 0) { row in
-            try CanonicalRelationSchema(
-                unscopedColumns: row.fields.keys.sorted()
-            )
-        }
+        let fieldNames = rows[rows.startIndex].fields.keys.sorted()
+        let inferred = try CanonicalRelationSchema(
+            unscopedColumns: fieldNames
+        )
         if let alias = source.alias {
             return try inferred.applyingAlias(alias)
         }
@@ -6038,11 +6267,12 @@ extension DatabaseContext {
 
     private func materializeSetOperationInputs(
         _ sources: [DataSource],
+        authorization: IndexReadAuthorization,
         namedSubqueries: [NamedSubquery],
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> [CanonicalRelation] {
@@ -6052,6 +6282,7 @@ extension DatabaseContext {
             relations.append(
                 try await materializeRows(
                     for: source,
+                    authorization: authorization,
                     namedSubqueries: namedSubqueries,
                     options: options,
                     partitionValues: partitionValues,
@@ -6143,39 +6374,42 @@ extension DatabaseContext {
         return try retained.finish().moveToSharedOwnership(at: .bindingCandidate)
     }
 
-    /// Adapts a completed logical-source result back into request-accounted
-    /// ownership. Logical-source executors expose `QueryResponse` as their
-    /// public boundary; canonical composition must re-establish ownership
-    /// before the result crosses another query operator.
-    private func retainExternalQueryResponse(
-        _ response: QueryResponse,
+    private func materializeSourceRows(
+        _ response: DatabaseRetainedQueryResponse,
+        sourceName: String?,
         workMeter: DatabaseWorkMeter
-    ) throws -> CanonicalRetainedQueryResponse {
-        var retained = try DatabaseRetainedArrayBuilder<QueryRow>(
-            workMeter: workMeter,
-            stage: .resultMaterialization,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: QueryRow.self),
-            expectedCount: response.rows.count
+    ) throws -> CanonicalRetainedRows {
+        try response.validateWorkMeter(
+            workMeter,
+            sourceName: sourceName ?? "SPARQL"
         )
-        for row in response.rows {
+        var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: workMeter,
+            stage: .bindingCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            expectedCount: response.count
+        )
+        for index in 0..<response.count {
+            try workMeter.consume(at: .bindingCandidate)
+            let retainedRow = response.row(at: index)
+            let row = retainedRow.materializeForRetainedTransfer()
+            let sourceRow = CanonicalSourceRow.fromBaseFields(
+                row.fields,
+                sourceName: sourceName,
+                annotations: row.annotations,
+                version: row.version
+            )
             try retained.append(
                 footprint: try CanonicalRelationalFootprintMeter.footprint(
-                    of: row,
+                    of: sourceRow,
                     workMeter: workMeter
                 ),
-                make: { row }
+                make: { sourceRow }
             )
         }
-        let rows = try retained.finish().moveToSharedOwnership(
-            at: .resultMaterialization
-        )
-        return CanonicalRetainedQueryResponse(
-            rows: rows,
-            visibleRange: rows.startIndex..<rows.endIndex,
-            continuation: response.continuation,
-            metadata: response.metadata,
-            affectedRows: response.affectedRows
+        return try retained.finish().moveToSharedOwnership(
+            at: .bindingCandidate
         )
     }
 

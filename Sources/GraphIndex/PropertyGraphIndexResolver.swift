@@ -6,7 +6,7 @@ import StorageKit
 ///
 /// Selection is synchronous and exact. Physical subspace resolution remains
 /// asynchronous because partitioned entity stores may require I/O.
-package struct DeclaredPropertyGraphIndex: Sendable {
+package struct DeclaredPropertyGraphIndex: Sendable, Equatable {
     package let entityName: String
     package let indexName: String
     package let configuration: PropertyGraphIndexConfiguration
@@ -107,7 +107,8 @@ package enum PropertyGraphIndexResolver {
         _ declaration: DeclaredPropertyGraphIndex,
         for type: T.Type,
         in context: IndexQueryContext,
-        transaction: any TransactionAccess
+        authorization: IndexReadAuthorization,
+        transaction: any TransactionReadAccess
     ) async throws -> ResolvedPropertyGraphIndex? {
         guard declaration.entityName == T.persistableType else {
             throw PropertyGraphIndexResolutionError.entityOwnershipMismatch(
@@ -116,18 +117,81 @@ package enum PropertyGraphIndexResolver {
                 actualEntity: declaration.entityName
             )
         }
+        let current = try requireUnique(
+            declarations(for: type, in: context).filter {
+                $0.indexName == declaration.indexName
+            },
+            entityName: T.persistableType,
+            selector: "property-graph index named \(declaration.indexName)"
+        )
+        guard current == declaration else {
+            throw PropertyGraphIndexResolutionError.declarationChanged(
+                entityName: T.persistableType,
+                indexName: declaration.indexName
+            )
+        }
         guard let readableIndex = try await context.readableIndex(
-            named: declaration.indexName,
+            named: current.indexName,
                 indexType: .graph(.property),
                 for: type,
+            authorization: authorization,
             transaction: transaction
         ) else {
             return nil
         }
         return ResolvedPropertyGraphIndex(
-            declaration: declaration,
+            declaration: current,
             indexSubspace: readableIndex.subspace
         )
+    }
+
+    /// Resolves one declared graph index and executes against storage access
+    /// confined to that index. The root transaction remains owned by
+    /// DatabaseEngine and never crosses into GraphIndex.
+    package static func withResolved<T: Persistable, Result: Sendable>(
+        _ declaration: DeclaredPropertyGraphIndex,
+        for type: T.Type,
+        in context: IndexQueryContext,
+        authorization: IndexReadAuthorization,
+        _ operation: @Sendable @escaping (
+            ResolvedPropertyGraphIndex?,
+            any IndexQueryReadAccess
+        ) async throws -> Result
+    ) async throws -> Result {
+        guard declaration.entityName == T.persistableType else {
+            throw PropertyGraphIndexResolutionError.entityOwnershipMismatch(
+                indexName: declaration.indexName,
+                expectedEntity: T.persistableType,
+                actualEntity: declaration.entityName
+            )
+        }
+        let current = try requireUnique(
+            declarations(for: type, in: context).filter {
+                $0.indexName == declaration.indexName
+            },
+            entityName: T.persistableType,
+            selector: "property-graph index named \(declaration.indexName)"
+        )
+        guard current == declaration else {
+            throw PropertyGraphIndexResolutionError.declarationChanged(
+                entityName: T.persistableType,
+                indexName: declaration.indexName
+            )
+        }
+        return try await context.withReadableIndex(
+            named: current.indexName,
+            indexType: .graph(.property),
+            for: type,
+            authorization: authorization
+        ) { readableIndex, access in
+            let resolved = readableIndex.map {
+                ResolvedPropertyGraphIndex(
+                    declaration: current,
+                    indexSubspace: $0.subspace
+                )
+            }
+            return try await operation(resolved, access)
+        }
     }
 
     private static func declarations<T: Persistable>(
@@ -184,6 +248,7 @@ public enum PropertyGraphIndexResolutionError: Error, Sendable, CustomStringConv
         expectedEntity: String,
         actualEntity: String
     )
+    case declarationChanged(entityName: String, indexName: String)
 
     public var description: String {
         switch self {
@@ -193,6 +258,8 @@ public enum PropertyGraphIndexResolutionError: Error, Sendable, CustomStringConv
             return "Entity \(entityName) has ambiguous \(selector): \(indexNames.joined(separator: ", "))"
         case .entityOwnershipMismatch(let indexName, let expectedEntity, let actualEntity):
             return "Index \(indexName) belongs to \(actualEntity), not \(expectedEntity)"
+        case .declarationChanged(let entityName, let indexName):
+            return "Property-graph index \(entityName).\(indexName) changed after the query builder was created"
         }
     }
 }

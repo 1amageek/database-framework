@@ -7,7 +7,6 @@ extension SPARQLQueryExecutor {
     /// Returns an executor over the same dataset with ontology-aware paths.
     public func withOntology(_ context: OntologyContext?) -> Self {
         Self(
-            database: database,
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: datasetScanner,
@@ -15,13 +14,17 @@ extension SPARQLQueryExecutor {
             dataset: dataset,
             functionRegistry: functionRegistry,
             ontologyContext: context,
-            propertyPathConfiguration: propertyPathConfiguration
+            propertyPathConfiguration: propertyPathConfiguration,
+            workMeter: workMeter,
+            expressionContext: expressionContext,
+            subqueryCache: subqueryCache,
+            nestedExpressionStatistics: nestedExpressionStatistics
         )
     }
 
     package func scanDatasetInTransaction(
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         try await datasetScanner.scan(
@@ -38,7 +41,6 @@ extension SPARQLQueryExecutor {
 
     func scoped(to dataset: SPARQLExecutionDataset) -> Self {
         Self(
-            database: database,
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: datasetScanner,
@@ -46,13 +48,16 @@ extension SPARQLQueryExecutor {
             dataset: dataset,
             functionRegistry: functionRegistry,
             ontologyContext: ontologyContext,
-            propertyPathConfiguration: propertyPathConfiguration
+            propertyPathConfiguration: propertyPathConfiguration,
+            workMeter: workMeter,
+            expressionContext: expressionContext,
+            subqueryCache: subqueryCache,
+            nestedExpressionStatistics: nestedExpressionStatistics
         )
     }
 
     func requestScoped(by workMeter: DatabaseWorkMeter) throws -> Self {
         Self(
-            database: database,
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: datasetScanner,
@@ -84,7 +89,6 @@ extension SPARQLQueryExecutor {
             )
         }
         return Self(
-            database: database,
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: datasetScanner,
@@ -103,7 +107,6 @@ extension SPARQLQueryExecutor {
     }
 
     init(
-        database: any StorageEngine,
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         datasetScanner: any RDFDatasetScanner,
@@ -112,12 +115,11 @@ extension SPARQLQueryExecutor {
         functionRegistry: SPARQLFunctionRegistry,
         ontologyContext: OntologyContext?,
         propertyPathConfiguration: ExecutionPropertyPathConfiguration,
-        workMeter: DatabaseWorkMeter,
-        expressionContext: SPARQLQueryExpressionContext,
+        workMeter: DatabaseWorkMeter?,
+        expressionContext: SPARQLQueryExpressionContext?,
         subqueryCache: SPARQLSubqueryResultCache?,
         nestedExpressionStatistics: SPARQLNestedExpressionStatistics?
     ) {
-        self.database = database
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
         self.datasetScanner = datasetScanner

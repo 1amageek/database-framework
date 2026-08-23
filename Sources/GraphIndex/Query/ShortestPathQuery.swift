@@ -248,14 +248,17 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
             maxNodesExplored: configMaxNodes
         )
 
-        return try await queryContext.withTransaction { transaction in
-            guard let resolvedIndex = try await PropertyGraphIndexResolver
-                .resolve(
-                    index,
-                    for: T.self,
-                    in: queryContext,
-                    transaction: transaction
-                ) else {
+        return try await PropertyGraphIndexResolver.withResolved(
+            index,
+            for: T.self,
+            in: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: 1,
+                offset: nil,
+                orderBy: nil
+            )
+        ) { resolvedIndex, transaction in
+            guard let resolvedIndex else {
                 return ShortestPathResult.notFound(
                     nodesExplored: 0,
                     durationNs: 0
@@ -299,14 +302,17 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
             maxNodesExplored: configMaxNodes
         )
 
-        return try await queryContext.withTransaction { transaction in
-            guard let resolvedIndex = try await PropertyGraphIndexResolver
-                .resolve(
-                    index,
-                    for: T.self,
-                    in: queryContext,
-                    transaction: transaction
-                ) else {
+        return try await PropertyGraphIndexResolver.withResolved(
+            index,
+            for: T.self,
+            in: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            )
+        ) { resolvedIndex, transaction in
+            guard let resolvedIndex else {
                 return AllShortestPathsResult(
                     paths: [],
                     distance: nil,

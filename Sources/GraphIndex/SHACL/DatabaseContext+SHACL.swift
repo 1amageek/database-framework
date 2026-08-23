@@ -65,24 +65,6 @@ public struct SHACLContextAPI: Sendable {
         self.context = context
     }
 
-    // MARK: - Store Access
-
-    private func withStore<Result: Sendable>(
-        _ operation: @Sendable @escaping (
-            SHACLShapesStore
-        ) async throws -> Result
-    ) async throws -> Result {
-        let context = self.context
-        return try await context.withDataOperation {
-            let baseSubspace = try context.operationDataRoot()
-                .subspace("data")
-                .subspace(Self.shaclPrefix)
-            return try await operation(
-                SHACLShapesStore(subspace: baseSubspace)
-            )
-        }
-    }
-
     // MARK: - Load Operations
 
     /// Load a SHACL shapes graph into the store
@@ -101,14 +83,15 @@ public struct SHACLContextAPI: Sendable {
     /// try await context.shacl.loadShapes(shapesGraph)
     /// ```
     public func loadShapes(_ graph: SHACLShapesGraph) async throws {
-        try await withStore { store in
-            try await self.context.indexQueryContext.withWriteTransaction {
-                transaction in
+        try await context.indexQueryContext.withAuxiliaryWriteStorage(
+            namespace: Self.shaclPrefix,
+            requiredAccess: .write
+        ) { subspace, transaction in
+                let store = SHACLShapesStore(subspace: subspace)
                 // Delete existing if present
                 try store.delete(iri: graph.iri, transaction: transaction)
                 // Save new shapes graph
                 try store.save(graph, transaction: transaction)
-            }
         }
     }
 
@@ -146,44 +129,55 @@ public struct SHACLContextAPI: Sendable {
         ontologyIRI: String? = nil,
         budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SHACLValidationReport {
-        // Load shapes graph
-        guard let shapesGraph = try await getShapesGraph(iri: shapesGraphIRI) else {
-            throw SHACLError.shapesGraphNotFound(shapesGraphIRI)
-        }
-
-        let configuredEntailmentContext: (any SHACLEntailmentContext)?
-        let configuredOntologyContext: OntologyContext?
-        switch entailment {
-        case .owl:
-            guard let ontIRI = ontologyIRI else {
-                throw SHACLError.ontologyIdentifierRequired
-            }
-            guard let ontology = try await context.ontology.get(iri: ontIRI) else {
-                throw SHACLError.ontologyNotFound(ontIRI)
-            }
-            configuredEntailmentContext = OWLGraphEntailment(
-                reasoner: OWLReasoner(
-                    ontology: ontology,
-                    clock: context.container.monotonicClock
-                )
-            )
-            configuredOntologyContext = OntologyContext(
-                ontology: ontology
-            )
-        case .none, .rdfs:
-            configuredEntailmentContext = nil
-            configuredOntologyContext = nil
-        }
-
         let workBudget = SHACLValidationWorkBudget(
             budget: budget,
             monotonicClock: context.container.monotonicClock
         )
-        return try await context.indexQueryContext.withTransaction { transaction in
-            let executor = try await buildExecutor(
-                for: type,
-                transaction: transaction
-            )
+        return try await context.indexQueryContext.withQuerySnapshot { snapshot in
+            guard let retainedShapesGraph = try await getRetainedShapesGraph(
+                iri: shapesGraphIRI,
+                snapshot: snapshot,
+                workMeter: workBudget.workMeter
+            ) else {
+                throw SHACLError.shapesGraphNotFound(shapesGraphIRI)
+            }
+            let shapesGraph = retainedShapesGraph.graph
+            defer { retainedShapesGraph.reservation.release() }
+
+            let configuredEntailmentContext: (any SHACLEntailmentContext)?
+            let configuredOntologyContext: OntologyContext?
+            let ontologyReservation: DatabaseIntermediateReservation?
+            switch entailment {
+            case .owl:
+                guard let ontIRI = ontologyIRI else {
+                    throw SHACLError.ontologyIdentifierRequired
+                }
+                guard let retainedOntology = try await getRetainedOntology(
+                    iri: ontIRI,
+                    snapshot: snapshot,
+                    workMeter: workBudget.workMeter
+                ) else {
+                    throw SHACLError.ontologyNotFound(ontIRI)
+                }
+                let ontology = retainedOntology.ontology
+                ontologyReservation = retainedOntology.reservation
+                configuredEntailmentContext = OWLGraphEntailment(
+                    reasoner: OWLReasoner(
+                        ontology: ontology,
+                        clock: context.container.monotonicClock
+                    )
+                )
+                configuredOntologyContext = OntologyContext(
+                    ontology: ontology
+                )
+            case .none, .rdfs:
+                ontologyReservation = nil
+                configuredEntailmentContext = nil
+                configuredOntologyContext = nil
+            }
+            defer { ontologyReservation?.release() }
+            return try await withExecutor(for: type, snapshot: snapshot) {
+                executor, transaction in
             let entailmentContext: (any SHACLEntailmentContext)?
             let ontologyContext: OntologyContext?
             if entailment == .rdfs {
@@ -223,6 +217,7 @@ public struct SHACLContextAPI: Sendable {
                 budget: workBudget
             )
             return try await validator.validate()
+            }
         }
     }
 
@@ -251,25 +246,27 @@ public struct SHACLContextAPI: Sendable {
         in shapesGraphIRI: String,
         budget: ExecutionBudget = ExecutionBudget()
     ) async throws -> SHACLValidationReport {
-        guard let shapesGraph = try await getShapesGraph(iri: shapesGraphIRI) else {
-            throw SHACLError.shapesGraphNotFound(shapesGraphIRI)
-        }
-
-        guard let shape = shapesGraph.findShape(
-            identifier: shapeIdentifier
-        ) else {
-            throw SHACLError.shapeNotFound(shapeIdentifier)
-        }
-
         let workBudget = SHACLValidationWorkBudget(
             budget: budget,
             monotonicClock: context.container.monotonicClock
         )
-        return try await context.indexQueryContext.withTransaction { transaction in
-            let executor = try await buildExecutor(
-                for: type,
-                transaction: transaction
-            )
+        return try await context.indexQueryContext.withQuerySnapshot { snapshot in
+            guard let retainedShapesGraph = try await getRetainedShapesGraph(
+                iri: shapesGraphIRI,
+                snapshot: snapshot,
+                workMeter: workBudget.workMeter
+            ) else {
+                throw SHACLError.shapesGraphNotFound(shapesGraphIRI)
+            }
+            let shapesGraph = retainedShapesGraph.graph
+            defer { retainedShapesGraph.reservation.release() }
+            guard let shape = shapesGraph.findShape(
+                identifier: shapeIdentifier
+            ) else {
+                throw SHACLError.shapeNotFound(shapeIdentifier)
+            }
+            return try await withExecutor(for: type, snapshot: snapshot) {
+                executor, transaction in
             let targetResolver = SHACLTargetResolver(
                 executor: executor,
                 transaction: transaction,
@@ -293,6 +290,7 @@ public struct SHACLContextAPI: Sendable {
                 against: shape
             )
             return SHACLValidationReport(results: results)
+            }
         }
     }
 
@@ -302,11 +300,11 @@ public struct SHACLContextAPI: Sendable {
     ///
     /// - Returns: Array of shapes graph IRIs
     public func listShapesGraphs() async throws -> [String] {
-        try await withStore { store in
-            try await self.context.indexQueryContext.withTransaction {
-                transaction in
-                try await store.listGraphIRIs(transaction: transaction)
-            }
+        try await context.indexQueryContext.withAuxiliaryReadStorage(
+            namespace: Self.shaclPrefix
+        ) { subspace, transaction in
+            try await SHACLShapesStore(subspace: subspace)
+                .listGraphIRIs(transaction: transaction)
         }
     }
 
@@ -315,11 +313,47 @@ public struct SHACLContextAPI: Sendable {
     /// - Parameter iri: The shapes graph IRI
     /// - Returns: The shapes graph, or nil if not found
     public func getShapesGraph(iri: String) async throws -> SHACLShapesGraph? {
-        try await withStore { store in
-            try await self.context.indexQueryContext.withTransaction {
-                transaction in
-                try await store.get(iri: iri, transaction: transaction)
-            }
+        try await context.indexQueryContext.withAuxiliaryReadStorage(
+            namespace: Self.shaclPrefix
+        ) { subspace, transaction in
+            try await SHACLShapesStore(subspace: subspace).get(
+                iri: iri,
+                transaction: transaction
+            )
+        }
+    }
+
+    private func getRetainedShapesGraph(
+        iri: String,
+        snapshot: any IndexQuerySnapshotAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> SHACLShapesStore.RetainedGraph? {
+        try await snapshot.withAuxiliaryReadStorage(
+            namespace: Self.shaclPrefix
+        ) { subspace, transaction in
+            try await SHACLShapesStore(subspace: subspace).getRetained(
+                iri: iri,
+                transaction: transaction,
+                workMeter: workMeter
+            )
+        }
+    }
+
+    private func getRetainedOntology(
+        iri: String,
+        snapshot: any IndexQuerySnapshotAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> OntologyStore.RetainedOntology? {
+        try await snapshot.withAuxiliaryReadStorage(
+            path: OntologyContextAPI.storagePath
+        ) { root, transaction in
+            try await OntologyStore(
+                subspace: OntologySubspace(base: root)
+            ).reconstructRetainedForValidation(
+                iri: iri,
+                transaction: transaction,
+                workMeter: workMeter
+            )
         }
     }
 
@@ -327,31 +361,40 @@ public struct SHACLContextAPI: Sendable {
     ///
     /// - Parameter iri: The shapes graph IRI to delete
     public func deleteShapesGraph(iri: String) async throws {
-        try await withStore { store in
-            try await self.context.indexQueryContext.withWriteTransaction {
-                transaction in
-                try store.delete(iri: iri, transaction: transaction)
-            }
+        try await context.indexQueryContext.withAuxiliaryWriteStorage(
+            namespace: Self.shaclPrefix,
+            requiredAccess: .write
+        ) { subspace, transaction in
+            try SHACLShapesStore(subspace: subspace).delete(
+                iri: iri,
+                transaction: transaction
+            )
         }
     }
 
     /// Delete all shapes graphs
     public func deleteAllShapesGraphs() async throws {
-        try await withStore { store in
-            try await self.context.indexQueryContext.withWriteTransaction {
-                transaction in
-                try store.deleteAll(transaction: transaction)
-            }
+        try await context.indexQueryContext.withAuxiliaryWriteStorage(
+            namespace: Self.shaclPrefix,
+            requiredAccess: .write
+        ) { subspace, transaction in
+            try SHACLShapesStore(subspace: subspace).deleteAll(
+                transaction: transaction
+            )
         }
     }
 
     // MARK: - Private
 
     /// Build a SPARQLQueryExecutor for the given Persistable type's graph index
-    private func buildExecutor<T: Persistable>(
+    private func withExecutor<T: Persistable, Result: Sendable>(
         for type: T.Type,
-        transaction: any TransactionAccess
-    ) async throws -> SPARQLQueryExecutor {
+        snapshot: any IndexQuerySnapshotAccess,
+        _ operation: @Sendable @escaping (
+            SPARQLQueryExecutor,
+            any IndexQueryReadAccess
+        ) async throws -> Result
+    ) async throws -> Result {
         let candidates = try context.indexQueryContext
             .indexDescriptors(for: T.self)
             .compactMap {
@@ -361,30 +404,36 @@ public struct SHACLContextAPI: Sendable {
             throw SHACLError.graphIndexNotFound(T.persistableType)
         }
         let selection = candidates[0]
-        let readableIndex = try await context.indexQueryContext.readableIndex(
+        return try await snapshot.withReadableIndex(
             named: selection.indexName,
             indexType: selection.indexType,
             for: T.self,
-            transaction: transaction
-        )
-        let sources: [RDFDatasetSource]
-        if let readableIndex {
-            sources = [
-                try RDFDatasetSource(
-                    entityName: T.persistableType,
-                    selection: selection,
-                    indexSubspace: readableIndex.subspace
-                )
-            ]
-        } else {
-            sources = []
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            )
+        ) { readableIndex, transaction in
+            let sources: [RDFDatasetSource]
+            if let readableIndex {
+                sources = [
+                    try RDFDatasetSource(
+                        entityName: T.persistableType,
+                        selection: selection,
+                        indexSubspace: readableIndex.subspace
+                    )
+                ]
+            } else {
+                sources = []
+            }
+            return try await operation(
+                SPARQLQueryExecutor(
+                    monotonicClock: context.container.monotonicClock,
+                    wallClock: context.container.wallClock,
+                    sources: sources
+                ),
+                transaction
+            )
         }
-
-        return SPARQLQueryExecutor(
-            database: context.container.engine,
-            monotonicClock: context.container.monotonicClock,
-            wallClock: context.container.wallClock,
-            sources: sources
-        )
     }
 }

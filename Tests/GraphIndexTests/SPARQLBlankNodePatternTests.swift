@@ -70,11 +70,13 @@ struct SPARQLBlankNodePatternTests {
             ])
         )
 
-        let (bindings, _) = try await executionContext.executor.execute(
+        let (bindings, _) = try await executeSPARQLTest(
+            executor: executionContext.executor,
             pattern: pattern,
             limit: nil,
             offset: 0,
-            workMeter: makeMeter()
+            workMeter: makeMeter(),
+            database: executionContext.database
         )
 
         #expect(bindings.count == 2)
@@ -127,11 +129,13 @@ struct SPARQLBlankNodePatternTests {
             ])
         )
 
-        let (bindings, _) = try await executionContext.executor.execute(
+        let (bindings, _) = try await executeSPARQLTest(
+            executor: executionContext.executor,
             pattern: pattern,
             limit: nil,
             offset: 0,
-            workMeter: makeMeter()
+            workMeter: makeMeter(),
+            database: executionContext.database
         )
 
         #expect(bindings.count == 1)
@@ -213,11 +217,13 @@ struct SPARQLBlankNodePatternTests {
         }
         let pattern = try GraphPatternConverter.convert(queryPattern)
 
-        let (bindings, _) = try await executionContext.executor.execute(
+        let (bindings, _) = try await executeSPARQLTest(
+            executor: executionContext.executor,
             pattern: pattern,
             limit: nil,
             offset: 0,
-            workMeter: makeMeter()
+            workMeter: makeMeter(),
+            database: executionContext.database
         )
 
         #expect(bindings.count == 1)
@@ -240,6 +246,7 @@ struct SPARQLBlankNodePatternTests {
 
     private struct SPARQLExecutionContext {
         let executor: SPARQLQueryExecutor
+        let database: InMemoryEngine
     }
 
     private func makeSPARQLExecutionContext(
@@ -266,13 +273,13 @@ struct SPARQLBlankNodePatternTests {
         }
         return SPARQLExecutionContext(
             executor: SPARQLQueryExecutor(
-                database: engine,
                 monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock(
                     now: Timestamp(secondsSinceUnixEpoch: 0)
                 ),
                 datasetScanner: store
-            )
+            ),
+            database: engine
         )
     }
 

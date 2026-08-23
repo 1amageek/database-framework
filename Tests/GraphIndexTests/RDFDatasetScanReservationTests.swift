@@ -20,7 +20,7 @@ struct RDFDatasetScanReservationTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             let reservation = try workMeter.reserveIntermediate(
@@ -38,16 +38,16 @@ struct RDFDatasetScanReservationTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
-            []
+        ) async throws -> RDFNamedGraphResult {
+            .empty
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
@@ -111,7 +111,6 @@ struct RDFDatasetScanReservationTests {
         )
         let meter = makeMeter()
         let executor = SPARQLQueryExecutor(
-            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(
                 now: Timestamp(secondsSinceUnixEpoch: 0)
@@ -126,10 +125,9 @@ struct RDFDatasetScanReservationTests {
             ),
         ])
 
-        let result = try await executor.execute(
+        let result = try await executeSPARQLTest(
+            executor: executor,
             pattern: pattern,
-            limit: nil,
-            offset: 0,
             workMeter: meter
         )
 
@@ -382,6 +380,71 @@ struct RDFDatasetScanReservationTests {
         #expect(Array(graphs) == [firstGraph, secondGraph])
     }
 
+    @Test("Named graph discovery rejects retained row overflow and releases it")
+    func namedGraphDiscoveryEnforcesRowBudget() async throws {
+        let engine = InMemoryEngine()
+        let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
+        let first = try makeGraph("discovery-row-a")
+        let second = try makeGraph("discovery-row-b")
+        try await createGraphs([first, second], in: store, database: engine)
+        let meter = makeMeter(maximumIntermediateRows: 1)
+
+        await #expect(throws: DatabaseWorkLimitError.self) {
+            _ = try await namedGraphs(
+                scanner: store,
+                database: engine,
+                workMeter: meter
+            )
+        }
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Named graph discovery rejects retained byte overflow and releases it")
+    func namedGraphDiscoveryEnforcesByteBudget() async throws {
+        let engine = InMemoryEngine()
+        let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
+        let graph = try makeGraph(String(repeating: "long-name-", count: 64))
+        try await createGraphs([graph], in: store, database: engine)
+        let meter = makeMeter(maximumIntermediateBytes: 128)
+
+        await #expect(throws: DatabaseWorkLimitError.self) {
+            _ = try await namedGraphs(
+                scanner: store,
+                database: engine,
+                workMeter: meter
+            )
+        }
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Canonical named graph discovery accounts duplicate source owners")
+    func canonicalNamedGraphDiscoveryDeduplicatesRetainedSources() async throws {
+        let engine = InMemoryEngine()
+        let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
+        let graph = try makeGraph("discovery-duplicate")
+        try await createGraphs([graph], in: store, database: engine)
+        let meter = makeMeter()
+        var result: RDFNamedGraphResult? = try await namedGraphs(
+            scanner: CanonicalRDFDatasetScanner(
+                authoritativeStore: store,
+                projectedSources: [store.datasetSource]
+            ),
+            database: engine,
+            workMeter: meter
+        )
+
+        #expect(result?.map(\.graph) == [graph])
+        // The authoritative source owner and the deduplicated output owner
+        // overlap. Projected sources may be released at their last use.
+        #expect(meter.peakIntermediateRows >= 2)
+        #expect(meter.retainedIntermediateRows > 0)
+        result = nil
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     @Test("Nested RDF-star terms are measured with a constant-space cursor")
     func deeplyNestedTripleTermsUseConstantTraversalStorage() throws {
         let tripleSubject = RDFSubject.iri(.xsdString)
@@ -492,6 +555,24 @@ struct RDFDatasetScanReservationTests {
         }
     }
 
+    private func namedGraphs<Scanner: RDFDatasetScanner>(
+        scanner: Scanner,
+        database: InMemoryEngine,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> RDFNamedGraphResult {
+        try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            try await scanner.namedGraphs(
+                limit: nil,
+                readMode: .snapshot,
+                transaction: transaction,
+                workMeter: workMeter
+            )
+        }
+    }
+
     private func insert(
         _ quads: [RDFQuad],
         into store: CanonicalRDFGraphStore,
@@ -506,6 +587,26 @@ struct RDFDatasetScanReservationTests {
             for quad in quads {
                 _ = try await store.insert(
                     quad,
+                    transaction: transaction,
+                    workMeter: workMeter
+                )
+            }
+        }
+    }
+
+    private func createGraphs(
+        _ graphs: [RDFGraphName],
+        in store: CanonicalRDFGraphStore,
+        database: InMemoryEngine
+    ) async throws {
+        let workMeter = makeMeter()
+        try await StorageTransactionExecutor(engine: database).withTransaction(
+            configuration: .batch,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            for graph in graphs {
+                try await store.createGraph(
+                    graph,
                     transaction: transaction,
                     workMeter: workMeter
                 )

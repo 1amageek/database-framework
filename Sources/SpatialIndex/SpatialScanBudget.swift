@@ -29,6 +29,7 @@ internal enum SpatialScanBudget {
             return 1
         }
 
-        return max(totalLimit - emittedCount + 1, 1)
+        let remaining = totalLimit - emittedCount
+        return remaining == Int.max ? Int.max : max(remaining + 1, 1)
     }
 }

@@ -69,6 +69,9 @@ public enum CanonicalReadError: Error, Sendable {
     /// No executor is registered for the requested semantic index type.
     case executorNotRegistered(IndexType)
 
+    /// An executor returned retained rows charged to another request meter.
+    case executorWorkMeterMismatch(sourceName: String)
+
     // MARK: Pagination
 
     /// The continuation token provided by the caller is malformed or stale.

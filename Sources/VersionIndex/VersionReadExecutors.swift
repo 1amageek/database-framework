@@ -1,4 +1,4 @@
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -56,13 +56,17 @@ private struct VersionReadExecutor: IndexReadExecutor {
         guard requestedLimit.map({ $0 >= 0 }) ?? true else {
             throw VersionReadError.invalidParameter(VersionReadParameter.limit)
         }
-        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let budgetLimit = try options.workMeter
+            .storageWorkReadLimitWithSentinel()
         let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
         let rawResults = try await context.indexQueryContext.withReadableIndex(
             named: index.name,
             indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
+            authorization: try IndexReadAuthorization(
+                selectQuery: selectQuery
+            ),
             configuration: execution.transactionConfiguration
         ) { readableIndex, transaction -> [(version: Version, data: ByteString)] in
             guard let readableIndex else { return [] }
@@ -167,7 +171,8 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
         guard requestedLimit.map({ $0 >= 0 }) ?? true else {
             throw VersionReadError.invalidParameter(VersionReadParameter.limit)
         }
-        let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
+        let budgetLimit = try options.workMeter
+            .storageWorkReadLimitWithSentinel()
         let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
         let rawResults = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration

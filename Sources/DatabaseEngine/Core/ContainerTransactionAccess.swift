@@ -18,18 +18,24 @@ final class ContainerTransactionAccess: TransactionAccess, Sendable {
     /// The backend-owned access used only when the container delegates a
     /// backend-specific namespace operation. The wrapper remains retained by
     /// the caller, so its operation lease stays active for the entire borrow.
-    func namespaceTransactionBorrow(
+    func namespaceWriteTransactionBorrow(
         for lifecycle: DatabaseStorageLifecycle
-    ) throws -> ContainerNamespaceTransactionBorrow {
+    ) throws -> ContainerNamespaceWriteTransactionBorrow {
         guard operationLease.belongs(to: lifecycle) else {
             throw StorageError.invalidOperation(
                 "Namespace operations require a transaction admitted by the same database container"
             )
         }
-        return ContainerNamespaceTransactionBorrow(
+        return ContainerNamespaceWriteTransactionBorrow(
             transaction: transaction,
             operationLease: operationLease
         )
+    }
+
+    func namespaceReadTransactionBorrow(
+        for lifecycle: DatabaseStorageLifecycle
+    ) throws -> ContainerNamespaceReadTransactionBorrow {
+        try namespaceWriteTransactionBorrow(for: lifecycle).readOnly()
     }
 
     var capabilities: TransactionCapabilities {
@@ -69,14 +75,21 @@ final class ContainerTransactionAccess: TransactionAccess, Sendable {
         snapshot: Bool,
         streamingMode: StreamingMode
     ) -> KeyValueCursor {
-        transaction.rangeCursor(
-            from: begin,
-            to: end,
-            limit: limit,
-            reverse: reverse,
-            snapshot: snapshot,
-            streamingMode: streamingMode
-        ).retainingLifetime(of: operationLease)
+        do {
+            let cursorLease = try operationLease.beginChildOperation()
+            return transaction.rangeCursor(
+                from: begin,
+                to: end,
+                limit: limit,
+                reverse: reverse,
+                snapshot: snapshot,
+                streamingMode: streamingMode
+            ).retainingLifetime(of: cursorLease)
+        } catch {
+            return KeyValueCursor(
+                consuming: FailedContainerRangeResult(error: error)
+            )
+        }
     }
 
     func setValue(_ value: ByteString, for key: ByteString) throws {
@@ -167,3 +180,6 @@ final class ContainerTransactionAccess: TransactionAccess, Sendable {
         transaction.requestVersionstamp()
     }
 }
+
+extension ContainerTransactionAccess:
+    ContainerNamespaceReadTransactionBorrowing {}

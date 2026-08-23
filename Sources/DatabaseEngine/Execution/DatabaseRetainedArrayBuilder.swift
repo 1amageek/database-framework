@@ -23,16 +23,27 @@ package struct DatabaseRetainedArrayBuilder<Element: Sendable>: ~Copyable {
                 bytes: initialGrowth.additionalByteCount
             )
         )
-        self.reservation = try workMeter.reserveIntermediate(
+        let reservation = try workMeter.reserveIntermediate(
             bytes: initialFootprint.bytes,
             at: stage
         )
         var elements: [Element] = []
         elements.reserveCapacity(initialGrowth.capacity)
+        let actualCapacity = elements.capacity
+        precondition(actualCapacity >= initialGrowth.capacity)
+        if actualCapacity > initialGrowth.capacity {
+            try reservation.reserveAdditional(
+                bytes: try layout.capacityByteCount(
+                    actualCapacity - initialGrowth.capacity
+                ),
+                at: stage
+            )
+        }
         self.elements = elements
+        self.reservation = reservation
         self.defaultStage = stage
         self.layout = layout
-        self.accountedCapacity = initialGrowth.capacity
+        self.accountedCapacity = actualCapacity
     }
 
     init(
@@ -82,18 +93,44 @@ package struct DatabaseRetainedArrayBuilder<Element: Sendable>: ~Copyable {
             bytes: admittedFootprint.bytes,
             at: stage ?? defaultStage
         )
-        do {
-            try reservation.reserveAdditional(
-                bytes: growth.additionalByteCount,
-                at: stage ?? defaultStage
-            )
-        } catch {
-            claimReservation.release()
-            throw error
-        }
         if growth.capacity != accountedCapacity {
-            elements.reserveCapacity(growth.capacity)
-            accountedCapacity = growth.capacity
+            do {
+                // Reallocation temporarily retains both Array buffers. The new
+                // target buffer is admitted independently before construction;
+                // any allocator spare capacity is reconciled before publication.
+                let replacementReservation = try reservation.reserveChild(
+                    bytes: try layout.capacityByteCount(growth.capacity),
+                    at: stage ?? defaultStage
+                )
+                var replacement = elements
+                replacement.reserveCapacity(growth.capacity)
+                let actualCapacity = replacement.capacity
+                precondition(actualCapacity >= growth.capacity)
+                if actualCapacity > growth.capacity {
+                    try replacementReservation.reserveAdditional(
+                        bytes: try layout.capacityByteCount(
+                            actualCapacity - growth.capacity
+                        ),
+                        at: stage ?? defaultStage
+                    )
+                }
+                let replacementBytes = try layout.capacityByteCount(
+                    actualCapacity
+                )
+                reservation.absorbGuaranteedPartial(
+                    from: replacementReservation,
+                    bytes: replacementBytes
+                )
+                let replacedBytes = try layout.capacityByteCount(
+                    accountedCapacity
+                )
+                elements = replacement
+                reservation.releaseGuaranteedPartial(bytes: replacedBytes)
+                accountedCapacity = actualCapacity
+            } catch {
+                claimReservation.release()
+                throw error
+            }
         }
         return DatabaseRetainedArrayAppendAdmission(
             sourceReservation: reservation,

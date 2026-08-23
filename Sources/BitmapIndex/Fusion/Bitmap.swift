@@ -32,7 +32,7 @@ import StorageKit
 public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     public typealias Item = T
 
-    private let queryContext: IndexQueryContext
+    private let queryContext: IndexQueryContext!
     private let fieldName: String
     private var predicate: BitmapPredicate
 
@@ -57,9 +57,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
         _ field: Field<T, V>,
         equals value: V
     ) {
-        guard let context = FusionContext.current else {
-            fatalError("Bitmap must be used within context.fuse { } block")
-        }
+        let context = FusionContext.current
         self.fieldName = field.name
         self.predicate = .equals(value.fieldValue)
         self.queryContext = context
@@ -70,9 +68,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
         _ field: Field<T, V?>,
         equals value: V
     ) {
-        guard let context = FusionContext.current else {
-            fatalError("Bitmap must be used within context.fuse { } block")
-        }
+        let context = FusionContext.current
         self.fieldName = field.name
         self.predicate = .equals(value.fieldValue)
         self.queryContext = context
@@ -87,9 +83,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
         _ field: Field<T, V>,
         in values: [V]
     ) {
-        guard let context = FusionContext.current else {
-            fatalError("Bitmap must be used within context.fuse { } block")
-        }
+        let context = FusionContext.current
         self.fieldName = field.name
         self.predicate = .in(values.map { $0.fieldValue })
         self.queryContext = context
@@ -149,7 +143,44 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - FusionQuery
 
-    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
+    public var fusionQueryPlan: FusionQueryPlan<T> {
+        guard let queryContext else {
+            return FusionQueryPlan(
+                configurationError: .invalidConfiguration(
+                    "Bitmap requires an IndexQueryContext or context.fuse"
+                )
+            )
+        }
+        return FusionQueryPlan(
+            context: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            ),
+            indexDescriptor: {
+                guard let descriptor = try self.findIndexDescriptor() else {
+                    throw FusionQueryError.indexNotFound(
+                        entity: T.persistableType,
+                        field: self.fieldName,
+                        indexType: .bitmap
+                    )
+                }
+                return descriptor
+            },
+            operation: { [self] candidates, execution in
+                try await executeBound(
+                    candidates: candidates,
+                    execution: execution
+                )
+            }
+        )
+    }
+
+    private func executeBound(
+        candidates: Set<T.ID>?,
+        execution: ReadExecutionContext
+    ) async throws -> FusionQueryResult<T> {
         guard let descriptor = try findIndexDescriptor() else {
             throw FusionQueryError.indexNotFound(
                 entity: T.persistableType,
@@ -160,95 +191,77 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
 
         let indexName = descriptor.name
 
-        // Execute bitmap query within transaction
-        let primaryKeys: [Tuple] = try await queryContext.withReadableIndex(
+        // Resolve bitmap identifiers and models on one transaction snapshot.
+        let retained = try await queryContext.withReadableIndex(
             named: indexName,
             indexType: .bitmap,
-            for: T.self
-        ) { readableIndex, transaction in
+            for: T.self,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            )
+        ) { readableIndex, transaction -> (
+            primaryKeys: DatabaseSharedRetainedArray<Tuple>,
+            models: DatabaseSharedRetainedArray<PersistedModel?>
+        )? in
             guard let readableIndex else {
-                return []
+                return nil
             }
+            let reader = BitmapIndexReader(subspace: readableIndex.subspace)
+            let bitmap: BitmapIndexRetainedBitmap
             switch self.predicate {
             case .equals(let value):
-                let fieldValues = [try TupleEncoder.encode(value)]
-                return try await self.readBitmapPrimaryKeys(
-                    fieldValues: fieldValues,
-                    indexSubspace: readableIndex.subspace,
-                    transaction: transaction
+                bitmap = try await reader.retainedBitmap(
+                    for: [try TupleEncoder.encode(value)],
+                    transaction: transaction,
+                    workMeter: execution.workMeter
                 )
-
             case .in(let values):
-                // OR query across multiple values
-                var allPks: [Tuple] = []
-                var seen: Set<ByteString> = []
-
-                for value in values {
-                    let fieldValues = [try TupleEncoder.encode(value)]
-                    let pks = try await self.readBitmapPrimaryKeys(
-                        fieldValues: fieldValues,
-                        indexSubspace: readableIndex.subspace,
-                        transaction: transaction
-                    )
-                    for pk in pks {
-                        let packedPrimaryKey = pk.pack()
-                        if !seen.contains(packedPrimaryKey) {
-                            seen.insert(packedPrimaryKey)
-                            allPks.append(pk)
-                        }
-                    }
-                }
-                return allPks
+                bitmap = try await reader.retainedUnion(
+                    of: try values.map {
+                        [try TupleEncoder.encode($0)]
+                    },
+                    transaction: transaction,
+                    workMeter: execution.workMeter
+                )
             }
+            let primaryKeys = try await reader.retainedPrimaryKeys(
+                for: bitmap,
+                transaction: transaction,
+                workMeter: execution.workMeter
+            )
+            let models = try await transaction
+                .fetchPersistedModelsPreservingOrder(
+                    entity: try T.schemaEntity,
+                    primaryKeys: primaryKeys,
+                    partitions: queryContext.partitionValues,
+                    workMeter: execution.workMeter
+                )
+            return (primaryKeys: primaryKeys, models: models)
         }
 
-        // Fetch items by primary keys
-        var results = try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
-
-        // Filter to candidates if provided
-        if let candidateIDs = candidates {
-            results = results.filter { candidateIDs.contains($0.id) }
-        }
-
-        // All matching items get score 1.0 (pass/fail filter)
-        return results.map { ScoredResult(item: $0, score: 1.0) }
-    }
-
-    // MARK: - Bitmap Index Reading
-
-    /// Read primary keys from bitmap index
-    ///
-    /// Index structure:
-    /// - `[indexSubspace]["data"][fieldValue]` -> RoaringBitmap of sequential IDs
-    /// - `[indexSubspace]["ids"][seqId]` -> primary key bytes
-    private func readBitmapPrimaryKeys(
-        fieldValues: [any TupleElement],
-        indexSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> [Tuple] {
-        let dataSubspace = indexSubspace.subspace("data")
-        let idsSubspace = indexSubspace.subspace("ids")
-
-        // Get bitmap for field values
-        let bitmapKey = dataSubspace.pack(Tuple(fieldValues))
-        guard let bitmapBytes = try await transaction.getValue(for: bitmapKey) else {
-            return []
-        }
-
-        let bitmap = try RoaringBitmap(serializedBytes: bitmapBytes)
-
-        // Convert sequential IDs to primary keys
-        var primaryKeys: [Tuple] = []
-        primaryKeys.reserveCapacity(bitmap.cardinality)
-        for seqId in bitmap {
-            let idKey = idsSubspace.pack(Tuple(Int(seqId)))
-            if let pkBytes = try await transaction.getValue(for: idKey) {
-                let pkElements = try Tuple.unpack(from: pkBytes)
-                primaryKeys.append(Tuple(pkElements))
+        // All matching items get score 1.0 (pass/fail filter).
+        var output = try FusionQueryResultBuilder<T>(
+            execution: execution,
+            expectedCount: retained?.models.count ?? 0
+        )
+        guard let retained else { return try output.finish() }
+        for (primaryKey, model) in zip(
+            retained.primaryKeys,
+            retained.models
+        ) {
+            guard let model else {
+                throw BitmapQueryError.indexedItemMissing(
+                    index: indexName,
+                    primaryKey: primaryKey.pack()
+                )
             }
+            let item = try model.decode(as: T.self)
+            if let candidates, !candidates.contains(item.id) { continue }
+            try output.append(ScoredResult(item: item, score: 1.0))
         }
-
-        return primaryKeys
+        return try output.finish()
     }
 
 }

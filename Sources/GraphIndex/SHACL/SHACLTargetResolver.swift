@@ -22,14 +22,14 @@ import DatabaseTypes
 public struct SHACLTargetResolver: Sendable {
 
     private let executor: SPARQLQueryExecutor
-    private let transaction: any TransactionAccess
+    private let transaction: any TransactionReadAccess
     private let dataGraph: SHACLDataGraphTarget
     private let entailmentContext: (any SHACLEntailmentContext)?
     private let budget: SHACLValidationWorkBudget
 
     public init(
         executor: SPARQLQueryExecutor,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         dataGraph: SHACLDataGraphTarget,
         entailmentContext: (any SHACLEntailmentContext)? = nil,
         budget: SHACLValidationWorkBudget
@@ -50,8 +50,11 @@ public struct SHACLTargetResolver: Sendable {
     func resolve(
         _ targets: [SHACLTarget],
         shapeIdentifier: RDFTerm?
-    ) async throws -> Set<RDFTerm> {
-        var focusNodes = Set<RDFTerm>()
+    ) async throws -> SHACLRetainedTerms {
+        var focusNodes = try SHACLRetainedTermSetBuilder(
+            workMeter: budget.workMeter,
+            expectedCount: targets.count
+        )
 
         for target in targets {
             try budget.consume(at: .projection)
@@ -59,10 +62,10 @@ public struct SHACLTargetResolver: Sendable {
                 target,
                 shapeIdentifier: shapeIdentifier
             )
-            focusNodes.formUnion(nodes)
+            try focusNodes.formUnion(nodes)
         }
 
-        return focusNodes
+        return try focusNodes.finish()
     }
 
     // MARK: - Private
@@ -70,11 +73,16 @@ public struct SHACLTargetResolver: Sendable {
     private func resolveTarget(
         _ target: SHACLTarget,
         shapeIdentifier: RDFTerm?
-    ) async throws -> Set<RDFTerm> {
+    ) async throws -> SHACLRetainedTerms {
         switch target {
         case .node(let node):
             // Direct node — no query needed
-            return [node]
+            var nodes = try SHACLRetainedTermSetBuilder(
+                workMeter: budget.workMeter,
+                expectedCount: 1
+            )
+            try nodes.insert(node)
+            return try nodes.finish()
 
         case .class_(let classIRI):
             return try await queryInstances(of: classIRI)
@@ -101,7 +109,7 @@ public struct SHACLTargetResolver: Sendable {
 
     private func queryInstances(
         of classIRI: String
-    ) async throws -> Set<RDFTerm> {
+    ) async throws -> SHACLRetainedTerms {
         var entailedClasses: Set<String> = [classIRI]
         if let entailmentContext {
             entailedClasses.formUnion(
@@ -116,9 +124,11 @@ public struct SHACLTargetResolver: Sendable {
             at: .projection
         )
 
-        var instances = Set<RDFTerm>()
+        var instances = try SHACLRetainedTermSetBuilder(
+            workMeter: budget.workMeter
+        )
         for entailedClass in entailedClasses.sorted() {
-            instances.formUnion(
+            try instances.formUnion(
                 try await querySubjects(
                     predicate: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
                     object: entailedClass
@@ -130,53 +140,57 @@ public struct SHACLTargetResolver: Sendable {
                 of: classIRI
             ).sorted() {
                 try budget.consume(at: .deduplication)
-                instances.insert(individual)
+                try instances.insert(individual)
             }
         }
-        return instances
+        return try instances.finish()
     }
 
     private func queryEntailedSubjects(
         predicate: String
-    ) async throws -> Set<RDFTerm> {
+    ) async throws -> SHACLRetainedTerms {
         var predicates: Set<String> = [predicate]
         if let entailmentContext {
             predicates.formUnion(
                 entailmentContext.subProperties(of: predicate)
             )
         }
-        var nodes = Set<RDFTerm>()
+        var nodes = try SHACLRetainedTermSetBuilder(
+            workMeter: budget.workMeter
+        )
         for entailedPredicate in predicates.sorted() {
-            nodes.formUnion(
+            try nodes.formUnion(
                 try await querySubjects(predicate: entailedPredicate)
             )
         }
-        return nodes
+        return try nodes.finish()
     }
 
     private func queryEntailedObjects(
         predicate: String
-    ) async throws -> Set<RDFTerm> {
+    ) async throws -> SHACLRetainedTerms {
         var predicates: Set<String> = [predicate]
         if let entailmentContext {
             predicates.formUnion(
                 entailmentContext.subProperties(of: predicate)
             )
         }
-        var nodes = Set<RDFTerm>()
+        var nodes = try SHACLRetainedTermSetBuilder(
+            workMeter: budget.workMeter
+        )
         for entailedPredicate in predicates.sorted() {
-            nodes.formUnion(
+            try nodes.formUnion(
                 try await queryObjects(predicate: entailedPredicate)
             )
         }
-        return nodes
+        return try nodes.finish()
     }
 
     /// Query subjects matching { ?node <predicate> <object>? }
     private func querySubjects(
         predicate: String,
         object: String? = nil
-    ) async throws -> Set<RDFTerm> {
+    ) async throws -> SHACLRetainedTerms {
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .variable("?node"),
@@ -189,7 +203,7 @@ public struct SHACLTargetResolver: Sendable {
             )
         ])
 
-        let (bindings, _) = try await executor.executeInTransaction(
+        let bindings = try await executor.executeRetainedInTransaction(
             pattern: dataGraph.apply(to: pattern),
             transaction: transaction,
             limit: nil,
@@ -198,19 +212,28 @@ public struct SHACLTargetResolver: Sendable {
         )
         try budget.consume(UInt64(bindings.count), at: .deduplication)
 
-        var nodes = Set<RDFTerm>()
-        for binding in bindings {
-            if let value = binding["?node"], case .rdfTerm(let term) = value {
-                nodes.insert(term)
+        var nodes = try SHACLRetainedTermSetBuilder(
+            workMeter: budget.workMeter,
+            expectedCount: bindings.count
+        )
+        for index in 0..<bindings.count {
+            try bindings.withBinding(
+                at: index,
+                workMeter: budget.workMeter
+            ) { binding in
+                if let value = binding["?node"],
+                   case .rdfTerm(let term) = value {
+                    try nodes.insert(term)
+                }
             }
         }
-        return nodes
+        return try nodes.finish()
     }
 
     /// Query objects matching { ?s <predicate> ?node }
     private func queryObjects(
         predicate: String
-    ) async throws -> Set<RDFTerm> {
+    ) async throws -> SHACLRetainedTerms {
         let pattern = ExecutionPattern.basic([
             ExecutionTriple(
                 subject: .wildcard,
@@ -221,7 +244,7 @@ public struct SHACLTargetResolver: Sendable {
             )
         ])
 
-        let (bindings, _) = try await executor.executeInTransaction(
+        let bindings = try await executor.executeRetainedInTransaction(
             pattern: dataGraph.apply(to: pattern),
             transaction: transaction,
             limit: nil,
@@ -230,12 +253,21 @@ public struct SHACLTargetResolver: Sendable {
         )
         try budget.consume(UInt64(bindings.count), at: .deduplication)
 
-        var nodes = Set<RDFTerm>()
-        for binding in bindings {
-            if let value = binding["?node"], case .rdfTerm(let term) = value {
-                nodes.insert(term)
+        var nodes = try SHACLRetainedTermSetBuilder(
+            workMeter: budget.workMeter,
+            expectedCount: bindings.count
+        )
+        for index in 0..<bindings.count {
+            try bindings.withBinding(
+                at: index,
+                workMeter: budget.workMeter
+            ) { binding in
+                if let value = binding["?node"],
+                   case .rdfTerm(let term) = value {
+                    try nodes.insert(term)
+                }
             }
         }
-        return nodes
+        return try nodes.finish()
     }
 }

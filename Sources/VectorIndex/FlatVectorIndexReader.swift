@@ -21,7 +21,7 @@ struct FlatVectorIndexReader: Sendable {
     func search(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
@@ -47,7 +47,7 @@ struct FlatVectorIndexReader: Sendable {
         var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
             maxSize: k,
             heapType: .max,
-            comparator: { $0.distance > $1.distance }
+            comparator: VectorSearchResultOrdering.isWorse
         )
 
         try await cursor.consume { key, value in

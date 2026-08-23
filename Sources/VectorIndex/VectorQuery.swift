@@ -284,6 +284,11 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             named: indexName,
             indexType: .vector,
             for: T.self,
+            authorization: IndexReadAuthorization(
+                limit: k,
+                offset: nil,
+                orderBy: ["distance"]
+            ),
             configuration: configuration
         ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -390,8 +395,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             }
             let items = try await queryContext.fetchItemsPreservingOrder(
                 ids: tuples,
-                type: T.self,
-                transaction: transaction
+                type: T.self
             )
 
             var results: [(item: T, distance: Double)] = []
@@ -407,7 +411,13 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                     (item: item, distance: result.distance)
                 )
             }
-            return results.sorted { $0.distance < $1.distance }
+            return results.sorted {
+                if $0.distance == $1.distance {
+                    return $0.item.id.persistableIdentifierValue
+                        < $1.item.id.persistableIdentifierValue
+                }
+                return $0.distance < $1.distance
+            }
         }
     }
 
@@ -481,6 +491,11 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             named: indexName,
             indexType: .vector,
             for: T.self,
+            authorization: IndexReadAuthorization(
+                limit: k,
+                offset: nil,
+                orderBy: ["distance"]
+            ),
             configuration: configuration
         ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -508,12 +523,12 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             )
 
             // Fetch each HNSW candidate before evaluating the application predicate.
-            let fetchItem: @Sendable (Tuple, any TransactionAccess) async throws -> T? = { primaryKey, tx in
+            let fetchItem: @Sendable (Tuple) async throws -> T? = {
+                primaryKey in
                 let items = try await self.queryContext
                     .fetchItemsPreservingOrder(
                         ids: [primaryKey],
-                        type: T.self,
-                        transaction: tx
+                        type: T.self
                     )
                 guard items.count == 1, let item = items[0] else {
                     throw VectorQueryError.indexedItemMissing(
@@ -539,8 +554,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             let items = try await self.queryContext
                 .fetchItemsPreservingOrder(
                     ids: ids,
-                    type: T.self,
-                    transaction: transaction
+                    type: T.self
                 )
 
             var finalResults: [(item: T, distance: Double)] = []

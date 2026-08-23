@@ -67,18 +67,37 @@ enum RankValueOrdering {
 
     static func sorted<Item>(
         _ entries: consuming [RankValueEntry<Item>],
-        direction: RankValueDirection
+        direction: RankValueDirection,
+        workMeter: DatabaseWorkMeter? = nil
     ) throws -> [RankValueEntry<Item>] {
         var result = consume entries
+        let identifierReservation = try workMeter?.reserveIntermediate(
+            bytes: try DatabaseIntermediateFootprint(
+                bytes: UInt64(MemoryLayout<Set<ByteString>>.stride)
+            ).adding(
+                try DatabaseIntermediateFootprint(
+                    bytes: UInt64(max(1, MemoryLayout<ByteString>.stride + 32))
+                ).multiplied(by: UInt64(result.count))
+            ).bytes,
+            at: .deduplication
+        )
+        defer { identifierReservation?.release() }
         var identifiers: Set<ByteString> = []
         identifiers.reserveCapacity(result.count)
         for entry in result {
+            try workMeter?.consume(at: .deduplication)
+            try identifierReservation?.reserveAdditional(
+                rows: 1,
+                bytes: UInt64(entry.identifierKey.count),
+                at: .deduplication
+            )
             guard identifiers.insert(entry.identifierKey).inserted else {
                 throw RankValueError.duplicateIdentifier
             }
         }
 
         try result.sort { lhs, rhs in
+            try workMeter?.consume(at: .sortComparison)
             let left = try numericValue(
                 from: lhs.value,
                 fieldName: "rank"

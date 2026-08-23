@@ -584,7 +584,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         )
 
         // Collect all aggregation results inside the transaction
-        let allAggregationResults: [AggregationIndexResult] = try await queryContext.withTransaction { transaction in
+        let allAggregationResults: [AggregationIndexResult] = try await queryContext.withQuerySnapshot { snapshot in
             var collected: [AggregationIndexResult] = []
 
             for aggregation in self.aggregations {
@@ -592,23 +592,31 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
                     continue
                 }
 
-                guard let readableIndex = try await self.queryContext
-                    .readableIndex(
-                        named: descriptor.name,
-                            indexType: descriptor.type,
-                            for: T.self,
-                        transaction: transaction
-                    ) else {
-                    continue
-                }
                 let index = Self.buildIndex(from: descriptor, persistableType: T.persistableType)
-                let indexResults = try await self.queryFromIndex(
-                    index: index,
-                    subspace: readableIndex.subspace,
-                    idExpression: idExpression,
-                    aggregation: aggregation,
-                    transaction: transaction
-                )
+                let indexResults: [(
+                    grouping: [FieldValue],
+                    value: FieldValue?
+                )] = try await snapshot.withReadableIndex(
+                    named: descriptor.name,
+                    indexType: descriptor.type,
+                    for: T.self,
+                    authorization: IndexReadAuthorization(
+                        limit: nil,
+                        offset: nil,
+                        orderBy: nil
+                    )
+                ) { readableIndex, transaction in
+                    guard let readableIndex else {
+                        return []
+                    }
+                    return try await self.queryFromIndex(
+                        index: index,
+                        subspace: readableIndex.subspace,
+                        idExpression: idExpression,
+                        aggregation: aggregation,
+                        transaction: transaction
+                    )
+                }
 
                 collected.append((
                     aggregationName: aggregation.name,
@@ -692,7 +700,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         aggregation: AggregationSpec,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch aggregation.type {
         case .count:
@@ -802,7 +810,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
@@ -837,7 +845,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = SumIndexMaintainer<T, Value>(
             index: index,
@@ -859,7 +867,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
@@ -894,7 +902,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = AverageIndexMaintainer<T, Value>(
             index: index,
@@ -918,7 +926,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
@@ -957,7 +965,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = MinIndexMaintainer<T, Value>(
             index: index,
@@ -979,7 +987,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
@@ -1018,7 +1026,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = MaxIndexMaintainer<T, Value>(
             index: index,

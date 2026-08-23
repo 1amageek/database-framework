@@ -177,7 +177,7 @@ struct HNSWIndexStorage: Sendable {
     }
 
     func loadOrCreateIndex(
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         additionalCapacity: Int = 0
     ) async throws -> HNSWIndexF32 {
         if let graphData = try await loadGraphSnapshotData(transaction: transaction) {
@@ -248,7 +248,7 @@ struct HNSWIndexStorage: Sendable {
     }
 
     func loadSearchSnapshot(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> HNSWGraphCache.Snapshot {
         if let metadataBytes = try await transaction.getValue(
             for: graphMetadataKey,
@@ -325,7 +325,7 @@ struct HNSWIndexStorage: Sendable {
     func validateStoredEntry(
         label: UInt64,
         primaryKey: Tuple,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws {
         let mappingKey = primaryKeysSubspace.pack(HNSWLabelCodec.tuple(label))
         guard let mappingValue = try await transaction.getValue(
@@ -381,7 +381,7 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func loadGraphSnapshotData(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> ByteString? {
         guard let metadataBytes = try await transaction.getValue(
             for: graphMetadataKey,
@@ -484,7 +484,7 @@ struct HNSWIndexStorage: Sendable {
 
     private func loadChunkedGraphSnapshot(
         metadata: ByteString,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> ByteString {
         let decoded = try decodeGraphMetadata(metadata)
         guard resourceLimits.maximumSnapshotByteCount > 0 else {
@@ -645,7 +645,7 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func loadPrimaryKeysByLabel(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> HNSWPrimaryKeySnapshot {
         guard resourceLimits.maximumPrimaryKeyCount >= 0,
               resourceLimits.maximumPrimaryKeyByteCount >= 0 else {
@@ -812,7 +812,7 @@ struct HNSWIndexStorage: Sendable {
 
     private func validateForwardMappings(
         primaryKeys: [UInt64: Tuple],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws {
         let (begin, end) = labelsSubspace.range()
         var cursor = transaction.rangeCursor(
@@ -871,7 +871,7 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func hasPersistedVector(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Bool {
         let (begin, end) = vectorsSubspace.range()
         var cursor = transaction.rangeCursor(
@@ -888,7 +888,7 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func hasPersistedForwardMapping(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Bool {
         let (begin, end) = labelsSubspace.range()
         var cursor = transaction.rangeCursor(
@@ -929,7 +929,7 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func estimateMaxElements(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int {
         let (begin, end) = vectorsSubspace.range()
         var cursor = transaction.rangeCursor(

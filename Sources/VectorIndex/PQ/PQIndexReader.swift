@@ -39,7 +39,7 @@ struct PQIndexReader: Sendable {
     func search(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
@@ -94,7 +94,7 @@ struct PQIndexReader: Sendable {
         var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
             maxSize: k,
             heapType: .max,
-            comparator: { $0.distance > $1.distance }
+            comparator: VectorSearchResultOrdering.isWorse
         )
         let codesSubspace = subspace.subspace(PQIndexStorageKey.codes.rawValue)
         let (begin, end) = codesSubspace.range()
@@ -133,7 +133,7 @@ struct PQIndexReader: Sendable {
     }
 
     private func loadMetadata(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> PQMetadata {
         let key = subspace.pack(Tuple([PQIndexStorageKey.metadata.rawValue]))
         guard let value = try await transaction.getValue(
@@ -161,7 +161,7 @@ struct PQIndexReader: Sendable {
     private func exactSearch(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let vectorsSubspace = subspace.subspace(PQIndexStorageKey.vectors.rawValue)
@@ -177,7 +177,7 @@ struct PQIndexReader: Sendable {
         var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
             maxSize: k,
             heapType: .max,
-            comparator: { $0.distance > $1.distance }
+            comparator: VectorSearchResultOrdering.isWorse
         )
         try await cursor.consume { key, value in
             try workMeter?.consume(at: .indexScan)
@@ -208,7 +208,7 @@ struct PQIndexReader: Sendable {
     }
 
     private func hasStoredVector(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Bool {
         let range = subspace.subspace(PQIndexStorageKey.vectors.rawValue).range()
         var cursor = transaction.rangeCursor(
@@ -225,7 +225,7 @@ struct PQIndexReader: Sendable {
     }
 
     func loadCodebookViews(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [PersistedVectorView] {
         let codebooksSubspace = subspace.subspace(
             PQIndexStorageKey.codebooks.rawValue

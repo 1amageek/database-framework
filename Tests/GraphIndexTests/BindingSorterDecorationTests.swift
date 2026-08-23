@@ -130,7 +130,7 @@ struct BindingSorterDecorationTests {
             VariableBinding(["?value": .int64(1)]),
             VariableBinding(["?value": .int64(2)])
         ]
-        let key = BindingSortKey { binding in
+        let key = BindingSortKey(authorizationName: "?value") { binding in
             evaluationCount.withLock { $0 += 1 }
             return binding["?value"]
         }
@@ -181,7 +181,7 @@ struct BindingSorterDecorationTests {
             VariableBinding(["?value": .int64(1)])
         ]
         let original = bindings
-        let key = BindingSortKey { binding in
+        let key = BindingSortKey(authorizationName: "?value") { binding in
             evaluationCount.withLock { $0 += 1 }
             return binding["?value"]
         }
@@ -310,7 +310,7 @@ struct BindingSorterDecorationTests {
     @Test("Semantic expression errors become unbound ordering keys")
     func expressionErrorBecomesUnboundKey() throws {
         let expression = Expression.variable(Variable("missing"))
-        let key = BindingSortKey { binding in
+        let key = BindingSortKey(authorizationName: "?missing") { binding in
             try ExpressionEvaluator.evaluateForOrdering(
                 expression,
                 binding: binding
@@ -328,7 +328,7 @@ struct BindingSorterDecorationTests {
 
     @Test("Runtime failures abort ORDER BY")
     func runtimeFailurePropagates() {
-        let key = BindingSortKey { _ in
+        let key = BindingSortKey(authorizationName: "?test") { _ in
             throw SPARQLExpressionEvaluationError.resourceLimitExceeded(
                 stage: "test",
                 required: 2,

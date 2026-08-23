@@ -212,7 +212,10 @@ struct PolymorphicFetchTests {
             let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
                 group: group,
                 ids: [compositeIdentifier, missingIdentifier],
-                transaction: transaction
+                transaction: transaction,
+                workMeter: ReadExecutionContext(
+                    monotonicClock: container.monotonicClock
+                ).workMeter
             )
             #expect(fetched.count == 2)
             #expect(

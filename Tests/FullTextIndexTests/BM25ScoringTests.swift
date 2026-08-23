@@ -111,28 +111,28 @@ private struct BM25ScoringContext {
 struct BM25ScorerUnitTests {
 
     @Test("IDF calculation - standard formula")
-    func testIDFCalculation() {
+    func testIDFCalculation() throws {
         let scorer = BM25Scorer(params: .default, totalDocuments: 100, averageDocumentLength: 50.0)
 
         // Term in 10 documents out of 100
-        let idf10 = scorer.idf(documentFrequency: 10)
+        let idf10 = try scorer.idf(documentFrequency: 10)
         #expect(idf10 > 0, "IDF should be positive for rare terms")
 
         // Term in 50 documents out of 100 (half the corpus)
-        let idf50 = scorer.idf(documentFrequency: 50)
+        let idf50 = try scorer.idf(documentFrequency: 50)
         #expect(idf50 < idf10, "IDF for common terms should be lower")
 
         // Term in 90 documents out of 100 (very common)
-        let idf90 = scorer.idf(documentFrequency: 90)
+        let idf90 = try scorer.idf(documentFrequency: 90)
         #expect(idf90 < 0, "IDF should be negative for terms in majority of docs (standard BM25)")
     }
 
     @Test("BM25 score calculation")
-    func testBM25ScoreCalculation() {
+    func testBM25ScoreCalculation() throws {
         let scorer = BM25Scorer(params: .default, totalDocuments: 100, averageDocumentLength: 50.0)
 
         // Simple case: single term, appears once
-        let score1 = scorer.score(
+        let score1 = try scorer.score(
             termFrequencies: ["swift": 1],
             documentFrequencies: ["swift": 10],
             docLength: 50
@@ -140,7 +140,7 @@ struct BM25ScorerUnitTests {
         #expect(score1 > 0, "Score should be positive for matching term")
 
         // Higher TF should increase score (but with saturation)
-        let score2 = scorer.score(
+        let score2 = try scorer.score(
             termFrequencies: ["swift": 5],
             documentFrequencies: ["swift": 10],
             docLength: 50
@@ -149,7 +149,7 @@ struct BM25ScorerUnitTests {
         #expect(score2 < score1 * 5, "TF saturation should limit score increase")
 
         // Longer document should have lower score (length normalization)
-        let scoreLong = scorer.score(
+        let scoreLong = try scorer.score(
             termFrequencies: ["swift": 1],
             documentFrequencies: ["swift": 10],
             docLength: 100  // Twice the average
@@ -158,7 +158,7 @@ struct BM25ScorerUnitTests {
     }
 
     @Test("BM25 parameters affect scoring")
-    func testBM25ParametersAffectScoring() {
+    func testBM25ParametersAffectScoring() throws {
         let defaultParams = BM25Parameters.default
         let noLengthNorm = BM25Parameters.noLengthNorm
 
@@ -166,13 +166,13 @@ struct BM25ScorerUnitTests {
         let scorerNoNorm = BM25Scorer(params: noLengthNorm, totalDocuments: 100, averageDocumentLength: 50.0)
 
         // Long document with b=0.75 (default) vs b=0 (no normalization)
-        let scoreDefault = scorerDefault.score(
+        let scoreDefault = try scorerDefault.score(
             termFrequencies: ["swift": 1],
             documentFrequencies: ["swift": 10],
             docLength: 200  // 4x average
         )
 
-        let scoreNoNorm = scorerNoNorm.score(
+        let scoreNoNorm = try scorerNoNorm.score(
             termFrequencies: ["swift": 1],
             documentFrequencies: ["swift": 10],
             docLength: 200
@@ -182,22 +182,153 @@ struct BM25ScorerUnitTests {
     }
 
     @Test("Multiple query terms")
-    func testMultipleQueryTerms() {
+    func testMultipleQueryTerms() throws {
         let scorer = BM25Scorer(params: .default, totalDocuments: 100, averageDocumentLength: 50.0)
 
-        let singleTermScore = scorer.score(
+        let singleTermScore = try scorer.score(
             termFrequencies: ["swift": 1],
             documentFrequencies: ["swift": 10],
             docLength: 50
         )
 
-        let twoTermScore = scorer.score(
+        let twoTermScore = try scorer.score(
             termFrequencies: ["swift": 1, "concurrency": 1],
             documentFrequencies: ["swift": 10, "concurrency": 5],
             docLength: 50
         )
 
         #expect(twoTermScore > singleTermScore, "More matching terms should increase score")
+    }
+
+    @Test("Term insertion order does not change score bits")
+    func termInsertionOrderDoesNotChangeScoreBits() throws {
+        let scorer = BM25Scorer(
+            params: .default,
+            totalDocuments: 100,
+            averageDocumentLength: 50
+        )
+        let terms = ["gamma", "alpha", "beta"]
+        let frequencies = ["alpha": 3, "beta": 2, "gamma": 1]
+        let documentFrequencies = [
+            "alpha": Int64(7),
+            "beta": Int64(11),
+            "gamma": Int64(19),
+        ]
+        var reversedFrequencies: [String: Int] = [:]
+        for term in terms.reversed() {
+            reversedFrequencies[term] = frequencies[term]
+        }
+
+        let first = try scorer.score(
+            termFrequencies: frequencies,
+            documentFrequencies: documentFrequencies,
+            docLength: 61
+        )
+        let second = try scorer.score(
+            termFrequencies: reversedFrequencies,
+            documentFrequencies: documentFrequencies,
+            docLength: 61
+        )
+
+        #expect(first.bitPattern == second.bitPattern)
+    }
+
+    @Test("Canonical term order rejects duplicates, omissions, and missing statistics")
+    func canonicalTermOrderIsExact() throws {
+        let scorer = BM25Scorer(
+            params: .default,
+            totalDocuments: 100,
+            averageDocumentLength: 50
+        )
+        let termFrequencies = ["alpha": 1, "beta": 2]
+        let documentFrequencies = ["alpha": Int64(7), "beta": Int64(11)]
+
+        #expect(throws: BM25ScoringError.invalidTermOrder) {
+            try scorer.score(
+                termFrequencies: termFrequencies,
+                documentFrequencies: documentFrequencies,
+                docLength: 50,
+                orderedTerms: ["alpha", "alpha"]
+            )
+        }
+        #expect(throws: BM25ScoringError.invalidTermOrder) {
+            try scorer.score(
+                termFrequencies: termFrequencies,
+                documentFrequencies: documentFrequencies,
+                docLength: 50,
+                orderedTerms: ["alpha"]
+            )
+        }
+        #expect(
+            throws: BM25ScoringError.missingDocumentFrequency(term: "beta")
+        ) {
+            try scorer.score(
+                termFrequencies: termFrequencies,
+                documentFrequencies: ["alpha": 7],
+                docLength: 50,
+                orderedTerms: ["alpha", "beta"]
+            )
+        }
+    }
+
+    @Test("Non-finite and out-of-range parameters fail explicitly")
+    func invalidParametersFailExplicitly() {
+        for k1 in [Double.nan, .infinity, -.infinity, -1] {
+            #expect(throws: BM25ScoringError.invalidK1) {
+                try BM25Parameters.validated(k1: k1, b: 0.75)
+            }
+        }
+        for b in [Double.nan, .infinity, -.infinity, -0.1, 1.1] {
+            #expect(throws: BM25ScoringError.invalidLengthNormalization) {
+                try BM25Parameters.validated(k1: 1.2, b: b)
+            }
+        }
+    }
+
+    @Test("Invalid corpus and document statistics fail explicitly")
+    func invalidStatisticsFailExplicitly() throws {
+        for scorer in [
+            BM25Scorer(
+                params: .default,
+                totalDocuments: 0,
+                averageDocumentLength: 10
+            ),
+            BM25Scorer(
+                params: .default,
+                totalDocuments: 10,
+                averageDocumentLength: .nan
+            ),
+        ] {
+            #expect(throws: BM25ScoringError.invalidCorpusStatistics) {
+                try scorer.idf(documentFrequency: 1)
+            }
+        }
+
+        let scorer = BM25Scorer(
+            params: .default,
+            totalDocuments: 10,
+            averageDocumentLength: 10
+        )
+        #expect(throws: BM25ScoringError.invalidDocumentFrequency) {
+            try scorer.idf(documentFrequency: 11)
+        }
+        #expect(throws: BM25ScoringError.invalidDocumentFrequency) {
+            try scorer.idf(documentFrequency: -1)
+        }
+        #expect(throws: BM25ScoringError.invalidTermFrequency) {
+            try scorer.scoreForTerm(
+                termFrequency: -1,
+                documentFrequency: 1,
+                docLength: 1
+            )
+        }
+        #expect(throws: BM25ScoringError.invalidDocumentLength) {
+            try scorer.scoreForTerm(
+                termFrequency: 1,
+                documentFrequency: 1,
+                docLength: -1
+            )
+        }
     }
 }
 

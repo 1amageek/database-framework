@@ -34,7 +34,7 @@ struct SPARQLSubSelectExecutionTests {
         }
 
         func record(
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) {
             state.withLock {
@@ -57,7 +57,7 @@ struct SPARQLSubSelectExecutionTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             observations.record(
@@ -79,16 +79,16 @@ struct SPARQLSubSelectExecutionTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
-            []
+        ) async throws -> RDFNamedGraphResult {
+            .empty
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
@@ -98,7 +98,7 @@ struct SPARQLSubSelectExecutionTests {
     private struct RetryScanObservationState: Sendable {
         var innerScanCount = 0
         var rightScanCount = 0
-        var transactions: [ObjectIdentifier: any TransactionAccess] = [:]
+        var transactions: [ObjectIdentifier: any TransactionReadAccess] = [:]
         var workMeterIdentifiers: Set<ObjectIdentifier> = []
     }
 
@@ -123,7 +123,7 @@ struct SPARQLSubSelectExecutionTests {
 
         func record(
             predicate: String,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) -> Int {
             state.withLock { state in
@@ -156,7 +156,7 @@ struct SPARQLSubSelectExecutionTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             guard case .iri(let predicateIRI) = predicate else {
@@ -217,16 +217,16 @@ struct SPARQLSubSelectExecutionTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
-            []
+        ) async throws -> RDFNamedGraphResult {
+            .empty
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
@@ -241,7 +241,7 @@ struct SPARQLSubSelectExecutionTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             guard case .iri(let predicateIRI) = predicate else {
@@ -279,16 +279,16 @@ struct SPARQLSubSelectExecutionTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
-            []
+        ) async throws -> RDFNamedGraphResult {
+            .empty
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
@@ -380,12 +380,12 @@ struct SPARQLSubSelectExecutionTests {
         )
         let meter = makeWorkMeter()
 
-        let result = try await SPARQLQueryExecutor(
-            database: InMemoryEngine(),
+        let result = try await executeSPARQLTest(
+            executor: SPARQLQueryExecutor(
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: scanner
-        ).execute(
+            ),
             pattern: pattern,
             limit: nil,
             offset: 0,
@@ -429,12 +429,12 @@ struct SPARQLSubSelectExecutionTests {
         )
 
         do {
-            _ = try await SPARQLQueryExecutor(
-                database: InMemoryEngine(),
+            _ = try await executeSPARQLTest(
+                executor: SPARQLQueryExecutor(
                 monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock(),
                 sources: []
-            ).execute(
+                ),
                 pattern: pattern,
                 limit: nil,
                 offset: 0,
@@ -469,12 +469,12 @@ struct SPARQLSubSelectExecutionTests {
         let pattern = try GraphPatternConverter.convert(.subquery(inner))
 
         do {
-            _ = try await SPARQLQueryExecutor(
-                database: InMemoryEngine(),
+            _ = try await executeSPARQLTest(
+                executor: SPARQLQueryExecutor(
                 monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock(),
                 sources: []
-            ).execute(
+                ),
                 pattern: pattern,
                 limit: nil,
                 offset: 0,
@@ -516,19 +516,20 @@ struct SPARQLSubSelectExecutionTests {
         )
         let pattern = try GraphPatternConverter.convert(.subquery(inner))
         let executor = SPARQLQueryExecutor(
-            database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: RecordingScanner(observations: observations)
         )
 
-        _ = try await executor.execute(
+        _ = try await executeSPARQLTest(
+            executor: executor,
             pattern: pattern,
             limit: nil,
             offset: 0,
             workMeter: makeWorkMeter()
         )
-        _ = try await executor.execute(
+        _ = try await executeSPARQLTest(
+            executor: executor,
             pattern: pattern,
             limit: nil,
             offset: 0,
@@ -569,16 +570,17 @@ struct SPARQLSubSelectExecutionTests {
         )
         let meter = makeWorkMeter()
 
-        let result = try await SPARQLQueryExecutor(
-            database: InMemoryEngine(),
+        let result = try await executeSPARQLTest(
+            executor: SPARQLQueryExecutor(
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: RetryAwareScanner(observations: observations)
-        ).execute(
+            ),
             pattern: pattern,
             limit: nil,
             offset: 0,
-            workMeter: meter
+            workMeter: meter,
+            transactionConfiguration: .default
         )
 
         #expect(result.0.count == 1)
@@ -610,12 +612,12 @@ struct SPARQLSubSelectExecutionTests {
             return
         }
 
-        let result = try await SPARQLQueryExecutor(
-            database: InMemoryEngine(),
+        let result = try await executeSPARQLTest(
+            executor: SPARQLQueryExecutor(
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: FollowingBindingScanner()
-        ).execute(
+            ),
             pattern: GraphPatternConverter.convert(graphPattern),
             limit: nil,
             offset: 0,
@@ -850,12 +852,12 @@ struct SPARQLSubSelectExecutionTests {
     private func execute(
         _ pattern: ExecutionPattern
     ) async throws -> [VariableBinding] {
-        let result = try await SPARQLQueryExecutor(
-            database: InMemoryEngine(),
+        let result = try await executeSPARQLTest(
+            executor: SPARQLQueryExecutor(
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: []
-        ).execute(
+            ),
             pattern: pattern,
             limit: nil,
             offset: 0,

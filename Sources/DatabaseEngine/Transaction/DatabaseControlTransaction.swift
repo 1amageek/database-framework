@@ -24,18 +24,13 @@ extension DBContainer {
             clock: monotonicClock,
             executionDeadline: executionDeadline
         ) { storageAccess in
-            let transaction = DatabaseTransaction(
+            try await self.withRootScopedDatabaseTransaction(
                 storageAccess: storageAccess,
-                container: self
+                dataRoot: self.controlStorage().root,
+                accessMode: .readWrite,
+                exposesPhysicalMaintenance: false,
+                operation
             )
-            do {
-                let result = try await operation(transaction)
-                try await transaction.prepareForCommit()
-                return result
-            } catch {
-                await transaction.invalidate()
-                throw error
-            }
         }
     }
 
@@ -63,24 +58,19 @@ extension DBContainer {
                 authorization: authorization,
                 transaction: storageAccess
             )
-            let admittedStorageAccess = requiredAccess == .read
-                ? ReadAuthorizedTransactionAccess.admitted(storageAccess)
-                : storageAccess
-            let transaction = DatabaseTransaction(
-                storageAccess: admittedStorageAccess,
-                container: self
-            )
             return try await RequestAuthorization.$context.withValue(
                 authorization
             ) {
-                do {
-                    let result = try await operation(transaction)
-                    try await transaction.prepareForCommit()
-                    return result
-                } catch {
-                    await transaction.invalidate()
-                    throw error
-                }
+                try await self.withRootScopedDatabaseTransaction(
+                    storageAccess: storageAccess,
+                    dataRoot: self.controlStorage().root,
+                    accessMode: requiredAccess == .read
+                        ? .readOnly
+                        : .readWrite,
+                    exposesPhysicalMaintenance:
+                        requiredAccess.contains(.administer),
+                    operation
+                )
             }
         }
     }
@@ -90,6 +80,7 @@ extension DBContainer {
     /// its authorization context for entity and field policies.
     @_spi(DatabaseExecution)
     public func withControlTransaction<Result: Sendable>(
+        requiredAccess: Security.Access,
         authorization: AuthorizationContext,
         configuration: TransactionConfiguration = .default,
         executionDeadline: TransactionExecutionDeadline? = nil,
@@ -102,23 +93,81 @@ extension DBContainer {
             clock: monotonicClock,
             executionDeadline: executionDeadline
         ) { storageAccess in
-            let transaction = DatabaseTransaction(
-                storageAccess: storageAccess,
-                container: self
-            )
             return try await RequestAuthorization.$context.withValue(
                 authorization
             ) {
-                do {
-                    let result = try await operation(transaction)
-                    try await transaction.prepareForCommit()
-                    return result
-                } catch {
-                    await transaction.invalidate()
-                    throw error
-                }
+                try await self.withRootScopedDatabaseTransaction(
+                    storageAccess: storageAccess,
+                    dataRoot: self.databaseRoot,
+                    accessMode: requiredAccess == .read
+                        ? .readOnly
+                        : .readWrite,
+                    exposesPhysicalMaintenance:
+                        requiredAccess.contains(.administer),
+                    operation
+                )
             }
         }
     }
     #endif
+
+    package func withRootScopedDatabaseTransaction<Result: Sendable>(
+        storageAccess: any TransactionAccess,
+        dataRoot: Subspace,
+        accessMode: DatabaseTransactionAccessMode,
+        exposesPhysicalMaintenance: Bool = false,
+        _ operation: @Sendable @escaping (
+            DatabaseTransaction
+        ) async throws -> Result
+    ) async throws -> Result {
+        let operationScope = DatabaseReadScopeGate()
+        let validationScope = DatabaseReadScopeGate()
+        let admittedStorageAccess = DataRootTransactionAccess.admitted(
+            storageAccess,
+            dataRoot: dataRoot,
+            accessMode: accessMode,
+            readScope: operationScope
+        )
+        let validationStorageAccess = DataRootTransactionAccess.admitted(
+            storageAccess,
+            dataRoot: dataRoot,
+            accessMode: .readOnly,
+            readScope: validationScope
+        )
+        let transaction = DatabaseTransaction(
+            storageAccess: admittedStorageAccess,
+            validationStorageAccess: validationStorageAccess,
+            container: self,
+            maintenanceAccess: exposesPhysicalMaintenance
+                ? DatabaseMaintenanceAccess(
+                    compaction: storageAccess.compaction,
+                    operationScope: operationScope
+                )
+                : nil
+        )
+        do {
+            let result = try await operation(transaction)
+            try await operationScope.closeAndWait()
+            admittedStorageAccess.revoke()
+            try await transaction.prepareForCommit()
+            try await validationScope.closeAndWait()
+            validationStorageAccess.revoke()
+            return result
+        } catch {
+            var terminalError: any Error = error
+            for scope in [operationScope, validationScope] {
+                do {
+                    try await scope.closeAndWait()
+                } catch let cleanupError as DatabaseReadScopeCleanupError {
+                    terminalError = cleanupError.preserving(
+                        operationError: terminalError
+                    )
+                }
+            }
+            admittedStorageAccess.revoke()
+            validationStorageAccess.revoke()
+            await transaction.invalidate()
+            throw terminalError
+        }
+    }
 }

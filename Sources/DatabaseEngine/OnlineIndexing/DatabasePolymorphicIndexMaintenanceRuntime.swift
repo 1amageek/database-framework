@@ -321,7 +321,7 @@ public struct DatabasePolymorphicIndexMaintenanceRuntime: Sendable {
         let itemSubspace = target.subspace.subspace(SubspaceKey.items)
         let range = itemSubspace.range()
         let begin = lastProcessedKey.map { $0.appending(0) } ?? range.begin
-        let storage = container.itemStorageFactory.make(
+        let storage = container.itemStorageFactory.makeWriter(
             transaction: transaction,
             blobsSubspace: target.subspace.subspace(SubspaceKey.blobs)
         )

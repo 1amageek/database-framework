@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateBatchedNestedLoopJoinStep(
         pattern: ExecutionTriple,
         leftBindings: borrowing SPARQLRetainedBindings,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression?,
         resultLimit: Int?
@@ -20,22 +20,21 @@ extension SPARQLQueryExecutor {
         var stats = ExecutionStatistics()
         stats.joinStrategies.append(.batchedNestedLoop)
 
-        var scanCache: [
-            ScanSignature: SPARQLSharedBindingSnapshot
-        ] = [:]
+        let scanCache = try SPARQLRetainedScanCache.make(
+            workMeter: try requiredWorkMeter()
+        )
+        defer { scanCache.shutdown() }
 
         for leftIndex in 0..<leftBindings.count {
             try requiredWorkMeter().consume(at: .bindingCandidate)
             try await leftBindings.withElement(at: leftIndex) { binding in
                 let substituted = pattern.substitute(binding)
-                let signature = makeScanSignature(
+                let matches: SPARQLRetainedBindings
+                if let cachedMatches = try scanCache.value(
                     for: substituted,
                     graphTarget: activeGraph.graphTarget
-                )
-
-                let matches: SPARQLRetainedBindings
-                if let cachedMatches = scanCache[signature] {
-                    matches = cachedMatches.retainedBindings()
+                ) {
+                    matches = cachedMatches
                 } else {
                     let scannedMatches = try await executePattern(
                         substituted,
@@ -50,7 +49,11 @@ extension SPARQLQueryExecutor {
                     ).sharingForFanOut(
                         at: .joinCandidate
                     )
-                    scanCache[signature] = sharedOwnership.snapshot
+                    try scanCache.store(
+                        sharedOwnership.snapshot,
+                        for: substituted,
+                        graphTarget: activeGraph.graphTarget
+                    )
                     matches = consume sharedOwnership.retained
                 }
 

@@ -36,7 +36,10 @@ package final class QueryStatisticsService: StatisticsProvider, Sendable {
 
     // MARK: - Properties
 
-    /// FDB Container for database access
+    /// Caller-owned execution context for admitted statistics attempts.
+    private let context: DatabaseContext
+
+    /// Container for immutable runtime metadata and clocks.
     private let container: DBContainer
 
     /// Persistent storage
@@ -129,16 +132,17 @@ package final class QueryStatisticsService: StatisticsProvider, Sendable {
     /// Creates a query statistics service.
     ///
     /// - Parameters:
-    ///   - container: DBContainer for database access
+    ///   - context: Database context that owns authorization and data-root admission
     ///   - subspace: Root subspace for storage
     ///   - configuration: Optional configuration
     public init(
-        container: DBContainer,
+        context: DatabaseContext,
         subspace: Subspace,
         configuration: Configuration = .default
     ) {
-        self.container = container
-        self.storage = StatisticsStorage(container: container, subspace: subspace)
+        self.context = context
+        self.container = context.container
+        self.storage = StatisticsStorage(context: context, subspace: subspace)
         self.cache = Mutex(Cache())
         self.heuristics = HeuristicStatisticsProvider()
         self.configuration = configuration
@@ -333,9 +337,9 @@ package final class QueryStatisticsService: StatisticsProvider, Sendable {
     ///   - store: DataStore for accessing entities
     ///   - sampleRate: Sample rate (0.0-1.0), nil uses default
     ///   - fields: Specific fields to collect (nil for all)
-    public func collectStatistics<T: Persistable, Store: DataStore>(
+    package func collectStatistics<T: Persistable>(
         for type: T.Type,
-        using store: Store,
+        using store: DatabaseDataStore,
         sampleRate: Double? = nil,
         fields: [String]? = nil
     ) async throws {
@@ -377,7 +381,12 @@ package final class QueryStatisticsService: StatisticsProvider, Sendable {
         var totalCount: Int64 = 0
         var totalSize: Int64 = 0
 
-        let items = try await store.fetchAll(type)
+        let items = try await context.withReadStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
+            try await store.fetchAll(type, transaction: transaction)
+        }
         for item in items {
             totalCount += 1
 
@@ -551,9 +560,9 @@ package final class QueryStatisticsService: StatisticsProvider, Sendable {
             )
         )
 
-        let cardinality = try await container.transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: container.monotonicClock
+        let cardinality = try await context.withReadStorageAccess(
+            requiredAccess: .administer,
+            configuration: .batch
         ) { transaction in
             var entryCount: Int64 = 0
             var hll = HyperLogLog()

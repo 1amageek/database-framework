@@ -8,7 +8,7 @@ struct PersistablePreparedDelete: Sendable {
     let persistedModel: PersistedModel
     let identifier: Tuple
     let key: ByteString
-    let storage: ItemStorage
+    let storage: ItemStorageWriter
     let runtime: EntityRuntimeRegistration
     let transientReservation: DatabaseIntermediateReservation?
 }

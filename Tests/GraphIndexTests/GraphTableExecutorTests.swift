@@ -118,7 +118,7 @@ struct GraphTableExecutorTests {
 
         // Create GRAPH_TABLE source
         let source = GraphTableSource(
-            graphName: "SocialGraph",
+            graphName: "social_executor_index",
             matchPattern: MatchPattern(paths: [
                 PathPattern(elements: [
                     .node(NodePattern(variable: "a")),
@@ -150,7 +150,7 @@ struct GraphTableExecutorTests {
 
         // GRAPH_TABLE with property filter
         let source = GraphTableSource(
-            graphName: "SocialGraph",
+            graphName: "social_executor_index",
             matchPattern: MatchPattern(paths: [
                 PathPattern(elements: [
                     .node(NodePattern(variable: "a")),
@@ -188,7 +188,7 @@ struct GraphTableExecutorTests {
 
         // GRAPH_TABLE with range filter
         let source = GraphTableSource(
-            graphName: "SocialGraph",
+            graphName: "social_executor_index",
             matchPattern: MatchPattern(paths: [
                 PathPattern(elements: [
                     .node(NodePattern(variable: "a")),
@@ -228,7 +228,7 @@ struct GraphTableExecutorTests {
 
         // Multiple filters (AND)
         let source = GraphTableSource(
-            graphName: "SocialGraph",
+            graphName: "social_executor_index",
             matchPattern: MatchPattern(paths: [
                 PathPattern(elements: [
                     .node(NodePattern(variable: "a")),
@@ -260,7 +260,7 @@ struct GraphTableExecutorTests {
 
         // Complex expression (subquery)
         let source = GraphTableSource(
-            graphName: "SocialGraph",
+            graphName: "social_executor_index",
             matchPattern: MatchPattern(paths: [
                 PathPattern(elements: [
                     .node(NodePattern(variable: "a")),
@@ -362,7 +362,7 @@ struct GraphTableExecutorTests {
         try await context.save()
 
         let source = GraphTableSource(
-            graphName: "SocialGraph",
+            graphName: "social_executor_index",
             matchPattern: MatchPattern(paths: [
                 PathPattern(elements: [
                     .node(NodePattern(variable: "a")),
@@ -400,7 +400,7 @@ struct GraphTableExecutorTests {
 
         // Filter to only 2020 (1 edge out of 9)
         let source = GraphTableSource(
-            graphName: "SocialGraph",
+            graphName: "social_executor_index",
             matchPattern: MatchPattern(paths: [
                 PathPattern(elements: [
                     .node(NodePattern(variable: "a")),

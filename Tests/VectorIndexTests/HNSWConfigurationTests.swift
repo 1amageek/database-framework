@@ -869,7 +869,7 @@ struct HNSWBasicBehaviorTests {
                 queryVector: [1, 0, 0, 0],
                 k: 1,
                 predicate: { _ in true },
-                fetchItem: { primaryKey, _ in
+                fetchItem: { primaryKey in
                     let id = try decodePrimaryKeyString(
                         try primaryKey.elements()
                     )

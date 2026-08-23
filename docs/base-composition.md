@@ -1,8 +1,6 @@
 # Base and Composition
 
 Status: implemented behind the non-default `MultiBase` SwiftPM trait.
-The P0/P1 responsibility-boundary changes described here have not yet received
-the separately authorized build and behavioral verification pass.
 
 The package ownership, runtime state, Wire contract, transaction boundaries,
 implementation order, and verification gates are defined in

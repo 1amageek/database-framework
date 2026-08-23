@@ -44,7 +44,9 @@ public struct BitmapEntryPoint<T: Persistable>: Sendable {
     ///
     /// - Parameter field: Compiled identity of the indexed field
     /// - Returns: Bitmap query builder
-    public func field<Value>(_ field: Field<T, Value>) -> BitmapQueryBuilder<T> {
+    public func field<Value: FieldValueRepresentable>(
+        _ field: Field<T, Value>
+    ) -> BitmapQueryBuilder<T, Value> {
         BitmapQueryBuilder(
             queryContext: queryContext,
             fieldName: field.name
@@ -57,14 +59,17 @@ public struct BitmapEntryPoint<T: Persistable>: Sendable {
 /// Builder for bitmap index queries
 ///
 /// Supports efficient set operations on low-cardinality fields.
-public struct BitmapQueryBuilder<T: Persistable>: Sendable {
+public struct BitmapQueryBuilder<
+    T: Persistable,
+    Value: FieldValueRepresentable
+>: Sendable {
     // MARK: - Types
 
     /// Query operation type
     public enum Operation: Sendable {
-        case equals(any TupleElement & Sendable)
-        case `in`([any TupleElement & Sendable])
-        case and([[any TupleElement & Sendable]])
+        case equals(FieldValue)
+        case `in`([FieldValue])
+        case and([[FieldValue]])
     }
 
     // MARK: - Properties
@@ -93,15 +98,9 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Parameter value: The value to match
     /// - Returns: Updated query builder
-    public func equals(_ value: some TupleElement & Sendable) -> Self {
+    public func equals(_ value: Value) -> Self {
         var copy = self
-        copy.operation = .equals(value)
-        return copy
-    }
-
-    internal func equalsAny(_ value: any TupleElement & Sendable) -> Self {
-        var copy = self
-        copy.operation = .equals(value)
+        copy.operation = .equals(value.fieldValue)
         return copy
     }
 
@@ -109,15 +108,9 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Parameter values: Values to match
     /// - Returns: Updated query builder
-    public func `in`(_ values: [some TupleElement & Sendable]) -> Self {
+    public func `in`(_ values: [Value]) -> Self {
         var copy = self
-        copy.operation = .in(values)
-        return copy
-    }
-
-    internal func inAny(_ values: [any TupleElement & Sendable]) -> Self {
-        var copy = self
-        copy.operation = .in(values)
+        copy.operation = .in(values.map(\.fieldValue))
         return copy
     }
 
@@ -127,15 +120,11 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Parameter valueSets: Array of value arrays to AND together
     /// - Returns: Updated query builder
-    public func all(_ valueSets: [[some TupleElement & Sendable]]) -> Self {
+    public func all(_ valueSets: [[Value]]) -> Self {
         var copy = self
-        copy.operation = .and(valueSets)
-        return copy
-    }
-
-    internal func allAny(_ valueSets: [[any TupleElement & Sendable]]) -> Self {
-        var copy = self
-        copy.operation = .and(valueSets)
+        copy.operation = .and(
+            valueSets.map { $0.map(\.fieldValue) }
+        )
         return copy
     }
 
@@ -172,6 +161,16 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         let indexName = try resolveIndexName()
         return try await withResolvedBitmap(
             configuration: configuration,
+            authorization: IndexReadAuthorization(
+                limit: try limitCount.map {
+                    guard let value = Int(exactly: $0) else {
+                        throw BitmapQueryError.invalidLimit($0)
+                    }
+                    return value
+                },
+                offset: nil,
+                orderBy: nil
+            ),
             missing: { [] }
         ) { bitmap, maintainer, transaction in
             var resultBitmap = bitmap
@@ -190,8 +189,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             )
             let items = try await self.queryContext.fetchItemsPreservingOrder(
                 ids: primaryKeys,
-                type: T.self,
-                transaction: transaction
+                type: T.self
             )
             var results: [T] = []
             results.reserveCapacity(items.count)
@@ -222,6 +220,11 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ) async throws -> Int {
         return try await withResolvedBitmap(
             configuration: configuration,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            ),
             missing: { 0 }
         ) { bitmap, _, _ in
             bitmap.cardinality
@@ -240,6 +243,11 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ) async throws -> RoaringBitmap {
         return try await withResolvedBitmap(
             configuration: configuration,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            ),
             missing: { RoaringBitmap() }
         ) { bitmap, _, _ in
             bitmap
@@ -254,8 +262,13 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     /// `execute()`, `count()`, and `getBitmap()`.
     private func withResolvedBitmap<R: Sendable>(
         configuration: TransactionConfiguration,
+        authorization: IndexReadAuthorization,
         missing: @Sendable @escaping () -> R,
-        _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexReader, any TransactionAccess) async throws -> R
+        _ body: @escaping @Sendable (
+            RoaringBitmap,
+            BitmapIndexReader,
+            any TransactionReadAccess
+        ) async throws -> R
     ) async throws -> R {
         guard let op = operation else {
             throw BitmapQueryError.noOperation
@@ -275,6 +288,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             named: indexName,
             indexType: .bitmap,
             for: T.self,
+            authorization: authorization,
             configuration: configuration
         ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -287,14 +301,21 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             let bitmap: RoaringBitmap
             switch op {
             case .equals(let value):
-                bitmap = try await reader.bitmap(for: [value], transaction: transaction)
+                bitmap = try await reader.bitmap(
+                    for: [try value.toTupleElement()],
+                    transaction: transaction
+                )
 
             case .in(let values):
-                let valueSets = values.map { [$0] as [any TupleElement] }
+                let valueSets = try values.map {
+                    [try $0.toTupleElement()] as [any TupleElement]
+                }
                 bitmap = try await reader.union(of: valueSets, transaction: transaction)
 
             case .and(let valueSets):
-                let converted = valueSets.map { $0 as [any TupleElement] }
+                let converted = try valueSets.map {
+                    try FieldValue.toTupleElements($0)
+                }
                 bitmap = try await reader.intersection(of: converted, transaction: transaction)
             }
 
@@ -344,19 +365,15 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         switch operation {
         case .equals(let value):
             parameters[BitmapReadParameter.operation] = .string(BitmapReadParameter.equalsOperation)
-            parameters[BitmapReadParameter.values] = .array([
-                try DatabaseEngine.CanonicalTupleElementCodec.encode(value)
-            ])
+            parameters[BitmapReadParameter.values] = .array([value])
         case .in(let values):
             parameters[BitmapReadParameter.operation] = .string(BitmapReadParameter.inOperation)
-            parameters[BitmapReadParameter.values] = .array(
-                try values.map { try DatabaseEngine.CanonicalTupleElementCodec.encode($0) }
-            )
+            parameters[BitmapReadParameter.values] = .array(values)
         case .and(let valueSets):
             parameters[BitmapReadParameter.operation] = .string(BitmapReadParameter.andOperation)
             parameters[BitmapReadParameter.valueSets] = .array(
-                try valueSets.map { valueSet in
-                    .array(try valueSet.map { try DatabaseEngine.CanonicalTupleElementCodec.encode($0) })
+                valueSets.map { valueSet in
+                    .array(valueSet)
                 }
             )
         }
@@ -423,6 +440,9 @@ public enum BitmapQueryError: Error, CustomStringConvertible {
     /// More than one bitmap index targets the requested field.
     case ambiguousIndexes(entity: String, field: String)
 
+    /// The requested query limit cannot be represented by this runtime.
+    case invalidLimit(UInt64)
+
     /// An index entry references an entity that is not present in storage.
     case indexedItemMissing(index: String, primaryKey: ByteString)
 
@@ -436,6 +456,8 @@ public enum BitmapQueryError: Error, CustomStringConvertible {
             return "Bitmap index definition is invalid: \(name)"
         case .ambiguousIndexes(let entity, let field):
             return "Multiple bitmap indexes target \(entity).\(field)"
+        case .invalidLimit(let limit):
+            return "Bitmap query limit exceeds the runtime range: \(limit)"
         case .indexedItemMissing(let index, let primaryKey):
             return "Bitmap index '\(index)' references missing item \(primaryKey)"
         }

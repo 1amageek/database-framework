@@ -1,16 +1,16 @@
 import DatabaseKit
 import StorageKit
 
-/// Transaction and namespace selected for one database execution path.
+/// Non-authoritative identity of the storage root selected for one database
+/// execution path.
 ///
 /// The lightweight runtime resolves directly to its one injected engine. The
 /// `MultiBase` runtime resolves the operation-bound Base lease. This value
-/// does not perform authorization; persisted Grant evaluation remains in the
-/// optional Base transaction path.
+/// intentionally contains no engine or transaction executor: retaining
+/// metadata must never retain storage authority beyond the operation that
+/// admitted it.
 @_spi(DatabaseExecution)
-public struct DatabaseExecutionStorage: Sendable {
-    public let engine: any StorageEngine
-    public let transactionExecutor: StorageTransactionExecutor
+public struct DatabaseExecutionStorage: Sendable, Equatable {
     public let root: Subspace
     #if DATABASE_MULTI_BASE
     public let resource: Security.Resource
@@ -20,15 +20,11 @@ public struct DatabaseExecutionStorage: Sendable {
 
     #if DATABASE_MULTI_BASE
     package init(
-        engine: any StorageEngine,
-        transactionExecutor: StorageTransactionExecutor,
         root: Subspace,
         resource: Security.Resource,
         generation: UInt64,
         domainIdentifier: String
     ) {
-        self.engine = engine
-        self.transactionExecutor = transactionExecutor
         self.root = root
         self.resource = resource
         self.generation = generation
@@ -36,14 +32,10 @@ public struct DatabaseExecutionStorage: Sendable {
     }
     #else
     package init(
-        engine: any StorageEngine,
-        transactionExecutor: StorageTransactionExecutor,
         root: Subspace,
         generation: UInt64,
         domainIdentifier: String
     ) {
-        self.engine = engine
-        self.transactionExecutor = transactionExecutor
         self.root = root
         self.generation = generation
         self.domainIdentifier = domainIdentifier

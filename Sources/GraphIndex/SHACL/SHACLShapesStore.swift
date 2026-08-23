@@ -6,6 +6,7 @@
 // Reference: W3C SHACL §2.1 (Shapes Graph)
 // https://www.w3.org/TR/shacl/#shapes-graph
 
+import DatabaseEngine
 import StorageKit
 import DatabaseKit
 import DatabaseTypes
@@ -17,6 +18,11 @@ import DatabaseTypes
 /// ```
 ///
 struct SHACLShapesStore: Sendable {
+
+    struct RetainedGraph: Sendable {
+        let graph: SHACLShapesGraph
+        let reservation: DatabaseIntermediateReservation
+    }
 
     /// Subspace key for shapes graph entries
     private enum SubspaceKey: Int, Sendable {
@@ -68,13 +74,56 @@ struct SHACLShapesStore: Sendable {
     /// - Returns: The shapes graph, or nil if not found
     func get(
         iri: String,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> SHACLShapesGraph? {
         let key = graphKey(iri)
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
             return nil
         }
         return try SHACLShapesGraphStorageFormat.decode(data)
+    }
+
+    /// Reads and decodes one validation input only after its peak materialized
+    /// footprint has been admitted to the request budget.
+    func getRetained(
+        iri: String,
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> RetainedGraph? {
+        try workMeter.consume(at: .storageRow)
+        let key = graphKey(iri)
+        guard var source = try await transaction.getValue(
+            for: key,
+            snapshot: true
+        ) else {
+            return nil
+        }
+        let admittedByteCount = try SHACLShapesGraphStorageFormat
+            .validationDecodeAdmissionByteCount(
+                encodedByteCount: source.count
+            )
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: admittedByteCount,
+            at: .storageRow
+        )
+        do {
+            // Backend range owners do not expose a portable retained size.
+            // Detach inside the already-admitted overlap before decoding.
+            let frame = source.detached()
+            source = ByteString()
+            let graph = try SHACLShapesGraphStorageFormat.decode(frame)
+            // Keep the conservative decode admission for the complete graph
+            // lifetime. A re-encoded frame does not measure nested collection
+            // capacity, enum boxes, or allocator overhead and therefore cannot
+            // justify shrinking the retained reservation.
+            return RetainedGraph(
+                graph: graph,
+                reservation: reservation
+            )
+        } catch {
+            reservation.release()
+            throw error
+        }
     }
 
     // MARK: - List
@@ -84,7 +133,7 @@ struct SHACLShapesStore: Sendable {
     /// - Parameter transaction: The FDB transaction
     /// - Returns: Array of shapes graph IRIs
     func listGraphIRIs(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [String] {
         let (beginKey, endKey) = graphsSubspace.range()
         let stream = try await TransactionRangeCollection.collect(using: transaction,

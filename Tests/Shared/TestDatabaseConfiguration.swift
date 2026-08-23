@@ -253,15 +253,15 @@ extension DBContainer {
     /// catalog and persisted Grants, then rebuilds the fixture's index state.
     /// Test suites that reuse one backend call this between serialized cases.
     public func resetTestBaseData() async throws {
-        try await withTestBaseOperation {
+        try await testBaseContext().withTransaction { transaction in
             let storage = try self.executionStorage()
             let dataRoot = storage.root.subspace("data")
-            try await storage.engine.withTransaction { transaction in
-                try transaction.clearRange(
-                    beginKey: dataRoot.range().begin,
-                    endKey: dataRoot.range().end
-                )
-            }
+            try transaction.storageAccess.clearRange(
+                beginKey: dataRoot.range().begin,
+                endKey: dataRoot.range().end
+            )
+        }
+        try await withTestBaseOperation {
             try await self.ensureIndexesReady()
         }
     }
@@ -282,6 +282,27 @@ extension DBContainer {
     ) async throws -> Result {
         try await testBaseContext().withTransaction { transaction in
             try await operation(transaction.storageAccess)
+        }
+    }
+
+    /// Runs a low-level storage assertion through the migration-maintenance
+    /// admission path. Use this only to inspect durable state while ordinary
+    /// data operations are intentionally blocked by an incomplete migration.
+    public func withTestBaseMigrationMaintenanceTransaction<Result: Sendable>(
+        _ operation: @Sendable @escaping (
+            any TransactionAccess
+        ) async throws -> Result
+    ) async throws -> Result {
+        try await withMigrationMaintenanceAccess {
+            try await self.withTestBaseTransaction(operation)
+        }
+    }
+
+    /// Returns the root retained by the explicit test Base lease without
+    /// exposing production execution-storage SPI to individual test targets.
+    public func testBaseDataRoot() async throws -> Subspace {
+        try await withTestBaseOperation {
+            try self.executionStorage().root
         }
     }
 

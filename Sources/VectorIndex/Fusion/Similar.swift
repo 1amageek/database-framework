@@ -4,9 +4,21 @@
 // This file is part of VectorIndex module, not DatabaseEngine.
 // DatabaseEngine does not own vector index execution.
 
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
+import StorageKit
+
+private struct RetainedVectorMatch<Item: Persistable>: Sendable {
+    let item: Item
+    let distance: Double
+    let reservation: DatabaseIntermediateReservation
+}
+
+private struct RetainedVectorMatchBatch<Item: Persistable>: Sendable {
+    let elements: [RetainedVectorMatch<Item>]
+    let arrayReservation: DatabaseIntermediateReservation
+}
 
 /// Vector similarity search query for Fusion
 ///
@@ -25,7 +37,7 @@ import DatabaseTypes
 public struct Similar<T: Persistable>: FusionQuery, Sendable {
     public typealias Item = T
 
-    private let queryContext: IndexQueryContext
+    private let queryContext: IndexQueryContext!
     private let fieldIdentity: FieldIdentity
     private let fieldName: String
     private let dimensions: Int
@@ -52,9 +64,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// }
     /// ```
     public init(_ field: Field<T, Vector>, dimensions: Int) {
-        guard let context = FusionContext.current else {
-            fatalError("Similar must be used within context.fuse { } block")
-        }
+        let context = FusionContext.current
         self.fieldIdentity = field.identity
         self.fieldName = field.name
         self.dimensions = dimensions
@@ -67,9 +77,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     ///   - field: Compiled optional vector field metadata
     ///   - dimensions: Number of dimensions in the vectors
     public init(_ field: Field<T, Vector?>, dimensions: Int) {
-        guard let context = FusionContext.current else {
-            fatalError("Similar must be used within context.fuse { } block")
-        }
+        let context = FusionContext.current
         self.fieldIdentity = field.identity
         self.fieldName = field.name
         self.dimensions = dimensions
@@ -171,7 +179,44 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - FusionQuery
 
-    public func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
+    public var fusionQueryPlan: FusionQueryPlan<T> {
+        guard let queryContext else {
+            return FusionQueryPlan(
+                configurationError: .invalidConfiguration(
+                    "Similar requires an IndexQueryContext or context.fuse"
+                )
+            )
+        }
+        return FusionQueryPlan(
+            context: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: k,
+                offset: nil,
+                orderBy: ["distance"]
+            ),
+            indexDescriptor: {
+                guard let descriptor = try self.findIndexDescriptor() else {
+                    throw FusionQueryError.indexNotFound(
+                        entity: T.persistableType,
+                        field: self.fieldName,
+                        indexType: .vector
+                    )
+                }
+                return descriptor
+            },
+            operation: { [self] candidates, execution in
+                try await executeBound(
+                    candidates: candidates,
+                    execution: execution
+                )
+            }
+        )
+    }
+
+    private func executeBound(
+        candidates: Set<T.ID>?,
+        execution: ReadExecutionContext
+    ) async throws -> FusionQueryResult<T> {
         guard dimensions > 0 else {
             throw FusionQueryError.invalidConfiguration(
                 "Vector dimensions must be positive"
@@ -222,29 +267,24 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
 
         let indexName = descriptor.name
 
-        // Execute search with candidate-aware strategy
-        let searchResults: [(item: T, distance: Double)]
-
         if let candidateIDs = candidates {
             guard !candidateIDs.isEmpty else {
-                return []
+                return try FusionQueryResultBuilder<T>(
+                    execution: execution
+                ).finish()
             }
-            searchResults = try await executeWithCandidates(
+            return try await executeWithCandidates(
                 queryVector: vector,
-                candidateIDs: candidateIDs
-            )
-        } else {
-            // No candidates - standard kNN search via index
-            searchResults = try await executeVectorSearch(
-                indexName: indexName,
-                queryVector: vector,
-                k: k
+                candidateIDs: candidateIDs,
+                execution: execution
             )
         }
-
-        // Convert distance to score using min-max normalization
-        // This handles both positive distances (euclidean, cosine) and negative distances (dotProduct)
-        return try normalizeDistancesToScores(searchResults)
+        return try await executeVectorSearch(
+            indexName: indexName,
+            queryVector: vector,
+            k: k,
+            execution: execution
+        )
     }
 
     // MARK: - Vector Index Reading
@@ -255,53 +295,67 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     private func executeVectorSearch(
         indexName: String,
         queryVector: Vector,
-        k: Int
-    ) async throws -> [(item: T, distance: Double)] {
+        k: Int,
+        execution: ReadExecutionContext
+    ) async throws -> FusionQueryResult<T> {
         let builder = VectorQueryBuilder<T>(
             queryContext: queryContext,
             fieldName: fieldName,
             dimensions: dimensions,
             selectedIndexName: indexName
         ).metric(metric)
-        return try await builder
+        let query = try builder
             .query(queryVector, k: k)
-            .executeDirect()
-    }
-
-    /// Normalize distances to scores [0, 1] where higher is better
-    ///
-    /// Handles all distance metrics correctly:
-    /// - Euclidean/Cosine: distances are positive, smaller = better
-    /// - DotProduct: distances are negative (computed as -dot), smaller (more negative) = better
-    ///
-    /// Uses min-max normalization: score = (maxDist - distance) / (maxDist - minDist)
-    private func normalizeDistancesToScores(
-        _ results: [(item: T, distance: Double)]
-    ) throws -> [ScoredResult<T>] {
-        guard !results.isEmpty else { return [] }
-
-        let distances = results.map { $0.distance }
-        guard distances.allSatisfy({ $0.isFinite }) else {
-            throw FusionQueryError.invalidConfiguration(
-                "Vector search produced a non-finite distance"
+            .toSelectQuery()
+        let rows = try await queryContext.context
+            .executeRetainedCanonicalQueryRows(
+            query,
+            execution: execution,
+            graphPartitions: queryContext.partitionValues
+        )
+        guard !rows.isEmpty else {
+            return try FusionQueryResultBuilder<T>(
+                execution: execution
+            ).finish()
+        }
+        var minimumDistance = Double.infinity
+        var maximumDistance = -Double.infinity
+        for index in 0..<rows.count {
+            try execution.workMeter.consume(at: .projection)
+            let retainedRow = rows.row(at: index)
+            guard let distance = retainedRow.float64Annotation(
+                named: "distance"
+            ) else {
+                throw CanonicalReadError.missingAnnotation("distance")
+            }
+            guard distance.isFinite else {
+                throw FusionQueryError.invalidConfiguration(
+                    "Vector search produced a non-finite distance"
+                )
+            }
+            minimumDistance = min(minimumDistance, distance)
+            maximumDistance = max(maximumDistance, distance)
+        }
+        let distanceRange = maximumDistance - minimumDistance
+        var output = try FusionQueryResultBuilder<T>(
+            execution: execution,
+            expectedCount: rows.count
+        )
+        for index in 0..<rows.count {
+            let retainedRow = rows.row(at: index)
+            guard let distance = retainedRow.float64Annotation(
+                named: "distance"
+            ) else {
+                throw CanonicalReadError.missingAnnotation("distance")
+            }
+            try output.appendDecodedRow(
+                retainedRow,
+                score: distanceRange == 0
+                    ? 1.0
+                    : (maximumDistance - distance) / distanceRange
             )
         }
-        guard let minDist = distances.min(),
-              let maxDist = distances.max(),
-              maxDist != minDist else {
-            // All distances are the same - assign equal scores
-            return results.map { ScoredResult(item: $0.item, score: 1.0) }
-        }
-
-        // Min-max normalization: smaller distance = higher score
-        // score = (maxDist - distance) / (maxDist - minDist)
-        // When distance = minDist: score = 1.0 (best)
-        // When distance = maxDist: score = 0.0 (worst)
-        let range = maxDist - minDist
-        return results.map { result in
-            let score = (maxDist - result.distance) / range
-            return ScoredResult(item: result.item, score: score)
-        }
+        return try output.finish()
     }
 
     // MARK: - Candidate-Aware Search
@@ -314,42 +368,117 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// models and vector owners are released between batches.
     private func executeWithCandidates(
         queryVector: Vector,
-        candidateIDs: Set<T.ID>
-    ) async throws -> [(item: T, distance: Double)] {
+        candidateIDs: Set<T.ID>,
+        execution: ReadExecutionContext
+    ) async throws -> FusionQueryResult<T> {
         let fetchBatchSize = 128
-        var nearest = MinHeap<(item: T, distance: Double)>(
+        try queryContext.authorizeListAccess(
+            entityName: T.persistableType,
+            authorization: IndexReadAuthorization(
+                limit: candidateIDs.count,
+                offset: nil,
+                orderBy: ["distance"]
+            )
+        )
+        let heapArrayReservation = try execution.workMeter
+            .reserveIntermediate(
+                bytes: try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                    count: min(k, candidateIDs.count),
+                    element: RetainedVectorMatch<T>.self
+                ).bytes,
+                at: .indexScan
+            )
+        defer { heapArrayReservation.release() }
+        var nearest = MinHeap<RetainedVectorMatch<T>>(
             maxSize: k,
             heapType: .max,
-            comparator: { $0.distance > $1.distance }
-        )
-        var identifiers: [T.ID] = []
-        identifiers.reserveCapacity(min(fetchBatchSize, candidateIDs.count))
-
-        for identifier in candidateIDs {
-            identifiers.append(identifier)
-            if identifiers.count == fetchBatchSize {
-                let results = try await computeDistancesForCandidateBatch(
-                    queryVector: queryVector,
-                    identifiers: identifiers
-                )
-                for result in results {
-                    nearest.insert(result)
+            comparator: {
+                if $0.distance == $1.distance {
+                    return $0.item.id.persistableIdentifierValue
+                        > $1.item.id.persistableIdentifierValue
                 }
-                identifiers.removeAll(keepingCapacity: true)
+                return $0.distance > $1.distance
             }
-        }
-
-        if !identifiers.isEmpty {
-            let results = try await computeDistancesForCandidateBatch(
-                queryVector: queryVector,
-                identifiers: identifiers
+        )
+        try execution.workMeter.consume(
+            UInt64(candidateIDs.count),
+            at: .sortInput
+        )
+        let orderedIdentifierReservation = try execution.workMeter
+            .reserveIntermediate(
+                rows: UInt64(candidateIDs.count),
+                bytes: try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                    count: candidateIDs.count,
+                    element: T.ID.self
+                ).bytes,
+                at: .sortInput
             )
-            for result in results {
+        defer { orderedIdentifierReservation.release() }
+        let orderedIdentifiers = candidateIDs.sorted(by: {
+            $0.persistableIdentifierValue < $1.persistableIdentifierValue
+        })
+        var batchStart = orderedIdentifiers.startIndex
+        while batchStart < orderedIdentifiers.endIndex {
+            let batchEnd = min(
+                batchStart + fetchBatchSize,
+                orderedIdentifiers.endIndex
+            )
+            let results = try await computeDistancesForCandidateBatch(
+                    queryVector: queryVector,
+                    identifiers: orderedIdentifiers[batchStart..<batchEnd],
+                    execution: execution
+                )
+            for result in results.elements {
                 nearest.insert(result)
             }
+            batchStart = batchEnd
         }
-
-        return nearest.sorted()
+        guard !nearest.isEmpty else {
+            return try FusionQueryResultBuilder<T>(
+                execution: execution
+            ).finish()
+        }
+        let sortedArrayReservation = try execution.workMeter
+            .reserveIntermediate(
+                bytes: try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                    count: nearest.count,
+                    element: RetainedVectorMatch<T>.self
+                ).bytes,
+                at: .sortInput
+            )
+        defer { sortedArrayReservation.release() }
+        try execution.workMeter.consume(
+            UInt64(nearest.count),
+            at: .sortInput
+        )
+        let matches = nearest.sorted()
+        var minimumDistance = Double.infinity
+        var maximumDistance = -Double.infinity
+        for match in matches {
+            guard match.distance.isFinite else {
+                throw FusionQueryError.invalidConfiguration(
+                    "Vector search produced a non-finite distance"
+                )
+            }
+            minimumDistance = min(minimumDistance, match.distance)
+            maximumDistance = max(maximumDistance, match.distance)
+        }
+        let distanceRange = maximumDistance - minimumDistance
+        var output = try FusionQueryResultBuilder<T>(
+            execution: execution,
+            expectedCount: matches.count
+        )
+        for match in matches {
+            try output.append(
+                ScoredResult(
+                    item: match.item,
+                    score: distanceRange == 0
+                        ? 1.0
+                        : (maximumDistance - match.distance) / distanceRange
+                )
+            )
+        }
+        return try output.finish()
     }
 
     /// Computes one bounded candidate batch. The returned array cannot exceed
@@ -357,17 +486,59 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// next batch is loaded.
     private func computeDistancesForCandidateBatch(
         queryVector: Vector,
-        identifiers: [T.ID]
-    ) async throws -> [(item: T, distance: Double)] {
-        let items = try await queryContext.fetchItems(
-            identifiers: identifiers,
-            type: T.self
-        )
-
-        var results: [(item: T, distance: Double)] = []
-        results.reserveCapacity(items.count)
-
-        for item in items {
+        identifiers: ArraySlice<T.ID>,
+        execution: ReadExecutionContext
+    ) async throws -> RetainedVectorMatchBatch<T> {
+        let tupleArrayReservation = try execution.workMeter
+            .reserveIntermediate(
+                rows: UInt64(identifiers.count),
+                bytes: try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                    count: identifiers.count,
+                    element: Tuple.self
+                ).bytes,
+                at: .storageRow
+            )
+        defer { tupleArrayReservation.release() }
+        var primaryKeys: [Tuple] = []
+        primaryKeys.reserveCapacity(identifiers.count)
+        for identifier in identifiers {
+            let primaryKey = try PersistableIdentifierKeyCodec.tuple(
+                for: identifier
+            )
+            try tupleArrayReservation.reserveAdditional(
+                bytes: UInt64(primaryKey.pack().count),
+                at: .storageRow
+            )
+            primaryKeys.append(primaryKey)
+        }
+        guard let entity = queryContext.schema.entity(
+            named: T.persistableType
+        ) else {
+            throw FusionQueryError.invalidConfiguration(
+                "Entity '\(T.persistableType)' is not present in the active schema"
+            )
+        }
+        let models = try await queryContext.context
+            .fetchPersistedModelsPreservingOrder(
+                entity: entity,
+                primaryKeys: primaryKeys,
+                partitions: queryContext.partitionValues,
+                workMeter: execution.workMeter
+            )
+        let resultArrayReservation = try execution.workMeter
+            .reserveIntermediate(
+                bytes: try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                    count: models.count,
+                    element: RetainedVectorMatch<T>.self
+                ).bytes,
+                at: .indexScan
+            )
+        var results: [RetainedVectorMatch<T>] = []
+        results.reserveCapacity(models.count)
+        for model in models {
+            guard let model else { continue }
+            let item = try model.decode(as: T.self)
+            try execution.workMeter.consume(at: .filterEvaluation)
             guard let vector = try float32Vector(from: item) else {
                 continue
             }
@@ -383,9 +554,28 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
                 from: queryVector,
                 to: vector
             )
-            results.append((item: item, distance: distance))
+            let footprint = try CanonicalRelationalFootprintMeter.footprint(
+                of: item,
+                annotations: ["distance": .float64(distance)],
+                workMeter: execution.workMeter
+            )
+            let itemReservation = try execution.workMeter.reserveIntermediate(
+                rows: footprint.rows,
+                bytes: footprint.bytes,
+                at: .indexScan
+            )
+            results.append(
+                RetainedVectorMatch(
+                    item: item,
+                    distance: distance,
+                    reservation: itemReservation
+                )
+            )
         }
-        return results
+        return RetainedVectorMatchBatch(
+            elements: results,
+            arrayReservation: resultArrayReservation
+        )
     }
 
     private func float32Vector(from item: borrowing T) throws -> Vector? {

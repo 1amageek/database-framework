@@ -8,11 +8,22 @@ public struct ItemStorageFactory: Sendable {
         self.configuration = configuration
     }
 
-    public func make(
+    public func makeWriter(
         transaction: any TransactionAccess,
         blobsSubspace: Subspace
-    ) -> ItemStorage {
-        ItemStorage(
+    ) -> ItemStorageWriter {
+        ItemStorageWriter(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace,
+            configuration: configuration
+        )
+    }
+
+    public func makeReader(
+        transaction: any TransactionReadAccess,
+        blobsSubspace: Subspace
+    ) -> ItemStorageReader {
+        ItemStorageReader(
             transaction: transaction,
             blobsSubspace: blobsSubspace,
             configuration: configuration

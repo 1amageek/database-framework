@@ -29,7 +29,7 @@ extension DBContainer {
     public func executionWithBaseLease<Result: Sendable>(
         _ lease: DatabaseBaseLease,
         _ operation: @Sendable () async throws -> Result
-    ) async rethrows -> Result {
+    ) async throws -> Result {
         try await withBaseLease(lease, operation)
     }
 

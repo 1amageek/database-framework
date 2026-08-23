@@ -65,19 +65,46 @@ public struct OntologyContextAPI: Sendable {
 
     // MARK: - Store Access
 
-    /// Get the ontology store for performing operations
-    private func withStore<Result: Sendable>(
-        _ operation: @Sendable @escaping (OntologyStore) async throws -> Result
+    package static let storagePath = [
+        "database-framework",
+        "ontology-index",
+    ]
+
+    /// Executes an ontology read with access confined to its owned namespace.
+    private func withReadStore<Result: Sendable>(
+        _ operation: @Sendable @escaping (
+            OntologyStore,
+            any IndexReadAccess
+        ) async throws -> Result
     ) async throws -> Result {
-        try await context.withDataOperation {
-            let root = try context.operationDataRoot()
-                .subspace("data")
-                .subspace("database-framework")
-                .subspace("ontology-index")
-            return try await operation(
+        try await context.indexQueryContext.withAuxiliaryReadStorage(
+            path: Self.storagePath
+        ) { root, transaction in
+            try await operation(
                 OntologyStore(
                     subspace: OntologySubspace(base: root)
-                )
+                ),
+                transaction
+            )
+        }
+    }
+
+    /// Executes an ontology mutation with access confined to its owned namespace.
+    private func withWriteStore<Result: Sendable>(
+        _ operation: @Sendable @escaping (
+            OntologyStore,
+            any IndexMaintenanceTransactionAccess
+        ) async throws -> Result
+    ) async throws -> Result {
+        try await context.indexQueryContext.withAuxiliaryWriteStorage(
+            path: Self.storagePath,
+            requiredAccess: .write
+        ) { root, transaction in
+            try await operation(
+                OntologyStore(
+                    subspace: OntologySubspace(base: root)
+                ),
+                transaction
             )
         }
     }
@@ -109,15 +136,13 @@ public struct OntologyContextAPI: Sendable {
         _ ontology: OWLOntology,
         at timestamp: Timestamp
     ) async throws {
-        try await withStore { store in
-            try await context.indexQueryContext.withWriteTransaction { transaction in
-                // loadOntology is idempotent — it clears existing data internally
-                try await store.loadOntology(
-                    ontology,
-                    at: timestamp,
-                    transaction: transaction
-                )
-            }
+        try await withWriteStore { store, transaction in
+            // loadOntology is idempotent — it clears existing data internally
+            try await store.loadOntology(
+                ontology,
+                at: timestamp,
+                transaction: transaction
+            )
         }
     }
 
@@ -131,15 +156,13 @@ public struct OntologyContextAPI: Sendable {
         _ ontologies: [OWLOntology],
         at timestamp: Timestamp
     ) async throws {
-        try await withStore { store in
-            try await context.indexQueryContext.withWriteTransaction { transaction in
-                for ontology in ontologies {
-                    try await store.loadOntology(
-                        ontology,
-                        at: timestamp,
-                        transaction: transaction
-                    )
-                }
+        try await withWriteStore { store, transaction in
+            for ontology in ontologies {
+                try await store.loadOntology(
+                    ontology,
+                    at: timestamp,
+                    transaction: transaction
+                )
             }
         }
     }
@@ -155,10 +178,8 @@ public struct OntologyContextAPI: Sendable {
     /// properties, and axioms. For simple queries, consider using the
     /// individual store methods directly.
     public func get(iri: String) async throws -> OWLOntology? {
-        try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
-                try await store.reconstruct(iri: iri, transaction: transaction)
-            }
+        try await withReadStore { store, transaction in
+            try await store.reconstruct(iri: iri, transaction: transaction)
         }
     }
 
@@ -167,13 +188,11 @@ public struct OntologyContextAPI: Sendable {
     /// - Parameter iri: The ontology IRI
     /// - Returns: Metadata if found
     public func getMetadata(iri: String) async throws -> OntologyMetadata? {
-        try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
-                try await store.getMetadata(
-                    ontologyIRI: iri,
-                    transaction: transaction
-                )
-            }
+        try await withReadStore { store, transaction in
+            try await store.getMetadata(
+                ontologyIRI: iri,
+                transaction: transaction
+            )
         }
     }
 
@@ -183,10 +202,8 @@ public struct OntologyContextAPI: Sendable {
     ///
     /// - Returns: Array of ontology IRIs
     public func list() async throws -> [String] {
-        try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
-                try await store.listOntologies(transaction: transaction)
-            }
+        try await withReadStore { store, transaction in
+            try await store.listOntologies(transaction: transaction)
         }
     }
 
@@ -207,10 +224,8 @@ public struct OntologyContextAPI: Sendable {
     ///
     /// - Parameter iri: The ontology IRI to delete
     public func delete(iri: String) async throws {
-        try await withStore { store in
-            try await context.indexQueryContext.withWriteTransaction { transaction in
-                try store.deleteOntology(iri, transaction: transaction)
-            }
+        try await withWriteStore { store, transaction in
+            try store.deleteOntology(iri, transaction: transaction)
         }
     }
 
@@ -218,10 +233,8 @@ public struct OntologyContextAPI: Sendable {
     ///
     /// **Warning**: This removes all stored ontology data.
     public func deleteAll() async throws {
-        try await withStore { store in
-            try await context.indexQueryContext.withWriteTransaction { transaction in
-                try store.deleteAll(transaction: transaction)
-            }
+        try await withWriteStore { store, transaction in
+            try store.deleteAll(transaction: transaction)
         }
     }
 
@@ -277,14 +290,12 @@ public struct OntologyContextAPI: Sendable {
         of classIRI: String,
         in ontologyIRI: String
     ) async throws -> Set<String> {
-        try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
-                try await store.getSuperClasses(
-                    of: classIRI,
-                    ontologyIRI: ontologyIRI,
-                    transaction: transaction
-                )
-            }
+        try await withReadStore { store, transaction in
+            try await store.getSuperClasses(
+                of: classIRI,
+                ontologyIRI: ontologyIRI,
+                transaction: transaction
+            )
         }
     }
 
@@ -298,14 +309,12 @@ public struct OntologyContextAPI: Sendable {
         of classIRI: String,
         in ontologyIRI: String
     ) async throws -> Set<String> {
-        try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
-                try await store.getSubClasses(
-                    of: classIRI,
-                    ontologyIRI: ontologyIRI,
-                    transaction: transaction
-                )
-            }
+        try await withReadStore { store, transaction in
+            try await store.getSubClasses(
+                of: classIRI,
+                ontologyIRI: ontologyIRI,
+                transaction: transaction
+            )
         }
     }
 
@@ -319,14 +328,12 @@ public struct OntologyContextAPI: Sendable {
         of propertyIRI: String,
         in ontologyIRI: String
     ) async throws -> Set<String> {
-        try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
-                try await store.getSuperProperties(
-                    of: propertyIRI,
-                    ontologyIRI: ontologyIRI,
-                    transaction: transaction
-                )
-            }
+        try await withReadStore { store, transaction in
+            try await store.getSuperProperties(
+                of: propertyIRI,
+                ontologyIRI: ontologyIRI,
+                transaction: transaction
+            )
         }
     }
 
@@ -340,14 +347,12 @@ public struct OntologyContextAPI: Sendable {
         property propertyIRI: String,
         in ontologyIRI: String
     ) async throws -> Bool {
-        try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
-                try await store.isTransitive(
-                    property: propertyIRI,
-                    ontologyIRI: ontologyIRI,
-                    transaction: transaction
-                )
-            }
+        try await withReadStore { store, transaction in
+            try await store.isTransitive(
+                property: propertyIRI,
+                ontologyIRI: ontologyIRI,
+                transaction: transaction
+            )
         }
     }
 
@@ -361,14 +366,12 @@ public struct OntologyContextAPI: Sendable {
         of propertyIRI: String,
         in ontologyIRI: String
     ) async throws -> String? {
-        try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
-                try await store.getInverse(
-                    of: propertyIRI,
-                    ontologyIRI: ontologyIRI,
-                    transaction: transaction
-                )
-            }
+        try await withReadStore { store, transaction in
+            try await store.getInverse(
+                of: propertyIRI,
+                ontologyIRI: ontologyIRI,
+                transaction: transaction
+            )
         }
     }
 
@@ -382,14 +385,12 @@ public struct OntologyContextAPI: Sendable {
         for propertyIRI: String,
         in ontologyIRI: String
     ) async throws -> [[String]] {
-        try await withStore { store in
-            try await context.indexQueryContext.withTransaction { transaction in
-                try await store.getPropertyChains(
-                    for: propertyIRI,
-                    ontologyIRI: ontologyIRI,
-                    transaction: transaction
-                )
-            }
+        try await withReadStore { store, transaction in
+            try await store.getPropertyChains(
+                for: propertyIRI,
+                ontologyIRI: ontologyIRI,
+                transaction: transaction
+            )
         }
     }
 
@@ -415,70 +416,67 @@ public struct OntologyContextAPI: Sendable {
     /// try await context.ontology.validateSchema(schema, ontologyIRI: "http://example.org/onto")
     /// ```
     public func validateSchema(_ schema: Schema, ontologyIRI: String) async throws {
-        let errors: [OntologyValidationError] = try await withStore {
-            ontologyStore in
+        let errors: [OntologyValidationError] = try await withReadStore {
+            ontologyStore, transaction in
             let validator = OntologyIRIValidator(store: ontologyStore)
-            return try await context.indexQueryContext.withTransaction {
-                transaction in
-                var collected: [OntologyValidationError] = []
-                for entity in schema.entities {
-                    guard let binding = entity.ontology else {
-                        continue
-                    }
+            var collected: [OntologyValidationError] = []
+            for entity in schema.entities {
+                guard let binding = entity.ontology else {
+                    continue
+                }
 
-                    let properties: [OWLDataPropertyDescriptor]
-                    switch binding {
-                    case .owlClass(let classIRI, let descriptors):
-                        do {
-                            try await validator.validateClass(
-                                classIRI,
-                                in: ontologyIRI,
-                                transaction: transaction
-                            )
-                        } catch let error as OntologyValidationError {
-                            collected.append(error)
-                        }
-                        properties = descriptors
-                    case .owlObjectProperty(
-                        let propertyIRI,
-                        _,
-                        _,
-                        let descriptors
-                    ):
-                        do {
+                let properties: [OWLDataPropertyDescriptor]
+                switch binding {
+                case .owlClass(let classIRI, let descriptors):
+                    do {
+                        try await validator.validateClass(
+                            classIRI,
+                            in: ontologyIRI,
+                            transaction: transaction
+                        )
+                    } catch let error as OntologyValidationError {
+                        collected.append(error)
+                    }
+                    properties = descriptors
+                case .owlObjectProperty(
+                    let propertyIRI,
+                    _,
+                    _,
+                    let descriptors
+                ):
+                    do {
+                        try await validator.validateObjectProperty(
+                            propertyIRI,
+                            in: ontologyIRI,
+                            transaction: transaction
+                        )
+                    } catch let error as OntologyValidationError {
+                        collected.append(error)
+                    }
+                    properties = descriptors
+                }
+
+                for property in properties {
+                    do {
+                        if property.isObjectProperty {
                             try await validator.validateObjectProperty(
-                                propertyIRI,
+                                property.iri,
                                 in: ontologyIRI,
                                 transaction: transaction
                             )
-                        } catch let error as OntologyValidationError {
-                            collected.append(error)
+                        } else {
+                            try await validator.validateDataProperty(
+                                property.iri,
+                                in: ontologyIRI,
+                                transaction: transaction
+                            )
                         }
-                        properties = descriptors
-                    }
-
-                    for property in properties {
-                        do {
-                            if property.isObjectProperty {
-                                try await validator.validateObjectProperty(
-                                    property.iri,
-                                    in: ontologyIRI,
-                                    transaction: transaction
-                                )
-                            } else {
-                                try await validator.validateDataProperty(
-                                    property.iri,
-                                    in: ontologyIRI,
-                                    transaction: transaction
-                                )
-                            }
-                        } catch let error as OntologyValidationError {
-                            collected.append(error)
-                        }
+                    } catch let error as OntologyValidationError {
+                        collected.append(error)
                     }
                 }
-                return collected
             }
+            return collected
         }
 
         if !errors.isEmpty {

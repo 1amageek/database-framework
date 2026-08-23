@@ -209,14 +209,17 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: PageRankResult with scores for all nodes
     public func compute() async throws -> PageRankResult {
-        return try await queryContext.withTransaction { transaction in
-            guard let resolvedIndex = try await PropertyGraphIndexResolver
-                .resolve(
-                    index,
-                    for: T.self,
-                    in: queryContext,
-                    transaction: transaction
-                ) else {
+        return try await PropertyGraphIndexResolver.withResolved(
+            index,
+            for: T.self,
+            in: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            )
+        ) { resolvedIndex, transaction in
+            guard let resolvedIndex else {
                 return PageRankResult(
                     scores: [:],
                     iterations: 0,
@@ -244,14 +247,17 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
     /// - Parameter startNode: Starting node for personalized PageRank
     /// - Returns: PageRankResult with scores relative to startNode
     public func computePersonalized(from startNode: String) async throws -> PageRankResult {
-        return try await queryContext.withTransaction { transaction in
-            guard let resolvedIndex = try await PropertyGraphIndexResolver
-                .resolve(
-                    index,
-                    for: T.self,
-                    in: queryContext,
-                    transaction: transaction
-                ) else {
+        return try await PropertyGraphIndexResolver.withResolved(
+            index,
+            for: T.self,
+            in: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            )
+        ) { resolvedIndex, transaction in
+            guard let resolvedIndex else {
                 return PageRankResult(
                     scores: [:],
                     iterations: 0,
@@ -365,14 +371,17 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: CommunityResult with node assignments
     public func detect() async throws -> CommunityResult {
-        return try await queryContext.withTransaction { transaction in
-            guard let resolvedIndex = try await PropertyGraphIndexResolver
-                .resolve(
-                    index,
-                    for: T.self,
-                    in: queryContext,
-                    transaction: transaction
-                ) else {
+        return try await PropertyGraphIndexResolver.withResolved(
+            index,
+            for: T.self,
+            in: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            )
+        ) { resolvedIndex, transaction in
+            guard let resolvedIndex else {
                 return CommunityResult(
                     assignments: [:],
                     communities: [:],
@@ -402,14 +411,17 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
     ///   - maxHops: Maximum hops from node to consider
     /// - Returns: Set of node IDs in the same community
     public func detectLocal(for node: String, maxHops: Int = 3) async throws -> Set<String> {
-        let identities = try await queryContext.withTransaction { transaction in
-            guard let resolvedIndex = try await PropertyGraphIndexResolver
-                .resolve(
-                    index,
-                    for: T.self,
-                    in: queryContext,
-                    transaction: transaction
-                ) else {
+        let identities = try await PropertyGraphIndexResolver.withResolved(
+            index,
+            for: T.self,
+            in: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            )
+        ) { resolvedIndex, transaction in
+            guard let resolvedIndex else {
                 return Set<GraphIdentity>()
             }
             let detector = CommunityDetector(

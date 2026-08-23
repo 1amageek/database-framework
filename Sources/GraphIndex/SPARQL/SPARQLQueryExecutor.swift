@@ -23,7 +23,6 @@ public struct SPARQLQueryExecutor: Sendable {
 
     // MARK: - Properties
 
-    let database: any StorageEngine
     let monotonicClock: any StorageMonotonicClock
     let wallClock: any WallClock
     let datasetScanner: any RDFDatasetScanner
@@ -91,9 +90,10 @@ public struct SPARQLQueryExecutor: Sendable {
 
     // MARK: - Initialization
 
-    /// Initialize with an abstract scanner for one logical RDF dataset.
-    public init(
-        database: any StorageEngine,
+    /// Initialize an executor that can only run inside a caller-owned
+    /// transaction. This form prevents query evaluation from opening a second
+    /// storage snapshot or escaping the caller's admitted data root.
+    package init(
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         datasetScanner: any RDFDatasetScanner,
@@ -103,7 +103,6 @@ public struct SPARQLQueryExecutor: Sendable {
         ontologyContext: OntologyContext? = nil,
         propertyPathConfiguration: ExecutionPropertyPathConfiguration = .default
     ) {
-        self.database = database
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
         self.datasetScanner = datasetScanner
@@ -118,9 +117,8 @@ public struct SPARQLQueryExecutor: Sendable {
         self.nestedExpressionStatistics = nil
     }
 
-    /// Initialize with canonical physical RDF dataset sources.
-    public init(
-        database: any StorageEngine,
+    /// Initialize a transaction-bound executor over canonical RDF sources.
+    package init(
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         sources: [RDFDatasetSource],
@@ -131,7 +129,6 @@ public struct SPARQLQueryExecutor: Sendable {
         propertyPathConfiguration: ExecutionPropertyPathConfiguration = .default
     ) {
         self.init(
-            database: database,
             monotonicClock: monotonicClock,
             wallClock: wallClock,
             datasetScanner: IndexedRDFDatasetScanner(sources: sources),

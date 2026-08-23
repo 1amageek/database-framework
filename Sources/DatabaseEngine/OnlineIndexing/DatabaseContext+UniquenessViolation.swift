@@ -40,7 +40,7 @@ extension DatabaseContext {
         indexName: String,
         limit: Int? = nil
     ) async throws -> [UniquenessViolation] {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -84,7 +84,7 @@ extension DatabaseContext {
         limit: Int? = nil,
         partition: DirectoryPath<T>
     ) async throws -> [UniquenessViolation] {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -120,7 +120,7 @@ extension DatabaseContext {
         for type: T.Type,
         indexName: String
     ) async throws -> Bool {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -149,7 +149,7 @@ extension DatabaseContext {
         indexName: String,
         partition: DirectoryPath<T>
     ) async throws -> Bool {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -190,7 +190,7 @@ extension DatabaseContext {
         for type: T.Type,
         indexName: String
     ) async throws -> ViolationSummary {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -219,7 +219,7 @@ extension DatabaseContext {
         indexName: String,
         partition: DirectoryPath<T>
     ) async throws -> ViolationSummary {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -259,7 +259,7 @@ extension DatabaseContext {
         indexName: String,
         valueKey: ByteString
     ) async throws {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -290,7 +290,7 @@ extension DatabaseContext {
         valueKey: ByteString,
         partition: DirectoryPath<T>
     ) async throws {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -318,7 +318,7 @@ extension DatabaseContext {
         for type: T.Type,
         indexName: String
     ) async throws {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -346,7 +346,7 @@ extension DatabaseContext {
         indexName: String,
         partition: DirectoryPath<T>
     ) async throws {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -393,7 +393,7 @@ extension DatabaseContext {
         indexName: String,
         valueKey: ByteString
     ) async throws -> ViolationResolution {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
@@ -428,7 +428,7 @@ extension DatabaseContext {
         valueKey: ByteString,
         partition: DirectoryPath<T>
     ) async throws -> ViolationResolution {
-        try await withStorageAccess(
+        try await withWriteStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in

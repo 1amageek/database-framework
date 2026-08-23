@@ -235,13 +235,13 @@ struct SPARQLFunctionTransactionTests {
             workMeter: workMeter
         )
 
-        let response = try await context.indexQueryContext.withTransaction {
-            transaction in
+        let response = try await context.indexQueryContext.withQuerySnapshot {
+            snapshot in
             let prepared = try await context
                 .prepareSQLSelectForCanonicalExecution(
                     query,
                     workMeter: workMeter,
-                    transaction: transaction,
+                    snapshot: snapshot,
                     structuralLimits: .default
             )
             #expect(workMeter.retainedIntermediateRows > 0)
@@ -259,16 +259,14 @@ struct SPARQLFunctionTransactionTests {
             ) {
                 _ = try await prepared.execute(
                     in: context,
-                    execution: foreignExecution,
-                    transaction: transaction
+                    execution: foreignExecution
                 )
             }
             #expect(workMeter.retainedIntermediateRows > 0)
             #expect(workMeter.retainedIntermediateBytes > 0)
             return try await prepared.execute(
                 in: context,
-                execution: execution,
-                transaction: transaction
+                execution: execution
             )
         }
 

@@ -36,10 +36,45 @@ extension DBContainer {
                 transaction: transaction
             )
             #endif
-            let admittedTransaction = requiredAccess == .read
-                ? ReadAuthorizedTransactionAccess.admitted(transaction)
-                : transaction
-            return try await operation(admittedTransaction)
+            let operationScope = DatabaseReadScopeGate()
+            let admittedTransaction = DataRootTransactionAccess.admitted(
+                transaction,
+                dataRoot: {
+                    #if DATABASE_MULTI_BASE
+                    lease.root
+                    #else
+                    self.databaseRoot
+                    #endif
+                }(),
+                accessMode: requiredAccess == .read
+                    ? .readOnly
+                    : .readWrite,
+                readScope: operationScope
+            )
+            let result: Result
+            do {
+                result = try await operation(admittedTransaction)
+            } catch {
+                let operationError = error
+                do {
+                    try await operationScope.closeAndWait()
+                } catch let cleanupError as DatabaseReadScopeCleanupError {
+                    admittedTransaction.revoke()
+                    throw cleanupError.preserving(
+                        operationError: operationError
+                    )
+                }
+                admittedTransaction.revoke()
+                throw operationError
+            }
+            do {
+                try await operationScope.closeAndWait()
+                admittedTransaction.revoke()
+                return result
+            } catch {
+                admittedTransaction.revoke()
+                throw error
+            }
         }
     }
 }

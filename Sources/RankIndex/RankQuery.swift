@@ -158,12 +158,26 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         try validateMode()
 
         let indexName = try resolvedIndexName()
+        let authorizationLimit: Int?
+        switch queryMode {
+        case .top(let count), .bottom(let count):
+            authorizationLimit = count
+        case .range(_, let end):
+            authorizationLimit = end
+        case .percentile:
+            authorizationLimit = 1
+        }
 
         // Execute query using index
         return try await queryContext.withReadableIndex(
             named: indexName,
             indexType: .rank,
             for: T.self,
+            authorization: IndexReadAuthorization(
+                limit: authorizationLimit,
+                offset: nil,
+                orderBy: ["rank"]
+            ),
             configuration: configuration
         ) { readableIndex, transaction in
             guard let readableIndex else {
@@ -179,7 +193,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// Execute query using the rank index
     private func executeWithIndex(
         indexSubspace: Subspace,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(item: T, rank: Int)] {
         let scoresSubspace = indexSubspace.subspace("scores")
         let scanner = RankScanner(scoresSubspace: scoresSubspace, transaction: transaction)
@@ -225,7 +239,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     private func scanTop(
         scanner: RankScanner,
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(item: T, rank: Int)] {
         let entries = try await scanner.top(k: k)
         return try await fetchItemsWithRank(
@@ -240,7 +254,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         scanner: RankScanner,
         indexSubspace: Subspace,
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(item: T, rank: Int)] {
         let entries = try await scanner.bottom(k: k)
         let countKey = indexSubspace.pack(Tuple("_count"))
@@ -263,7 +277,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         scanner: RankScanner,
         from: Int,
         to: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(item: T, rank: Int)] {
         let entries = try await scanner.rangeDescending(from: from, to: to)
         return try await fetchItemsWithRank(
@@ -281,7 +295,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         scanner: RankScanner,
         indexSubspace: Subspace,
         p: Double,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(item: T, rank: Int)] {
         let countKey = indexSubspace.pack(Tuple("_count"))
         let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
@@ -316,13 +330,12 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         entries: [RankScanEntry],
         startRank: Int,
         rankStep: Int = 1,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(item: T, rank: Int)] {
         let ids = entries.map { $0.primaryKey }
         let items = try await queryContext.fetchItemsPreservingOrder(
             ids: ids,
-            type: T.self,
-            transaction: transaction
+            type: T.self
         )
         var results: [(item: T, rank: Int)] = []
         results.reserveCapacity(items.count)

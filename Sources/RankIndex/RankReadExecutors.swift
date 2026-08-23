@@ -1,4 +1,4 @@
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -84,6 +84,9 @@ private struct RankReadExecutor: IndexReadExecutor {
             indexType: indexType,
             forEntityName: entity.name,
             partitions: partitions,
+            authorization: try IndexReadAuthorization(
+                selectQuery: selectQuery
+            ),
             configuration: execution.transactionConfiguration
         ) { readableIndex, transaction -> IndexReadResult in
             guard let readableIndex else { return .empty }
@@ -110,16 +113,8 @@ private struct RankReadExecutor: IndexReadExecutor {
                 entity: entity,
                 primaryKeys: primaryKeys,
                 partitions: partitions,
-                transaction: transaction,
                 workMeter: options.workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
             guard fetched.count == rankedKeys.count else {
                 throw RankReadError.fetchedEntityCountMismatch(
                     expected: rankedKeys.count,
@@ -151,7 +146,7 @@ private struct RankReadExecutor: IndexReadExecutor {
 
     private func scanRanked(
         indexSubspace: Subspace,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         parameters: IndexReadParameters,
         workMeter: DatabaseWorkMeter
     ) async throws -> [(primaryKey: Tuple, rank: Int)] {
@@ -302,16 +297,8 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             let entities = try await context.fetchPolymorphicItemsPreservingOrder(
                 group: group,
                 ids: primaryKeys,
-                transaction: transaction,
                 workMeter: options.workMeter
             )
-            let entityReservation = try DatabaseIntermediateCollectionMeter
-                .reservePolymorphicEntities(
-                    entities,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { entityReservation.release() }
             guard rankedKeys.count == entities.count else {
                 throw RankReadError.fetchedEntityCountMismatch(
                     expected: rankedKeys.count,
@@ -347,7 +334,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
 
     private func scanRanked(
         indexSubspace: Subspace,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         parameters: IndexReadParameters,
         workMeter: DatabaseWorkMeter
     ) async throws -> [(primaryKey: Tuple, rank: Int)] {

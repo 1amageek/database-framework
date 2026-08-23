@@ -6,6 +6,39 @@
 
 import DatabaseMath
 
+public enum BM25ScoringError: Error, Sendable, Equatable {
+    case invalidK1
+    case invalidLengthNormalization
+    case invalidCorpusStatistics
+    case invalidDocumentFrequency
+    case missingDocumentFrequency(term: String)
+    case invalidTermFrequency
+    case invalidTermOrder
+    case invalidDocumentLength
+    case nonFiniteScore
+}
+
+extension BM25Parameters {
+    public static func validated(
+        k1: Double,
+        b: Double
+    ) throws -> BM25Parameters {
+        guard k1.isFinite,
+              k1 >= 0,
+              k1 <= Double(Float.greatestFiniteMagnitude) else {
+            throw BM25ScoringError.invalidK1
+        }
+        guard b.isFinite, b >= 0, b <= 1 else {
+            throw BM25ScoringError.invalidLengthNormalization
+        }
+        let parameters = BM25Parameters(k1: Float(k1), b: Float(b))
+        guard parameters.k1.isFinite, parameters.b.isFinite else {
+            throw BM25ScoringError.nonFiniteScore
+        }
+        return parameters
+    }
+}
+
 // MARK: - BM25 Statistics
 
 /// BM25 corpus statistics required for scoring
@@ -107,8 +140,11 @@ public struct BM25Scorer: Sendable {
     ///
     /// - Parameter documentFrequency: Number of documents containing this term
     /// - Returns: IDF value (can be negative for very common terms)
-    public func idf(documentFrequency df: Int64) -> Double {
-        guard totalDocuments > 0 else { return 0 }
+    public func idf(documentFrequency df: Int64) throws -> Double {
+        try validateConfiguration()
+        guard df >= 0, df <= totalDocuments else {
+            throw BM25ScoringError.invalidDocumentFrequency
+        }
 
         let N = Double(totalDocuments)
         let dfDouble = Double(df)
@@ -117,7 +153,11 @@ public struct BM25Scorer: Sendable {
         let denominator = dfDouble + 0.5
 
         // Standard BM25 IDF (can be negative when df > N/2)
-        return DatabaseMath.naturalLogarithm(numerator / denominator)
+        let value = DatabaseMath.naturalLogarithm(numerator / denominator)
+        guard value.isFinite else {
+            throw BM25ScoringError.nonFiniteScore
+        }
+        return value
     }
 
     // MARK: - Score Calculation
@@ -133,27 +173,68 @@ public struct BM25Scorer: Sendable {
         termFrequencies: [String: Int],
         documentFrequencies: [String: Int64],
         docLength: Int
-    ) -> Double {
-        guard averageDocumentLength > 0 else { return 0 }
+    ) throws -> Double {
+        try score(
+            termFrequencies: termFrequencies,
+            documentFrequencies: documentFrequencies,
+            docLength: docLength,
+            orderedTerms: termFrequencies.keys.sorted()
+        )
+    }
+
+    /// Scores in a caller-provided canonical term order. The order must be a
+    /// duplicate-free permutation of the term-frequency keys.
+    package func score(
+        termFrequencies: [String: Int],
+        documentFrequencies: [String: Int64],
+        docLength: Int,
+        orderedTerms: [String]
+    ) throws -> Double {
+        try validateConfiguration()
+        guard docLength >= 0 else {
+            throw BM25ScoringError.invalidDocumentLength
+        }
+
+        let orderedTermSet = Set(orderedTerms)
+        guard orderedTerms.count == termFrequencies.count,
+              orderedTermSet.count == orderedTerms.count,
+              orderedTermSet == Set(termFrequencies.keys) else {
+            throw BM25ScoringError.invalidTermOrder
+        }
 
         var totalScore = 0.0
 
         let k1 = Double(params.k1)
         let b = Double(params.b)
 
-        for (term, tf) in termFrequencies {
-            guard let df = documentFrequencies[term], tf > 0 else { continue }
+        for term in orderedTerms {
+            guard let tf = termFrequencies[term] else {
+                throw BM25ScoringError.invalidTermOrder
+            }
+            guard tf >= 0 else {
+                throw BM25ScoringError.invalidTermFrequency
+            }
+            guard tf > 0 else { continue }
+            guard let df = documentFrequencies[term] else {
+                throw BM25ScoringError.missingDocumentFrequency(term: term)
+            }
 
-            let idfValue = idf(documentFrequency: df)
+            let idfValue = try idf(documentFrequency: df)
 
             // TF normalization with length normalization
             // (tf × (k1 + 1)) / (tf + k1 × (1 - b + b × |D|/avgDL))
             let tfDouble = Double(tf)
             let lengthRatio = Double(docLength) / averageDocumentLength
             let denominator = tfDouble + k1 * (1 - b + b * lengthRatio)
+            guard denominator.isFinite, denominator > 0 else {
+                throw BM25ScoringError.nonFiniteScore
+            }
             let tfNormalized = (tfDouble * (k1 + 1)) / denominator
 
             totalScore += idfValue * tfNormalized
+            guard totalScore.isFinite else {
+                throw BM25ScoringError.nonFiniteScore
+            }
         }
 
         return totalScore
@@ -172,10 +253,17 @@ public struct BM25Scorer: Sendable {
         termFrequency tf: Int,
         documentFrequency df: Int64,
         docLength: Int
-    ) -> Double {
-        guard averageDocumentLength > 0, tf > 0 else { return 0 }
+    ) throws -> Double {
+        try validateConfiguration()
+        guard tf >= 0 else {
+            throw BM25ScoringError.invalidTermFrequency
+        }
+        guard docLength >= 0 else {
+            throw BM25ScoringError.invalidDocumentLength
+        }
+        guard tf > 0 else { return 0 }
 
-        let idfValue = idf(documentFrequency: df)
+        let idfValue = try idf(documentFrequency: df)
 
         let k1 = Double(params.k1)
         let b = Double(params.b)
@@ -183,8 +271,29 @@ public struct BM25Scorer: Sendable {
         let tfDouble = Double(tf)
         let lengthRatio = Double(docLength) / averageDocumentLength
         let denominator = tfDouble + k1 * (1 - b + b * lengthRatio)
+        guard denominator.isFinite, denominator > 0 else {
+            throw BM25ScoringError.nonFiniteScore
+        }
         let tfNormalized = (tfDouble * (k1 + 1)) / denominator
 
-        return idfValue * tfNormalized
+        let score = idfValue * tfNormalized
+        guard score.isFinite else {
+            throw BM25ScoringError.nonFiniteScore
+        }
+        return score
+    }
+
+    private func validateConfiguration() throws {
+        guard params.k1.isFinite, params.k1 >= 0 else {
+            throw BM25ScoringError.invalidK1
+        }
+        guard params.b.isFinite, params.b >= 0, params.b <= 1 else {
+            throw BM25ScoringError.invalidLengthNormalization
+        }
+        guard totalDocuments > 0,
+              averageDocumentLength.isFinite,
+              averageDocumentLength > 0 else {
+            throw BM25ScoringError.invalidCorpusStatistics
+        }
     }
 }

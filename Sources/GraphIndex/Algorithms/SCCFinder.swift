@@ -636,14 +636,17 @@ public struct StronglyConnectedComponentsQuery<Edge: Persistable>: Sendable {
         missing: @Sendable @escaping () -> Result,
         _ operation: @Sendable @escaping (SCCFinder) async throws -> Result
     ) async throws -> Result {
-        return try await queryContext.withTransaction { transaction in
-            guard let resolvedIndex = try await PropertyGraphIndexResolver
-                .resolve(
-                    index,
-                    for: Edge.self,
-                    in: queryContext,
-                    transaction: transaction
-                ) else {
+        return try await PropertyGraphIndexResolver.withResolved(
+            index,
+            for: Edge.self,
+            in: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            )
+        ) { resolvedIndex, transaction in
+            guard let resolvedIndex else {
                 return missing()
             }
             let snapshot = GraphReadSnapshot(

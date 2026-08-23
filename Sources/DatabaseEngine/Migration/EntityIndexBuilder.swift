@@ -13,6 +13,7 @@ import StorageKit
 package struct EntityIndexBuilder {
     package static func buildIndex(
         for runtime: EntityRuntimeRegistration,
+        transactionAuthority: IndexBuildTransactionAuthority,
         container: DBContainer,
         storeSubspace: Subspace,
         index: ResolvedIndex,
@@ -21,6 +22,7 @@ package struct EntityIndexBuilder {
         configurations: [any IndexRuntimeConfiguration] = []
     ) async throws {
         try await runtime.buildIndex(
+            transactionAuthority: transactionAuthority,
             container: container,
             storeSubspace: storeSubspace,
             index: index,

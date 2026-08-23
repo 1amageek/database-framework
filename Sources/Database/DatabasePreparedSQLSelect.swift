@@ -26,8 +26,7 @@ public struct DatabasePreparedSQLSelect: Sendable {
     public func execute(
         in context: DatabaseContext,
         execution: ReadExecutionContext,
-        graphPartitions: FieldObject = FieldObject(),
-        transaction: any TransactionAccess
+        graphPartitions: FieldObject = FieldObject()
     ) async throws -> QueryResponse {
         guard execution.workMeter === workMeter else {
             throw DatabasePreparedSQLSelectError.workMeterMismatch
@@ -37,8 +36,7 @@ public struct DatabasePreparedSQLSelect: Sendable {
         return try await context.executeCanonicalQuery(
             query,
             execution: execution,
-            graphPartitions: graphPartitions,
-            transaction: transaction
+            graphPartitions: graphPartitions
         )
     }
 }

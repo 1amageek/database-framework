@@ -109,14 +109,14 @@ public struct CountIndexMaintainer<Item: PersistedEntityValue>: CountAggregation
     /// Get the count for a specific grouping
     public func getCount(
         groupingValues: [FieldValue],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int64 {
         try await getCountValue(groupingValues: groupingValues, transaction: transaction)
     }
 
     /// Get all counts in this index
     public func getAllCounts(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(grouping: [FieldValue], count: Int64)] {
         let storedResults = try await scanAllCounts(transaction: transaction)
         return try storedResults.map { result in

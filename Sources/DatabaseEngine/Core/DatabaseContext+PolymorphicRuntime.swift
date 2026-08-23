@@ -26,15 +26,71 @@ public struct PolymorphicEntity: Sendable {
 }
 
 extension DatabaseContext {
+    @_spi(DatabaseExecution)
     public func executeCanonicalRead<T: Sendable>(
         configuration: TransactionConfiguration = .default,
-        _ operation: @Sendable @escaping (any TransactionAccess) async throws -> T
+        _ operation: @Sendable @escaping (
+            any TransactionReadAccess
+        ) async throws -> T
     ) async throws -> T {
-        try await withStorageAccess(
-            requiredAccess: .read,
+        try await withReadStorageAccess(
             configuration: configuration,
             operation
         )
+    }
+
+    /// Executes a canonical read at an optional restorable storage position
+    /// and returns the actual read point without exposing transaction-control
+    /// methods to the callback.
+    @_spi(DatabaseExecution)
+    public func executeCanonicalRead<T: Sendable>(
+        restoring requestedReadPoint: DatabaseExecutionReadPoint?,
+        configuration: TransactionConfiguration = .default,
+        _ operation: @Sendable @escaping (
+            any TransactionReadAccess,
+            DatabaseExecutionReadPoint
+        ) async throws -> T
+    ) async throws -> T {
+        if requestedReadPoint != nil {
+            guard ActiveDatabaseTransactionContext.binding == nil else {
+                throw DatabaseExecutionReadPointError
+                    .restoreRequiresIndependentTransaction
+            }
+        }
+        return try await withAdmittedStorageAccess(
+            requiredAccess: .read,
+            mode: .readOnly,
+            configuration: configuration,
+            requestedReadPoint: requestedReadPoint
+        ) { transaction in
+            let identity = try self.executionStorage()
+            if let requestedReadPoint,
+               requestedReadPoint.domainIdentifier
+                != identity.domainIdentifier {
+                throw DatabaseExecutionReadPointError.domainMismatch
+            }
+            guard let rooted = transaction as? DataRootTransactionAccess else {
+                throw DatabaseRuntimeError.internalError(
+                    "Canonical reads require data-root-admitted storage access"
+                )
+            }
+            let position: DatabaseExecutionReadPoint.Position
+            if let version = try await rooted.captureReadVersion() {
+                position = .version(version)
+            } else {
+                var generator = SystemRandomNumberGenerator()
+                position = .opaque(ByteString((0..<32).map { _ in
+                    UInt8.random(in: .min ... .max, using: &generator)
+                }))
+            }
+            return try await operation(
+                rooted.readProjection(),
+                DatabaseExecutionReadPoint(
+                    domainIdentifier: identity.domainIdentifier,
+                    position: position
+                )
+            )
+        }
     }
 
     func scanPolymorphicItems(
@@ -53,8 +109,7 @@ extension DatabaseContext {
             orderBy: orderBy
         )
 
-        return try await withStorageAccess(
-            requiredAccess: .read,
+        return try await withReadStorageAccess(
             configuration: configuration
         ) { transaction in
             guard let subspace = try await self.container
@@ -66,7 +121,10 @@ extension DatabaseContext {
             }
             let itemSubspace = subspace.subspace(SubspaceKey.items)
             let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-            let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
+            let storage = self.container.itemStorageFactory.makeReader(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
             let (begin, end) = itemSubspace.range()
             var entities: [PolymorphicEntity] = []
 
@@ -91,7 +149,7 @@ extension DatabaseContext {
                     data,
                     expectedEntity: runtime.entity.name
                 )
-                let item = try runtime.canonicalized(persistedModel)
+                let item = try runtime.canonicalized(persistedModel).detached()
                 try self.container.securityDelegate?.evaluateGet(
                     persistedModel,
                     fields: nil
@@ -114,8 +172,7 @@ extension DatabaseContext {
         ids: [Tuple],
         configuration: TransactionConfiguration = .default
     ) async throws -> [PolymorphicEntity] {
-        try await withStorageAccess(
-            requiredAccess: .read,
+        try await withReadStorageAccess(
             configuration: configuration
         ) { transaction in
             try await self.fetchPolymorphicItems(
@@ -130,49 +187,90 @@ extension DatabaseContext {
     package func fetchPolymorphicItems(
         group: PolymorphicGroup,
         ids: [Tuple],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [PolymorphicEntity] {
-        try await fetchPolymorphicItemsPreservingOrder(
+        let execution = ReadExecutionContext(
+            monotonicClock: container.monotonicClock
+        )
+        return try await fetchPolymorphicItemsPreservingOrder(
             group: group,
             ids: ids,
-            transaction: transaction
+            transaction: transaction,
+            workMeter: execution.workMeter
         ).compactMap { $0 }
     }
 
     /// Fetches polymorphic rows without discarding unresolved identifiers.
     /// The returned array has exactly one slot for every requested identifier.
-    package func fetchPolymorphicItemsPreservingOrder(
+    package func fetchPolymorphicItemsPreservingOrder<Identifiers>(
         group: PolymorphicGroup,
-        ids: [Tuple],
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter? = nil
-    ) async throws -> [PolymorphicEntity?] {
-        let reservation = try workMeter?.reserveIntermediate(
-            rows: UInt64(ids.count),
-            bytes: try DatabaseIntermediateFootprint(
-                bytes: UInt64(
-                    max(1, MemoryLayout<PolymorphicEntity?>.stride + 16)
-                )
-            ).multiplied(by: UInt64(ids.count)).bytes,
+        ids: Identifiers,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseSharedRetainedArray<PolymorphicEntity?>
+    where Identifiers: RandomAccessCollection & Sendable,
+          Identifiers.Element == Tuple {
+        try await withReadStorageAccess { transaction in
+            try await self.fetchPolymorphicItemsPreservingOrder(
+                group: group,
+                ids: ids,
+                transaction: transaction,
+                workMeter: workMeter
+            )
+        }
+    }
+
+    /// Fetches polymorphic rows on an explicit trusted transaction capability.
+    package func fetchPolymorphicItemsPreservingOrder<Identifiers>(
+        group: PolymorphicGroup,
+        ids: Identifiers,
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseSharedRetainedArray<PolymorphicEntity?>
+    where Identifiers: RandomAccessCollection & Sendable,
+          Identifiers.Element == Tuple {
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: ids.count,
+                element: PolymorphicEntity?.self
+            ).bytes,
             at: .storageRow
         )
-        defer { reservation?.release() }
+        var transferredReservation = false
+        defer {
+            if !transferredReservation { reservation.release() }
+        }
         guard let subspace = try await container.openPolymorphicDirectory(
             for: group.identifier,
             transaction: transaction
         ) else {
-            return [PolymorphicEntity?](repeating: nil, count: ids.count)
+            let nilFootprint = try DatabaseIntermediateFootprint(
+                rows: 1,
+                bytes: 16
+            ).multiplied(by: UInt64(ids.count))
+            try reservation.reserveAdditional(
+                rows: nilFootprint.rows,
+                bytes: nilFootprint.bytes,
+                at: .storageRow
+            )
+            let retainedItems = try DatabaseSharedRetainedArray.adopting(
+                [PolymorphicEntity?](repeating: nil, count: ids.count),
+                reservation: reservation,
+                workMeter: workMeter,
+                stage: .storageRow
+            )
+            transferredReservation = true
+            return retainedItems
         }
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let typeMap = try polymorphicTypeMap(for: group)
-        let storage = container.itemStorageFactory.make(
+        let storage = container.itemStorageFactory.makeReader(
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
         func load(
             _ id: Tuple
-        ) async throws -> PolymorphicEntity? {
+        ) async throws -> (entity: PolymorphicEntity?, admitted: Bool) {
             guard id.count > 0 else {
                 throw PolymorphicRuntimeError.invalidRequestedIdentifier
             }
@@ -181,40 +279,101 @@ extension DatabaseContext {
                 throw PolymorphicRuntimeError.invalidRequestedIdentifier
             }
             let key = itemSubspace.pack(id)
-            guard let data = try await storage.read(for: key) else {
-                return nil
+            guard let retainedValue = try await storage.readRetained(
+                for: key,
+                workMeter: workMeter,
+                stage: .storageRow
+            ) else {
+                return (nil, false)
             }
             guard let runtime = typeMap[typeCode] else {
                 throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
             }
-            let persistedModel = try DataAccess.deserializePersistedModel(
-                data,
-                expectedEntity: runtime.entity.name
+            let fieldOverhead = try DatabaseIntermediateFootprint(
+                bytes: 96
+            ).multiplied(by: UInt64(runtime.entity.fields.count))
+            let provisionalFootprint = try DatabaseIntermediateFootprint(
+                rows: 1,
+                bytes: UInt64(retainedValue.count)
+            ).adding(fieldOverhead).adding(
+                DatabaseIntermediateFootprint(
+                    bytes: UInt64(runtime.entity.name.utf8.count)
+                        + UInt64(id.count) * 64
+                        + 320
+                )
             )
-            let item = try runtime.canonicalized(persistedModel)
+            try reservation.reserveAdditional(
+                rows: provisionalFootprint.rows,
+                bytes: provisionalFootprint.bytes,
+                at: .storageRow
+            )
+            let persistedModel = try retainedValue.withValue { data in
+                try DataAccess.deserializePersistedModel(
+                    data,
+                    expectedEntity: runtime.entity.name
+                )
+            }
+            let item = try runtime.canonicalized(persistedModel).detached()
+            var actualFootprint = try CanonicalRelationalFootprintMeter
+                .footprint(of: item, workMeter: workMeter)
+            actualFootprint = try actualFootprint.adding(
+                DatabaseIntermediateFootprint(
+                    bytes: UInt64(runtime.entity.name.utf8.count)
+                        + UInt64(id.count) * 64
+                        + 320
+                )
+            )
+            if actualFootprint.bytes > provisionalFootprint.bytes {
+                try reservation.reserveAdditional(
+                    bytes: actualFootprint.bytes - provisionalFootprint.bytes,
+                    at: .storageRow
+                )
+            } else if actualFootprint.bytes < provisionalFootprint.bytes {
+                try reservation.releasePartial(
+                    bytes: provisionalFootprint.bytes - actualFootprint.bytes
+                )
+            }
             try container.securityDelegate?.evaluateGet(
-                persistedModel,
+                item,
                 fields: nil
             )
-            return PolymorphicEntity(
-                item: item,
-                typeName: runtime.entity.name,
-                typeCode: typeCode,
-                polymorphicIdentifier: id
+            return (
+                PolymorphicEntity(
+                    item: item,
+                    typeName: runtime.entity.name,
+                    typeCode: typeCode,
+                    polymorphicIdentifier: id
+                ),
+                true
             )
         }
         var items = [PolymorphicEntity?](
             repeating: nil,
             count: ids.count
         )
-        for index in ids.indices {
+        for (index, id) in ids.enumerated() {
             // TransactionAccess is a serial operation boundary. A true batch
             // read requires an explicit StorageKit contract; child tasks must
             // not issue overlapping operations against one transaction.
-            try workMeter?.consume(at: .storageRow)
-            items[index] = try await load(ids[index])
+            try workMeter.consume(at: .storageRow)
+            let loaded = try await load(id)
+            if !loaded.admitted {
+                try reservation.reserveAdditional(
+                    rows: 1,
+                    bytes: 16,
+                    at: .storageRow
+                )
+            }
+            items[index] = loaded.entity
         }
-        return items
+        let retainedItems = try DatabaseSharedRetainedArray.adopting(
+            items,
+            reservation: reservation,
+            workMeter: workMeter,
+            stage: .storageRow
+        )
+        transferredReservation = true
+        return retainedItems
     }
 
     package func polymorphicTypeMap(
@@ -248,6 +407,11 @@ extension DatabaseContext {
         offset: Int?,
         orderBy: [String]?
     ) throws {
+        let authorization = IndexReadAuthorization(
+            limit: limit,
+            offset: offset,
+            orderBy: orderBy
+        )
         for typeName in group.memberTypeNames {
             guard let runtime = container.runtimeConfiguration.entityRuntimes.registration(
                 named: typeName
@@ -258,27 +422,11 @@ extension DatabaseContext {
                         memberTypeName: typeName
                     )
             }
-            try evaluatePolymorphicListAccess(
-                for: runtime.entity,
-                limit: limit,
-                offset: offset,
-                orderBy: orderBy
+            try indexQueryContext.authorizeListAccess(
+                entityName: runtime.entity.name,
+                authorization: authorization
             )
         }
-    }
-
-    private func evaluatePolymorphicListAccess(
-        for entity: Schema.Entity,
-        limit: Int?,
-        offset: Int?,
-        orderBy: [String]?
-    ) throws {
-        try container.securityDelegate?.evaluateList(
-            entity: entity.name,
-            limit: limit,
-            offset: offset,
-            orderBy: orderBy
-        )
     }
 
 }

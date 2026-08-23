@@ -13,7 +13,7 @@ struct HNSWIndexReader: Sendable {
         queryVector: Vector,
         k: Int,
         parameters: HNSWSearchParameters,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == storage.dimensions else {
             throw VectorIndexError.dimensionMismatch(
@@ -55,6 +55,7 @@ struct HNSWIndexReader: Sendable {
                 )
             )
         }
+        output.sort(by: VectorSearchResultOrdering.isBetter)
         return output
     }
 }

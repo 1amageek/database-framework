@@ -8,7 +8,10 @@ import StorageKit
 /// receive an operation-scoped capability that permits recursive persistence
 /// while preserving this owner, shared storage access, and final validation.
 /// `TransactionRunner` alone owns commit, cancellation, and retry lifecycle.
-public final actor DatabaseTransaction: DatabaseTransactionWriting {
+public final actor DatabaseTransaction:
+    DatabaseTransactionWriting,
+    DatabaseTransactionPersistenceReading
+{
     private enum State: Sendable, Equatable {
         case open
         case executing(UInt64)
@@ -22,11 +25,33 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     nonisolated package let storageAccess: any TransactionAccess
+    private nonisolated let validationStorageAccess: any TransactionAccess
 
     @_spi(DatabaseExecution)
     public nonisolated var executionStorageAccess: any TransactionAccess {
         storageAccess
     }
+
+    @_spi(DatabaseExecution)
+    public nonisolated var executionReadTransaction:
+        DatabaseExecutionReadTransaction {
+        DatabaseExecutionReadTransaction(transaction: self)
+    }
+
+    package nonisolated var storageReadProjection:
+        any TransactionReadAccess {
+        if let admitted = storageAccess as? DataRootTransactionAccess {
+            return admitted.readProjection()
+        }
+        return DatabaseReadAccessProjection(transaction: storageAccess)
+    }
+
+    /// Physical maintenance authority admitted for an administrative
+    /// database-control transaction. Data and metadata transactions receive
+    /// no such authority.
+    @_spi(DatabaseExecution)
+    public nonisolated let executionMaintenanceAccess:
+        DatabaseMaintenanceAccess?
 
     private let container: DBContainer
     private let mutationMaintenanceService: PersistableMutationMaintenanceService
@@ -46,13 +71,16 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let partitionPath: [String]
     }
 
-    @_spi(DatabaseExecution)
-    public init(
+    package init(
         storageAccess: any TransactionAccess,
-        container: DBContainer
+        validationStorageAccess: (any TransactionAccess)? = nil,
+        container: DBContainer,
+        maintenanceAccess: DatabaseMaintenanceAccess? = nil
     ) {
         self.storageAccess = storageAccess
+        self.validationStorageAccess = validationStorageAccess ?? storageAccess
         self.container = container
+        self.executionMaintenanceAccess = maintenanceAccess
         self.mutationMaintenanceService =
             PersistableMutationMaintenanceService(
                 maintainers: container.runtimeConfiguration
@@ -188,7 +216,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 entries.removeLast(entries.count - limit)
             }
 
-            let storage = container.itemStorageFactory.make(
+            let storage = container.itemStorageFactory.makeWriter(
                 transaction: storageAccess,
                 blobsSubspace: subspaces.blobs
             )
@@ -326,8 +354,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
 
     // MARK: - Package persistence operations
 
-    @_spi(DatabaseExecution)
-    public func loadPersistedModel(
+    package func loadPersistedModel(
         entity: String,
         id: Tuple,
         partition: AnyDirectoryPath?
@@ -510,10 +537,14 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         do {
             try ensureActive(operationID, permitsMutation: false)
             let resolved = try resolve(identity)
+            let transaction = state == .preparingCommit(operationID)
+                ? validationStorageAccess
+                : storageAccess
             return try await loadPersistedModelUnchecked(
                 entity: identity.entity,
                 id: resolved.id,
-                partition: resolved.partition
+                partition: resolved.partition,
+                transaction: transaction
             )
         } catch {
             state = .closed
@@ -681,7 +712,13 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         state = .closed
         await operationGate.closeAndWait()
         await validationGate?.closeAndWait()
+        revokeScopedStorageAccesses()
         mutationJournal.removeAll()
+    }
+
+    private func revokeScopedStorageAccesses() {
+        (storageAccess as? DataRootTransactionAccess)?.revoke()
+        (validationStorageAccess as? DataRootTransactionAccess)?.revoke()
     }
 
     // MARK: - Persistence pipeline
@@ -885,8 +922,10 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     private func loadPersistedModelUnchecked(
         entity: String,
         id: Tuple,
-        partition: AnyDirectoryPath?
+        partition: AnyDirectoryPath?,
+        transaction: (any TransactionAccess)? = nil
     ) async throws -> PersistedModel? {
+        let transaction = transaction ?? storageAccess
         let runtime = try entityRuntime(named: entity)
         if runtime.entity.hasDynamicDirectory, partition == nil {
             throw DirectoryPathError.dynamicFieldsRequired(
@@ -896,13 +935,14 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         }
         guard let subspaces = try await openSubspaces(
             for: runtime.entity,
-            partition: partition
+            partition: partition,
+            transaction: transaction
         ) else {
             return nil
         }
         let key = subspaces.items.subspace(entity).pack(id)
-        let storage = container.itemStorageFactory.make(
-            transaction: storageAccess,
+        let storage = container.itemStorageFactory.makeWriter(
+            transaction: transaction,
             blobsSubspace: subspaces.blobs
         )
         guard let data = try await storage.read(for: key) else {
@@ -958,7 +998,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let startingAfter = try startingAfterIdentifier.map {
             entitySubspace.pack(try Tuple(packed: $0))
         }
-        let storage = container.itemStorageFactory.make(
+        let storage = container.itemStorageFactory.makeWriter(
             transaction: storageAccess,
             blobsSubspace: subspaces.blobs
         )
@@ -1043,7 +1083,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             )
         }
         let (begin, end) = subspaces.items.subspace(entity).range()
-        let storage = container.itemStorageFactory.make(
+        let storage = container.itemStorageFactory.makeWriter(
             transaction: storageAccess,
             blobsSubspace: subspaces.blobs
         )
@@ -1221,6 +1261,18 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         for entity: Schema.Entity,
         partition: AnyDirectoryPath?
     ) async throws -> ResolvedSubspaces? {
+        try await openSubspaces(
+            for: entity,
+            partition: partition,
+            transaction: storageAccess
+        )
+    }
+
+    private func openSubspaces(
+        for entity: Schema.Entity,
+        partition: AnyDirectoryPath?,
+        transaction: any TransactionAccess
+    ) async throws -> ResolvedSubspaces? {
         let path = try partition ?? AnyDirectoryPath(for: entity)
         try path.validate()
         let partitionPath = path.resolve()
@@ -1246,7 +1298,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let root = try await container.openDirectory(
             for: entity,
             path: path,
-            transaction: storageAccess
+            transaction: transaction
         )
         let resolved = ResolvedSubspaces(
             items: root.subspace(SubspaceKey.items),
@@ -1266,7 +1318,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let key = subspaces.items
             .subspace(Model.persistableType)
             .pack(try PersistableIdentifierKeyCodec.tuple(for: id))
-        let storage = container.itemStorageFactory.make(
+        let storage = container.itemStorageFactory.makeWriter(
             transaction: storageAccess,
             blobsSubspace: subspaces.blobs
         )

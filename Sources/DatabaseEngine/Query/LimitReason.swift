@@ -83,6 +83,20 @@ public enum LimitReason: Sendable, Equatable {
     ///   - scanned: Number of cells scanned
     ///   - limit: The configured maximum cells
     case maxCellsReached(scanned: Int, limit: Int)
+
+    /// Maximum candidate scan limit was reached before the source exhausted.
+    ///
+    /// - Parameters:
+    ///   - scanned: Number of candidates fully processed.
+    ///   - limit: The configured maximum candidates.
+    case maxCandidatesReached(scanned: Int, limit: Int)
+
+    /// Maximum spatial search radius was reached before enough results were found.
+    ///
+    /// - Parameters:
+    ///   - radiusMeters: Largest radius that was fully searched, in meters.
+    ///   - limitMeters: The configured maximum search radius, in meters.
+    case maxRadiusReached(radiusMeters: Double, limitMeters: Double)
 }
 
 // MARK: - CustomStringConvertible
@@ -107,6 +121,10 @@ extension LimitReason: CustomStringConvertible {
             return "maxWorkUnitsReached(consumed: \(consumed), limit: \(limit))"
         case .maxCellsReached(let scanned, let limit):
             return "maxCellsReached(scanned: \(scanned), limit: \(limit))"
+        case .maxCandidatesReached(let scanned, let limit):
+            return "maxCandidatesReached(scanned: \(scanned), limit: \(limit))"
+        case .maxRadiusReached(let radiusMeters, let limitMeters):
+            return "maxRadiusReached(radiusMeters: \(radiusMeters), limitMeters: \(limitMeters))"
         }
     }
 }

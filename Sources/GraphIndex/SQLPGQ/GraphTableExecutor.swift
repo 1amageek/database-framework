@@ -1,7 +1,7 @@
 /// GraphTableExecutor.swift
 /// SQL/PGQ GRAPH_TABLE query executor
 
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -57,12 +57,12 @@ public struct GraphTableRow: Sendable {
 /// Executor for SQL/PGQ GRAPH_TABLE queries
 ///
 /// Converts SQL/PGQ match patterns to GraphPropertyScanner calls with property filtering.
-public struct GraphTableExecutor: Sendable {
+struct GraphTableExecutor: Sendable {
     private let graphTableSource: GraphTableSource
     private let indexDescriptor: IndexDescriptor
     private let indexSubspace: Subspace
 
-    public init(
+    init(
         indexDescriptor: IndexDescriptor,
         indexSubspace: Subspace,
         graphTableSource: GraphTableSource
@@ -72,10 +72,55 @@ public struct GraphTableExecutor: Sendable {
         self.graphTableSource = graphTableSource
     }
 
-    /// Execute GRAPH_TABLE query and return matching rows
-    public func execute(
-        transaction: any TransactionAccess
-    ) async throws -> [GraphTableRow] {
+    /// Executes the canonical GRAPH_TABLE source while retaining the request's
+    /// memory reservation and caller-supplied transaction through the adapter
+    /// boundary.
+    func executeRetainedCanonicalRows(
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseRetainedQueryRows {
+        let states = try await matchingStates(
+            transaction: transaction,
+            workMeter: workMeter
+        )
+        var output = try DatabaseRetainedArrayBuilder<QueryRow>(
+            workMeter: workMeter,
+            stage: .bindingCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: QueryRow.self),
+            expectedCount: states.count
+        )
+        for index in states.startIndex..<states.endIndex {
+            try states.withElement(at: index) { state in
+                try workMeter.consume(at: .bindingCandidate)
+                let graphRow = try makeRow(from: state)
+                if let filter = graphTableSource.matchPattern.where,
+                   try !evaluateBoolean(filter, fields: graphRow.fields) {
+                    return
+                }
+                let row = QueryRow(fields: graphRow.fields)
+                try output.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: row,
+                        workMeter: workMeter
+                    ),
+                    make: { row }
+                )
+            }
+        }
+        let owner = try output.finish().moveToSharedOwnership(
+            at: .bindingCandidate
+        )
+        return DatabaseRetainedQueryRows(
+            owner: owner,
+            visibleRange: owner.startIndex..<owner.endIndex
+        )
+    }
+
+    private func matchingStates(
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseSharedRetainedArray<MatchState> {
         let steps = try extractSteps(from: graphTableSource.matchPattern)
         guard !steps.isEmpty else {
             throw GraphTableError.invalidGraphPattern("No edge patterns found in MATCH clause")
@@ -93,10 +138,24 @@ public struct GraphTableExecutor: Sendable {
         let scanner = GraphPropertyScanner(
             indexSubspace: indexSubspace,
             strategy: configuration.strategy,
-            includedFieldNames: indexDescriptor.includedFieldNames
+            includedFieldNames: indexDescriptor.includedFieldNames,
+            workMeter: workMeter
         )
 
-        var states: [MatchState] = [MatchState()]
+        var initial = try DatabaseRetainedArrayBuilder<MatchState>(
+            workMeter: workMeter,
+            stage: .bindingCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: MatchState.self),
+            expectedCount: 1
+        )
+        try initial.append(
+            footprint: DatabaseIntermediateFootprint(rows: 1, bytes: 64),
+            make: { MatchState() }
+        )
+        var states = try initial.finish().moveToSharedOwnership(
+            at: .bindingCandidate
+        )
 
         for step in steps {
             states = try await extend(
@@ -104,18 +163,14 @@ public struct GraphTableExecutor: Sendable {
                 with: step,
                 scanner: scanner,
                 strategy: configuration.strategy,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: workMeter
             )
             if states.isEmpty {
-                return []
+                return states
             }
         }
-
-        let rows = try states.map(makeRow)
-        guard let filter = graphTableSource.matchPattern.where else {
-            return rows
-        }
-        return try rows.filter { try evaluateBoolean(filter, fields: $0.fields) }
+        return states
     }
 
     // MARK: - Pattern Evaluation
@@ -143,6 +198,159 @@ public struct GraphTableExecutor: Sendable {
         ) {
             self.bindings = bindings
             self.matchedSteps = matchedSteps
+        }
+    }
+
+    /// Computes a conservative retained footprint before MATCH expansion
+    /// allocates a new binding Dictionary or matched-step Array. The charge is
+    /// intentionally conservative where a prospective binding may already be
+    /// present; over-admission is preferable to an unaccounted fan-out path.
+    private final class GraphTableMatchStateFootprintMeter {
+        private static let stateHeaderByteCount: UInt64 = 64
+        private static let matchedStepSlotByteCount: UInt64 = 256
+        private static let prospectiveBindingSlotByteCount: UInt64 = 128
+        private static let edgeHeaderByteCount: UInt64 = 256
+        private static let propertySlotByteCount: UInt64 = 96
+
+        private let fieldMeter: SPARQLBindingFootprintMeter
+
+        private init(fieldMeter: SPARQLBindingFootprintMeter) {
+            self.fieldMeter = fieldMeter
+        }
+
+        static func make(
+            workMeter: DatabaseWorkMeter
+        ) throws -> GraphTableMatchStateFootprintMeter {
+            GraphTableMatchStateFootprintMeter(
+                fieldMeter: try SPARQLBindingFootprintMeter.make(
+                    workMeter: workMeter,
+                    stage: .bindingCandidate
+                )
+            )
+        }
+
+        func shutdown() {
+            fieldMeter.shutdown()
+        }
+
+        func footprint(
+            of state: borrowing MatchState
+        ) throws -> DatabaseIntermediateFootprint {
+            var footprint = try fieldMeter.footprint(
+                of: VariableBinding(state.bindings)
+            ).adding(
+                DatabaseIntermediateFootprint(
+                    bytes: Self.stateHeaderByteCount
+                )
+            ).adding(
+                try DatabaseIntermediateFootprint(
+                    bytes: Self.matchedStepSlotByteCount
+                ).multiplied(by: UInt64(state.matchedSteps.count))
+            )
+            for matchedStep in state.matchedSteps {
+                footprint = try footprint.adding(
+                    edgeFootprint(
+                        edge: matchedStep.edge,
+                        leftID: matchedStep.leftID,
+                        rightID: matchedStep.rightID
+                    )
+                )
+            }
+            return footprint
+        }
+
+        func prospectiveFootprint(
+            retaining state: borrowing MatchState,
+            step: borrowing Step,
+            edge: borrowing GraphEdgeWithProperties,
+            leftID: borrowing String,
+            rightID: borrowing String
+        ) throws -> DatabaseIntermediateFootprint {
+            var footprint = try footprint(of: state).adding(
+                DatabaseIntermediateFootprint(
+                    bytes: Self.matchedStepSlotByteCount
+                )
+            ).adding(
+                try edgeFootprint(
+                    edge: edge,
+                    leftID: leftID,
+                    rightID: rightID
+                )
+            )
+
+            if let variable = step.left.variable {
+                footprint = try footprint.adding(
+                    prospectiveBindingFootprint(
+                        keyUTF8Count: variable.utf8.count + 3,
+                        value: .string(copy leftID)
+                    )
+                )
+            }
+            if let variable = step.right.variable {
+                footprint = try footprint.adding(
+                    prospectiveBindingFootprint(
+                        keyUTF8Count: variable.utf8.count + 3,
+                        value: .string(copy rightID)
+                    )
+                )
+            }
+            if let variable = step.edge.variable {
+                let label = try edge.edgeLabel
+                    .requirePropertyGraphIdentifier()
+                footprint = try footprint.adding(
+                    prospectiveBindingFootprint(
+                        keyUTF8Count: variable.utf8.count + 6,
+                        value: .string(label)
+                    )
+                )
+                for (propertyName, propertyValue) in edge.properties {
+                    footprint = try footprint.adding(
+                        prospectiveBindingFootprint(
+                            keyUTF8Count: variable.utf8.count
+                                + propertyName.utf8.count + 1,
+                            value: propertyValue
+                        )
+                    )
+                }
+            }
+            return footprint
+        }
+
+        private func edgeFootprint(
+            edge: borrowing GraphEdgeWithProperties,
+            leftID: borrowing String,
+            rightID: borrowing String
+        ) throws -> DatabaseIntermediateFootprint {
+            let label = try edge.edgeLabel.requirePropertyGraphIdentifier()
+            var footprint = DatabaseIntermediateFootprint(
+                bytes: Self.edgeHeaderByteCount
+                    + UInt64(leftID.utf8.count)
+                    + UInt64(rightID.utf8.count)
+                    + UInt64(label.utf8.count)
+            )
+            for (propertyName, propertyValue) in edge.properties {
+                footprint = try footprint.adding(
+                    DatabaseIntermediateFootprint(
+                        bytes: Self.propertySlotByteCount
+                            + UInt64(propertyName.utf8.count)
+                    )
+                ).adding(
+                    try fieldMeter.footprint(of: propertyValue)
+                )
+            }
+            return footprint
+        }
+
+        private func prospectiveBindingFootprint(
+            keyUTF8Count: Int,
+            value: borrowing FieldValue
+        ) throws -> DatabaseIntermediateFootprint {
+            try DatabaseIntermediateFootprint(
+                bytes: Self.prospectiveBindingSlotByteCount
+                    + UInt64(keyUTF8Count)
+            ).adding(
+                try fieldMeter.footprint(of: value)
+            )
         }
     }
 
@@ -200,24 +408,56 @@ public struct GraphTableExecutor: Sendable {
     }
 
     private func extend(
-        states: [MatchState],
+        states: DatabaseSharedRetainedArray<MatchState>,
         with step: Step,
         scanner: GraphPropertyScanner,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionAccess
-    ) async throws -> [MatchState] {
-        var nextStates: [MatchState] = []
-        for state in states {
-            let matches = try await match(
-                step: step,
-                state: state,
-                scanner: scanner,
-                strategy: strategy,
-                transaction: transaction
-            )
-            nextStates.append(contentsOf: matches)
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseSharedRetainedArray<MatchState> {
+        var nextStates = try DatabaseRetainedArrayBuilder<MatchState>(
+            workMeter: workMeter,
+            stage: .bindingCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: MatchState.self)
+        )
+        var seen = try SPARQLRetainedBindingSet.make(
+            workMeter: workMeter,
+            stage: .deduplication
+        )
+        let footprintMeter = try GraphTableMatchStateFootprintMeter.make(
+            workMeter: workMeter
+        )
+        defer { footprintMeter.shutdown() }
+
+        for stateIndex in states.startIndex..<states.endIndex {
+            let matches = try await states.withElement(at: stateIndex) {
+                state in
+                try await match(
+                    step: step,
+                    state: state,
+                    scanner: scanner,
+                    strategy: strategy,
+                    transaction: transaction,
+                    workMeter: workMeter
+                )
+            }
+            for matchIndex in matches.startIndex..<matches.endIndex {
+                try matches.withElement(at: matchIndex) { state in
+                    let binding = VariableBinding(state.bindings)
+                    guard try seen.insert(binding) else { return }
+                    let footprint = try footprintMeter.footprint(of: state)
+                    let admission = try nextStates.prepareAppend(
+                        footprint: footprint,
+                        at: .bindingCandidate
+                    )
+                    nextStates.append(copy state, using: admission)
+                }
+            }
         }
-        return nextStates
+        return try nextStates.finish().moveToSharedOwnership(
+            at: .bindingCandidate
+        )
     }
 
     private func match(
@@ -225,19 +465,36 @@ public struct GraphTableExecutor: Sendable {
         state: MatchState,
         scanner: GraphPropertyScanner,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionAccess
-    ) async throws -> [MatchState] {
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseSharedRetainedArray<MatchState> {
         let leftResolution = try resolveIdentity(for: step.left, bindings: state.bindings)
         let rightResolution = try resolveIdentity(for: step.right, bindings: state.bindings)
         if leftResolution == .impossible || rightResolution == .impossible {
-            return []
+            return try DatabaseSharedRetainedArray.empty(
+                workMeter: workMeter,
+                stage: .bindingCandidate
+            )
         }
 
         let propertyFilters = try convertToPropertyFilters(step.edge.properties)
         let labels: [String?] = step.edge.labels?.isEmpty == false
             ? step.edge.labels!.map(Optional.some)
             : [nil]
-        var matches: [MatchState] = []
+        var matches = try DatabaseRetainedArrayBuilder<MatchState>(
+            workMeter: workMeter,
+            stage: .bindingCandidate,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: MatchState.self)
+        )
+        var seen = try SPARQLRetainedBindingSet.make(
+            workMeter: workMeter,
+            stage: .deduplication
+        )
+        let footprintMeter = try GraphTableMatchStateFootprintMeter.make(
+            workMeter: workMeter
+        )
+        defer { footprintMeter.shutdown() }
 
         for orientation in traversals(for: step.edge.direction) {
             for label in labels {
@@ -270,6 +527,17 @@ public struct GraphTableExecutor: Sendable {
                           endpointMatches(rightID, resolution: rightResolution) else {
                         continue
                     }
+                    let footprint = try footprintMeter.prospectiveFootprint(
+                        retaining: state,
+                        step: step,
+                        edge: edge,
+                        leftID: leftID,
+                        rightID: rightID
+                    )
+                    let admission = try matches.prepareAppend(
+                        footprint: footprint,
+                        at: .bindingCandidate
+                    )
                     guard let bindings = try bind(
                         step: step,
                         leftID: leftID,
@@ -279,17 +547,27 @@ public struct GraphTableExecutor: Sendable {
                     ) else {
                         continue
                     }
-                    matches.append(
-                        MatchState(
-                            bindings: bindings,
-                            matchedSteps: state.matchedSteps + [MatchedStep(step: step, edge: edge, leftID: leftID, rightID: rightID)]
-                        )
+                    let candidate = MatchState(
+                        bindings: bindings,
+                        matchedSteps: state.matchedSteps + [
+                            MatchedStep(
+                                step: step,
+                                edge: edge,
+                                leftID: leftID,
+                                rightID: rightID
+                            )
+                        ]
                     )
+                    let binding = VariableBinding(candidate.bindings)
+                    guard try seen.insert(binding) else { continue }
+                    matches.append(candidate, using: admission)
                 }
             }
         }
 
-        return deduplicated(states: matches)
+        return try matches.finish().moveToSharedOwnership(
+            at: .bindingCandidate
+        )
     }
 
     private func traversals(for direction: EdgeDirection) -> [TraversalOrientation] {
@@ -479,15 +757,6 @@ public struct GraphTableExecutor: Sendable {
         }
         bindings[key] = value
         return true
-    }
-
-    private func deduplicated(states: [MatchState]) -> [MatchState] {
-        var seen = Set<[String: FieldValue]>()
-        var unique: [MatchState] = []
-        for state in states where seen.insert(state.bindings).inserted {
-            unique.append(state)
-        }
-        return unique
     }
 
     private func makeRow(from state: MatchState) throws -> GraphTableRow {
@@ -779,22 +1048,52 @@ extension DatabaseContext {
                 "No property-graph index found for entity \(T.persistableType)"
             )
         }
-        let queryContext = indexQueryContext
-        return try await queryContext.withTransaction { transaction in
-            guard let index = try await queryContext
-                .readableIndex(
-                    named: descriptor.name,
-                        indexType: descriptor.type,
-                        for: T.self,
-                    transaction: transaction
-                ) else {
-                return []
+        var canonicalColumnNames = ["source", "target", "edgeLabel"]
+        for fieldName in descriptor.includedFieldNames
+            where !canonicalColumnNames.contains(fieldName) {
+            canonicalColumnNames.append(fieldName)
+        }
+        let canonicalSource: GraphTableSource
+        if source.columns?.isEmpty != false {
+            canonicalSource = GraphTableSource(
+                graphName: source.graphName,
+                matchPattern: source.matchPattern,
+                columns: canonicalColumnNames.map { fieldName in
+                    GraphTableColumn(
+                        expression: .column(
+                            ColumnRef(column: fieldName)
+                        ),
+                        alias: fieldName
+                    )
+                },
+                alias: source.alias
+            )
+        } else {
+            canonicalSource = source
+        }
+        let response = try await query(
+            SelectQuery(
+                projection: .all,
+                source: .graphTable(canonicalSource)
+            )
+        )
+        let propertyNames = Set(descriptor.includedFieldNames)
+        return try response.rows.map { row in
+            guard let sourceID = row.fields["source"]?.stringValue,
+                  let targetID = row.fields["target"]?.stringValue,
+                  let edgeLabel = row.fields["edgeLabel"]?.stringValue else {
+                throw GraphTableError.invalidGraphPattern(
+                    "Canonical GRAPH_TABLE result is missing an endpoint or edge label"
+                )
             }
-            return try await GraphTableExecutor(
-                indexDescriptor: descriptor,
-                indexSubspace: index.subspace,
-                graphTableSource: source
-            ).execute(transaction: transaction)
+            let properties = row.fields.filter { propertyNames.contains($0.key) }
+            return try GraphTableRow(
+                source: sourceID,
+                target: targetID,
+                edgeLabel: edgeLabel,
+                properties: properties,
+                fields: row.fields
+            )
         }
     }
 }

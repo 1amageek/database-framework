@@ -148,14 +148,17 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
         }
         try validateLimits()
 
-        return try await queryContext.withTransaction { transaction in
-            guard let resolvedIndex = try await PropertyGraphIndexResolver
-                .resolve(
-                    index,
-                    for: T.self,
-                    in: queryContext,
-                    transaction: transaction
-                ) else {
+        return try await PropertyGraphIndexResolver.withResolved(
+            index,
+            for: T.self,
+            in: queryContext,
+            authorization: IndexReadAuthorization(
+                limit: limitCount,
+                offset: nil,
+                orderBy: nil
+            )
+        ) { resolvedIndex, transaction in
+            guard let resolvedIndex else {
                 return []
             }
             let snapshot = GraphReadSnapshot(
@@ -182,15 +185,18 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
         }
         try validateLimits()
 
-        let identities: [GraphIdentity] = try await queryContext
-            .withTransaction { transaction in
-            guard let resolvedIndex = try await PropertyGraphIndexResolver
-                .resolve(
-                    index,
-                    for: T.self,
-                    in: queryContext,
-                    transaction: transaction
-                ) else {
+        let identities: [GraphIdentity] = try await PropertyGraphIndexResolver
+            .withResolved(
+                index,
+                for: T.self,
+                in: queryContext,
+                authorization: IndexReadAuthorization(
+                    limit: limitCount,
+                    offset: nil,
+                    orderBy: nil
+                )
+            ) { resolvedIndex, transaction in
+            guard let resolvedIndex else {
                 return []
             }
             let snapshot = GraphReadSnapshot(
@@ -230,7 +236,7 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
         source: GraphIdentity,
         target: GraphIdentity?,
         scanner: GraphEdgeScanner,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [GraphPath] {
         typealias PartialPath = (nodes: [GraphIdentity], edges: [GraphIdentity])
         let maximumDepth = pathLengthValue.effectiveMax(defaultLimit: 10)
@@ -310,7 +316,7 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
         source: GraphIdentity,
         target: GraphIdentity?,
         scanner: GraphEdgeScanner,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [GraphIdentity] {
         let maximumDepth = pathLengthValue.effectiveMax(defaultLimit: 10)
         var orderedResults: [GraphIdentity] = []

@@ -1,13 +1,12 @@
 {
-  "originHash" : "a2ba22ebe659f42a23359fe2f61cfb6d04e417c5a431169577e1f1786bc47ad4",
+  "originHash" : "b4daf5541b454236435eabefe306ee94f29c9bccefcf03324a89477b0e16d759",
   "pins" : [
     {
       "identity" : "database-kit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-kit.git",
       "state" : {
-        "revision" : "775facbae56d8ccbbf7024d40a8fb36da64093c2",
-        "version" : "26.819.0"
+        "revision" : "8d5ef0d9d072669336774b71f2f86937a47d26af"
       }
     },
     {
@@ -15,8 +14,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-types.git",
       "state" : {
-        "revision" : "4b0c81a9c322cbfa5628e411ee1fa931c2890e5d",
-        "version" : "26.730.0"
+        "revision" : "6ff1742926d6618e44eb9f6c0ef2a2719c88c645"
       }
     },
     {
@@ -24,7 +22,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/fdb-swift-bindings.git",
       "state" : {
-        "revision" : "383603e99773b7935e1f59f38ea9590372851656"
+        "revision" : "fcb5ac0b80c13314f41defb6ce3dfe871cd1da6b"
       }
     },
     {
@@ -41,7 +39,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/storage-kit.git",
       "state" : {
-        "revision" : "00d4c48e824f1055e02f51ebdffe5b8dc42645d3"
+        "revision" : "17b4de4f8d532ebf613e50678752aa7ff44f49e3"
       }
     },
     {

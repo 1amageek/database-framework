@@ -7,7 +7,6 @@
 import DatabaseTypes
 import StorageKit
 import DatabaseKit
-import Synchronization
 
 // MARK: - BatchFetchConfiguration
 
@@ -154,12 +153,12 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     /// - Returns: The fetched items (preserves order where found)
     public func fetch(
         primaryKeys: [Tuple],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [Item] {
         guard !primaryKeys.isEmpty else { return [] }
 
         let itemTypeSubspace = itemSubspace.subspace(itemType)
-        let storage = itemStorageFactory.make(
+        let storage = itemStorageFactory.makeReader(
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
@@ -186,7 +185,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     private func fetchBatch(
         primaryKeys: [Tuple],
         subspace: Subspace,
-        storage: ItemStorage
+        storage: ItemStorageReader
     ) async throws -> [Item] {
         var results: [Item] = []
         results.reserveCapacity(primaryKeys.count)
@@ -213,15 +212,15 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     /// - Returns: A throwing stream of fetched items
     public func stream<S: AsyncSequence>(
         primaryKeys: S,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> AsyncThrowingStream<Item, Error> where S.Element == Tuple, S: Sendable {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 var batch: [Tuple] = []
                 batch.reserveCapacity(configuration.batchSize)
 
                 let itemTypeSubspace = itemSubspace.subspace(itemType)
-                let storage = itemStorageFactory.make(
+                let storage = itemStorageFactory.makeReader(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
                 )
@@ -229,6 +228,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                 do {
                     var primaryKeyIterator = primaryKeys.makeAsyncIterator()
                     while let pk = try await primaryKeyIterator.next() {
+                        try Task.checkCancellation()
                         batch.append(pk)
 
                         if batch.count >= configuration.batchSize {
@@ -261,6 +261,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -276,16 +277,16 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     public func streamFromIndex<S: AsyncSequence>(
         indexEntries: S,
         indexSubspace: Subspace,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> AsyncThrowingStream<Item, Error>
     where S.Element == (key: ByteString, value: ByteString), S: Sendable {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 var batch: [Tuple] = []
                 batch.reserveCapacity(configuration.batchSize)
 
                 let itemTypeSubspace = itemSubspace.subspace(itemType)
-                let storage = itemStorageFactory.make(
+                let storage = itemStorageFactory.makeReader(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
                 )
@@ -293,6 +294,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                 do {
                     var indexEntryIterator = indexEntries.makeAsyncIterator()
                     while let (key, _) = try await indexEntryIterator.next() {
+                        try Task.checkCancellation()
                         // Extract primary key from index entry
                         if let pk = try extractPrimaryKey(
                             from: key,
@@ -331,6 +333,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -388,14 +391,14 @@ extension BatchFetcher {
     /// - Returns: Detailed fetch results
     public func fetchWithResults(
         primaryKeys: [Tuple],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async -> BatchFetchResult<Item> {
         guard !primaryKeys.isEmpty else {
             return BatchFetchResult(items: [], notFound: [], failed: [])
         }
 
         let itemTypeSubspace = itemSubspace.subspace(itemType)
-        let storage = itemStorageFactory.make(
+        let storage = itemStorageFactory.makeReader(
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
@@ -433,99 +436,184 @@ extension BatchFetcher {
 /// Batch fetcher with prefetching support
 ///
 /// Prefetches the next batch while the current batch is being processed.
-public final class PrefetchingBatchFetcher<Item: Persistable>: Sendable {
-    private let baseFetcher: BatchFetcher<Item>
-    private let container: DBContainer
-
-    private struct State: Sendable {
-        var prefetchTask: Task<[Item], Error>?
-        var prefetchKeys: [Tuple]?
+public actor PrefetchingBatchFetcher<Item: Persistable> {
+    private struct TrackedPrefetch: Sendable {
+        let identifier: UInt64
+        let keys: [Tuple]
+        let task: Task<[Item], Error>
     }
 
-    private let state: Mutex<State>
+    private let baseFetcher: BatchFetcher<Item>
+    private let context: DatabaseContext
+    private var nextIdentifier: UInt64 = 1
+    private var tracked: [UInt64: TrackedPrefetch] = [:]
+    private var currentIdentifier: UInt64?
+    private var isShutdown = false
 
     public init(
-        container: DBContainer,
+        context: DatabaseContext,
         itemSubspace: Subspace,
         blobsSubspace: Subspace,
         itemType: String,
         configuration: BatchFetchConfiguration = .default
     ) {
-        self.container = container
+        self.context = context
         self.baseFetcher = BatchFetcher<Item>(
             itemSubspace: itemSubspace,
             blobsSubspace: blobsSubspace,
             itemType: itemType,
-            itemStorageFactory: container.itemStorageFactory,
+            itemStorageFactory: context.container.itemStorageFactory,
             configuration: configuration
         )
-        self.state = Mutex(State())
     }
 
     /// Start prefetching a batch of keys
     ///
     /// - Parameter primaryKeys: Keys to prefetch
-    public func prefetch(primaryKeys: [Tuple]) {
+    public func prefetch(primaryKeys: [Tuple]) async throws {
+        guard !isShutdown else {
+            throw PrefetchingBatchFetcherError.closed
+        }
         guard baseFetcher.configuration.prefetchEnabled else { return }
 
-        state.withLock { state in
-            // Cancel any existing prefetch
-            state.prefetchTask?.cancel()
+        let previousIdentifier = currentIdentifier
+        if let previousIdentifier,
+           let previous = tracked[previousIdentifier] {
+            previous.task.cancel()
+        }
 
-            // Start new prefetch
-            state.prefetchKeys = primaryKeys
-            state.prefetchTask = Task {
-                try await self.container.transactionExecutor.withTransaction(configuration: .batch, clock: self.container.monotonicClock) { transaction in
-                    return try await self.baseFetcher.fetch(
-                        primaryKeys: primaryKeys,
-                        transaction: transaction
-                    )
-                }
+        let identifier = try allocateIdentifier()
+        let context = self.context
+        let baseFetcher = self.baseFetcher
+        // A detached task intentionally does not inherit an active
+        // transaction TaskLocal. The context must independently re-admit
+        // this read to its configured data root before any key is read.
+        let task = Task.detached { () throws -> [Item] in
+            try await context.executeCanonicalRead(
+                configuration: .batch
+            ) { transaction in
+                try await baseFetcher.fetch(
+                    primaryKeys: primaryKeys,
+                    transaction: transaction
+                )
+            }
+        }
+        tracked[identifier] = TrackedPrefetch(
+            identifier: identifier,
+            keys: primaryKeys,
+            task: task
+        )
+        currentIdentifier = identifier
+
+        if let previousIdentifier,
+           let previous = tracked[previousIdentifier] {
+            await drainRetired(previous.task)
+            tracked.removeValue(forKey: previousIdentifier)
+            guard !isShutdown else {
+                throw PrefetchingBatchFetcherError.closed
             }
         }
     }
 
-    /// Get prefetched results if available, otherwise fetch fresh
+    /// Fetches through the caller-owned transaction.
     ///
-    /// - Parameters:
-    ///   - primaryKeys: The keys to fetch
-    ///   - transaction: The transaction to use
-    /// - Returns: The fetched items
-    public func fetchOrUsePrefetched(
+    /// Independently prefetched values are never substituted here: doing so
+    /// would lose read-your-writes and conflict tracking from this transaction.
+    public func fetch(
         primaryKeys: [Tuple],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [Item] {
-        // Check if we have a matching prefetch
-        let (task, keys) = state.withLock { state in
-            (state.prefetchTask, state.prefetchKeys)
+        guard !isShutdown else {
+            throw PrefetchingBatchFetcherError.closed
         }
-
-        if let task = task, let keys = keys, keys == primaryKeys {
-            // Clear the prefetch
-            state.withLock { state in
-                state.prefetchTask = nil
-                state.prefetchKeys = nil
-            }
-
-            // Use prefetched results
-            return try await task.value
-        }
-
-        // No matching prefetch, fetch fresh
         return try await baseFetcher.fetch(
             primaryKeys: primaryKeys,
             transaction: transaction
         )
     }
 
-    /// Cancel any pending prefetch
-    public func cancelPrefetch() {
-        state.withLock { state in
-            state.prefetchTask?.cancel()
-            state.prefetchTask = nil
-            state.prefetchKeys = nil
+    /// Consumes an explicitly nontransactional speculative read.
+    ///
+    /// If no matching prefetch exists, this method performs another independent
+    /// canonical read. Callers requiring transaction consistency must use
+    /// `fetch(primaryKeys:transaction:)` instead.
+    public func consumePrefetched(
+        primaryKeys: [Tuple]
+    ) async throws -> [Item] {
+        guard !isShutdown else {
+            throw PrefetchingBatchFetcherError.closed
+        }
+        if let identifier = currentIdentifier,
+           let current = tracked[identifier],
+           current.keys == primaryKeys {
+            currentIdentifier = nil
+            do {
+                let value = try await current.task.value
+                tracked.removeValue(forKey: identifier)
+                return value
+            } catch {
+                tracked.removeValue(forKey: identifier)
+                throw error
+            }
+        }
+
+        return try await context.executeCanonicalRead(
+            configuration: .batch
+        ) { transaction in
+            try await self.baseFetcher.fetch(
+                primaryKeys: primaryKeys,
+                transaction: transaction
+            )
         }
     }
+
+    /// Cancels and drains every pending or replaced prefetch task.
+    ///
+    /// Owners must call this method before releasing the fetcher so no
+    /// operation-owned read continues beyond the fetcher's lifecycle.
+    public func shutdown() async throws {
+        guard !isShutdown else { return }
+        isShutdown = true
+        currentIdentifier = nil
+        let pending = tracked
+        pending.values.forEach { $0.task.cancel() }
+        var firstFailure: (any Error)?
+        for prefetch in pending.values {
+            do {
+                _ = try await prefetch.task.value
+            } catch is CancellationError {
+                // Cancellation is the expected shutdown terminal state.
+            } catch {
+                if firstFailure == nil { firstFailure = error }
+            }
+            tracked.removeValue(forKey: prefetch.identifier)
+        }
+        if let firstFailure { throw firstFailure }
+    }
+
+    private func drainRetired(_ task: Task<[Item], Error>) async {
+        do {
+            _ = try await task.value
+        } catch {
+            // Replacement intentionally discards a speculative result. The
+            // task is still drained before its tracking entry is removed.
+        }
+    }
+
+    private func allocateIdentifier() throws -> UInt64 {
+        let identifier = nextIdentifier
+        let next = nextIdentifier.addingReportingOverflow(1)
+        guard !next.overflow else {
+            throw PrefetchingBatchFetcherError.identifierExhausted
+        }
+        nextIdentifier = next.partialValue
+        return identifier
+    }
+}
+
+public enum PrefetchingBatchFetcherError: Error, Sendable, Equatable {
+    case closed
+    case identifierExhausted
 }
 
 // MARK: - Batch Fetch Statistics

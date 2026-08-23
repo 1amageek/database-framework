@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     package func executeAskInTransaction(
         _ query: AskQuery,
         structuralLimits: QueryStructuralLimits,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let plan = try SPARQLQueryLevelPlanCompiler.compile(
@@ -27,7 +27,7 @@ extension SPARQLQueryExecutor {
         _ query: ConstructQuery,
         nodeNamespace: GraphResultNodeNamespace,
         structuralLimits: QueryStructuralLimits,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRetainedRDFGraph {
         let plan = try SPARQLQueryLevelPlanCompiler.compile(
@@ -78,7 +78,7 @@ extension SPARQLQueryExecutor {
     package func executeDescribeInTransaction(
         _ query: DescribeQuery,
         structuralLimits: QueryStructuralLimits,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRetainedRDFGraph {
         let plan = try SPARQLQueryLevelPlanCompiler.compile(

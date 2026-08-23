@@ -584,7 +584,9 @@ struct IndexRebuildConsistencyTests {
             // Read state via IndexLifecycleStore (entity root subspace)
             let entitySubspace = try await container.testBaseDirectory(for: RebuildScalarUser.self)
             let lifecycleStore = IndexLifecycleStore(container: container, subspace: entitySubspace)
-            let state = try await lifecycleStore.state(of: indexName)
+            let state = try await container.withTestBaseOperation {
+                try await lifecycleStore.state(of: indexName)
+            }
 
             #expect(state == .readable,
                 "IndexLifecycleStore should see index as readable after rebuild, got \(state)")

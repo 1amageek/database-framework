@@ -581,7 +581,7 @@ struct PolymorphicMigrationFDBTests {
             .subspace(SubspaceKey.indexes)
             .subspace(indexName)
 
-        return try await container.engine.withTransaction { transaction -> Int in
+        return try await container.withTestBaseTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
             return try await transaction.collectRange(
                 begin: begin,
@@ -604,7 +604,7 @@ struct PolymorphicMigrationFDBTests {
             .subspace(indexName)
         let range = indexSubspace.range()
 
-        try await container.engine.withTransaction { transaction in
+        try await container.withTestBaseTransaction { transaction in
             try transaction.clearRange(beginKey: range.begin, endKey: range.end)
         }
     }
@@ -622,7 +622,7 @@ struct PolymorphicMigrationFDBTests {
             .subspace("state")
             .subspace(indexName)
         let range = stateSubspace.range()
-        return try await container.engine.withTransaction { transaction in
+        return try await container.withTestBaseTransaction { transaction in
             try await transaction.collectRange(
                 begin: range.begin,
                 end: range.end,
@@ -640,7 +640,9 @@ struct PolymorphicMigrationFDBTests {
         )
         let groupSubspace = try await container.testBasePolymorphicDirectory(for: group.identifier)
         let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
-        return try await lifecycleStore.state(of: indexName)
+        return try await container.withTestBaseOperation {
+            try await lifecycleStore.state(of: indexName)
+        }
     }
 }
 #endif

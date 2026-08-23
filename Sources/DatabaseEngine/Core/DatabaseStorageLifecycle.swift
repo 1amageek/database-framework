@@ -32,59 +32,77 @@ final class DatabaseStorageLifecycle: Sendable {
         self.storageEngine = storageEngine
     }
 
-    func claimStorageEngine() throws -> any StorageEngine {
-        try state.withLock { state in
-            switch state.phase {
-            case .available:
-                state.phase = .opening
-                return ContainerStorageEngine(lifecycle: self)
-            case .opening, .open:
-                throw DatabaseContainerLifecycleError
-                    .configurationAlreadyUsed
-            case .closing, .stopping:
-                throw DatabaseContainerLifecycleError.shuttingDown
-            case .closed:
-                throw DatabaseContainerLifecycleError.shutdown
-            }
-        }
-    }
-
-    func finishOpening() throws {
-        try state.withLock { state in
-            switch state.phase {
-            case .opening:
-                state.phase = .open
-            case .closing, .stopping:
-                throw DatabaseContainerLifecycleError.shuttingDown
-            case .closed:
-                throw DatabaseContainerLifecycleError.shutdown
-            case .available, .open:
-                throw DatabaseContainerLifecycleError
-                    .configurationAlreadyUsed
-            }
-        }
-    }
-
-    func beginOperation() throws -> DatabaseStorageOperationLease {
-        try state.withLock { state in
-            switch state.phase {
-            case .opening, .open:
-                let (operationCount, overflow) = state.operationCount
-                    .addingReportingOverflow(1)
-                guard !overflow else {
-                    throw DatabaseContainerLifecycleError
-                        .operationLimitExceeded
+    func claimStorageEngine() throws(DatabaseContainerLifecycleError) -> any StorageEngine {
+        let result: Result<any StorageEngine, DatabaseContainerLifecycleError> =
+            state.withLock { state in
+                switch state.phase {
+                case .available:
+                    state.phase = .opening
+                    return .success(ContainerStorageEngine(lifecycle: self))
+                case .opening, .open:
+                    return .failure(.configurationAlreadyUsed)
+                case .closing, .stopping:
+                    return .failure(.shuttingDown)
+                case .closed:
+                    return .failure(.shutdown)
                 }
-                state.operationCount = operationCount
-                return DatabaseStorageOperationLease(lifecycle: self)
-            case .available:
-                throw DatabaseContainerLifecycleError
-                    .configurationAlreadyUsed
-            case .closing, .stopping:
-                throw DatabaseContainerLifecycleError.shuttingDown
-            case .closed:
-                throw DatabaseContainerLifecycleError.shutdown
             }
+        switch result {
+        case .success(let storageEngine):
+            return storageEngine
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    func finishOpening() throws(DatabaseContainerLifecycleError) {
+        let result: Result<Void, DatabaseContainerLifecycleError> =
+            state.withLock { state in
+                switch state.phase {
+                case .opening:
+                    state.phase = .open
+                    return .success(())
+                case .closing, .stopping:
+                    return .failure(.shuttingDown)
+                case .closed:
+                    return .failure(.shutdown)
+                case .available, .open:
+                    return .failure(.configurationAlreadyUsed)
+                }
+            }
+        switch result {
+        case .success:
+            return
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    func beginOperation() throws(DatabaseContainerLifecycleError) -> DatabaseStorageOperationLease {
+        let result: Result<DatabaseStorageOperationLease, DatabaseContainerLifecycleError> =
+            state.withLock { state in
+                switch state.phase {
+                case .opening, .open:
+                    let (operationCount, overflow) = state.operationCount
+                        .addingReportingOverflow(1)
+                    guard !overflow else {
+                        return .failure(.operationLimitExceeded)
+                    }
+                    state.operationCount = operationCount
+                    return .success(DatabaseStorageOperationLease(lifecycle: self))
+                case .available:
+                    return .failure(.configurationAlreadyUsed)
+                case .closing, .stopping:
+                    return .failure(.shuttingDown)
+                case .closed:
+                    return .failure(.shutdown)
+                }
+            }
+        switch result {
+        case .success(let lease):
+            return lease
+        case .failure(let error):
+            throw error
         }
     }
 

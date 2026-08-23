@@ -225,9 +225,7 @@ struct IndexLifecycleStoreCorruptionTests {
     func stateDecodingIsStrict() async throws {
         let context = try await makeContext()
 
-        let missingState = try await context.lifecycleStore.state(
-            of: context.indexName
-        )
+        let missingState = try await context.state(of: context.indexName)
         #expect(missingState == .disabled)
 
         for (bytes, expectedState) in [
@@ -236,9 +234,7 @@ struct IndexLifecycleStoreCorruptionTests {
             (ByteString([IndexState.writeOnly.rawValue]), IndexState.writeOnly),
         ] {
             try await context.store(bytes)
-            let state = try await context.lifecycleStore.state(
-                of: context.indexName
-            )
+            let state = try await context.state(of: context.indexName)
             #expect(state == expectedState)
         }
 
@@ -267,11 +263,9 @@ struct IndexLifecycleStoreCorruptionTests {
         ] {
             try await context.store(bytes)
             await expectIndexStateError(expectedError) {
-                _ = try await context.lifecycleStore.state(
-                    of: context.indexName
-                )
+                _ = try await context.state(of: context.indexName)
             }
-            try await context.engine.withTransaction { transaction in
+            try await context.container.withTestBaseTransaction { transaction in
                 await expectIndexStateError(expectedError) {
                     _ = try await context.lifecycleStore.state(
                         of: context.indexName,
@@ -296,7 +290,7 @@ struct IndexLifecycleStoreCorruptionTests {
         try await context.store(corruptBytes)
 
         for transition in IndexStateTransition.allCases {
-            try await context.engine.withTransaction { transaction in
+            try await context.container.withTestBaseTransaction { transaction in
                 await expectIndexStateError(expectedError) {
                     switch transition {
                     case .enable:
@@ -336,7 +330,7 @@ struct IndexLifecycleStoreCorruptionTests {
             indexName: validIndex
         )
 
-        let validAndMissing = try await context.lifecycleStore.states(
+        let validAndMissing = try await context.states(
             of: [validIndex, missingIndex]
         )
         #expect(validAndMissing.count == 2)
@@ -347,7 +341,7 @@ struct IndexLifecycleStoreCorruptionTests {
         await expectIndexStateError(
             .unknownPersistedStateValue(index: corruptIndex, value: 0xFF)
         ) {
-            _ = try await context.lifecycleStore.states(
+            _ = try await context.states(
                 of: [validIndex, missingIndex, corruptIndex]
             )
         }
@@ -364,12 +358,9 @@ struct IndexLifecycleStoreCorruptionTests {
         try await context.store(corruptBytes)
 
         await expectIndexStateError(expectedError) {
-            try await context.lifecycleStore.ensureReadable(
-                [context.indexName],
-                entityRange: context.entityRange
-            )
+            try await context.ensureReadable()
         }
-        try await context.engine.withTransaction { transaction in
+        try await context.container.withTestBaseTransaction { transaction in
             await expectIndexStateError(expectedError) {
                 try await context.lifecycleStore.initializeMissingStates(
                     [context.indexName],
@@ -395,7 +386,7 @@ struct IndexLifecycleStoreCorruptionTests {
     func readAdmissionRejectsMissingState() async throws {
         let context = try await makeContext()
 
-        try await context.engine.withTransaction { transaction in
+        try await context.container.withTestBaseTransaction { transaction in
             await expectIndexStateError(
                 .missingPersistedState(index: context.indexName)
             ) {
@@ -691,7 +682,12 @@ struct IndexLifecycleStoreCorruptionTests {
                 .indexQueryContext.withReadableIndex(
                     named: indexName,
                     indexType: .ordered,
-                    for: IndexedCatalogEntry.self
+                    for: IndexedCatalogEntry.self,
+                    authorization: IndexReadAuthorization(
+                        limit: nil,
+                        offset: nil,
+                        orderBy: nil
+                    )
                 ) { _, _ in
                     ()
                 }
@@ -812,11 +808,10 @@ struct IndexLifecycleStoreCorruptionTests {
             ),
             security: .testingDisabled
         )
-        let root = Subspace(
-            prefix: Tuple("index-lifecycle-store-corruption").pack()
-        )
+        let root = try await container.testBaseDataRoot()
+            .subspace("index-lifecycle-store-corruption")
         return IndexStateScenario(
-            engine: engine,
+            container: container,
             lifecycleStore: IndexLifecycleStore(
                 container: container,
                 subspace: root
@@ -848,7 +843,7 @@ private enum IndexStateTransition: CaseIterable, Sendable {
 }
 
 private struct IndexStateScenario: Sendable {
-    let engine: InMemoryEngine
+    let container: DBContainer
     let lifecycleStore: IndexLifecycleStore
     let root: Subspace
     let indexName: String
@@ -868,8 +863,29 @@ private struct IndexStateScenario: Sendable {
         indexName: String? = nil
     ) async throws {
         let key = try stateKey(for: indexName ?? self.indexName)
-        try await engine.withTransaction { transaction in
+        try await container.withTestBaseTransaction { transaction in
             try transaction.setValue(bytes, for: key)
+        }
+    }
+
+    func state(of indexName: String) async throws -> IndexState {
+        try await container.withTestBaseOperation {
+            try await lifecycleStore.state(of: indexName)
+        }
+    }
+
+    func states(of indexNames: [String]) async throws -> [String: IndexState] {
+        try await container.withTestBaseOperation {
+            try await lifecycleStore.states(of: indexNames)
+        }
+    }
+
+    func ensureReadable() async throws {
+        try await container.withTestBaseOperation {
+            try await lifecycleStore.ensureReadable(
+                [indexName],
+                entityRange: entityRange
+            )
         }
     }
 

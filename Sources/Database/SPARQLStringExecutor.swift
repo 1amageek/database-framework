@@ -30,111 +30,15 @@ extension DatabaseContext {
     }
 }
 
-public func executeSPARQLString(
-    _ sparql: String,
-    database: any StorageEngine,
+func _executeRetainedSPARQLSelectPlan(
+    _ plan: SPARQLSelectExecutionPlan,
     sources: [RDFDatasetSource],
     monotonicClock: any StorageMonotonicClock,
     wallClock: any WallClock,
-    transaction: (any TransactionAccess)? = nil,
-    compilationLimits: SPARQLExpressionCompilationLimits = .default,
-    budget: ExecutionBudget
-) async throws -> SPARQLResult {
-    let workMeter = DatabaseWorkMeter(
-        budget: budget,
-        monotonicClock: monotonicClock
-    )
-    let result = try await _executeSPARQLString(
-        sparql,
-        database: database,
-        sources: sources,
-        monotonicClock: monotonicClock,
-        wallClock: wallClock,
-        transaction: transaction,
-        compilationLimits: compilationLimits,
-        workMeter: workMeter
-    )
-    guard let rowCount = UInt32(exactly: result.bindings.count) else {
-        throw DatabaseWorkLimitError.maximumRows(
-            stage: .resultMaterialization,
-            consumed: workMeter.consumedRows,
-            requested: UInt32.max,
-            maximum: budget.maximumRows
-        )
-    }
-    try workMeter.recordOutputRows(rowCount)
-    return result
-}
-
-func _executeSPARQLString(
-    _ sparql: String,
-    database: any StorageEngine,
-    sources: [RDFDatasetSource],
-    monotonicClock: any StorageMonotonicClock,
-    wallClock: any WallClock,
-    transaction: (any TransactionAccess)? = nil,
-    compilationLimits: SPARQLExpressionCompilationLimits,
-    workMeter: DatabaseWorkMeter
-) async throws -> SPARQLResult {
-    let plan = try compileSPARQLSelectPlan(
-        sparql,
-        compilationLimits: compilationLimits
-    )
-    let executor = SPARQLQueryExecutor(
-        database: database,
-        monotonicClock: monotonicClock,
-        wallClock: wallClock,
-        sources: sources
-    )
-    let startTime = monotonicClock.now
-    let executionResult: ([VariableBinding], ExecutionStatistics)
-    if let transaction {
-        executionResult = try await executor.executeInTransaction(
-            selectPlan: plan,
-            transaction: transaction,
-            workMeter: workMeter
-        )
-    } else {
-        executionResult = try await executor.execute(
-            selectPlan: plan,
-            workMeter: workMeter
-        )
-    }
-    var (bindings, statistics) = executionResult
-    statistics.durationNs = DatabaseMonotonicMeasurement.nanoseconds(
-        from: startTime,
-        to: monotonicClock.now
-    )
-    let reachedLimit = plan.slice.limit.map {
-        bindings.count >= $0
-    } ?? false
-    return SPARQLResult(
-        bindings: consume bindings,
-        projectedVariables: plan.projectionVariables,
-        isComplete: !reachedLimit,
-        limitReason: reachedLimit ? .explicitLimit : nil,
-        statistics: statistics
-    )
-}
-
-/// Executes SPARQL for another in-process database operator while retaining
-/// graph result storage in the shared request budget across suspension.
-func _executeRetainedSPARQLString(
-    _ sparql: String,
-    database: any StorageEngine,
-    sources: [RDFDatasetSource],
-    monotonicClock: any StorageMonotonicClock,
-    wallClock: any WallClock,
-    transaction: any TransactionAccess,
-    compilationLimits: SPARQLExpressionCompilationLimits,
+    transaction: any TransactionReadAccess,
     workMeter: DatabaseWorkMeter
 ) async throws -> SPARQLRetainedResult {
-    let plan = try compileSPARQLSelectPlan(
-        sparql,
-        compilationLimits: compilationLimits
-    )
     let executor = SPARQLQueryExecutor(
-        database: database,
         monotonicClock: monotonicClock,
         wallClock: wallClock,
         sources: sources
@@ -153,7 +57,7 @@ func _executeRetainedSPARQLString(
     )
 }
 
-private func compileSPARQLSelectPlan(
+func compileSPARQLSelectPlan(
     _ sparql: String,
     compilationLimits: SPARQLExpressionCompilationLimits
 ) throws -> SPARQLSelectExecutionPlan {

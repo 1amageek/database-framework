@@ -53,10 +53,55 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>:
         )
     }
 
+    /// Adopts an already-accounted Array without copying its COW buffer. The
+    /// additional owner allocation is admitted before shared storage is made.
+    package static func adopting(
+        _ elements: consuming [Element],
+        reservation: DatabaseIntermediateReservation,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseSharedRetainedArray<Element> {
+        let layout = try CanonicalRelationalFootprintMeter
+            .retainedArrayLayout(for: Element.self)
+        if elements.capacity > elements.count {
+            try reservation.reserveAdditional(
+                bytes: try layout.capacityByteCount(
+                    elements.capacity - elements.count
+                ),
+                at: stage
+            )
+        }
+        let ownerReservation = try reservation.reserveChild(
+            bytes: layout.sharedOwnerByteCount,
+            at: stage
+        )
+        return DatabaseSharedRetainedArray(
+            elements: elements,
+            elementReservation: reservation,
+            ownerReservation: ownerReservation
+        )
+    }
+
+    package static func empty(
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseSharedRetainedArray<Element> {
+        let builder = try DatabaseRetainedArrayBuilder<Element>(
+            workMeter: workMeter,
+            stage: stage,
+            layout: try CanonicalRelationalFootprintMeter
+                .retainedArrayLayout(for: Element.self)
+        )
+        return try builder.finish().moveToSharedOwnership(at: stage)
+    }
+
     package var count: Int { storage.elements.count }
     package var isEmpty: Bool { storage.elements.isEmpty }
     package var startIndex: Int { storage.elements.startIndex }
     package var endIndex: Int { storage.elements.endIndex }
+    package var workMeter: DatabaseWorkMeter {
+        storage.elementReservation.workMeter
+    }
 
     package func index(after index: Int) -> Int { index + 1 }
     package func index(before index: Int) -> Int { index - 1 }

@@ -18,7 +18,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             guard limit == 1 else {
@@ -52,16 +52,16 @@ struct SPARQLRuntimeExpressionExecutionTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
-            []
+        ) async throws -> RDFNamedGraphResult {
+            .empty
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
@@ -311,12 +311,13 @@ struct SPARQLRuntimeExpressionExecutionTests {
             variable: "?exists",
             expression: try SPARQLExpressionPlan(.exists(exists))
         )
-        let result = try await SPARQLQueryExecutor(
-            database: InMemoryEngine(),
+        let executor = SPARQLQueryExecutor(
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             datasetScanner: ExistsLimitScanner()
-        ).execute(
+        )
+        let result = try await executeSPARQLTest(
+            executor: executor,
             pattern: pattern,
             limit: nil,
             offset: 0,
@@ -568,13 +569,14 @@ struct SPARQLRuntimeExpressionExecutionTests {
         _ pattern: ExecutionPattern,
         functionRegistry: SPARQLFunctionRegistry = .empty
     ) async throws -> [VariableBinding] {
-        let result = try await SPARQLQueryExecutor(
-            database: InMemoryEngine(),
+        let executor = SPARQLQueryExecutor(
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             sources: [],
             functionRegistry: functionRegistry
-        ).execute(
+        )
+        let result = try await executeSPARQLTest(
+            executor: executor,
             pattern: pattern,
             limit: nil,
             offset: 0,

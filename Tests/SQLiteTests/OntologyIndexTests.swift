@@ -77,15 +77,17 @@ private func containsSubsequence(
 }
 
 private func findEntries(
-    engine: any StorageEngine,
+    container: DBContainer,
     containing term: RDFTerm
 ) async throws -> [ByteString] {
     let needle = try RDFTermStorageFormat.encode(term).copyBytes()
-    return try await engine.withTransaction { transaction in
+    let dataRoot = try await container.testBaseDataRoot()
+    return try await container.withTestBaseTransaction { transaction in
+        let range = dataRoot.range()
         var matched: [ByteString] = []
         for (key, _) in try await transaction.collectRange(
-            from: .firstGreaterOrEqual([0x00]),
-            to: .firstGreaterOrEqual([0xFF]),
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             limit: 10_000,
             snapshot: true
         ) where containsSubsequence(key, needle) {
@@ -263,7 +265,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
 
         let subject = try person.ontologySubject()
         let entries = try await findEntries(
-            engine: container.engine,
+            container: container,
             containing: subject.term
         )
         #expect(entries.count == 18)
@@ -282,7 +284,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         try await context.save()
 
         let entries = try await findEntries(
-            engine: container.engine,
+            container: container,
             containing: person.ontologySubject().term
         )
         let oldLiteral = try RDFTermStorageFormat.encode(
@@ -308,7 +310,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
         try await context.save()
         #expect(
             try await !findEntries(
-                engine: container.engine,
+                container: container,
                 containing: subject.term
             ).isEmpty
         )
@@ -318,7 +320,7 @@ struct OWLClassRDFSQLiteIntegrationTests {
 
         #expect(
             try await findEntries(
-                engine: container.engine,
+                container: container,
                 containing: subject.term
             ).isEmpty
         )

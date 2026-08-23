@@ -31,7 +31,7 @@ struct IVFIndexReader: Sendable {
     func search(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
@@ -87,7 +87,10 @@ struct IVFIndexReader: Sendable {
                 )
             )
         }
-        centroidDistances.sort { $0.distance < $1.distance }
+        centroidDistances.sort {
+            if $0.distance == $1.distance { return $0.index < $1.index }
+            return $0.distance < $1.distance
+        }
         let nearestClusters = centroidDistances
             .prefix(parameters.nprobe)
             .map { $0.index }
@@ -95,7 +98,7 @@ struct IVFIndexReader: Sendable {
         var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
             maxSize: k,
             heapType: .max,
-            comparator: { $0.distance > $1.distance }
+            comparator: VectorSearchResultOrdering.isWorse
         )
 
         for clusterID in nearestClusters {
@@ -143,7 +146,7 @@ struct IVFIndexReader: Sendable {
     }
 
     private func loadMetadata(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> IVFMetadata {
         let key = subspace.pack(Tuple([IVFIndexStorageKey.metadata.rawValue]))
         guard let value = try await transaction.getValue(
@@ -171,7 +174,7 @@ struct IVFIndexReader: Sendable {
     private func exactSearch(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let listsSubspace = subspace.subspace(IVFIndexStorageKey.lists.rawValue)
@@ -187,7 +190,7 @@ struct IVFIndexReader: Sendable {
         var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
             maxSize: k,
             heapType: .max,
-            comparator: { $0.distance > $1.distance }
+            comparator: VectorSearchResultOrdering.isWorse
         )
         try await cursor.consume { key, value in
             try workMeter?.consume(at: .indexScan)
@@ -228,7 +231,7 @@ struct IVFIndexReader: Sendable {
     }
 
     private func hasStoredVector(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Bool {
         let range = subspace.subspace(IVFIndexStorageKey.lists.rawValue).range()
         var cursor = transaction.rangeCursor(
@@ -245,7 +248,7 @@ struct IVFIndexReader: Sendable {
     }
 
     func loadCentroids(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [PersistedVectorView] {
         let centroidSubspace = subspace.subspace(
             IVFIndexStorageKey.centroids.rawValue

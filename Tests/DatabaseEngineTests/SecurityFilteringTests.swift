@@ -1,9 +1,11 @@
 #if !os(WASI)
 import Foundation
+import DatabaseRuntime
+import StorageKit
 import Testing
 import TestHeartbeat
 @testable import DatabaseKit
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Persistable
 private struct SecuredRecord: SecurityPolicy {
@@ -88,6 +90,43 @@ private struct FieldSecuredRecord: SecurityPolicy {
 
     static func permitsDelete(
         _ resource: borrowing FieldSecuredRecord,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+}
+
+@Persistable
+private struct ExactQueryShapeRecord: SecurityPolicy {
+    var id: String = UUID().uuidString
+    var score: Int64 = 0
+    var depth: Int64 = 0
+
+    static func permitsRead(
+        of resource: borrowing ExactQueryShapeRecord,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsQuery(
+        _ query: borrowing SecurityQuery,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        query.limit == 1
+            && query.offset == nil
+            && query.orderBy == ["score"]
+    }
+
+    static func permitsCreate(
+        _ newResource: borrowing ExactQueryShapeRecord,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsUpdate(
+        from resource: borrowing ExactQueryShapeRecord,
+        to newResource: borrowing ExactQueryShapeRecord,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsDelete(
+        _ resource: borrowing ExactQueryShapeRecord,
         in context: borrowing AuthorizationContext
     ) -> Bool { true }
 }
@@ -189,6 +228,72 @@ struct RequestAuthorizationPolicyTests {
                 offset: 0,
                 orderBy: nil
             )
+        }
+    }
+
+    @Test("Logical LIST admission covers only the exact query shape")
+    func logicalListAdmissionRequiresExactShape() async throws {
+        let schema = try Schema(
+            entities: [try ExactQueryShapeRecord.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let container = try await DBContainer.open(
+            testing: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "exact-list-admission-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        ExactQueryShapeRecord.self
+                    )
+                ],
+                authorizationPolicies: [
+                    AuthorizationPolicyHandler(ExactQueryShapeRecord.self)
+                ]
+            )
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext(
+            authorization: .authenticated(
+                Principal(identifier: "exact-query-reader")
+            )
+        )
+        let allowed = IndexReadAuthorization(
+            limit: 1,
+            offset: nil,
+            orderBy: ["score"]
+        )
+        try await context.withDataOperation {
+            let admission = try context.admitLogicalRead(
+                listAuthorization: allowed,
+                fieldPlan: .fullEntity(try ExactQueryShapeRecord.schemaEntity)
+            )
+
+            try await context.withReadAuthorizationAdmission(admission) {
+                #expect(throws: SecurityError.self) {
+                    try context.indexQueryContext.authorizeListAccess(
+                        entityName: ExactQueryShapeRecord.persistableType,
+                        authorization: IndexReadAuthorization(
+                            limit: nil,
+                            offset: nil,
+                            orderBy: ["score"]
+                        )
+                    )
+                }
+                #expect(throws: SecurityError.self) {
+                    try context.indexQueryContext.authorizeListAccess(
+                        entityName: ExactQueryShapeRecord.persistableType,
+                        authorization: IndexReadAuthorization(
+                            limit: 1,
+                            offset: nil,
+                            orderBy: ["depth"]
+                        )
+                    )
+                }
+            }
         }
     }
 

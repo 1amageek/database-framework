@@ -56,23 +56,38 @@ public struct SHACLValidator: Sendable {
     ///
     /// - Returns: Validation report with all results
     public func validate() async throws -> SHACLValidationReport {
-        var allResults: [SHACLValidationResult] = []
+        var allResults = try SHACLValidationResultCollectionBuilder(
+            workMeter: budget.workMeter,
+            expectedSegmentCount: shapesGraph.activeShapes.count
+        )
 
         for shape in shapesGraph.activeShapes {
             try budget.consume(at: .projection)
             let results = try await validateShape(shape)
-            allResults.append(contentsOf: results)
+            try allResults.append(contentsOf: results)
         }
 
-        return SHACLValidationReport(results: allResults)
+        let retainedResults = try allResults.finish()
+        return SHACLValidationReport(
+            results: retainedResults.promoteToOutput()
+        )
     }
 
     /// Validate explicit focus nodes against every active shape.
     public func validate(
         focusNodes: [RDFTerm]
     ) async throws -> SHACLValidationReport {
-        let canonicalFocusNodes = Array(Set(focusNodes)).sorted()
-        var allResults: [SHACLValidationResult] = []
+        var focusNodeBuilder = try SHACLRetainedTermSetBuilder(
+            workMeter: budget.workMeter,
+            expectedCount: focusNodes.count
+        )
+        for focusNode in focusNodes {
+            try focusNodeBuilder.insert(focusNode)
+        }
+        let canonicalFocusNodes = try focusNodeBuilder.finish()
+        var allResults = try SHACLValidationResultCollectionBuilder(
+            workMeter: budget.workMeter
+        )
         for shape in shapesGraph.activeShapes {
             for focusNode in canonicalFocusNodes {
                 try budget.consume(at: .projection)
@@ -80,35 +95,42 @@ public struct SHACLValidator: Sendable {
                     shape,
                     focusNode: focusNode
                 )
-                allResults.append(contentsOf: results)
+                try allResults.append(contentsOf: results)
             }
         }
-        return SHACLValidationReport(results: allResults)
+        let retainedResults = try allResults.finish()
+        return SHACLValidationReport(
+            results: retainedResults.promoteToOutput()
+        )
     }
 
     // MARK: - Shape-Level Validation
 
     /// Validate a single shape against all its target focus nodes
-    private func validateShape(_ shape: SHACLShape) async throws -> [SHACLValidationResult] {
+    private func validateShape(
+        _ shape: SHACLShape
+    ) async throws -> SHACLRetainedValidationResults {
         let focusNodes = try await targetResolver.resolve(
             shape.targets,
             shapeIdentifier: shape.identifier
         )
 
-        var results: [SHACLValidationResult] = []
+        var results = try SHACLValidationResultCollectionBuilder(
+            workMeter: budget.workMeter
+        )
         for focusNode in focusNodes {
             try budget.consume(at: .projection)
             let nodeResults = try await evaluateShapeOnFocusNode(shape, focusNode: focusNode)
-            results.append(contentsOf: nodeResults)
+            try results.append(contentsOf: nodeResults)
         }
-        return results
+        return try results.finish()
     }
 
     /// Evaluate a shape against a single focus node
     private func evaluateShapeOnFocusNode(
         _ shape: SHACLShape,
         focusNode: RDFTerm
-    ) async throws -> [SHACLValidationResult] {
+    ) async throws -> SHACLRetainedValidationResults {
         switch shape {
         case .node(let nodeShape):
             return try await evaluateNodeShape(nodeShape, focusNode: focusNode)
@@ -130,8 +152,10 @@ public struct SHACLValidator: Sendable {
     private func evaluateNodeShape(
         _ nodeShape: NodeShape,
         focusNode: RDFTerm
-    ) async throws -> [SHACLValidationResult] {
-        var results: [SHACLValidationResult] = []
+    ) async throws -> SHACLRetainedValidationResults {
+        var results = try SHACLValidationResultCollectionBuilder(
+            workMeter: budget.workMeter
+        )
 
         // Collect declared property IRIs for sh:closed augmentation (§4.8.1)
         let declaredPropertyIRIs = nodeShape.propertyShapes.compactMap {
@@ -139,7 +163,12 @@ public struct SHACLValidator: Sendable {
         }
 
         // Evaluate node-level constraints (focus node is the value node)
-        let focusAsValue: [RDFTerm] = [focusNode]
+        var focusValueBuilder = try SHACLRetainedTermSetBuilder(
+            workMeter: budget.workMeter,
+            expectedCount: 1
+        )
+        try focusValueBuilder.insert(focusNode)
+        let focusAsValue = try focusValueBuilder.finish()
         for constraint in nodeShape.constraints {
             try budget.consume(at: .projection)
             // Augment sh:closed with declared property paths (§4.8.1)
@@ -161,7 +190,7 @@ public struct SHACLValidator: Sendable {
                 sourceShape: nodeShape.identifier,
                 validator: self
             )
-            results.append(contentsOf: constraintResults)
+            try results.append(contentsOf: constraintResults)
         }
 
         // Evaluate property shapes
@@ -172,10 +201,10 @@ public struct SHACLValidator: Sendable {
                 propertyShape,
                 focusNode: focusNode
             )
-            results.append(contentsOf: propResults)
+            try results.append(contentsOf: propResults)
         }
 
-        return results
+        return try results.finish()
     }
 
     // MARK: - PropertyShape Evaluation
@@ -188,14 +217,16 @@ public struct SHACLValidator: Sendable {
     private func evaluatePropertyShape(
         _ propertyShape: PropertyShape,
         focusNode: RDFTerm
-    ) async throws -> [SHACLValidationResult] {
+    ) async throws -> SHACLRetainedValidationResults {
         // Collect value nodes via SPARQL property path
         let valueNodes = try await constraintEvaluator.collectValueNodes(
             from: focusNode,
             path: propertyShape.path
         )
 
-        var results: [SHACLValidationResult] = []
+        var results = try SHACLValidationResultCollectionBuilder(
+            workMeter: budget.workMeter
+        )
 
         // Evaluate constraints against value nodes
         for constraint in propertyShape.constraints {
@@ -210,7 +241,7 @@ public struct SHACLValidator: Sendable {
                 sourceShape: propertyShape.identifier,
                 validator: self
             )
-            results.append(contentsOf: constraintResults)
+            try results.append(contentsOf: constraintResults)
         }
 
         // Evaluate nested property shapes
@@ -224,11 +255,11 @@ public struct SHACLValidator: Sendable {
                     nestedShape,
                     focusNode: value
                 )
-                results.append(contentsOf: nestedResults)
+                try results.append(contentsOf: nestedResults)
             }
         }
 
-        return results
+        return try results.finish()
     }
 
     // MARK: - Single Node Validation
@@ -246,6 +277,17 @@ public struct SHACLValidator: Sendable {
         _ node: RDFTerm,
         against shape: SHACLShape
     ) async throws -> [SHACLValidationResult] {
+        let retainedResults = try await validateNodeRetained(
+            node,
+            against: shape
+        )
+        return retainedResults.promoteToOutput()
+    }
+
+    func validateNodeRetained(
+        _ node: RDFTerm,
+        against shape: SHACLShape
+    ) async throws -> SHACLRetainedValidationResults {
         try await evaluateShapeOnFocusNode(shape, focusNode: node)
     }
 }

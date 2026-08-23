@@ -57,7 +57,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         if let limit, limit <= 0 {
@@ -130,7 +130,8 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                     throw physicalIndexFailure(source, reason: reason)
                 }
 
-                let storageLimit = try workMeter.storageReadLimitWithSentinel()
+                let storageLimit = try workMeter
+                    .storageWorkReadLimitWithSentinel()
                 var reachedLogicalLimit = false
                 var cursor = transaction.rangeCursor(
                     from: .firstGreaterOrEqual(range.begin),
@@ -409,45 +410,37 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
     public func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [RDFGraphName] {
-        if let limit, limit <= 0 { return [] }
+    ) async throws -> RDFNamedGraphResult {
+        if let limit, limit <= 0 { return .empty }
 
-        var seen = Set<RDFGraphName>()
+        var graphs = try RDFNamedGraphResultBuilder(workMeter: workMeter)
         for source in sources {
             switch source.coverage {
             case .defaultGraph:
                 continue
             case .namedGraph(let graph):
                 try workMeter.consume(at: .deduplication)
-                seen.insert(graph)
+                try graphs.append(graph)
             case .dataset:
                 try await collectNamedGraphs(
                     from: source,
                     readMode: readMode,
                     transaction: transaction,
                     workMeter: workMeter,
-                    into: &seen
+                    into: &graphs
                 )
             }
         }
 
-        try workMeter.consume(UInt64(seen.count), at: .sortInput)
-        var graphs = try seen.sorted { lhs, rhs in
-            try workMeter.consume(2, at: .sortComparison)
-            return lhs < rhs
-        }
-        if let limit, graphs.count > limit {
-            graphs.removeLast(graphs.count - limit)
-        }
-        return graphs
+        return try graphs.finish(limit: limit)
     }
 
     public func containsNamedGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         for source in sources {
@@ -477,9 +470,9 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
     private func collectNamedGraphs(
         from source: RDFDatasetSource,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter,
-        into seen: inout Set<RDFGraphName>
+        into graphs: inout RDFNamedGraphResultBuilder
     ) async throws {
         try workMeter.consume(at: .indexScan)
         let ordering = GraphIndexOrdering.gspo
@@ -533,7 +526,7 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
             }
             let graph = try RDFGraphName(graphTerm)
             try workMeter.consume(at: .deduplication)
-            seen.insert(graph)
+            try graphs.append(graph)
 
             let graphComponent: RDFQuadIndexComponentWritePlan
             do throws(RDFTermStorageError) {

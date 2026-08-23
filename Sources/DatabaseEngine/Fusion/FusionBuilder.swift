@@ -2,13 +2,37 @@
 // DatabaseEngine - Builder for fusion queries with ResultBuilder support
 
 import DatabaseKit
+import StorageKit
+
+private struct FusionBuilderStorageClock: StorageMonotonicClock {
+    private static let clock = ContinuousClock()
+    private static let origin = clock.now
+
+    var now: StorageInstant {
+        StorageInstant(
+            durationSinceReference: Self.origin.duration(to: Self.clock.now)
+        )
+    }
+
+    func sleep(
+        until deadline: StorageInstant
+    ) async throws(StorageClockError) {
+        let remaining = now.duration(to: deadline)
+        guard remaining > .zero else { return }
+        do {
+            try await Self.clock.sleep(for: remaining)
+        } catch {
+            throw .cancelled
+        }
+    }
+}
 
 // MARK: - FusionBuilder
 
 /// Builder for creating and executing fusion queries
 ///
 /// FusionBuilder combines multiple queries using a pipeline or parallel
-/// execution model, then applies a fusion algorithm to merge results.
+/// execution model, then applies a canonical fusion strategy to merge results.
 ///
 /// **Pipeline Execution**:
 /// Each query added with the builder executes sequentially, with candidates
@@ -34,7 +58,7 @@ import DatabaseKit
 ///     // Stage 3: Rank by popularity
 ///     qc.rank(Product.self, \.popularity)
 /// }
-/// .algorithm(.rrf())
+/// .strategy(.reciprocalRank())
 /// .limit(10)
 /// ```
 ///
@@ -48,83 +72,37 @@ import DatabaseKit
 /// ```
 public struct FusionBuilder<T: Persistable>: Sendable {
 
+    private let context: DatabaseContext?
     private let stages: [any FusionStage<T>]
-    private var algorithm: Algorithm
+    private var strategy: FusionStrategy
     private var limitCount: Int?
-
-    // MARK: - Algorithm
-
-    /// Fusion algorithm for combining results
-    public enum Algorithm: Sendable {
-        /// Reciprocal Rank Fusion
-        ///
-        /// Combines results based on their rank positions across sources.
-        /// Items appearing in multiple sources receive higher scores.
-        ///
-        /// Formula: `score(d) = Σ 1/(k + rank_i(d))`
-        ///
-        /// - Parameter k: Rank constant (default: 60, higher = smoother blending)
-        ///
-        /// Reference: Cormack et al., "Reciprocal Rank Fusion outperforms
-        /// Condorcet and individual Rank Learning Methods" (SIGIR 2009)
-        case rrf(k: Int = 60)
-
-        /// Sum of normalized scores
-        ///
-        /// Adds together the normalized scores from each source.
-        /// Good when scores from different sources are comparable.
-        case sum
-
-        /// Maximum score
-        ///
-        /// Takes the maximum score from any source.
-        /// Good when you want the best match from any single source.
-        case max
-
-        /// Weighted sum of scores
-        ///
-        /// Applies weights to each query result set before summing.
-        /// **Important**: Weights are per-query, not per-stage. A Parallel stage
-        /// with 2 queries counts as 2 sources.
-        ///
-        /// **Example**:
-        /// ```swift
-        /// context.fuse(Product.self) {
-        ///     Search(...)      // source 0
-        ///     Parallel {
-        ///         Similar(...) // source 1
-        ///         Nearby(...)  // source 2
-        ///     }
-        ///     Rank(...)        // source 3
-        /// }
-        /// .algorithm(.weighted([0.3, 0.3, 0.2, 0.2]))
-        /// ```
-        ///
-        /// - Parameter weights: Array of weights (one per query source)
-        case weighted([Double])
-    }
 
     // MARK: - Initialization
 
     internal init(
         stages: [any FusionStage<T>],
-        algorithm: Algorithm = .rrf(),
+        context: DatabaseContext? = nil,
+        strategy: FusionStrategy = .reciprocalRank(),
         limit: Int? = nil
     ) {
+        self.context = context
         self.stages = stages
-        self.algorithm = algorithm
+        self.strategy = strategy
         self.limitCount = limit
     }
 
     // MARK: - Configuration
 
-    /// Set the fusion algorithm
+    /// Set the canonical fusion strategy.
     ///
-    /// - Parameter algorithm: The algorithm to use for combining results
+    /// Weighted strategies use one weight per query source, including each
+    /// query inside a parallel stage.
+    ///
+    /// - Parameter strategy: The strategy used to combine ordered inputs.
     /// - Returns: Updated builder
-    public func algorithm(_ algorithm: Algorithm) -> Self {
+    public func strategy(_ strategy: FusionStrategy) -> Self {
         var copy = self
-        copy.algorithm = algorithm
+        copy.strategy = strategy
         return copy
     }
 
@@ -143,69 +121,261 @@ public struct FusionBuilder<T: Persistable>: Sendable {
     /// Execute the fusion query
     ///
     /// Executes all stages in order, applying candidate filtering between
-    /// stages, then combines results using the specified fusion algorithm.
+    /// stages, then combines results using the specified fusion strategy.
     ///
     /// - Returns: Array of scored results, sorted by score descending
-    public func execute() async throws -> [ScoredResult<T>] {
+    public func execute(
+        options: ReadExecutionOptions = .default
+    ) async throws -> [ScoredResult<T>] {
         try validateConfiguration()
-        guard !stages.isEmpty else { return [] }
+        guard !stages.isEmpty else {
+            throw FusionQueryError.invalidConfiguration(
+                "Fusion requires at least one input"
+            )
+        }
+
+        let execution = ReadExecutionContext(
+            options: options,
+            monotonicClock: context?.container.monotonicClock
+                ?? FusionBuilderStorageClock()
+        )
+        guard let context else {
+            return try await executeStages(execution: execution)
+        }
+        let canonicalRead = CanonicalReadExecution.resolve(
+            requested: options.consistency,
+            default: .snapshot
+        )
+        return try await context.executeCanonicalRead(
+            configuration: canonicalRead.transactionConfiguration
+        ) { _ in
+            try context.indexQueryContext.authorizeListAccess(
+                entityName: T.persistableType,
+                authorization: IndexReadAuthorization(
+                    limit: limitCount,
+                    offset: nil,
+                    orderBy: ["score"]
+                )
+            )
+            return try await executeStages(execution: execution)
+        }
+    }
+
+    private func executeStages(
+        execution: ReadExecutionContext
+    ) async throws -> [ScoredResult<T>] {
+        let workMeter = execution.workMeter
 
         var candidateIDs: Set<T.ID>? = nil
-        var allResults: [[ScoredResult<T>]] = []
-
+        var candidateReservation: DatabaseIntermediateReservation?
+        defer { candidateReservation?.release() }
+        var allResultsBuilder = try FusionStageResultBuilder<T>(
+            execution: execution,
+            expectedCount: stages.count
+        )
         // Execute stages sequentially
         for (stageIndex, stage) in stages.enumerated() {
             // Stage 0 has no candidate restriction
             // Subsequent stages filter to candidates from previous stages
             let stageCandidates = stageIndex > 0 ? candidateIDs : nil
 
-            let stageResults = try await stage.execute(candidates: stageCandidates)
-            guard stageResults.allSatisfy({ results in
-                results.allSatisfy { $0.score.isFinite }
+            let stageResults = try await stage.execute(
+                candidates: stageCandidates,
+                execution: execution
+            )
+            let retainedStageResults = stageResults.retainedElements
+            let resultCount = retainedStageResults.reduce(into: 0) {
+                $0 += $1.count
+            }
+            try workMeter.consume(UInt64(resultCount), at: .indexScan)
+            guard retainedStageResults.allSatisfy({ results in
+                results.retainedElements.allSatisfy { $0.score.isFinite }
             }) else {
                 throw FusionQueryError.invalidConfiguration(
                     "Fusion sources must produce finite scores"
                 )
             }
 
-            // Update candidate set (intersection of all results in this stage)
-            var stageIDs: Set<T.ID> = []
-            for results in stageResults {
-                for result in results {
+            // A parallel stage admits the union of its query results. Each
+            // later stage intersects that union with the prior candidates.
+            var stageIDReservation: DatabaseIntermediateReservation? =
+                try workMeter.reserveIntermediate(
+                    rows: UInt64(resultCount),
+                    bytes: try Self.identitySetFootprint(
+                        count: resultCount
+                    ).bytes,
+                    at: .deduplication
+                )
+            defer { stageIDReservation?.release() }
+            var stageIDs = Set<T.ID>(minimumCapacity: resultCount)
+            for results in retainedStageResults {
+                for result in results.retainedElements {
                     stageIDs.insert(result.item.id)
                 }
             }
+            let unusedStageIdentityCount = resultCount - stageIDs.count
+            if unusedStageIdentityCount > 0 {
+                try stageIDReservation?.releasePartial(
+                    rows: UInt64(unusedStageIdentityCount)
+                )
+            }
 
-            if candidateIDs == nil {
-                candidateIDs = stageIDs
+            if let previousCandidates = candidateIDs {
+                let maximumIntersectionCount = min(
+                    previousCandidates.count,
+                    stageIDs.count
+                )
+                let nextReservation = try workMeter.reserveIntermediate(
+                    rows: UInt64(maximumIntersectionCount),
+                    bytes: try Self.identitySetFootprint(
+                        count: maximumIntersectionCount
+                    ).bytes,
+                    at: .deduplication
+                )
+                var ownsNextReservation = true
+                defer {
+                    if ownsNextReservation { nextReservation.release() }
+                }
+                let nextCandidates = previousCandidates.intersection(stageIDs)
+                let unusedIntersectionCount = maximumIntersectionCount
+                    - nextCandidates.count
+                if unusedIntersectionCount > 0 {
+                    try nextReservation.releasePartial(
+                        rows: UInt64(unusedIntersectionCount)
+                    )
+                }
+                candidateIDs = nextCandidates
+                candidateReservation?.release()
+                candidateReservation = nextReservation
+                ownsNextReservation = false
             } else {
-                candidateIDs = candidateIDs!.intersection(stageIDs)
+                candidateIDs = stageIDs
+                candidateReservation = stageIDReservation
+                stageIDReservation = nil
             }
 
-            // Collect all results for fusion
-            allResults.append(contentsOf: stageResults)
-        }
-
-        // Filter all results to final candidate set
-        // This ensures items filtered out in later stages don't appear in fusion
-        let filteredResults: [[ScoredResult<T>]]
-        if let finalCandidates = candidateIDs {
-            filteredResults = allResults.map { results in
-                results.filter { finalCandidates.contains($0.item.id) }
+            for result in retainedStageResults {
+                try allResultsBuilder.append(result)
             }
-        } else {
-            filteredResults = allResults
+        }
+        let allResults = try allResultsBuilder.finish()
+        guard !allResults.isEmpty else {
+            throw FusionQueryError.invalidConfiguration(
+                "Fusion requires at least one input"
+            )
         }
 
-        // Apply fusion algorithm
-        var fused = try applyAlgorithm(algorithm, to: filteredResults)
-
-        // Apply limit
-        if let limit = limitCount {
-            fused = Array(fused.prefix(limit))
+        // Apply the strategy directly over eligible rows so the pipeline does
+        // not materialize a second copy of every source result.
+        let fusedResults: DatabaseSharedRetainedArray<
+            CanonicalFusionAlgebraResult<ReferenceIdentifier, ScoredResult<T>>
+        >
+        do {
+            fusedResults = try CanonicalFusionAlgebra.fuse(
+                sources: allResults.retainedElements.lazy.map(
+                    \.retainedElements
+                ),
+                orderedSources: allResults.retainedElements.lazy.map {
+                    $0.ordering.isRankOrdered
+                },
+                strategy: strategy,
+                isEligible: { result in
+                    candidateIDs?.contains(result.item.id) ?? true
+                },
+                workMeter: workMeter,
+                identity: { result in
+                    result.item.id.persistableIdentifierValue
+                },
+                signal: { result in
+                    .higherIsBetter(result.score)
+                },
+                payloadsAreEquivalent: { lhs, rhs in
+                    try Self.payloadsAreEquivalent(lhs.item, rhs.item)
+                }
+            )
+        } catch let error as CanonicalFusionAlgebraError<ReferenceIdentifier> {
+            throw FusionQueryError.invalidConfiguration(
+                Self.describe(error)
+            )
+        }
+        var fused: [ScoredResult<T>] = []
+        let visibleCount = min(limitCount ?? fusedResults.count, fusedResults.count)
+        guard let outputCount = UInt32(exactly: visibleCount) else {
+            throw FusionQueryError.invalidConfiguration(
+                "Fusion output count exceeds the supported range"
+            )
+        }
+        try workMeter.recordOutputRows(outputCount)
+        fused.reserveCapacity(visibleCount)
+        for entry in fusedResults.prefix(visibleCount) {
+            fused.append(
+                ScoredResult(item: entry.payload.item, score: entry.score)
+            )
         }
 
         return fused
+    }
+
+    private static func identitySetFootprint(
+        count: Int
+    ) throws -> DatabaseIntermediateFootprint {
+        try DatabaseIntermediateFootprint(
+            bytes: UInt64(MemoryLayout<Set<T.ID>>.stride)
+        ).adding(identitySetElementFootprint(count: count))
+    }
+
+    private static func payloadsAreEquivalent(
+        _ lhs: borrowing T,
+        _ rhs: borrowing T
+    ) throws -> Bool {
+        for name in T.allFields {
+            guard try lhs.persistedValue(forFieldNamed: name)
+                == rhs.persistedValue(forFieldNamed: name) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func identitySetElementFootprint(
+        count: Int
+    ) throws -> DatabaseIntermediateFootprint {
+        guard count >= 0 else {
+            throw FusionQueryError.invalidConfiguration(
+                "Fusion identity count must not be negative"
+            )
+        }
+        return try DatabaseIntermediateFootprint(
+            rows: 1,
+            bytes: UInt64(max(1, MemoryLayout<T.ID>.stride) + 48)
+        ).multiplied(by: UInt64(count))
+    }
+
+    private static func describe(
+        _ error: CanonicalFusionAlgebraError<ReferenceIdentifier>
+    ) -> String {
+        switch error {
+        case .weightCountMismatch(let expected, let actual):
+            return "Weighted fusion requires \(expected) weights, got \(actual)"
+        case .nonFiniteWeight:
+            return "Fusion weights must be finite"
+        case .negativeWeight:
+            return "Fusion weights must not be negative"
+        case .duplicateIdentity:
+            return "A fusion input produced a duplicate identity"
+        case .inconsistentPayload:
+            return "Fusion inputs disagree about one persisted identity"
+        case .inconsistentSignal:
+            return "A fusion input produced inconsistent score signals"
+        case .nonFiniteSignal:
+            return "Fusion sources must produce finite scores"
+        case .unorderedRankSource:
+            return "Rank fusion requires an ordered source"
+        case .scoreOverflow:
+            return "Fusion score accumulation exceeded the finite range"
+        case .inputCountOverflow:
+            return "Fusion input count exceeds the supported range"
+        }
     }
 
     // MARK: - Private Helpers
@@ -216,115 +386,10 @@ public struct FusionBuilder<T: Persistable>: Sendable {
                 "Fusion result limit must not be negative"
             )
         }
-        switch algorithm {
-        case .rrf(let rankConstant):
-            guard rankConstant >= 0 else {
-                throw FusionQueryError.invalidConfiguration(
-                    "RRF rank constant must not be negative"
-                )
-            }
-        case .weighted(let weights):
-            guard weights.allSatisfy({ $0.isFinite }) else {
-                throw FusionQueryError.invalidConfiguration(
-                    "Fusion weights must be finite"
-                )
-            }
-        case .sum, .max:
-            break
-        }
     }
 
-    private func applyAlgorithm(
-        _ algorithm: Algorithm,
-        to sources: [[ScoredResult<T>]]
-    ) throws -> [ScoredResult<T>] {
-        var scores: [T.ID: (item: T, score: Double)] = [:]
-
-        switch algorithm {
-        case .rrf(let k):
-            for source in sources {
-                for (rank, result) in source.enumerated() {
-                    let id = result.item.id
-                    let denominator = Double(k) + Double(rank) + 1.0
-                    let rrfScore = 1.0 / denominator
-                    if let existing = scores[id] {
-                        scores[id] = (existing.item, existing.score + rrfScore)
-                    } else {
-                        scores[id] = (result.item, rrfScore)
-                    }
-                }
-            }
-
-        case .sum:
-            for source in sources {
-                for result in source {
-                    let id = result.item.id
-                    if let existing = scores[id] {
-                        scores[id] = (
-                            existing.item,
-                            try finiteSum(existing.score, result.score)
-                        )
-                    } else {
-                        scores[id] = (result.item, result.score)
-                    }
-                }
-            }
-
-        case .max:
-            for source in sources {
-                for result in source {
-                    let id = result.item.id
-                    if let existing = scores[id] {
-                        scores[id] = (existing.item, Swift.max(existing.score, result.score))
-                    } else {
-                        scores[id] = (result.item, result.score)
-                    }
-                }
-            }
-
-        case .weighted(let weights):
-            guard weights.count == sources.count else {
-                throw FusionQueryError.invalidConfiguration(
-                    "Weighted fusion requires exactly one weight per source"
-                )
-            }
-            for (sourceIndex, source) in sources.enumerated() {
-                let weight = weights[sourceIndex]
-                for result in source {
-                    let id = result.item.id
-                    let weightedScore = result.score * weight
-                    guard weightedScore.isFinite else {
-                        throw FusionQueryError.invalidConfiguration(
-                            "Weighted fusion produced a non-finite score"
-                        )
-                    }
-                    if let existing = scores[id] {
-                        scores[id] = (
-                            existing.item,
-                            try finiteSum(existing.score, weightedScore)
-                        )
-                    } else {
-                        scores[id] = (result.item, weightedScore)
-                    }
-                }
-            }
-        }
-
-        return scores.values
-            .sorted { $0.score > $1.score }
-            .map { ScoredResult(item: $0.item, score: $0.score) }
-    }
-
-    private func finiteSum(_ lhs: Double, _ rhs: Double) throws -> Double {
-        let result = lhs + rhs
-        guard result.isFinite else {
-            throw FusionQueryError.invalidConfiguration(
-                "Fusion score accumulation exceeded the finite range"
-            )
-        }
-        return result
-    }
 }
+
 
 // MARK: - FusionStageBuilder
 
@@ -389,7 +454,7 @@ extension DatabaseContext {
     ///
     /// Fusion enables hybrid search by combining results from different
     /// query types (FullText, Vector, Spatial, etc.) using various
-    /// fusion algorithms like Reciprocal Rank Fusion (RRF).
+    /// fusion strategies like Reciprocal Rank Fusion (RRF).
     ///
     /// **Pipeline Execution**:
     /// Queries execute sequentially, with each stage restricting candidates
@@ -410,7 +475,7 @@ extension DatabaseContext {
     ///     qc.search(Product.self, \.description).terms(["coffee"])
     ///     qc.similar(Product.self, \.embedding, dimensions: 384).query(vector, k: 100)
     /// }
-    /// .algorithm(.rrf())
+    /// .strategy(.reciprocalRank())
     /// .limit(10)
     ///
     /// // Pipeline with parallel stage
@@ -424,7 +489,7 @@ extension DatabaseContext {
     ///
     ///     qc.rank(Product.self, \.rating).order(.descending)
     /// }
-    /// .algorithm(.weighted([0.2, 0.4, 0.4]))
+    /// .strategy(.weighted([0.2, 0.4, 0.4]))
     /// .limit(20)
     /// ```
     ///
@@ -440,6 +505,6 @@ extension DatabaseContext {
         let stages = FusionContext.withContext(indexQueryContext) {
             content()
         }
-        return FusionBuilder(stages: stages)
+        return FusionBuilder(stages: stages, context: self)
     }
 }

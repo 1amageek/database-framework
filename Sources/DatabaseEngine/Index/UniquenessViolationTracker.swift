@@ -310,7 +310,10 @@ package final class UniquenessViolationTracker: Sendable {
         indexName: String,
         limit: Int? = nil
     ) async throws -> [UniquenessViolation] {
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await container.withDatabaseTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
             try await self.scanViolations(
                 indexName: indexName,
                 limit: limit,
@@ -359,7 +362,10 @@ package final class UniquenessViolationTracker: Sendable {
     public func scanAllViolations(
         limit: Int? = nil
     ) async throws -> [String: [UniquenessViolation]] {
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await container.withDatabaseTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
             try await self.scanAllViolations(limit: limit, transaction: transaction)
         }
     }
@@ -390,7 +396,10 @@ package final class UniquenessViolationTracker: Sendable {
     /// - Parameter indexName: Name of the index to check
     /// - Returns: True if violations exist
     public func hasViolations(indexName: String) async throws -> Bool {
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await container.withDatabaseTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
             try await self.hasViolations(indexName: indexName, transaction: transaction)
         }
     }
@@ -417,7 +426,10 @@ package final class UniquenessViolationTracker: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Returns: Number of distinct value violations (not total conflicting entities)
     public func countViolations(indexName: String) async throws -> Int {
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await container.withDatabaseTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
             try await self.countViolations(indexName: indexName, transaction: transaction)
         }
     }
@@ -456,7 +468,10 @@ package final class UniquenessViolationTracker: Sendable {
         valueKey: ByteString,
         indexSubspace: Subspace
     ) async throws -> ViolationResolution {
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await container.withDatabaseTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
             try await self.verifyResolution(
                 indexName: indexName,
                 valueKey: valueKey,
@@ -529,7 +544,10 @@ package final class UniquenessViolationTracker: Sendable {
         indexName: String,
         valueKey: ByteString
     ) async throws {
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await container.withDatabaseTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
             try await self.clearViolation(
                 indexName: indexName,
                 valueKey: valueKey,
@@ -560,7 +578,10 @@ package final class UniquenessViolationTracker: Sendable {
     ///
     /// - Parameter indexName: Name of the index
     public func clearAllViolations(indexName: String) async throws {
-        try await container.transactionExecutor.withTransaction(configuration: .batch, clock: container.monotonicClock) { transaction in
+        try await container.withDatabaseTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
+        ) { transaction in
             try await self.clearAllViolations(indexName: indexName, transaction: transaction)
         }
     }
@@ -603,9 +624,9 @@ public struct ViolationSummary: Sendable {
 extension UniquenessViolationTracker {
     /// Get summary of violations for an index
     public func violationSummary(indexName: String) async throws -> ViolationSummary {
-        try await container.transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: container.monotonicClock
+        try await container.withDatabaseTransaction(
+            requiredAccess: .administer,
+            configuration: .batch
         ) { transaction in
             try await self.violationSummary(
                 indexName: indexName,

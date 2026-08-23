@@ -135,7 +135,7 @@ public struct FlatVectorIndexMaintainer<Item: PersistedEntityValue>: IndexMainta
     public func search(
         queryVector: [Float],
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let retainedQuery = try Vector(float32: queryVector)
         return try await search(
@@ -148,7 +148,7 @@ public struct FlatVectorIndexMaintainer<Item: PersistedEntityValue>: IndexMainta
     func search(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         try await FlatVectorIndexReader(
             subspace: subspace,
