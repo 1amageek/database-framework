@@ -214,6 +214,31 @@ public struct GraphPropertyScanner: Sendable {
         )
     }
 
+    /// Scans through the immutable transaction owned by this scanner's graph
+    /// snapshot without exposing that transaction to the caller.
+    @_spi(DatabaseExecution)
+    public func scanSnapshotEdges(
+        from source: GraphIdentity?,
+        edge edgeLabel: GraphIdentity?,
+        to target: GraphIdentity?,
+        graphTarget: GraphScanTarget = .all,
+        propertyFilters: [PropertyFilter]?
+    ) -> GraphPropertyScan {
+        guard let snapshot else {
+            preconditionFailure(
+                "Snapshot scanning requires a GraphReadSnapshot"
+            )
+        }
+        return scanEdges(
+            from: source,
+            edge: edgeLabel,
+            to: target,
+            graphTarget: graphTarget,
+            propertyFilters: propertyFilters,
+            transaction: snapshot.transaction
+        )
+    }
+
     package func decodeProperties(
         _ value: ByteString
     ) throws -> [String: FieldValue] {
