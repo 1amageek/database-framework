@@ -182,6 +182,22 @@ public struct CompositionDataSource: Sendable {
         try await acquireReadLease().resolution
     }
 
+    /// Authorizes every member and retains their generation leases while an
+    /// adapter consumes immutable Composition metadata. Storage and lease
+    /// authority remain inside DatabaseEngine and cannot escape the callback.
+    @_spi(DatabaseExecution)
+    public func withAuthorizedReadDescriptor<Result: Sendable>(
+        _ operation: @escaping @Sendable (
+            DatabaseCompositionReadDescriptor
+        ) async throws -> Result
+    ) async throws -> Result {
+        let lease = try await acquireReadLease()
+        defer { withExtendedLifetime(lease) {} }
+        return try await operation(
+            DatabaseCompositionReadDescriptor(lease: lease)
+        )
+    }
+
     /// Opens one read transaction per physical domain and keeps all of them
     /// alive until the federated operation finishes. Every member Grant is
     /// checked before `operation` can observe data.
