@@ -1984,7 +1984,10 @@ extension DatabaseContext {
             )
             do {
                 let result = try await operation(
-                    transaction.executionReadTransaction
+                    DatabaseExecutionReadTransaction(
+                        transaction: transaction,
+                        context: self
+                    )
                 )
                 await transaction.invalidate()
                 return result
