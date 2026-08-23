@@ -606,7 +606,7 @@ struct DatabaseRetainedBufferTests {
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
-    @Test("partial RDF graph promotion releases the hidden full graph")
+    @Test("RDF graph promotion and shared continuation pages preserve accounting")
     func partialRDFGraphPromotionReleasesFullGraph() throws {
         let meter = DatabaseWorkMeter(
             budget: ExecutionBudget(
@@ -630,6 +630,32 @@ struct DatabaseRetainedBufferTests {
         #expect(page == [try graphQuad(identifier: 2)])
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
+
+        var sharedBuilder = try DatabaseRetainedRDFGraphBuilder(
+            workMeter: meter
+        )
+        for identifier in 1...3 {
+            try sharedBuilder.append(try graphQuad(identifier: identifier))
+        }
+        let shared = try sharedBuilder.finish()
+            .moveToSharedOwnership()
+        let sourceRows = meter.retainedIntermediateRows
+        let promotedPage: [RDFQuad]
+        do {
+            let retainedPage = try shared.retainedPage(
+                1..<3,
+                workMeter: meter
+            )
+            #expect(meter.retainedIntermediateRows == sourceRows + 2)
+            promotedPage = retainedPage.promoteToOutput()
+        }
+        #expect(
+            promotedPage == [
+                try graphQuad(identifier: 2),
+                try graphQuad(identifier: 3),
+            ]
+        )
+        #expect(meter.retainedIntermediateRows == sourceRows)
     }
 
     private func makeMeter(

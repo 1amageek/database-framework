@@ -39,4 +39,23 @@ public struct DatabasePreparedSQLSelect: Sendable {
             graphPartitions: graphPartitions
         )
     }
+
+    /// Executes while retaining request-accounted response ownership for a
+    /// downstream internal stage such as durable continuation persistence.
+    public func executeRetained(
+        in context: DatabaseContext,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject()
+    ) async throws -> DatabaseRetainedQueryResponse {
+        guard execution.workMeter === workMeter else {
+            throw DatabasePreparedSQLSelectError.workMeterMismatch
+        }
+        let lifetimeOwner = retainedStorage
+        defer { withExtendedLifetime(lifetimeOwner) {} }
+        return try await context.executeRetainedCanonicalQuery(
+            query,
+            execution: execution,
+            graphPartitions: graphPartitions
+        )
+    }
 }

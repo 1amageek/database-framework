@@ -630,6 +630,41 @@ extension DatabaseContext {
         )
     }
 
+    /// Executes a canonical query while retaining the complete response and
+    /// its request-scoped intermediate-memory reservations.
+    @_spi(DatabaseExecution)
+    public func executeRetainedCanonicalQuery(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject()
+    ) async throws -> DatabaseRetainedQueryResponse {
+        try QueryStructuralValidator.validate(
+            selectQuery,
+            limits: execution.queryStructuralLimits
+        )
+        let readExecution = CanonicalReadExecution.resolve(
+            requested: execution.consistency,
+            default: .serializable
+        )
+        return try await withDataOperation { [self] in
+            try await withLogicalReadAuthorizationAdmission(
+                for: selectQuery
+            ) {
+                try await withReadStorageAccess(
+                    configuration: readExecution.transactionConfiguration
+                ) { [self] transaction in
+                    try await queryCanonical(
+                        selectQuery,
+                        options: execution,
+                        partitionValues: graphPartitions,
+                        partitionMode: .strict,
+                        transaction: transaction
+                    )
+                }
+            }
+        }
+    }
+
     /// Executes a canonical query while retaining request-accounted row
     /// ownership for an internal downstream stage.
     ///

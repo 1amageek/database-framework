@@ -111,7 +111,8 @@ public struct DatabaseRetainedQueryResponse: Sendable {
     }
 
     /// Promotes retained storage only at a top-level public result boundary.
-    package consuming func promoteToPublicResponse() -> QueryResponse {
+    @_spi(DatabaseExecution)
+    public consuming func promoteToPublicResponse() -> QueryResponse {
         let visibleRange = visibleRange
         let continuation = continuation
         let metadata = retainedMetadata.values
