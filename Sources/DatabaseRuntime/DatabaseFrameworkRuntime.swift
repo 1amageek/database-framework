@@ -184,6 +184,9 @@ public enum DatabaseFrameworkRuntime {
         #if DATABASE_RUNTIME_FULL_TEXT_INDEXES
         executors.append(FullTextFusionIndexReadExecutor())
         #endif
+        #if DATABASE_RUNTIME_BITMAP_INDEXES
+        executors.append(BitmapFusionIndexReadExecutor())
+        #endif
         return executors
     }
 
