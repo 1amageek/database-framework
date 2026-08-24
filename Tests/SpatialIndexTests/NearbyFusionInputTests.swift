@@ -178,6 +178,12 @@ struct NearbyFusionInputTests {
                     transaction: transaction
                 )
             )
+            #expect(
+                readable.physicalLayout == (try IndexPhysicalLayout(
+                    name: "spatial.exact-coordinate",
+                    revision: 1
+                ))
+            )
             let coordinate = SpatialIndexStoredCoordinate(
                 point: item.location.point,
                 height: item.location.ellipsoidalHeightInMeters

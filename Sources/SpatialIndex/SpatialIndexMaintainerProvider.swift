@@ -8,6 +8,22 @@ public struct SpatialIndexMaintainerProvider: IndexMaintainerProvider {
 
     public init() {}
 
+    public func physicalLayout(
+        for index: ResolvedIndex,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> IndexPhysicalLayout {
+        guard configurations.isEmpty else {
+            throw IndexMaintainerProviderError.unhandledRuntimeConfiguration(
+                indexType: indexType,
+                indexName: index.name
+            )
+        }
+        return try IndexPhysicalLayout(
+            name: "spatial.exact-coordinate",
+            revision: 1
+        )
+    }
+
     public func makeIndexMaintainer<Item: PersistedEntityValue>(
         index: ResolvedIndex,
         subspace: Subspace,

@@ -225,7 +225,7 @@ private func deepE2EAggregates(
 
 @Suite("DatabaseFramework Deep E2E Tests", .serialized, .heartbeat)
 struct DatabaseFrameworkDeepE2ETests {
-    @Test("Fusion restricts FullText before limit and ranks the admitted candidates")
+    @Test("Fusion restricts feature readers before limit and ranks admitted candidates")
     func fusionRestrictsFullTextBeforeLimitAndRanksCandidates() async throws {
         let schema = try Schema(
             entities: [try DeepE2EIndexedTicket.schemaEntity],
@@ -356,21 +356,22 @@ struct DatabaseFrameworkDeepE2ETests {
             "fusion-repeated-phrase"
         ])
 
-        let unavailableBitmap = try Bitmap(
+        let openBitmap = try Bitmap(
             DeepE2EIndexedTicket.fields.status,
             equals: "open"
         )
-        let unsupportedQuery = FusionQuery<DeepE2EIndexedTicket> {
-            unavailableBitmap
+        let bitmapRestrictedQuery = FusionQuery<DeepE2EIndexedTicket> {
+            openBitmap
             Search(DeepE2EIndexedTicket.fields.description)
                 .terms(["fusion"])
         }
-        await #expect {
-            _ = try await context.execute(unsupportedQuery)
-        } throws: { error in
-            error as? FusionExecutionError
-                == .indexExecutorNotRegistered(.bitmap)
-        }
+        let bitmapRestrictedResponse = try await context.execute(
+            bitmapRestrictedQuery
+        )
+        #expect(bitmapRestrictedResponse.results.map(\.item.id) == [
+            "fusion-open-low",
+            "fusion-open-high",
+        ])
     }
 
     @Test("SQLite maintains scalar full-text and aggregation indexes through update delete and rollback")

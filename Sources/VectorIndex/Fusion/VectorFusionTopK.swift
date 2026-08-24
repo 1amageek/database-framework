@@ -28,6 +28,8 @@ struct VectorFusionTopK {
         primaryKey: ByteString,
         distance: Double
     ) throws {
+        // The heap outlives each physical cursor row. Only admitted winners
+        // receive an exact, limit-bounded key copy with its own reservation.
         guard limit > 0 else { return }
         if matches.count < limit {
             let (requiredCapacity, overflow) = matches.count

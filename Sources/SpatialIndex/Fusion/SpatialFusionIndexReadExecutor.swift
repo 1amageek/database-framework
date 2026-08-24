@@ -67,6 +67,12 @@ package struct SpatialFusionIndexReadExecutor: FusionIndexReadExecutor {
     ) async throws -> FusionInputCoverage {
         guard request.limit > 0 else { return .satisfiedLimit }
         let prepared = try parameters(from: request.source.parameters)
+        let physicalLayout = request.access.index.physicalLayout
+        guard physicalLayout.name == "spatial.exact-coordinate",
+              physicalLayout.revision == 1,
+              physicalLayout.parameters.isEmpty else {
+            throw FusionExecutionError.executionContractViolation
+        }
         let configuration = try configuration(
             from: request.access.index.descriptor.declaration.definition
         )

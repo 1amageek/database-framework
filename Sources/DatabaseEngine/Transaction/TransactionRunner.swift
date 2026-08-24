@@ -454,7 +454,7 @@ internal struct TransactionRunner: Sendable {
                 }
             }
             group.addTask {
-                try await clock.sleep(until: deadline.instant)
+                try await sleepUntil(deadline.instant)
                 guard raceState.selectTimeout() else { return .lostRace }
                 let timeoutError = Self.timeoutError(deadline)
                 if let cleanupError = await cancellationGate.cancel(
@@ -687,10 +687,20 @@ internal struct TransactionRunner: Sendable {
         )
         let wake = clock.now.advanced(by: .milliseconds(delayMs))
         if let deadline, wake >= deadline.instant {
-            try await clock.sleep(until: deadline.instant)
+            try await sleepUntil(deadline.instant)
             throw Self.timeoutError(deadline)
         }
-        try await clock.sleep(until: wake)
+        try await sleepUntil(wake)
+    }
+
+    private func sleepUntil(_ deadline: StorageInstant) async throws {
+        do {
+            try await clock.sleep(until: deadline)
+        } catch .cancelled {
+            throw CancellationError()
+        } catch {
+            throw error
+        }
     }
 
     /// Calculate backoff delay with exponential growth and jitter
