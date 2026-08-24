@@ -30,7 +30,10 @@ public enum FusionExecutionError: Error, Sendable, Equatable {
 /// Internal invariant and physical-runtime failures. These details are not a
 /// stable public API and never expose packed storage keys to library clients.
 enum FusionExecutionContractError: Error, Sendable, Equatable {
+    case executionContractViolation
     case missingIdentity(field: String)
+    case missingConnectedResultField(field: String)
+    case invalidConnectedResultValue(field: String)
     case duplicateIdentity(FieldValue)
     case duplicatePrimaryKey(ByteString)
     case candidateDomainViolation(ByteString)

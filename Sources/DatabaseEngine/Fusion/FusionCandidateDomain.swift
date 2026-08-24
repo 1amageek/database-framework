@@ -28,6 +28,13 @@ package struct FusionCandidateDomain: Sendable {
         entries[index].packedPrimaryKey
     }
 
+    func withEntry<Result>(
+        at index: Int,
+        _ body: (borrowing Entry) throws -> Result
+    ) rethrows -> Result {
+        try entries.withElement(at: index, body)
+    }
+
     package func contains(
         primaryKey: ByteString,
         workMeter: DatabaseWorkMeter

@@ -314,15 +314,42 @@ enum FusionPreflight {
                         )
                     )
                     operation = .order(keys)
-                case .connected:
-                    // FIXME(INCOMPLETE_IMPLEMENTATION): Connected is
-                    // representable in QueryIR, but DatabaseEngine has no
-                    // cross-entity Fusion traversal executor. Production
-                    // reaches this post-authorization phase and fails
-                    // explicitly. Do not treat it as supported until graph
-                    // ownership, candidate restriction, transaction, and
-                    // resource tests pass.
-                    throw FusionExecutionError.unsupportedSource
+                case .connected(let source):
+                    guard let resultField = entity.fieldMapByName[
+                        source.resultField.name
+                    ],
+                    resultField.fieldNumber == source.resultField.number,
+                    resultField.type == .string,
+                    !resultField.isArray else {
+                        throw FusionExecutionError.invalidIndexInput(
+                            indexType: .graph(.property),
+                            parameter: "resultField"
+                        )
+                    }
+                    let edgeEntity = try context.resolveEntity(
+                        named: source.edgeEntity
+                    )
+                    let descriptor = try FusionIndexSelectionResolver
+                        .resolve(source.selection, in: edgeEntity)
+                    guard let executor = context.container
+                        .runtimeConfiguration.fusionReadExecutors
+                        .connectedExecutor(for: descriptor.type) else {
+                        throw FusionExecutionError
+                            .indexExecutorNotRegistered(descriptor.type)
+                    }
+                    try executor.validate(
+                        FusionConnectedValidationRequest(
+                            source: source,
+                            scoring: input.scoring,
+                            descriptor: descriptor
+                        )
+                    )
+                    operation = .connected(
+                        source: source,
+                        edgeEntity: edgeEntity,
+                        descriptor: descriptor,
+                        executor: executor
+                    )
                 }
                 try inputs.append(
                     footprint: DatabaseIntermediateFootprint(rows: 1)

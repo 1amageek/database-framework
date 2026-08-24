@@ -44,6 +44,12 @@ struct FusionPreparedPlan: Sendable {
             )
             case filter(Expression)
             case order([SortKey])
+            case connected(
+                source: FusionConnectedSource,
+                edgeEntity: Schema.Entity,
+                descriptor: IndexDescriptor,
+                executor: any FusionConnectedReadExecutor
+            )
         }
 
         let operation: Operation

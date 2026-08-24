@@ -34,6 +34,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
                 indexMaintainerProviderDescriptors,
             polymorphicIndexReadExecutors: polymorphicIndexReadExecutors,
             fusionIndexReadExecutors: [],
+            fusionConnectedReadExecutors: [],
             graphTableSourceExecutor: graphTableSourceExecutor,
             sparqlSourceExecutor: sparqlSourceExecutor,
             persistableMutationMaintainers: persistableMutationMaintainers,
@@ -50,6 +51,9 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         ] = [],
         polymorphicIndexReadExecutors: [any PolymorphicIndexReadExecutor] = [],
         fusionIndexReadExecutors: [any FusionIndexReadExecutor] = [],
+        fusionConnectedReadExecutors: [
+            any FusionConnectedReadExecutor
+        ] = [],
         graphTableSourceExecutor: (any GraphTableSourceExecutor)? = nil,
         sparqlSourceExecutor: (any SPARQLSourceExecutor)? = nil,
         persistableMutationMaintainers: [any PersistableMutationMaintainer] = [],
@@ -75,7 +79,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             polymorphicIndexExecutors: polymorphicIndexReadExecutors
         )
         self.fusionReadExecutors = try FusionReadExecutorRegistry(
-            indexExecutors: fusionIndexReadExecutors
+            indexExecutors: fusionIndexReadExecutors,
+            connectedExecutors: fusionConnectedReadExecutors
         )
         self.logicalSourceExecutors = LogicalSourceExecutorRegistry(
             graphTableExecutor: graphTableSourceExecutor,

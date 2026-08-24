@@ -96,34 +96,12 @@ final class FusionIndexReadSession: FusionIndexReadAccess, Sendable {
     }
 
     func rangeCursor(
-        subspace: Subspace,
-        start: Tuple?,
-        end: Tuple?,
-        startInclusive: Bool,
-        endInclusive: Bool,
+        from beginKey: ByteString,
+        to endKey: ByteString,
         reverse: Bool
     ) throws -> FusionIndexReadCursor {
         let transaction = try beginOperation()
         defer { endOperation() }
-        guard index.subspace.contains(subspace.prefix) else {
-            throw FusionExecutionContractError.indexReadOutsideAdmittedSubspace(
-                index: index.descriptor.name
-            )
-        }
-        let beginKey: ByteString
-        if let start {
-            let packed = subspace.pack(start)
-            beginKey = startInclusive ? packed : try strinc(packed)
-        } else {
-            beginKey = subspace.prefix
-        }
-        let endKey: ByteString
-        if let end {
-            let packed = subspace.pack(end)
-            endKey = endInclusive ? try strinc(packed) : packed
-        } else {
-            endKey = try subspace.prefixRange().end
-        }
         guard beginKey >= lowerBound,
               endKey <= upperBound,
               beginKey < endKey else {

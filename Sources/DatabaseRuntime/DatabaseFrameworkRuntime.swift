@@ -169,6 +169,7 @@ public enum DatabaseFrameworkRuntime {
             indexMaintainerProviderDescriptors: maintainerProviderDescriptors(),
             polymorphicIndexReadExecutors: polymorphicIndexReadExecutors(),
             fusionIndexReadExecutors: fusionIndexReadExecutors(),
+            fusionConnectedReadExecutors: fusionConnectedReadExecutors(),
             graphTableSourceExecutor: graphTableSourceExecutor,
             sparqlSourceExecutor: sparqlSourceExecutor,
             persistableMutationMaintainers: persistableMutationMaintainers(),
@@ -195,6 +196,15 @@ public enum DatabaseFrameworkRuntime {
         #endif
         #if DATABASE_RUNTIME_VECTOR_INDEXES
         executors.append(VectorFusionIndexReadExecutor())
+        #endif
+        return executors
+    }
+
+    private static func fusionConnectedReadExecutors()
+        -> [any FusionConnectedReadExecutor] {
+        var executors: [any FusionConnectedReadExecutor] = []
+        #if DATABASE_RUNTIME_GRAPH_INDEXES
+        executors.append(GraphFusionConnectedReadExecutor())
         #endif
         return executors
     }
