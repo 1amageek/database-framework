@@ -437,10 +437,10 @@ private typealias CanonicalRetainedRows =
     DatabaseSharedRetainedArray<CanonicalSourceRow>
 private typealias CanonicalRetainedGroups =
     DatabaseSharedRetainedArray<CanonicalGroupedRow>
-private typealias CanonicalRetainedQueryRows =
+typealias CanonicalRetainedQueryRows =
     DatabaseSharedRetainedArray<QueryRow>
 
-private struct CanonicalRetainedQueryResponse: Sendable {
+struct CanonicalRetainedQueryResponse: Sendable {
     let rows: CanonicalRetainedQueryRows
     let visibleRange: Range<Int>
     let continuation: QueryContinuation?
@@ -595,6 +595,7 @@ private struct CanonicalQueryEvaluationContext: Sendable {
     let partitionMode: CanonicalPartitionRoutingMode
     let namedSubqueries: [NamedSubquery]
     let outerRow: CanonicalSourceRow?
+    let preparedFusionGraph: FusionPreparedQueryGraph
 }
 
 extension DatabaseContext {
@@ -629,27 +630,177 @@ extension DatabaseContext {
         execution: ReadExecutionContext,
         graphPartitions: FieldObject = FieldObject()
     ) async throws -> QueryResponse {
+        let response = try await queryRetained(
+            selectQuery,
+            execution: execution,
+            graphPartitions: graphPartitions
+        )
+        return response.promoteToPublicResponse()
+    }
+
+    func queryRetained(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject()
+    ) async throws -> CanonicalRetainedQueryResponse {
+        do {
+            return try await queryRetainedUnmapped(
+                selectQuery,
+                execution: execution,
+                graphPartitions: graphPartitions
+            )
+        } catch {
+            throw sanitizedFusionExecutionError(error)
+        }
+    }
+
+    private func queryRetainedUnmapped(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject
+    ) async throws -> CanonicalRetainedQueryResponse {
         try QueryStructuralValidator.validate(
             selectQuery,
             limits: execution.queryStructuralLimits
         )
-        let readExecution = CanonicalReadExecution.resolve(
-            requested: execution.consistency,
-            default: .serializable
-        )
-        return try await withStorageAccess(
-            requiredAccess: .read,
-            configuration: readExecution.transactionConfiguration
-        ) { [self] transaction in
-            try await withFieldReadAuthorization(for: selectQuery) {
-                try await executeTransactionBoundCanonicalQuery(
+        return try await withDataOperation { [self] in
+            let resolvedFusionGraph = try FusionPreflight.resolveGraph(
+                selectQuery,
+                context: self,
+                workMeter: execution.workMeter
+            )
+            let readExecution = CanonicalReadExecution.resolve(
+                requested: execution.consistency,
+                default: .serializable
+            )
+            let authorizationPlan = DatabaseFieldReadAuthorizationPlan.make(
+                query: selectQuery,
+                schema: container.schema
+            ).merging(
+                resolvedFusionGraph.authorizationPlan
+            )
+            return try await withFieldReadAuthorization(authorizationPlan) {
+                let preparedFusionGraph = try FusionPreflight.prepareGraph(
                     selectQuery,
-                    options: execution,
-                    graphPartitions: graphPartitions,
-                    transaction: transaction
+                    resolvedFusionGraph,
+                    context: self,
+                    workMeter: execution.workMeter
+                )
+                return try await withStorageAccess(
+                    requiredAccess: .read,
+                    configuration: readExecution.transactionConfiguration
+                ) { [self] transaction in
+                    try await queryCanonical(
+                        selectQuery,
+                        options: execution,
+                        partitionValues: graphPartitions,
+                        partitionMode: .strict,
+                        transaction: transaction,
+                        preparedFusionGraph: preparedFusionGraph
+                    )
+                }
+            }
+        }
+    }
+
+    /// Runs a preflighted relational Fusion input on the caller-owned
+    /// transaction without promoting its retained rows to a public response.
+    func executeFusionRelationalRows(
+        _ selectQuery: SelectQuery,
+        options: ReadExecutionContext,
+        transaction: any TransactionAccess,
+        preparedFusionGraph: FusionPreparedQueryGraph
+    ) async throws -> CanonicalRetainedQueryResponse {
+        let internalOptions = executionContextWithoutExternalPageWindow(options)
+        return try await queryCanonical(
+            selectQuery,
+            options: internalOptions,
+            partitionValues: FieldObject(),
+            partitionMode: .strict,
+            transaction: transaction,
+            preparedFusionGraph: preparedFusionGraph
+        )
+    }
+
+    /// Applies canonical relational semantics to Engine-owned candidates. The
+    /// materialized row domain never crosses into a feature module.
+    func executeFusionCandidateRelationalRows(
+        _ candidates: FusionCandidateDomain,
+        query selectQuery: SelectQuery,
+        options: ReadExecutionContext,
+        transaction: any TransactionAccess,
+        preparedFusionGraph: FusionPreparedQueryGraph
+    ) async throws -> CanonicalRetainedQueryResponse {
+        guard case .table(let tableRef) = selectQuery.source else {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "A Fusion candidate input must use a table source"
+            )
+        }
+        let internalOptions = executionContextWithoutExternalPageWindow(options)
+        let sourceName = tableRef.alias ?? tableRef.effectiveName
+        var builder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: internalOptions.workMeter,
+            stage: .bindingCandidate,
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
+            expectedCount: candidates.count
+        )
+        try candidates.forEachEntry { entry in
+            try internalOptions.workMeter.consume(at: .bindingCandidate)
+            let rowFootprint = try CanonicalRelationalFootprintMeter
+                .footprint(of: entry.row, workMeter: internalOptions.workMeter)
+            let footprint = try rowFootprint.adding(rowFootprint).adding(
+                DatabaseIntermediateFootprint(
+                    bytes: UInt64(sourceName.utf8.count) + 64
+                )
+            )
+            try builder.append(footprint: footprint) {
+                CanonicalSourceRow.fromBaseFields(
+                    entry.row.fields,
+                    sourceName: sourceName,
+                    annotations: entry.row.annotations,
+                    version: entry.row.version
                 )
             }
         }
+        let sourceRows = try builder.finish().moveToSharedOwnership(
+            at: .bindingCandidate
+        )
+        return try await finalizeRelationalRows(
+            selectQuery,
+            sourceRows: sourceRows,
+            sourceSchema: try tableRelationSchema(tableRef),
+            residualFilter: selectQuery.filter,
+            residualOrderBy: selectQuery.orderBy,
+            options: internalOptions,
+            evaluationContext: CanonicalQueryEvaluationContext(
+                options: internalOptions,
+                transaction: transaction,
+                partitionValues: FieldObject(),
+                partitionMode: .strict,
+                namedSubqueries: try mergeNamedSubqueries(
+                    local: selectQuery.subqueries ?? [],
+                    inherited: []
+                ),
+                outerRow: nil,
+                preparedFusionGraph: preparedFusionGraph
+            )
+        )
+    }
+
+    /// Resolves relational bindings before Fusion opens a physical index.
+    func validateFusionRelationalInput(
+        _ selectQuery: SelectQuery
+    ) throws {
+        guard case .table(let tableRef) = selectQuery.source else {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "A Fusion relational input must use a table source"
+            )
+        }
+        try validateRelationalQueryBindings(
+            selectQuery,
+            sourceSchema: try tableRelationSchema(tableRef),
+            outerRow: nil
+        )
     }
 
     @_spi(DatabaseExecution)
@@ -678,6 +829,22 @@ extension DatabaseContext {
         graphPartitions: FieldObject = FieldObject(),
         transaction _: any TransactionAccess
     ) async throws -> QueryResponse {
+        do {
+            return try await queryTransactionBoundUnmapped(
+                selectQuery,
+                execution: execution,
+                graphPartitions: graphPartitions
+            )
+        } catch {
+            throw sanitizedFusionExecutionError(error)
+        }
+    }
+
+    private func queryTransactionBoundUnmapped(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject
+    ) async throws -> QueryResponse {
         try QueryStructuralValidator.validate(
             selectQuery,
             limits: execution.queryStructuralLimits
@@ -685,6 +852,7 @@ extension DatabaseContext {
         guard let binding = ActiveDatabaseTransactionContext.binding else {
             throw DatabaseTransactionError.invalidOperationContext
         }
+        try binding.validate(for: self)
         #if DATABASE_MULTI_BASE
         guard binding.resource == self.resource,
               binding.authorization == self.authorization,
@@ -699,18 +867,35 @@ extension DatabaseContext {
             binding.transaction
         )
         return try await withDataOperation { [self] in
-            try await withFieldReadAuthorization(for: selectQuery) {
+            let resolvedFusionGraph = try FusionPreflight.resolveGraph(
+                selectQuery,
+                context: self,
+                workMeter: execution.workMeter
+            )
+            let authorizationPlan = DatabaseFieldReadAuthorizationPlan.make(
+                query: selectQuery,
+                schema: container.schema
+            ).merging(
+                resolvedFusionGraph.authorizationPlan
+            )
+            return try await withFieldReadAuthorization(authorizationPlan) {
+                let preparedFusionGraph = try FusionPreflight.prepareGraph(
+                    selectQuery,
+                    resolvedFusionGraph,
+                    context: self,
+                    workMeter: execution.workMeter
+                )
                 #if DATABASE_MULTI_BASE
                 _ = try requireOperationDataRoot()
-                let executionBinding = DatabaseTransactionExecutionBinding(
+                let executionBinding = try DatabaseTransactionExecutionBinding(
+                    context: self,
                     transaction: admittedTransaction,
-                    resource: binding.resource,
-                    authorization: binding.authorization,
                     grantedAccess: .read,
                     databaseTransaction: nil
                 )
                 #else
-                let executionBinding = DatabaseTransactionExecutionBinding(
+                let executionBinding = try DatabaseTransactionExecutionBinding(
+                    context: self,
                     transaction: admittedTransaction,
                     databaseTransaction: nil
                 )
@@ -721,7 +906,8 @@ extension DatabaseContext {
                             selectQuery,
                             options: execution,
                             graphPartitions: graphPartitions,
-                            transaction: admittedTransaction
+                            transaction: admittedTransaction,
+                            preparedFusionGraph: preparedFusionGraph
                         )
                     }
             }
@@ -747,14 +933,16 @@ extension DatabaseContext {
         _ selectQuery: SelectQuery,
         options: ReadExecutionContext,
         graphPartitions: FieldObject,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        preparedFusionGraph: FusionPreparedQueryGraph
     ) async throws -> QueryResponse {
         let response = try await queryCanonical(
             selectQuery,
             options: options,
             partitionValues: graphPartitions,
             partitionMode: .strict,
-            transaction: transaction
+            transaction: transaction,
+            preparedFusionGraph: preparedFusionGraph
         )
         return response.promoteToPublicResponse()
     }
@@ -1019,13 +1207,9 @@ extension DatabaseContext {
     }
 
     private func withFieldReadAuthorization<Result: Sendable>(
-        for selectQuery: SelectQuery,
+        _ plan: DatabaseFieldReadAuthorizationPlan,
         _ operation: @Sendable () async throws -> Result
     ) async throws -> Result {
-        let plan = DatabaseFieldReadAuthorizationPlan.make(
-            query: selectQuery,
-            schema: container.schema
-        )
         try authorizeFieldReads(plan)
         return try await RequestFieldAuthorization.$fieldsByEntity.withValue(
             plan.fieldsByEntity
@@ -1670,8 +1854,7 @@ extension DatabaseContext {
         var leftBuilder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: options.workMeter,
             stage: .joinCandidate,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: leftRows.count
         )
         try leftRows.withSpan { rows in
@@ -1697,8 +1880,7 @@ extension DatabaseContext {
         var rightBuilder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: options.workMeter,
             stage: .joinCandidate,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: rightRows.count
         )
         try rightRows.withSpan { rows in
@@ -1755,7 +1937,8 @@ extension DatabaseContext {
         partitionMode: CanonicalPartitionRoutingMode,
         transaction: any TransactionAccess,
         inheritedSubqueries: [NamedSubquery] = [],
-        outerRow: CanonicalSourceRow? = nil
+        outerRow: CanonicalSourceRow? = nil,
+        preparedFusionGraph: FusionPreparedQueryGraph = .empty
     ) async throws -> CanonicalRetainedQueryResponse {
         let namedSubqueries = try mergeNamedSubqueries(
             local: selectQuery.subqueries ?? [],
@@ -1767,7 +1950,8 @@ extension DatabaseContext {
             partitionValues: partitionValues,
             partitionMode: partitionMode,
             namedSubqueries: namedSubqueries,
-            outerRow: outerRow
+            outerRow: outerRow,
+            preparedFusionGraph: preparedFusionGraph
         )
         if !isSPARQLSource(selectQuery.source),
            !sourceRequiresRuntimeInferredSchema(
@@ -1798,7 +1982,8 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
-                evaluationContext: evaluationContext
+                evaluationContext: evaluationContext,
+                preparedFusionGraph: preparedFusionGraph
             )
         }
 
@@ -1869,6 +2054,7 @@ extension DatabaseContext {
             partitionValues: partitionValues,
             partitionMode: .routed,
             transaction: transaction,
+            preparedFusionGraph: preparedFusionGraph,
             outerRow: outerRow
         )
 
@@ -1890,7 +2076,8 @@ extension DatabaseContext {
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
         transaction: any TransactionAccess,
-        evaluationContext: CanonicalQueryEvaluationContext
+        evaluationContext: CanonicalQueryEvaluationContext,
+        preparedFusionGraph: FusionPreparedQueryGraph
     ) async throws -> CanonicalRetainedQueryResponse {
         switch selectQuery.source {
         case .table(let tableRef):
@@ -1898,6 +2085,40 @@ extension DatabaseContext {
                 throw CanonicalReadError.invalidPartition(
                     entity: "graph",
                     reason: "graph partitions cannot be applied to a table source"
+                )
+            }
+            if case .fusion(let fusionSource) = accessPath {
+                let entity = try resolveEntity(named: tableRef.table)
+                guard preparedFusionGraph.isValidated else {
+                    throw FusionExecutionError.executionContractViolation
+                }
+                let preparedFusionPlan = try FusionPreflight
+                    .prepareForExecution(
+                        tableRef: tableRef,
+                        entity: entity,
+                        source: fusionSource,
+                        context: self,
+                        workMeter: options.workMeter
+                    )
+                let rowSet = try await FusionExecutor.execute(
+                    context: self,
+                    selectQuery: selectQuery,
+                    tableRef: tableRef,
+                    entity: entity,
+                    source: fusionSource,
+                    plan: preparedFusionPlan,
+                    preparedQueryGraph: preparedFusionGraph,
+                    options: options,
+                    transaction: transaction
+                )
+                let sourceName = tableRef.alias ?? tableRef.effectiveName
+                return try await finalizeIndexReadResult(
+                    rowSet,
+                    sourceName: sourceName,
+                    sourceSchema: try tableRelationSchema(tableRef),
+                    selectQuery: selectQuery,
+                    options: options,
+                    evaluationContext: evaluationContext
                 )
             }
             // Non-scalar index access paths (fulltext, vector, rank, etc.) are
@@ -2003,8 +2224,7 @@ extension DatabaseContext {
         var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: options.workMeter,
             stage: .projection,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: rowSet.rows.count
         )
         for indexRow in rowSet.rows {
@@ -2201,7 +2421,7 @@ extension DatabaseContext {
         )
     }
 
-    private func resolveEntity(named name: String) throws -> Schema.Entity {
+    func resolveEntity(named name: String) throws -> Schema.Entity {
         guard let entity = container.schema.entity(named: name) else {
             throw CanonicalReadError.unsupportedSource(
                 "Entity '\(name)' not found in schema"
@@ -2242,8 +2462,7 @@ extension DatabaseContext {
         var sourceRowBuilder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: options.workMeter,
             stage: .resultMaterialization,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: entities.count
         )
         for entity in entities {
@@ -2294,6 +2513,7 @@ extension DatabaseContext {
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
         transaction: any TransactionAccess,
+        preparedFusionGraph: FusionPreparedQueryGraph,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -2313,7 +2533,8 @@ extension DatabaseContext {
                     partitionMode: partitionMode,
                     transaction: transaction,
                     inheritedSubqueries: namedSubqueries,
-                    outerRow: allowsOuterReferences ? outerRow : nil
+                    outerRow: allowsOuterReferences ? outerRow : nil,
+                    preparedFusionGraph: preparedFusionGraph
                 )
                 let alias = tableRef.alias ?? named.name
                 return try materializeQueryRelation(
@@ -2355,8 +2576,7 @@ extension DatabaseContext {
             var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
                 stage: .bindingCandidate,
-                layout: try CanonicalRelationalFootprintMeter
-                    .retainedArrayLayout(for: CanonicalSourceRow.self),
+                layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
                 expectedCount: entities.count
             )
             for entity in entities {
@@ -2400,7 +2620,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 inheritedSubqueries: namedSubqueries,
-                outerRow: allowsOuterReferences ? outerRow : nil
+                outerRow: allowsOuterReferences ? outerRow : nil,
+                preparedFusionGraph: preparedFusionGraph
             )
             return try materializeQueryRelation(
                 response.visibleRows,
@@ -2419,6 +2640,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2432,6 +2654,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2445,6 +2668,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2457,6 +2681,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2470,6 +2695,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2486,8 +2712,7 @@ extension DatabaseContext {
             var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
                 stage: .bindingCandidate,
-                layout: try CanonicalRelationalFootprintMeter
-                    .retainedArrayLayout(for: CanonicalSourceRow.self),
+                layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
                 expectedCount: rows.count
             )
             for values in rows {
@@ -2531,8 +2756,7 @@ extension DatabaseContext {
             var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
                 stage: .bindingCandidate,
-                layout: try CanonicalRelationalFootprintMeter
-                    .retainedArrayLayout(for: CanonicalSourceRow.self),
+                layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
                 expectedCount: rows.count
             )
             for graphRow in rows {
@@ -2555,7 +2779,8 @@ extension DatabaseContext {
                                 partitionValues: partitionValues,
                                 partitionMode: partitionMode,
                                 namedSubqueries: namedSubqueries,
-                                outerRow: allowsOuterReferences ? outerRow : nil
+                                outerRow: allowsOuterReferences ? outerRow : nil,
+                                preparedFusionGraph: preparedFusionGraph
                             ),
                             workMeter: options.workMeter
                         )
@@ -2648,6 +2873,7 @@ extension DatabaseContext {
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
         transaction: any TransactionAccess,
+        preparedFusionGraph: FusionPreparedQueryGraph,
         outerRow: CanonicalSourceRow?,
         allowsOuterReferences: Bool
     ) async throws -> CanonicalRelation {
@@ -2664,7 +2890,8 @@ extension DatabaseContext {
             partitionValues: partitionValues,
             partitionMode: partitionMode,
             namedSubqueries: namedSubqueries,
-            outerRow: outerRow
+            outerRow: outerRow,
+            preparedFusionGraph: preparedFusionGraph
         )
         switch clause.type {
         case .lateral, .leftLateral:
@@ -2683,6 +2910,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2704,8 +2932,7 @@ extension DatabaseContext {
             var outputRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
                 stage: .joinCandidate,
-                layout: try CanonicalRelationalFootprintMeter
-                    .retainedArrayLayout(for: CanonicalSourceRow.self)
+                layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self)
             )
             for leftRow in left.rows {
                 let lateralOuter = leftRow.overlaying(outer: outerRow)
@@ -2716,6 +2943,7 @@ extension DatabaseContext {
                     partitionValues: partitionValues,
                     partitionMode: partitionMode,
                     transaction: transaction,
+                    preparedFusionGraph: preparedFusionGraph,
                     outerRow: lateralOuter,
                     allowsOuterReferences: true
                 )
@@ -2765,6 +2993,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2775,6 +3004,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2798,6 +3028,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2808,6 +3039,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2855,8 +3087,7 @@ extension DatabaseContext {
             var rows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: workMeter,
                 stage: .joinCandidate,
-                layout: try CanonicalRelationalFootprintMeter
-                    .retainedArrayLayout(for: CanonicalSourceRow.self)
+                layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self)
             )
             for left in leftRows {
                 for right in rightRows {
@@ -2909,8 +3140,7 @@ extension DatabaseContext {
         var results = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .joinCandidate,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self)
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self)
         )
 
         for leftRow in leftRows {
@@ -3165,8 +3395,7 @@ extension DatabaseContext {
         var results = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .joinCandidate,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self)
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self)
         )
         for left in leftRows {
             try workMeter.consume(at: .joinCandidate)
@@ -3439,6 +3668,7 @@ extension DatabaseContext {
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
         transaction: any TransactionAccess,
+        preparedFusionGraph: FusionPreparedQueryGraph,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -3458,6 +3688,7 @@ extension DatabaseContext {
             partitionValues: partitionValues,
             partitionMode: partitionMode,
             transaction: transaction,
+            preparedFusionGraph: preparedFusionGraph,
             outerRow: outerRow,
             allowsOuterReferences: allowsOuterReferences
         )
@@ -3467,8 +3698,7 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: options.workMeter,
             stage: .bindingCandidate,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self)
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self)
         )
         let remaining = try await materializeSetOperationInputs(
             Array(sources.dropFirst()),
@@ -3477,6 +3707,7 @@ extension DatabaseContext {
             partitionValues: partitionValues,
             partitionMode: partitionMode,
             transaction: transaction,
+            preparedFusionGraph: preparedFusionGraph,
             outerRow: outerRow,
             allowsOuterReferences: allowsOuterReferences
         )
@@ -3516,6 +3747,7 @@ extension DatabaseContext {
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
         transaction: any TransactionAccess,
+        preparedFusionGraph: FusionPreparedQueryGraph,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -3535,6 +3767,7 @@ extension DatabaseContext {
             partitionValues: partitionValues,
             partitionMode: partitionMode,
             transaction: transaction,
+            preparedFusionGraph: preparedFusionGraph,
             outerRow: outerRow,
             allowsOuterReferences: allowsOuterReferences
         )
@@ -3554,6 +3787,7 @@ extension DatabaseContext {
                 partitionValues: partitionValues,
                 partitionMode: partitionMode,
                 transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -3584,8 +3818,7 @@ extension DatabaseContext {
             var intersected = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
                 stage: .joinCandidate,
-                layout: try CanonicalRelationalFootprintMeter
-                    .retainedArrayLayout(for: CanonicalSourceRow.self),
+                layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
                 expectedCount: accumulator.count
             )
             for row in accumulator {
@@ -3622,6 +3855,7 @@ extension DatabaseContext {
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
         transaction: any TransactionAccess,
+        preparedFusionGraph: FusionPreparedQueryGraph,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -3632,6 +3866,7 @@ extension DatabaseContext {
             partitionValues: partitionValues,
             partitionMode: partitionMode,
             transaction: transaction,
+            preparedFusionGraph: preparedFusionGraph,
             outerRow: outerRow,
             allowsOuterReferences: allowsOuterReferences
         )
@@ -3642,6 +3877,7 @@ extension DatabaseContext {
             partitionValues: partitionValues,
             partitionMode: partitionMode,
             transaction: transaction,
+            preparedFusionGraph: preparedFusionGraph,
             outerRow: outerRow,
             allowsOuterReferences: allowsOuterReferences
         )
@@ -3680,8 +3916,7 @@ extension DatabaseContext {
         var difference = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: options.workMeter,
             stage: .joinCandidate,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: leftRows.count
         )
         for row in leftRows {
@@ -3728,8 +3963,7 @@ extension DatabaseContext {
         var unique = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .deduplication,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: rows.count
         )
         for row in rows {
@@ -3847,8 +4081,7 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .filterEvaluation,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: rows.count
         )
         for row in rows {
@@ -3957,8 +4190,7 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .sortInput,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: sorted.count
         )
         for item in sorted {
@@ -3983,8 +4215,7 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<QueryRow>(
             workMeter: workMeter,
             stage: .projection,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: QueryRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self),
             expectedCount: rows.count
         )
         switch projection {
@@ -4147,8 +4378,7 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<CanonicalGroupedRow>(
             workMeter: workMeter,
             stage: .aggregateInput,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalGroupedRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalGroupedRow.self),
             expectedCount: keys.count
         )
         for index in keys.indices {
@@ -4184,8 +4414,7 @@ extension DatabaseContext {
         var result = try DatabaseRetainedArrayBuilder<CanonicalGroupedRow>(
             workMeter: workMeter,
             stage: .aggregateInput,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalGroupedRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalGroupedRow.self),
             expectedCount: groups.count
         )
         for group in groups {
@@ -4297,8 +4526,7 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<CanonicalGroupedRow>(
             workMeter: workMeter,
             stage: .sortInput,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalGroupedRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalGroupedRow.self),
             expectedCount: sorted.count
         )
         for item in sorted {
@@ -4379,8 +4607,7 @@ extension DatabaseContext {
         var rows = try DatabaseRetainedArrayBuilder<QueryRow>(
             workMeter: workMeter,
             stage: .projection,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: QueryRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self),
             expectedCount: groups.count
         )
         for group in groups {
@@ -5256,7 +5483,8 @@ extension DatabaseContext {
             partitionMode: context.partitionMode,
             transaction: context.transaction,
             inheritedSubqueries: context.namedSubqueries,
-            outerRow: outerRow
+            outerRow: outerRow,
+            preparedFusionGraph: context.preparedFusionGraph
         )
     }
 
@@ -5337,8 +5565,7 @@ extension DatabaseContext {
         var unique = try DatabaseRetainedArrayBuilder<QueryRow>(
             workMeter: workMeter,
             stage: .deduplication,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: QueryRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self),
             expectedCount: rows.count
         )
         for row in rows {
@@ -5503,8 +5730,7 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .bindingCandidate,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: rows.count
         )
         for row in rows {
@@ -6043,6 +6269,7 @@ extension DatabaseContext {
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
         transaction: any TransactionAccess,
+        preparedFusionGraph: FusionPreparedQueryGraph,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> [CanonicalRelation] {
@@ -6057,6 +6284,7 @@ extension DatabaseContext {
                     partitionValues: partitionValues,
                     partitionMode: partitionMode,
                     transaction: transaction,
+                    preparedFusionGraph: preparedFusionGraph,
                     outerRow: outerRow,
                     allowsOuterReferences: allowsOuterReferences
                 )
@@ -6080,8 +6308,7 @@ extension DatabaseContext {
         var aligned = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .bindingCandidate,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: relation.rows.count
         )
         for row in relation.rows {
@@ -6120,8 +6347,7 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .bindingCandidate,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: rows.count
         )
         for row in rows {
@@ -6154,8 +6380,7 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<QueryRow>(
             workMeter: workMeter,
             stage: .resultMaterialization,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: QueryRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self),
             expectedCount: response.rows.count
         )
         for row in response.rows {
@@ -6201,8 +6426,7 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: stage,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: expectedCount
         )
         for row in rows {

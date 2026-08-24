@@ -4,6 +4,101 @@ import StorageKit
 
 /// Shared bounded framing for canonical entity fields.
 public enum PersistableFieldFrameCodec {
+    package static func retainedFootprint(
+        of model: PersistedModel
+    ) throws -> UInt64 {
+        var footprint = try DatabaseIntermediateFootprint(
+            bytes: UInt64(MemoryLayout<PersistedModel>.stride + 64)
+                + UInt64(model.entity.utf8.count)
+        ).adding(
+            try DatabaseIntermediateFootprint(
+                bytes: UInt64(MemoryLayout<PersistableField>.stride + 16)
+            ).multiplied(by: UInt64(model.fields.count))
+        )
+        for field in model.fields {
+            footprint = try footprint.adding(
+                DatabaseIntermediateFootprint(
+                    bytes: UInt64(field.name.utf8.count)
+                )
+            ).adding(
+                DatabaseIntermediateFootprint(
+                    bytes: try StorageValueDecoder.retainedFootprint(
+                        of: field.value
+                    )
+                )
+            )
+        }
+        return footprint.bytes
+    }
+
+    package static func decodedFootprint(
+        _ bytes: ByteString,
+        magic: [UInt8],
+        version: UInt16,
+        expectedEntity: String? = nil,
+        limits: StorageFrameLimits = .default
+    ) throws -> (
+        retainedByteCount: UInt64,
+        transientByteCount: UInt64
+    ) {
+        guard magic.count == 4 else {
+            throw PersistableFieldFrameError.invalidMagicLength(
+                actual: magic.count
+            )
+        }
+        var reader = try StorageFrameDecoder(bytes, limits: limits)
+        for byte in magic {
+            guard try reader.readUInt8() == byte else {
+                throw PersistableFieldFrameError.invalidMagic
+            }
+        }
+        let actualVersion = try reader.readUInt16()
+        guard actualVersion == version else {
+            throw PersistableFieldFrameError.unsupportedVersion(actualVersion)
+        }
+        let entityBytes = try reader.readValidatedStringBytes()
+        if let expectedEntity,
+           !entityBytes.elementsEqual(expectedEntity.utf8) {
+            throw PersistableFieldFrameError.entityMismatch(
+                expected: expectedEntity,
+                actual: String(decoding: entityBytes, as: UTF8.self)
+            )
+        }
+        let count = try reader.readCount()
+        var footprint = try DatabaseIntermediateFootprint(
+            bytes: UInt64(MemoryLayout<PersistedModel>.stride + 64)
+                + UInt64(entityBytes.count)
+        ).adding(
+            try DatabaseIntermediateFootprint(
+                bytes: UInt64(MemoryLayout<PersistableField>.stride + 16)
+            ).multiplied(by: UInt64(count))
+        )
+        for _ in 0..<count {
+            _ = try reader.readUInt32()
+            let nameBytes = try reader.readValidatedStringBytes()
+            footprint = try footprint.adding(
+                DatabaseIntermediateFootprint(
+                    bytes: UInt64(nameBytes.count)
+                )
+            )
+            let valueFootprint = try reader.readLengthPrefixed {
+                (child: inout StorageFrameDecoder) throws(
+                    StorageFrameError
+                ) -> UInt64 in
+                try StorageValueDecoder.retainedFootprint(from: &child)
+            }
+            footprint = try footprint.adding(
+                DatabaseIntermediateFootprint(bytes: valueFootprint)
+            )
+        }
+        try reader.ensureFullyRead()
+        return (
+            retainedByteCount: footprint.bytes,
+            transientByteCount: try PersistedModelAdmissionFootprint
+                .validationScratchByteCount(fieldCount: count)
+        )
+    }
+
     public static func encode(
         magic: [UInt8],
         version: UInt16,

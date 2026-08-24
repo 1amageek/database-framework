@@ -41,8 +41,7 @@ struct TransactionMutationJournal: Sendable {
             throw DatabaseTransactionMutationError.workMeterBoundAfterMutation
         }
 
-        let entryLayout = try CanonicalRelationalFootprintMeter
-            .retainedArrayLayout(for: Entry.self)
+        let entryLayout = try DatabaseRetainedArrayLayout.forElement(Entry.self)
         let lookupLayout = try DatabaseRetainedHashTableLayout.validated(
             containerByteCount: UInt64(
                 MemoryLayout<[EntityReference: Int]>.stride
@@ -198,8 +197,7 @@ struct TransactionMutationJournal: Sendable {
         var models = try DatabaseRetainedArrayBuilder<PersistedModel>(
             workMeter: accounting.workMeter,
             stage: .mutationPlanning,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: PersistedModel.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(PersistedModel.self),
             expectedCount: currentModelCount
         )
         for entry in entries {

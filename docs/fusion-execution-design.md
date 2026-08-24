@@ -2,14 +2,16 @@
 
 ## Status
 
-This document is the reviewed implementation contract for the Fusion redesign.
-It replaces the context-bound Fusion DSL described by the previous
-`docs/query.md` section. Changes that predate this contract are provisional and
-must be deleted or reconciled before they can be accepted as implementation.
+This document is the implementation contract for the Fusion redesign. The
+first production slice implements canonical `Filter -> Search -> Rank`
+execution, including candidate-before-limit full-text reads. Vector, spatial,
+bitmap, leaderboard, and graph inputs are context-free QueryIR values but are
+not reported as executable until their feature-owned physical readers and
+behavioral contracts are complete.
 
-## Confirmed Current State
+## Replaced Baseline
 
-The current implementation has two disconnected Fusion representations:
+The redesign replaced two disconnected Fusion representations:
 
 ```text
 DatabaseKit.AccessPath.fusion(FusionSource)
@@ -35,12 +37,12 @@ The canonical read path already owns the contracts that Fusion needs:
 - the canonical relational pipeline owns field authorization, projection,
   filtering, ordering, pagination, continuation, and output materialization.
 
-No production caller outside database-framework currently uses
+Before the redesign, no production caller outside database-framework used
 `DatabaseContext.fuse`, `FusionBuilder`, or `Parallel`. Existing Fusion tests
 exercise the local implementation directly, with Vector providing the only
 database-backed behavioral coverage.
 
-The executable inputs do not share one candidate contract. Most inputs perform
+The removed executable inputs did not share one candidate contract. Most inputs performed
 an unrestricted physical read and intersect candidates afterward, while
 `Similar` computes distances inside the incoming candidate set before applying
 `k`. That difference is observable: `topK(U) intersect C` is not equivalent to
@@ -49,7 +51,7 @@ an unrestricted physical read and intersect candidates afterward, while
 deliberately leaves relational filtering to the dispatcher after the
 index-native result has been produced.
 
-The confirmed implementation evidence is:
+The baseline evidence used to derive this design was:
 
 | Fact | Source of truth |
 |---|---|
@@ -83,7 +85,7 @@ contracts and must not be conflated:
 | Reader | Input domain | Limit ordering | Owner |
 |---|---|---|---|
 | `IndexReadExecutor` | One ordinary canonical query | Produce index-native rows; the relational dispatcher applies SQL clauses | Feature module |
-| `FusionIndexReadExecutor` | One admitted Fusion index plus immutable candidate rows | Apply candidate restriction before input-native `k`, limit, or ranking | Feature module |
+| `FusionIndexReadExecutor` | One admitted Fusion index plus opaque candidate primary keys | Apply candidate restriction before input-native `k`, limit, or ranking | Feature module |
 
 Both may share package-internal scanning and decoding code. One must not call
 the other if doing so changes the ordering of candidate restriction and
@@ -96,18 +98,13 @@ The final typed API is context-free until execution:
 ```swift
 let query = FusionQuery<Product> {
     Filter(Product.fields.isAvailable, equals: true)
-
-    FusionStage {
-        Search(Product.fields.summary)
-            .terms(searchTerms)
-        Similar(Product.fields.embedding, dimensions: dimensions)
-            .nearest(to: queryVector, k: candidateCount)
-    }
-
+    Search(Product.fields.summary)
+        .terms(searchTerms)
+        .limit(candidateCount)
     Rank(Product.fields.popularity)
         .order(.descending)
 }
-.strategy(.reciprocalRank())
+.strategy(.weighted([0, 1]))
 .limit(resultCount)
 
 let response = try await context.execute(query)
@@ -252,10 +249,15 @@ input. Every accumulation operation checks for a finite result.
 sequenceDiagram
     participant Caller
     participant Engine as DatabaseEngine
+    participant Auth as Field authorization
     participant Tx as TransactionAccess
     participant Reader as Relational / Fusion feature reader
 
     Caller->>Engine: execute(FusionQuery, options)
+    Engine->>Engine: validate structure and derive field authority
+    Engine->>Auth: authorize outer query + Fusion fields
+    Auth-->>Engine: admitted field plan
+    Engine->>Engine: resolve selectors and validate feature parameters
     Engine->>Tx: admit one read transaction
     loop stages in declaration order
         loop inputs in declaration order
@@ -294,23 +296,41 @@ predicate; it must not silently fall back to an unbounded physical read.
 
 `FusionIndexReadExecutor` is a package-scoped DatabaseEngine extension contract
 keyed by `IndexType`. DatabaseEngine first resolves and admits the declared
-index. It then constructs a request containing the `ReadableIndex`, immutable
-Fusion source, incoming candidate rows and canonical primary keys, input limit,
-shared `ReadExecutionContext`, an entity-loader capability, and a read-only
-storage facade. It does not expose `DatabaseContext`, transaction lifecycle,
-mutation methods, read-version mutation, transaction options, conflict ranges,
-or versionstamp requests to the feature module.
+index. It then constructs a request containing the immutable Fusion source,
+score interpretation, input limit, work meter, and a revocable read capability
+confined to that exact physical index subspace.
+Incoming candidates remain an opaque Engine-owned domain that exposes only
+canonical primary keys and membership. Feature modules cannot observe rows,
+open another index or transaction, mutate storage, or control transaction
+lifetime.
 
-StorageKit owns the capability split. `TransactionReadAccess` exposes only
-point, key-selector, and range reads. `TransactionAccess` refines it with
-mutation and transaction-state operations. DatabaseEngine wraps the admitted
-transaction in a concrete read-only facade before erasing it to
-`TransactionReadAccess`, so a feature cannot recover the underlying broader
-capability by downcasting. The entity loader is similarly limited to ordered
-loads for the already selected entity and partition, through the same admitted
-transaction and work meter.
+StorageKit supplies the low-level read operations, but DatabaseEngine does not
+erase the whole transaction to a feature-visible protocol. Its concrete
+`FusionIndexReadSession` validates every point and range against the admitted
+subspace, serializes operations, owns cursor cleanup, and revokes the capability
+before the transaction advances to another input.
 
-The result is an exact, complete, reservation-owning `IndexReadResult`.
+Admission is deliberately split so physical schema details are not observable
+before field authorization:
+
+```text
+structural plan validation
+    -> collect field authority without reporting selector resolution failures
+        -> authorize the combined outer-query and Fusion field plan
+            -> resolve index selectors and relational bindings
+                -> validate the registered feature executor
+                    -> open the read transaction and physical capability
+```
+
+A selector that is invalid or ambiguous requires whole-entity field authority
+before its precise schema error is reported. A valid selector contributes all
+fields represented by that physical index. Full-text postings combine every
+field declared by one index, so `Search(field)` selects an exact single-field
+index; a named multi-field full-text index is rejected rather than pretending
+that its combined postings represent only the requested field.
+
+The result is an exact, complete, reservation-owning sequence of physical
+matches retained by the Engine-owned sink.
 Unsupported candidate-aware execution and a resource or scan bound that
 prevents the declared input result from being completed are typed failures.
 Reaching an explicitly requested top-k count is successful completion, not
@@ -323,42 +343,46 @@ may differ only to follow the package's API naming rules:
 package protocol FusionIndexReadExecutor: Sendable {
     var indexType: IndexType { get }
 
-    func executeRows(
-        request: FusionIndexReadRequest
-    ) async throws -> IndexReadResult
+    func validate(_ request: FusionIndexValidationRequest) throws
+    func executeUnrestricted(
+        _ request: FusionIndexReadRequest,
+        output: FusionMatchSink
+    ) async throws -> FusionInputCoverage
+    func executeRestricted(
+        _ request: FusionIndexReadRequest,
+        candidates: FusionCandidateDomain,
+        output: FusionMatchSink
+    ) async throws -> FusionInputCoverage
 }
 
 package struct FusionIndexReadRequest: Sendable {
     let source: FusionIndexSource
-    let entity: Schema.Entity
-    let index: ReadableIndex
-    let candidates: [FusionCandidateRow]?
-    let limit: UInt64?
-    let readAccess: any TransactionReadAccess
-    let entityReader: FusionEntityReader
-    let options: ReadExecutionContext
+    let scoring: FusionScoring?
+    let limit: Int
+    let access: any FusionIndexReadAccess
+    let workMeter: DatabaseWorkMeter
 }
 ```
 
-`FusionCandidateRow` carries the canonical identity, physical primary key, and
-already authorized materialized fields. `FusionEntityReader` can only load
-ordered primary keys for the request's entity and partition. Neither type can
-open another entity, transaction, index, or snapshot.
+`FusionMatchSink` is the only feature output. It rejects keys outside the
+incoming domain, duplicates, malformed or nonfinite signals, and writes beyond
+the admitted limit before retaining them. Field authority is established
+before feature validation or I/O. DatabaseEngine materializes rows only after
+the feature capability has been revoked and performs row-policy evaluation on
+that Engine-owned path.
 
 `FusionReadExecutorRegistry` owns one immutable same-entity executor per
-`IndexType` and one optional cross-entity Connected executor. It rejects
-duplicates at bootstrap. `DatabaseRuntimeConfiguration` owns the registry;
-`DatabaseRuntime` constructs it from enabled traits. This avoids a global
-registry, keeps Connected's two-entity contract explicit, and prevents a
-feature module from taking ownership of the whole Fusion plan.
+`IndexType` and rejects duplicates at bootstrap.
+`DatabaseRuntimeConfiguration` owns the registry; `DatabaseRuntime` constructs
+it from enabled traits. This avoids global registration and prevents a feature
+module from taking ownership of the whole Fusion plan.
 
-A conforming result must contain the canonical identity field, full authorized
-row payload, the declared score annotation when scored, deterministic
-index-native ordering, and no duplicate identities. The result is complete for
-the declared input semantics. Readers may report empty success only when the
-index is readable and there are genuinely no matches; missing or unreadable
-required state remains a typed failure according to the existing index
-lifecycle contract.
+A conforming result is an ordered sequence of unique physical primary keys and
+the declared numeric signal when scored. The Engine owns payload loading,
+authorization, deterministic fused ordering, and the reserved `fusion.score`
+annotation. Readers may report empty success only when the index is readable
+and there are genuinely no matches; missing or unreadable required state
+remains a typed failure according to the existing index lifecycle contract.
 
 `Connected` is cross-entity: the property-graph index belongs to the edge
 entity while returned models belong to the Fusion result entity. Its QueryIR
@@ -390,34 +414,26 @@ bare array. It contains:
 
 - scored, decoded results;
 - the canonical query continuation, when present;
-- the storage read version when the backend exposes one, otherwise an explicit
-  transaction-scoped read point;
-- completion state;
-- request work statistics;
 - canonical query metadata.
 
 Resource exhaustion, cancellation, a partial physical scan, or an unsupported
-reader is not converted into a partial or empty success. The initial executor
-therefore returns `.complete` only; incomplete input execution throws a typed
-failure. The response completion field is retained so future explicitly
-requested approximate or partial policies cannot silently change this API.
-
-Work statistics are a snapshot of the shared `DatabaseWorkMeter`: the actual
-Fusion response row count, consumed work units, and peak intermediate rows and
-bytes. `outputRows` is not the meter's cumulative row-admission counter.
+reader is not converted into a partial or empty success. Physical coverage is
+an internal proof (`exhausted` or an exactly satisfied limit), not a public
+completion flag. Any future approximate or partial policy requires a separate
+explicit API contract.
 
 ## Feature Mapping
 
-| Feature input | Canonical operation | Score signal | Runtime owner |
-|---|---|---|---|
-| `Search` | candidate-aware full-text read | `score`, higher is better | FullTextIndex |
-| `Similar` | candidate-aware vector read | `distance`, lower is better | VectorIndex |
-| `Nearby` | candidate-aware spatial read | `distance`, lower is better | SpatialIndex |
-| `Rank` | canonical ordering over incoming candidates | position | DatabaseEngine relational executor |
-| `Filter` | canonical predicate over incoming candidates, or the table when first | none | DatabaseEngine relational executor |
-| `Bitmap` | candidate-aware bitmap read | none | BitmapIndex |
-| `Leaderboard` | candidate-aware leaderboard read | `score`, higher is better | LeaderboardIndex |
-| `Connected` | cross-entity property-graph traversal | `hops`, lower is better | GraphIndex |
+| Feature input | Canonical operation | Score signal | Runtime owner | Status |
+|---|---|---|---|---|
+| `Search` | candidate-aware full-text read | `score`, higher is better | FullTextIndex | Executable |
+| `Similar` | candidate-aware vector read | `distance`, lower is better | VectorIndex | QueryIR only; typed preflight failure |
+| `Nearby` | candidate-aware spatial read | `distance`, lower is better | SpatialIndex | QueryIR only; typed preflight failure |
+| `Rank` | canonical ordering over incoming candidates | position | DatabaseEngine relational executor | Executable after candidates exist |
+| `Filter` | canonical predicate over incoming candidates, or the table when first | none | DatabaseEngine relational executor | Executable |
+| `Bitmap` | candidate-aware bitmap read | none | BitmapIndex | QueryIR only; typed preflight failure |
+| `Leaderboard` | candidate-aware leaderboard read | `score`, higher is better | LeaderboardIndex | QueryIR only; typed preflight failure |
+| `Connected` | cross-entity property-graph traversal | `hops`, lower is better | GraphIndex | QueryIR only; typed preflight failure |
 
 The ordinary canonical readers are reusable only where they satisfy the
 candidate-before-limit contract. Otherwise the feature module supplies a
@@ -449,11 +465,12 @@ later must not change the stage algebra above.
 
 | State | Created by | Owner | Lifetime / isolation | Failure contract |
 |---|---|---|---|---|
-| Fusion plan | Caller / decoder | Value owner | Immutable, Sendable | Structural or semantic validation error |
+| Fusion plan | Caller / decoder | Value owner | Immutable, Sendable | Structural failure before authorization; schema and feature failure after authorization |
 | Schema generation | DBContainer operation lease | DatabaseContext | Whole operation | Stale or missing schema is an error |
 | Read transaction | DatabaseEngine | Transaction runner | Whole Fusion execution; serial access | Storage, cancellation, retry failure propagates |
 | Candidate identities | Fusion executor | Request work meter | Until next stage / final filtering | Budget failure propagates |
-| Input rows | Feature Fusion reader or canonical relational executor | Fusion executor | Until its contribution and canonical row are retained; reserve before append | Partial, missing, or corrupt rows fail |
+| Physical matches | Feature Fusion reader through the Engine sink | Fusion executor | Until candidate algebra and scoring finish; reserve before sink retention | Partial, duplicate, out-of-domain, or corrupt matches fail |
+| Candidate rows | DatabaseEngine materializer or relational executor | Fusion executor | Until the next stage and final composition finish | Missing or inconsistent canonical entities fail |
 | Fused rows | Fusion executor | Canonical relational pipeline | Until response promotion | Overflow or inconsistency fails |
 | Typed response | Caller | Caller | After transaction closes | Decode failure propagates |
 
@@ -464,9 +481,14 @@ copy at the Fusion ownership boundary is permitted only when the destination
 builder reserves before each append and the source reservation remains alive
 throughout the copy.
 
-No shared mutable Fusion state is introduced. Native, WASM, and Embedded use
-the same value storage and transaction path. No target-specific synchronization
-branch, `nonisolated(unsafe)`, or `@unchecked Sendable` is permitted.
+No global mutable Fusion state is introduced. Revocable request-local sinks,
+sessions, and reservations use the same Mutex or actor isolation on Native,
+WASM, and Embedded. There is no target-specific synchronization branch or
+`nonisolated(unsafe)` escape. An internal exact-size byte owner may use
+`@unchecked Sendable` only when it is immutable after initialization, performs
+exactly one deallocation, exposes pointers only through a synchronous borrow,
+and is required to detach an admitted value from an opaque or enclosing source
+owner.
 
 ## Design Authority Comparison
 
@@ -498,7 +520,7 @@ branch, `nonisolated(unsafe)`, or `@unchecked Sendable` is permitted.
 1. Route table `.fusion` access paths before `SelectQueryPlanner` rejects them.
 2. Execute all inputs through the active transaction and shared work meter.
 3. Add bounded candidate and score algebra with deterministic ordering.
-4. Add typed `FusionResponse`, read-point capture, completion, and work report.
+4. Add typed `FusionResponse` over canonical query continuation and metadata.
 5. Replace each feature Fusion query with a pure input value.
 6. Add and register candidate-aware Fusion readers without weakening the
    ordinary canonical reader contract.
@@ -526,7 +548,7 @@ The change is complete only after all of the following are true:
    cancellation, work limits, and transaction reuse.
 3. Each feature input has a pure-construction test proving it retains no
    runtime context and produces the expected canonical operation.
-4. Every feature reader has a regression proving candidate restriction occurs
+4. Every implemented feature reader has a regression proving candidate restriction occurs
    before its native limit. Spatial, leaderboard, and graph readers also cover
    missing indexes, malformed parameters, missing entities, and incomplete
    scan failure against real storage behavior.
@@ -534,14 +556,17 @@ The change is complete only after all of the following are true:
 6. SQLite, PostgreSQL, and FoundationDB backend harnesses pass their reviewed
    exact test counts with zero failures, skips, and runtime warnings.
 7. Before commit, source searches confirm that `FusionContext`, public
-   `Parallel`, executable Fusion closures, and incomplete implementation
-   markers are absent from production Fusion paths.
+   `Parallel`, and executable Fusion closures are absent. Every callable but
+   unavailable physical feature remains explicitly marked and fails preflight;
+   it is never counted as implemented coverage.
 
 ## Deliberately Deferred Optimization
 
 The first correct implementation does not overlap operations on one
-transaction and does not introduce unsafe buffers. Benchmarking begins only
-after the behavior and ownership tests pass. Candidate-set encoding,
-retained-row copy reduction, allocation reduction, Boolean DAG evaluation, and
+transaction and does not add an unsafe algorithmic fast path. Exact-size raw
+owners are confined to the ownership boundaries defined above; they establish
+bounded retention and are not themselves a performance claim. Benchmarking
+begins only after the behavior and ownership tests pass. Candidate-set
+encoding, further allocation reduction, Boolean DAG evaluation, and
 capability-gated scheduling are optimization candidates; none may alter this
 semantic contract.

@@ -1,4 +1,5 @@
 import DatabaseTypes
+import DatabaseEngine
 import DatabaseKit
 import DatabaseMath
 import StorageKit
@@ -26,8 +27,67 @@ private struct HNSWStoredArchive: HNSWArchiveBytes {
 }
 
 private struct HNSWPrimaryKeySnapshot: Sendable {
-    let values: [UInt64: Tuple]
+    let values: [UInt64: ByteString]
     let retainedByteCount: Int
+}
+
+private struct HNSWPrimaryKeyMappingSlot: Sendable {
+    let label: UInt64
+    let packedPrimaryKey: ByteString
+}
+
+/// Owns an exact-size cache copy when a storage result has an unknown or
+/// enclosing owner. The allocation is initialized completely before the
+/// immutable `ByteString` is exposed, borrowed pointers cannot escape the
+/// synchronous callback, and this owner performs exactly one deallocation.
+/// The caller validates and admits `count` before construction. UInt8 storage
+/// has alignment one, is never rebound, and is never mutated after init, so
+/// concurrent immutable borrows do not require additional synchronization.
+private final class HNSWPrimaryKeyBytesOwner:
+    ByteStringOwner,
+    @unchecked Sendable
+{
+    let count: Int
+    let retainedByteCount: Int?
+    let isStorageSelfContained = true
+    private let allocation: UnsafeMutableRawPointer?
+
+    init(copying bytes: ByteString) {
+        count = bytes.count
+        retainedByteCount = bytes.count
+        guard !bytes.isEmpty else {
+            allocation = nil
+            return
+        }
+        let allocation = UnsafeMutableRawPointer.allocate(
+            byteCount: bytes.count,
+            alignment: MemoryLayout<UInt8>.alignment
+        )
+        bytes.withUnsafeBytes { source in
+            UnsafeMutableRawBufferPointer(
+                start: allocation,
+                count: bytes.count
+            ).copyMemory(from: source)
+        }
+        self.allocation = allocation
+    }
+
+    deinit {
+        allocation?.deallocate()
+    }
+
+    func borrowBytes(
+        _ body: (UnsafeRawBufferPointer) throws -> Void
+    ) rethrows {
+        try body(
+            UnsafeRawBufferPointer(start: allocation, count: count)
+        )
+    }
+}
+
+private struct HNSWValidatedRestoreProfile: Sendable {
+    let cacheCost: Int
+    let additionalRestoreByteCount: Int
 }
 
 struct HNSWIndexStorage: Sendable {
@@ -84,6 +144,42 @@ struct HNSWIndexStorage: Sendable {
         case .cosine, .euclidean:
             return Double(hnswDistance)
         }
+    }
+
+    func validateSearchDistance(
+        _ hnswDistance: Float,
+        label: UInt64,
+        queryVector: Vector,
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
+    ) async throws -> Double {
+        let vectorKey = vectorsSubspace.pack(HNSWLabelCodec.tuple(label))
+        guard let vectorBytes = try await transaction.getValue(
+            for: vectorKey,
+            snapshot: true
+        ) else {
+            throw VectorIndexError.invalidStructure(
+                "HNSW search result has no persisted canonical vector"
+            )
+        }
+        try workMeter?.consume(UInt64(dimensions), at: .indexScan)
+        let candidate = try VectorConversion.persistedVector(
+            vectorBytes,
+            expectedCount: dimensions
+        )
+        let expectedDistance = try VectorConversion.distance(
+            metric: metric,
+            from: queryVector,
+            to: candidate
+        )
+        let actualDistance = try canonicalDistance(from: hnswDistance)
+        let tolerance = max(1e-5, abs(expectedDistance) * 1e-4)
+        guard abs(actualDistance - expectedDistance) <= tolerance else {
+            throw VectorIndexError.invalidStructure(
+                "HNSW graph distance disagrees with its persisted canonical vector"
+            )
+        }
+        return actualDistance
     }
 
     /// Prepares values for SwiftHNSW's Float32 comparison arithmetic. Cosine
@@ -248,46 +344,68 @@ struct HNSWIndexStorage: Sendable {
     }
 
     func loadSearchSnapshot(
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> HNSWGraphCache.Snapshot {
         if let metadataBytes = try await transaction.getValue(
             for: graphMetadataKey,
             snapshot: true
         ) {
-            _ = try decodeGraphMetadata(metadataBytes)
+            let metadata = try decodeGraphMetadata(metadataBytes)
             let cacheKey = HNSWGraphCache.Key(
+                transactionDomain: transaction.transactionDomain,
                 subspacePrefix: subspace.prefix,
                 dimensions: dimensions,
                 metric: metric.toHNSWMetric.rawValue,
-                metadata: metadataBytes
+                metadata: HNSWGraphCache.MetadataIdentity(
+                    version: metadata.version,
+                    byteCount: metadata.byteCount,
+                    chunkSize: metadata.chunkSize,
+                    chunkCount: metadata.chunkCount,
+                    revision: metadata.revision
+                )
             )
             if let cached = graphCache.get(cacheKey) {
                 return cached
             }
 
+            let primaryKeyReservation = try workMeter?.reserveIntermediate(
+                at: .indexScan
+            )
+            defer { primaryKeyReservation?.release() }
             let primaryKeys = try await loadPrimaryKeysByLabel(
-                transaction: transaction
+                transaction: transaction,
+                workMeter: workMeter,
+                reservation: primaryKeyReservation
             )
 
             let graphData = try await loadChunkedGraphSnapshot(
-                metadata: metadataBytes,
-                transaction: transaction
+                metadata: metadata,
+                transaction: transaction,
+                workMeter: workMeter
             )
-            let cacheCost = try inspectAndValidateRestore(
+            let restoreProfile = try inspectAndValidateRestore(
                 from: graphData,
                 primaryKeys: primaryKeys
             )
+            let nativeRestoreReservation = try workMeter?.reserveIntermediate(
+                bytes: UInt64(restoreProfile.additionalRestoreByteCount),
+                at: .indexScan
+            )
+            defer { nativeRestoreReservation?.release() }
             let index = try loadPersistedIndex(from: graphData)
-            let graphLabels = index.allLabels.sorted()
-            let mappedLabels = primaryKeys.values.keys.sorted()
-            guard graphLabels == mappedLabels else {
-                throw VectorIndexError.invalidStructure(
-                    "HNSW active graph labels and primary-key mappings disagree"
-                )
+            for label in primaryKeys.values.keys {
+                try workMeter?.consume(at: .indexScan)
+                guard index.contains(label: label) else {
+                    throw VectorIndexError.invalidStructure(
+                        "HNSW active graph labels and primary-key mappings disagree"
+                    )
+                }
             }
             try await validateForwardMappings(
                 primaryKeys: primaryKeys.values,
-                transaction: transaction
+                transaction: transaction,
+                workMeter: workMeter
             )
             let snapshot = HNSWGraphCache.Snapshot(
                 index: index,
@@ -296,13 +414,19 @@ struct HNSWIndexStorage: Sendable {
             graphCache.set(
                 snapshot,
                 for: cacheKey,
-                cost: cacheCost
+                cost: restoreProfile.cacheCost
             )
             return snapshot
         }
 
+        let primaryKeyReservation = try workMeter?.reserveIntermediate(
+            at: .indexScan
+        )
+        defer { primaryKeyReservation?.release() }
         let primaryKeys = try await loadPrimaryKeysByLabel(
-            transaction: transaction
+            transaction: transaction,
+            workMeter: workMeter,
+            reservation: primaryKeyReservation
         )
 
         guard primaryKeys.values.isEmpty,
@@ -336,15 +460,7 @@ struct HNSWIndexStorage: Sendable {
                 "HNSW reverse primary-key mapping is missing"
             )
         }
-        let mappedPrimaryKey: Tuple
-        do {
-            mappedPrimaryKey = try Tuple(packed: mappingValue)
-        } catch {
-            throw VectorIndexError.invalidStructure(
-                "Invalid HNSW reverse primary-key mapping"
-            )
-        }
-        guard mappedPrimaryKey.pack() == primaryKey.pack() else {
+        guard mappingValue == primaryKey.pack() else {
             throw VectorIndexError.invalidStructure(
                 "HNSW forward and reverse primary-key mappings disagree"
             )
@@ -390,7 +506,7 @@ struct HNSWIndexStorage: Sendable {
             return nil
         }
         return try await loadChunkedGraphSnapshot(
-            metadata: metadataBytes,
+            metadata: try decodeGraphMetadata(metadataBytes),
             transaction: transaction
         )
     }
@@ -483,10 +599,10 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func loadChunkedGraphSnapshot(
-        metadata: ByteString,
-        transaction: any TransactionAccess
+        metadata decoded: HNSWGraphMetadata,
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> ByteString {
-        let decoded = try decodeGraphMetadata(metadata)
         guard resourceLimits.maximumSnapshotByteCount > 0 else {
             throw VectorIndexError.invalidArgument(
                 "The maximum HNSW graph snapshot byte count must be positive"
@@ -513,7 +629,22 @@ struct HNSWIndexStorage: Sendable {
             )
         }
 
-        var output = [UInt8](repeating: 0, count: decoded.byteCount)
+        let retainedBuffer: DatabaseRetainedMutableByteBuffer?
+        var output: [UInt8]
+        if let workMeter {
+            let reservation = try workMeter.reserveIntermediate(
+                bytes: UInt64(decoded.byteCount),
+                at: .indexScan
+            )
+            retainedBuffer = DatabaseRetainedMutableByteBuffer(
+                count: decoded.byteCount,
+                reservation: reservation
+            )
+            output = []
+        } else {
+            retainedBuffer = nil
+            output = [UInt8](repeating: 0, count: decoded.byteCount)
+        }
         var loadedByteCount = 0
         for chunkIndex in 0..<decoded.chunkCount {
             let chunkKey = graphChunksSubspace.pack(Tuple(Int64(chunkIndex)))
@@ -534,14 +665,23 @@ struct HNSWIndexStorage: Sendable {
                     "HNSW graph snapshot chunk \(chunkIndex) has an invalid size"
                 )
             }
-            output.withUnsafeMutableBytes { destination in
-                chunk.withUnsafeBytes { source in
-                    let target = UnsafeMutableRawBufferPointer(
-                        rebasing: destination[
-                            loadedByteCount..<(loadedByteCount + source.count)
-                        ]
-                    )
-                    target.copyMemory(from: source)
+            if let retainedBuffer, let workMeter {
+                try DatabaseByteProcessingMeter.consume(
+                    byteCount: chunk.count,
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
+                retainedBuffer.append(copying: chunk)
+            } else {
+                output.withUnsafeMutableBytes { destination in
+                    chunk.withUnsafeBytes { source in
+                        let target = UnsafeMutableRawBufferPointer(
+                            rebasing: destination[
+                                loadedByteCount..<(loadedByteCount + source.count)
+                            ]
+                        )
+                        target.copyMemory(from: source)
+                    }
                 }
             }
             loadedByteCount += expectedChunkSize
@@ -550,6 +690,9 @@ struct HNSWIndexStorage: Sendable {
             throw VectorIndexError.invalidStructure(
                 "HNSW graph snapshot byte count mismatch"
             )
+        }
+        if let retainedBuffer {
+            return retainedBuffer.finalize()
         }
         return ByteString(output)
     }
@@ -571,17 +714,24 @@ struct HNSWIndexStorage: Sendable {
     private func decodeGraphMetadataPayload(
         _ metadata: ByteString
     ) throws -> HNSWGraphMetadata {
-        let tuple = try Tuple(packed: metadata)
-        guard tuple.count == 4 || tuple.count == 5,
-              case .signedInteger(let version) = try tuple.value(at: 0),
-              case .signedInteger(let byteCountValue) = try tuple.value(at: 1),
-              case .signedInteger(let chunkSizeValue) = try tuple.value(at: 2),
-              case .signedInteger(let chunkCountValue) = try tuple.value(at: 3)
-        else {
-            throw VectorIndexError.invalidStructure(
-                "Invalid HNSW graph snapshot metadata"
-            )
+        var cursor = TupleCursor(bytes: metadata)
+
+        func requireCanonicalInt64() throws -> Int64 {
+            let start = cursor.consumedByteCount
+            let value = try cursor.requireInt64()
+            guard cursor.consumedByteCount - start
+                    == canonicalTupleInt64ByteCount(value) else {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid HNSW graph snapshot metadata"
+                )
+            }
+            return value
         }
+
+        let version = try requireCanonicalInt64()
+        let byteCountValue = try requireCanonicalInt64()
+        let chunkSizeValue = try requireCanonicalInt64()
+        let chunkCountValue = try requireCanonicalInt64()
         guard version == hnswGraphSnapshotVersion else {
             throw VectorIndexError.invalidStructure(
                 "Unsupported HNSW graph snapshot version \(version)"
@@ -589,15 +739,15 @@ struct HNSWIndexStorage: Sendable {
         }
 
         let revision: Int64
-        if tuple.count == 5 {
-            guard case .signedInteger(let value) = try tuple.value(at: 4) else {
+        if cursor.isAtEnd {
+            revision = 0
+        } else {
+            revision = try requireCanonicalInt64()
+            guard cursor.isAtEnd else {
                 throw VectorIndexError.invalidStructure(
-                    "Invalid HNSW graph snapshot revision"
+                    "Invalid HNSW graph snapshot metadata"
                 )
             }
-            revision = value
-        } else {
-            revision = 0
         }
         guard byteCountValue >= 0,
               chunkSizeValue > 0,
@@ -625,6 +775,19 @@ struct HNSWIndexStorage: Sendable {
         )
     }
 
+    private func canonicalTupleInt64ByteCount(_ value: Int64) -> Int {
+        guard value != 0 else { return 1 }
+        var magnitude = value > 0
+            ? UInt64(value)
+            : 0 &- UInt64(bitPattern: value)
+        var payloadByteCount = 1
+        while magnitude > UInt64(UInt8.max) {
+            payloadByteCount += 1
+            magnitude >>= 8
+        }
+        return 1 + payloadByteCount
+    }
+
     private func nextGraphSnapshotRevision(
         transaction: any TransactionAccess
     ) async throws -> Int64 {
@@ -645,7 +808,9 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func loadPrimaryKeysByLabel(
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil,
+        reservation: DatabaseIntermediateReservation? = nil
     ) async throws -> HNSWPrimaryKeySnapshot {
         guard resourceLimits.maximumPrimaryKeyCount >= 0,
               resourceLimits.maximumPrimaryKeyByteCount >= 0 else {
@@ -663,8 +828,28 @@ struct HNSWIndexStorage: Sendable {
             streamingMode: .iterator
         )
 
-        var primaryKeysByLabel: [UInt64: Tuple] = [:]
-        var retainedByteCount = 0
+        let mappingLayout = try DatabaseRetainedHashTableLayout.validated(
+            containerByteCount: UInt64(
+                MemoryLayout<[UInt64: ByteString]>.stride
+            ),
+            elementCapacitySlotByteCount: UInt64(
+                max(1, MemoryLayout<HNSWPrimaryKeyMappingSlot>.stride)
+            )
+        )
+        guard let mappingContainerBytes = Int(exactly: mappingLayout.containerByteCount)
+        else {
+            throw VectorIndexError.invalidStructure(
+                "HNSW primary-key mapping exceeds the current platform limit"
+            )
+        }
+        try reservation?.reserveAdditional(
+            bytes: mappingLayout.containerByteCount,
+            at: .indexScan
+        )
+        var primaryKeysByLabel: [UInt64: ByteString] = [:]
+        var accountedCapacity = 0
+        var retainedByteCount = mappingContainerBytes
+        var persistedByteCount = 0
         try await cursor.consume { key, value in
             guard primaryKeysByLabel.count < resourceLimits.maximumPrimaryKeyCount else {
                 throw VectorIndexError.invalidStructure(
@@ -681,32 +866,94 @@ struct HNSWIndexStorage: Sendable {
                 64,
                 message: "HNSW primary-key retained byte count overflow"
             )
-            retainedByteCount = try checkedSum(
-                retainedByteCount,
+            persistedByteCount = try checkedSum(
+                persistedByteCount,
                 retainedRowByteCount,
                 message: "HNSW primary-key retained byte count overflow"
             )
-            guard retainedByteCount <= resourceLimits.maximumPrimaryKeyByteCount else {
+            guard persistedByteCount <= resourceLimits.maximumPrimaryKeyByteCount else {
                 throw VectorIndexError.invalidStructure(
                     "HNSW primary-key mapping exceeds the configured byte limit"
                 )
             }
-            do {
-                let labelTuple = try primaryKeysSubspace.unpack(key)
-                let labelValue = try HNSWLabelCodec.decode(labelTuple)
-                guard primaryKeysByLabel.updateValue(
-                    try Tuple(packed: value),
-                    forKey: labelValue
-                ) == nil else {
-                    throw VectorIndexError.invalidStructure(
-                        "Duplicate HNSW primary-key label"
+            try validateCanonicalPrimaryKey(
+                value,
+                workMeter: workMeter
+            )
+            guard primaryKeysSubspace.contains(key) else {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid HNSW primary-key mapping key"
+                )
+            }
+            let labelBytes = key[
+                primaryKeysSubspace.prefix.count..<key.count
+            ]
+            let labelValue = try HNSWLabelCodec.decodePacked(labelBytes)
+            let (requiredCount, countOverflow) = primaryKeysByLabel.count
+                .addingReportingOverflow(1)
+            guard !countOverflow else {
+                throw VectorIndexError.invalidStructure(
+                    "HNSW primary-key mapping count overflow"
+                )
+            }
+            let growth = try mappingLayout.growth(
+                from: accountedCapacity,
+                toFit: requiredCount
+            )
+            guard let growthByteCount = Int(exactly: growth.additionalByteCount)
+            else {
+                throw VectorIndexError.invalidStructure(
+                    "HNSW primary-key mapping exceeds the current platform limit"
+                )
+            }
+            retainedByteCount = try checkedSum(
+                retainedByteCount,
+                try checkedSum(
+                    growthByteCount,
+                    value.count,
+                    message: "HNSW primary-key retained byte count overflow"
+                ),
+                message: "HNSW primary-key retained byte count overflow"
+            )
+            try reservation?.reserveAdditional(
+                rows: 1,
+                bytes: try DatabaseIntermediateFootprint(
+                    bytes: growth.additionalByteCount
+                ).adding(
+                    DatabaseIntermediateFootprint(bytes: UInt64(value.count))
+                ).bytes,
+                at: .indexScan
+            )
+            try workMeter?.consume(at: .indexScan)
+            if growth.capacity != accountedCapacity {
+                primaryKeysByLabel.reserveCapacity(growth.capacity)
+                accountedCapacity = growth.capacity
+            }
+            let retainedValue: ByteString
+            if value.isStorageSelfContained,
+               value.retainedByteCount == value.count {
+                retainedValue = value
+            } else {
+                if let workMeter {
+                    try DatabaseByteProcessingMeter.consume(
+                        byteCount: value.count,
+                        workMeter: workMeter,
+                        stage: .indexScan
                     )
                 }
-            } catch let error as VectorIndexError {
-                throw error
-            } catch {
+                // The cache must not retain an opaque backend batch or a large
+                // enclosing row owner. This is the sole ownership-transfer
+                // copy; exact self-contained owners take the branch above.
+                retainedValue = ByteString(
+                    retaining: HNSWPrimaryKeyBytesOwner(copying: value)
+                )
+            }
+            guard primaryKeysByLabel.updateValue(
+                retainedValue,
+                forKey: labelValue
+            ) == nil else {
                 throw VectorIndexError.invalidStructure(
-                    "Invalid HNSW primary-key mapping"
+                    "Duplicate HNSW primary-key label"
                 )
             }
         }
@@ -719,7 +966,7 @@ struct HNSWIndexStorage: Sendable {
     private func inspectAndValidateRestore(
         from graphData: ByteString,
         primaryKeys: HNSWPrimaryKeySnapshot? = nil
-    ) throws -> Int {
+    ) throws -> HNSWValidatedRestoreProfile {
         guard resourceLimits.maximumRetainedByteCount > 0 else {
             throw VectorIndexError.invalidArgument(
                 "The maximum HNSW retained byte count must be positive"
@@ -769,7 +1016,18 @@ struct HNSWIndexStorage: Sendable {
                 "HNSW restore payload exceeds the configured byte limit"
             )
         }
-        return cachedBytes
+        guard profile.estimatedRestoreWorkingPayloadByteCount
+                >= profile.archiveByteCount else {
+            throw VectorIndexError.invalidStructure(
+                "HNSW restore profile excludes its archive payload"
+            )
+        }
+        return HNSWValidatedRestoreProfile(
+            cacheCost: cachedBytes,
+            additionalRestoreByteCount:
+                profile.estimatedRestoreWorkingPayloadByteCount
+                    - profile.archiveByteCount
+        )
     }
 
     private func validateNewIndexBudget(
@@ -811,8 +1069,9 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func validateForwardMappings(
-        primaryKeys: [UInt64: Tuple],
-        transaction: any TransactionAccess
+        primaryKeys: [UInt64: ByteString],
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws {
         let (begin, end) = labelsSubspace.range()
         var cursor = transaction.rangeCursor(
@@ -847,16 +1106,22 @@ struct HNSWIndexStorage: Sendable {
                     "HNSW forward label mapping exceeds the configured byte limit"
                 )
             }
-            let primaryKey: Tuple
-            do {
-                primaryKey = try labelsSubspace.unpack(key)
-            } catch {
+            guard labelsSubspace.contains(key) else {
                 throw VectorIndexError.invalidStructure(
                     "Invalid HNSW forward primary-key mapping"
                 )
             }
+            let primaryKey = key[labelsSubspace.prefix.count..<key.count]
             let label = try HNSWLabelCodec.decodePacked(value)
-            guard primaryKeys[label]?.pack() == primaryKey.pack() else {
+            try workMeter?.consume(at: .indexScan)
+            if let workMeter {
+                try DatabaseByteProcessingMeter.consume(
+                    byteCount: primaryKey.count,
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
+            }
+            guard primaryKeys[label] == primaryKey else {
                 throw VectorIndexError.invalidStructure(
                     "HNSW forward and reverse primary-key mappings disagree"
                 )
@@ -866,6 +1131,46 @@ struct HNSWIndexStorage: Sendable {
         guard observedCount == primaryKeys.count else {
             throw VectorIndexError.invalidStructure(
                 "HNSW forward primary-key mapping count is inconsistent"
+            )
+        }
+    }
+
+    private func validateCanonicalPrimaryKey(
+        _ packedPrimaryKey: ByteString,
+        workMeter: DatabaseWorkMeter?
+    ) throws {
+        let scratchBytes = try DatabaseIntermediateFootprint(
+            bytes: 128
+        ).adding(
+            try DatabaseIntermediateFootprint(
+                bytes: UInt64(packedPrimaryKey.count)
+            ).multiplied(by: 96)
+        ).bytes
+        let scratch = try workMeter?.reserveIntermediate(
+            bytes: scratchBytes,
+            at: .indexScan
+        )
+        defer { scratch?.release() }
+        if let workMeter {
+            try DatabaseByteProcessingMeter.consume(
+                byteCount: packedPrimaryKey.count,
+                passes: 2,
+                workMeter: workMeter,
+                stage: .indexScan
+            )
+        }
+        do {
+            guard try Tuple(packed: packedPrimaryKey).pack()
+                    == packedPrimaryKey else {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid HNSW reverse primary-key mapping"
+                )
+            }
+        } catch let error as VectorIndexError {
+            throw error
+        } catch {
+            throw VectorIndexError.invalidStructure(
+                "Invalid HNSW reverse primary-key mapping"
             )
         }
     }

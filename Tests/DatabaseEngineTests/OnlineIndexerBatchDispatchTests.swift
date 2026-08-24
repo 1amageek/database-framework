@@ -65,9 +65,9 @@ struct OnlineIndexerBatchDispatchTests {
         )
         try await lifecycleStore.enable(index.name)
 
-        var first = Player(name: "duplicate", score: 1, level: 1)
+        var first = Player.fixture(name: "duplicate", score: 1, level: 1)
         first.id = "first"
-        var second = Player(name: "duplicate", score: 2, level: 1)
+        var second = Player.fixture(name: "duplicate", score: 2, level: 1)
         second.id = "second"
         let players = [first, second]
         try await database.withTransaction { transaction in

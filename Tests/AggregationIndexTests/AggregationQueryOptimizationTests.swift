@@ -268,7 +268,7 @@ struct AggregationQueryOptimizationTests {
                 ],
                 value: AggregationOrder.fields.amount.identity
             ),
-            fieldSchemas: AggregationOrder.fieldSchemas
+            fieldSchemas: try AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -333,7 +333,7 @@ struct AggregationQueryOptimizationTests {
                 ],
                 value: AggregationOrder.fields.amount.identity
             ),
-            fieldSchemas: AggregationOrder.fieldSchemas
+            fieldSchemas: try AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -397,7 +397,7 @@ struct AggregationQueryOptimizationTests {
                     .ascending(AggregationOrder.fields.region.identity)
                 ]
             ),
-            fieldSchemas: AggregationOrder.fieldSchemas
+            fieldSchemas: try AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -461,7 +461,7 @@ struct AggregationQueryOptimizationTests {
                 ],
                 value: AggregationOrder.fields.amount.identity
             ),
-            fieldSchemas: AggregationOrder.fieldSchemas
+            fieldSchemas: try AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -526,7 +526,7 @@ struct AggregationQueryOptimizationTests {
                     .ascending(AggregationOrder.fields.region.identity)
                 ]
             ),
-            fieldSchemas: AggregationOrder.fieldSchemas
+            fieldSchemas: try AggregationOrder.fieldSchemas
         )
         let minIndexDescriptor = try IndexDescriptor(
             entityName: AggregationOrder.persistableType,
@@ -538,7 +538,7 @@ struct AggregationQueryOptimizationTests {
                 ],
                 value: AggregationOrder.fields.amount.identity
             ),
-            fieldSchemas: AggregationOrder.fieldSchemas
+            fieldSchemas: try AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(
@@ -608,7 +608,7 @@ struct AggregationQueryOptimizationTests {
                     .ascending(AggregationOrder.fields.region.identity)
                 ]
             ),
-            fieldSchemas: AggregationOrder.fieldSchemas
+            fieldSchemas: try AggregationOrder.fieldSchemas
         )
 
         let schema = try Schema(

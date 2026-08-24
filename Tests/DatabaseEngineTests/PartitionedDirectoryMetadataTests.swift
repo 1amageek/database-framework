@@ -32,7 +32,7 @@ struct PartitionedDirectoryMetadataTests {
 
     @Test("DirectoryPath extracts partition values from a model")
     func partitionValuesComeFromModel() throws {
-        let order = TenantOrder(
+        let order = TenantOrder.fixture(
             tenantID: "tenant_xyz",
             status: "pending",
             total: 50.0

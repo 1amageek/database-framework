@@ -19,12 +19,107 @@ private struct FullTextReadResourceArticle {
 
     var id: String
     var body: String
+    var payload: String
 }
 
 @Suite("Full-text read resource lifecycle", .serialized)
 struct FullTextReadResourceLifecycleTests {
-    @Test("Rejected union releases reservations before the meter is reused")
-    func rejectedUnionReleasesReservationsBeforeReuse() async throws {
+    @Test("Oversized persisted payload is rejected before decode retention")
+    func oversizedPersistedPayloadIsRejectedAndReleasesReservation() async throws {
+        let schema = try Schema(
+            entities: [try FullTextReadResourceArticle.schemaEntity]
+        )
+        let maintainerProvider = FullTextIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(
+            FullTextReadResourceArticle.self
+        )
+        try FullTextReadExecutors.register(with: &entityRuntime)
+        try entityRuntime.register(maintainerProvider)
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "fulltext-payload-resource-tests",
+                    revision: 1
+                ),
+                indexMaintainerProviderDescriptors: [
+                    .init(describing: maintainerProvider)
+                ],
+                entityRuntimes: [entityRuntime.registration()]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+
+        let context = container.testBaseContext()
+        try context.insert(
+            FullTextReadResourceArticle(
+                id: "oversized",
+                body: "oversized",
+                payload: String(repeating: "x", count: 120_000)
+            )
+        )
+        try context.insert(
+            FullTextReadResourceArticle(
+                id: "small",
+                body: "small",
+                payload: "small"
+            )
+        )
+        try await context.save()
+
+        let execution = ReadExecutionContext(
+            options: ReadExecutionOptions(
+                budget: ExecutionBudget(
+                    maximumIntermediateBytes: 8_000
+                )
+            ),
+            monotonicClock: container.monotonicClock
+        )
+        let oversizedQuery = try context.search(
+            FullTextReadResourceArticle.self
+        )
+        .fullText(FullTextReadResourceArticle.fields.body)
+        .terms(["oversized"], mode: .all)
+        .toSelectQuery()
+
+        await #expect {
+            _ = try await context.executeCanonicalQuery(
+                oversizedQuery,
+                execution: execution
+            )
+        } throws: { error in
+            guard case .maximumIntermediateBytes(
+                stage: .storageRow,
+                consumed: _,
+                requested: _,
+                maximum: 8_000
+            ) = error as? DatabaseWorkLimitError else {
+                return false
+            }
+            return true
+        }
+        #expect(execution.workMeter.retainedIntermediateRows == 0)
+        #expect(execution.workMeter.retainedIntermediateBytes == 0)
+
+        let retryQuery = try context.search(
+            FullTextReadResourceArticle.self
+        )
+        .fullText(FullTextReadResourceArticle.fields.body)
+        .terms(["small"], mode: .all)
+        .toSelectQuery()
+        let retry = try await context.executeCanonicalQuery(
+            retryQuery,
+            execution: execution
+        )
+        #expect(retry.rows.count == 1)
+        #expect(execution.workMeter.retainedIntermediateRows == 0)
+        #expect(execution.workMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Rejected read releases reservations before the meter is reused")
+    func rejectedReadReleasesReservationsBeforeReuse() async throws {
         let schema = try Schema(
             entities: [try FullTextReadResourceArticle.schemaEntity]
         )
@@ -57,26 +152,29 @@ struct FullTextReadResourceLifecycleTests {
         try context.insert(
             FullTextReadResourceArticle(
                 id: "first",
-                body: "common alpha"
+                body: "common alpha",
+                payload: "first"
             )
         )
         try context.insert(
             FullTextReadResourceArticle(
                 id: "second",
-                body: "common beta"
+                body: "common beta",
+                payload: "second"
             )
         )
         try context.insert(
             FullTextReadResourceArticle(
                 id: "third",
-                body: "beta unique"
+                body: "beta unique",
+                payload: "third"
             )
         )
         try await context.save()
 
         let execution = ReadExecutionContext(
             options: ReadExecutionOptions(
-                budget: ExecutionBudget(maximumIntermediateBytes: 1_300)
+                budget: ExecutionBudget(maximumIntermediateBytes: 2_500)
             ),
             monotonicClock: container.monotonicClock
         )
@@ -95,10 +193,10 @@ struct FullTextReadResourceLifecycleTests {
             Issue.record("The union must exceed the intermediate byte budget")
         } catch let workError as DatabaseWorkLimitError {
             guard case .maximumIntermediateBytes(
-                    stage: .indexScan,
+                    stage: _,
                     consumed: _,
                     requested: _,
-                    maximum: 1_300
+                    maximum: 2_500
                   ) = workError else {
                 Issue.record("Unexpected work limit: \(workError)")
                 return

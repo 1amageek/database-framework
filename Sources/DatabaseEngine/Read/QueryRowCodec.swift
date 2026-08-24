@@ -18,7 +18,9 @@ public enum QueryRowCodec {
         _ row: QueryRow,
         as type: T.Type
     ) throws -> T {
-        let schemas = Dictionary(uniqueKeysWithValues: T.fieldSchemas.map { ($0.name, $0) })
+        let schemas = Dictionary(
+            uniqueKeysWithValues: try T.fieldSchemas.map { ($0.name, $0) }
+        )
         var fields: [PersistableField] = []
         fields.reserveCapacity(row.fields.count)
         for (name, value) in row.fields {

@@ -62,7 +62,7 @@ struct CanonicalCoveringValueBuilderTests {
                     )
                 ]
             ),
-            fieldSchemas: IndexProjectionKeyOnlyEntity.fieldSchemas
+            fieldSchemas: try IndexProjectionKeyOnlyEntity.fieldSchemas
         )
         let bytes = try CoveringValueBuilder.build(
             for: entity,
@@ -87,7 +87,7 @@ struct CanonicalCoveringValueBuilderTests {
                         FieldIdentity(name: "unknown", number: 999)
                     ]
                 ),
-                fieldSchemas: IndexProjectionEntity.fieldSchemas
+                fieldSchemas: try IndexProjectionEntity.fieldSchemas
             )
         }
     }

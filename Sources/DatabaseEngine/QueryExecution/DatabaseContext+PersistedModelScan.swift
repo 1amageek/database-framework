@@ -58,8 +58,9 @@ extension DatabaseContext {
         primaryKeys: [Tuple],
         partitions: FieldObject,
         transaction: any TransactionAccess,
+        snapshot: Bool,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [PersistedModel?] {
+    ) async throws -> DatabaseRetainedPersistedModels {
         #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
@@ -71,17 +72,17 @@ extension DatabaseContext {
             storageAccess: transaction,
             container: container
         )
+        let arrayFootprint = try DatabaseIntermediateCollectionMeter
+            .arrayFootprint(
+                count: primaryKeys.count,
+                element: DatabaseRetainedPersistedModels.Entry?.self
+            )
         let reservation = try workMeter.reserveIntermediate(
             rows: UInt64(primaryKeys.count),
-            bytes: try DatabaseIntermediateFootprint(
-                bytes: UInt64(
-                    max(1, MemoryLayout<PersistedModel?>.stride + 16)
-                )
-            ).multiplied(by: UInt64(primaryKeys.count)).bytes,
+            bytes: arrayFootprint.bytes,
             at: .storageRow
         )
-        defer { reservation.release() }
-        var models = [PersistedModel?](
+        var models = [DatabaseRetainedPersistedModels.Entry?](
             repeating: nil,
             count: primaryKeys.count
         )
@@ -90,17 +91,35 @@ extension DatabaseContext {
             // Preserve one serial transaction snapshot until StorageKit owns a
             // backend-neutral batch-read contract.
             try workMeter.consume(at: .storageRow)
-            models[index] = try await databaseTransaction.loadPersistedModel(
+            models[index] = try await databaseTransaction
+                .loadRetainedPersistedModel(
                 entity: entity.name,
                 id: primaryKeys[index],
-                partition: partition
-            )
+                partition: partition,
+                snapshot: snapshot,
+                workMeter: workMeter
+                )
         }
-        return models
+        return DatabaseRetainedPersistedModels(
+            entries: models,
+            arrayReservation: reservation
+        )
     }
 
     package func authorizeCanonicalListAccess(
         entity: Schema.Entity,
+        selectQuery: SelectQuery
+    ) throws {
+        try authorizeCanonicalListAccess(
+            entityName: entity.name,
+            selectQuery: selectQuery
+        )
+    }
+
+    /// Performs logical list authorization from the requested name before
+    /// schema resolution can reveal whether that name exists.
+    package func authorizeCanonicalListAccess(
+        entityName: String,
         selectQuery: SelectQuery
     ) throws {
         let limit = try canonicalWindowValue(
@@ -112,7 +131,7 @@ extension DatabaseContext {
             parameter: "offset"
         )
         try container.securityDelegate?.evaluateList(
-            entity: entity.name,
+            entity: entityName,
             limit: limit,
             offset: offset,
             orderBy: try selectQuery.requiredOrderByColumnNames()

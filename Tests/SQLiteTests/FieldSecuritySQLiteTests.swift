@@ -14,6 +14,12 @@ private struct FieldSecuritySQLiteRecord: SecurityPolicy {
         "field-security",
         "records"
     )
+    #Index(
+        .bitmap(
+            name: "field_security_secret",
+            field: \FieldSecuritySQLiteRecord.secret
+        )
+    )
 
     var id: String = "record"
     var title: String = ""
@@ -77,6 +83,41 @@ struct FieldSecuritySQLiteTests {
                 SelectQuery(
                     projection: .all,
                     source: .table(TableRef(FieldSecuritySQLiteRecord.persistableType))
+                )
+            )
+        }
+
+        let restrictedBitmap = try Bitmap(
+            FieldSecuritySQLiteRecord.fields.secret,
+            equals: "classified"
+        )
+        let publicRank = FusionInput(
+            operation: .order([
+                SortKey(.col("title"), direction: .ascending),
+                SortKey(.col("id"), direction: .ascending),
+            ]),
+            scoring: .position,
+            requirement: .candidates
+        )
+        await #expect(throws: FieldSecurityError.self) {
+            try await reader.query(
+                SelectQuery(
+                    projection: .items([.column("title")]),
+                    source: .table(
+                        TableRef(FieldSecuritySQLiteRecord.persistableType)
+                    ),
+                    accessPath: .fusion(
+                        FusionSource(
+                            stages: [
+                                FusionStageSource(
+                                    inputs: [restrictedBitmap.fusionInput]
+                                ),
+                                FusionStageSource(
+                                    inputs: [publicRank]
+                                )
+                            ]
+                        )
+                    )
                 )
             )
         }

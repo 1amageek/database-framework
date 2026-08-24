@@ -990,6 +990,339 @@ struct HNSWBasicBehaviorTests {
         }
         #expect(dotNodeCount == 0)
     }
+
+    @Test("HNSW cache isolates equal index keys by storage domain")
+    func hnswCacheIsolatesIndependentStorageDomains() async throws {
+        let firstDatabase = InMemoryEngine()
+        let secondDatabase = InMemoryEngine()
+        let sharedCache = HNSWGraphCache()
+        let subspace = Subspace(
+            prefix: Tuple("test", "hnsw", "storage-domain-cache").pack()
+        )
+        let specification = try VectorIndexSpecification(
+            vectorIndexDefinition(dimensions: 4, metric: .euclidean)
+        )
+        let index = try resolvedHNSWIndex(specification)
+        let parameters = HNSWParameters(
+            m: 4,
+            efConstruction: 20,
+            efSearch: 20
+        )
+        let firstMaintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: subspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: parameters,
+            graphCache: sharedCache,
+            resourceLimits: .default
+        )
+        let secondMaintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: subspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: parameters,
+            graphCache: sharedCache,
+            resourceLimits: .default
+        )
+        let vector = try Vector(float32: [1, 0, 0, 0])
+
+        try await firstDatabase.withTransaction { transaction in
+            try await firstMaintainer.updateIndex(
+                oldItem: nil,
+                newItem: HNSWDocument(
+                    id: "first-engine",
+                    title: "First",
+                    embedding: vector
+                ),
+                transaction: transaction
+            )
+        }
+        try await secondDatabase.withTransaction { transaction in
+            try await secondMaintainer.updateIndex(
+                oldItem: nil,
+                newItem: HNSWDocument(
+                    id: "second-engine",
+                    title: "Second",
+                    embedding: vector
+                ),
+                transaction: transaction
+            )
+        }
+
+        let first = try await firstDatabase.withTransaction { transaction in
+            try await firstMaintainer.search(
+                queryVector: [1, 0, 0, 0],
+                k: 1,
+                transaction: transaction
+            )
+        }
+        let second = try await secondDatabase.withTransaction { transaction in
+            try await secondMaintainer.search(
+                queryVector: [1, 0, 0, 0],
+                k: 1,
+                transaction: transaction
+            )
+        }
+
+        #expect(
+            try decodePrimaryKeyString(
+                try #require(first.first).primaryKey
+            ) == "first-engine"
+        )
+        #expect(
+            try decodePrimaryKeyString(
+                try #require(second.first).primaryKey
+            ) == "second-engine"
+        )
+    }
+
+    @Test("HNSW traversal charges actual distance evaluations")
+    func hnswTraversalChargesActualDistanceEvaluations() async throws {
+        let database = InMemoryEngine()
+        let cache = HNSWGraphCache()
+        let subspace = Subspace(
+            prefix: Tuple("test", "hnsw", "observed-work").pack()
+        )
+        let specification = try VectorIndexSpecification(
+            vectorIndexDefinition(dimensions: 4, metric: .euclidean)
+        )
+        let index = try resolvedHNSWIndex(specification)
+        let parameters = HNSWParameters(
+            m: 4,
+            efConstruction: 20,
+            efSearch: 20
+        )
+        let maintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: subspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: parameters,
+            graphCache: cache,
+            resourceLimits: .default
+        )
+        let documents = try (0..<8).map { index in
+            HNSWDocument(
+                id: "document-\(index)",
+                title: "Document \(index)",
+                embedding: try Vector(
+                    float32: [Float(index), 1, 0, 0]
+                )
+            )
+        }
+        try await database.withTransaction { transaction in
+            try await maintainer.scanItems(
+                documents.map { (item: $0, id: Tuple($0.id)) },
+                transaction: transaction
+            )
+        }
+        _ = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [0, 1, 0, 0],
+                k: 1,
+                transaction: transaction
+            )
+        }
+        let storage = HNSWIndexStorage(
+            subspace: subspace,
+            dimensions: 4,
+            metric: .euclidean,
+            parameters: parameters,
+            graphCache: cache,
+            resourceLimits: .default
+        )
+        let meter = DatabaseWorkMeter(
+            budget: ExecutionBudget(maximumWorkUnits: 3),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+
+        await #expect(throws: DatabaseWorkLimitError.self) {
+            _ = try await database.withTransaction { transaction in
+                try await HNSWIndexReader(storage: storage).search(
+                    queryVector: Vector(float32: [0, 1, 0, 0]),
+                    k: 1,
+                    parameters: HNSWSearchParameters(ef: 20),
+                    transaction: transaction,
+                    workMeter: meter
+                )
+            }
+        }
+    }
+
+    @Test("HNSW cold restore accounts for overlapping retained payloads")
+    func hnswColdRestoreAccountsForPeakMemory() async throws {
+        let database = InMemoryEngine()
+        let subspace = Subspace(
+            prefix: Tuple("test", "hnsw", "restore-peak").pack()
+        )
+        let specification = try VectorIndexSpecification(
+            vectorIndexDefinition(dimensions: 4, metric: .euclidean)
+        )
+        let index = try resolvedHNSWIndex(specification)
+        let parameters = HNSWParameters(
+            m: 4,
+            efConstruction: 20,
+            efSearch: 20
+        )
+        let maintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: subspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: parameters
+        )
+        let documents = try (0..<8).map { index in
+            HNSWDocument(
+                id: "document-\(index)",
+                title: "Document \(index)",
+                embedding: try Vector(float32: [Float(index), 1, 0, 0])
+            )
+        }
+        try await database.withTransaction { transaction in
+            try await maintainer.scanItems(
+                documents.map { (item: $0, id: Tuple($0.id)) },
+                transaction: transaction
+            )
+        }
+
+        let retainedStorageBytes = try await database.withTransaction {
+            transaction -> Int in
+            let chunks = try await transaction.collectRange(
+                begin: subspace.subspace("_graphChunks").range().begin,
+                end: subspace.subspace("_graphChunks").range().end,
+                snapshot: true
+            )
+            let mappings = try await transaction.collectRange(
+                begin: subspace.subspace("p").range().begin,
+                end: subspace.subspace("p").range().end,
+                snapshot: true
+            )
+            return chunks.reduce(0) { $0 + $1.1.count }
+                + mappings.reduce(0) {
+                    $0 + $1.0.count + $1.1.count + 64
+                }
+        }
+        let successfulMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumWorkUnits: 1_000_000,
+                maximumIntermediateRows: 1_000,
+                maximumIntermediateBytes: 16 * 1_024 * 1_024
+            ),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let successfulStorage = HNSWIndexStorage(
+            subspace: subspace,
+            dimensions: 4,
+            metric: .euclidean,
+            parameters: parameters,
+            graphCache: HNSWGraphCache(),
+            resourceLimits: .default
+        )
+        _ = try await database.withTransaction { transaction in
+            try await HNSWIndexReader(storage: successfulStorage).search(
+                queryVector: Vector(float32: [0, 1, 0, 0]),
+                k: 1,
+                parameters: HNSWSearchParameters(ef: 20),
+                transaction: transaction,
+                workMeter: successfulMeter
+            )
+        }
+        #expect(
+            successfulMeter.peakIntermediateBytes
+                > UInt64(retainedStorageBytes)
+        )
+
+        let boundedMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumWorkUnits: 1_000_000,
+                maximumIntermediateRows: 1_000,
+                maximumIntermediateBytes: UInt64(retainedStorageBytes)
+            ),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let boundedStorage = HNSWIndexStorage(
+            subspace: subspace,
+            dimensions: 4,
+            metric: .euclidean,
+            parameters: parameters,
+            graphCache: HNSWGraphCache(),
+            resourceLimits: .default
+        )
+        await #expect(throws: DatabaseWorkLimitError.self) {
+            _ = try await database.withTransaction { transaction in
+                try await HNSWIndexReader(storage: boundedStorage).search(
+                    queryVector: Vector(float32: [0, 1, 0, 0]),
+                    k: 1,
+                    parameters: HNSWSearchParameters(ef: 20),
+                    transaction: transaction,
+                    workMeter: boundedMeter
+                )
+            }
+        }
+    }
+
+    @Test("HNSW rejects graph scores detached from persisted vectors")
+    func hnswRejectsStalePersistedVector() async throws {
+        let database = InMemoryEngine()
+        let subspace = Subspace(
+            prefix: Tuple("test", "hnsw", "stale-vector").pack()
+        )
+        let specification = try VectorIndexSpecification(
+            vectorIndexDefinition(dimensions: 4, metric: .euclidean)
+        )
+        let index = try resolvedHNSWIndex(specification)
+        let maintainer = HNSWIndexMaintainer<HNSWDocument>(
+            index: index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: subspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: HNSWParameters(
+                m: 4,
+                efConstruction: 20,
+                efSearch: 20
+            )
+        )
+        try await database.withTransaction { transaction in
+            try await maintainer.updateIndex(
+                oldItem: nil,
+                newItem: HNSWDocument(
+                    id: "exact",
+                    title: "Exact",
+                    embedding: try Vector(float32: [1, 0, 0, 0])
+                ),
+                transaction: transaction
+            )
+            let labelBytes = try #require(
+                try await transaction.getValue(
+                    for: subspace.subspace("l").pack(Tuple("exact"))
+                )
+            )
+            let label = try HNSWLabelCodec.decodePacked(labelBytes)
+            try transaction.setValue(
+                VectorConversion.floatArrayToBytes([0, 1, 0, 0]),
+                for: subspace.subspace("v").pack(
+                    HNSWLabelCodec.tuple(label)
+                )
+            )
+        }
+
+        await #expect(throws: VectorIndexError.self) {
+            _ = try await database.withTransaction { transaction in
+                try await maintainer.search(
+                    queryVector: [1, 0, 0, 0],
+                    k: 1,
+                    transaction: transaction
+                )
+            }
+        }
+    }
 }
 
 private func resolvedHNSWIndex(

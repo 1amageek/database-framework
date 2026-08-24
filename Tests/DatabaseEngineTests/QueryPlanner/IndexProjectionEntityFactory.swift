@@ -26,7 +26,7 @@ enum IndexProjectionEntityFactory {
                     ]
                     : []
             ),
-            fieldSchemas: IndexProjectionEntity.fieldSchemas
+            fieldSchemas: try IndexProjectionEntity.fieldSchemas
         )
     }
 

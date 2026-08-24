@@ -11,7 +11,7 @@ struct RelationshipReferenceMacroTests {
             RelationshipOptionalOwner.relationshipDescriptors.first
         )
         let field = try #require(
-            RelationshipOptionalOwner.fieldSchemas.first {
+            try RelationshipOptionalOwner.fieldSchemas.first {
                 $0.name == "target"
             }
         )
@@ -36,7 +36,7 @@ struct RelationshipReferenceMacroTests {
             RelationshipArrayOwner.relationshipDescriptors.first
         )
         let field = try #require(
-            RelationshipArrayOwner.fieldSchemas.first {
+            try RelationshipArrayOwner.fieldSchemas.first {
                 $0.name == "targets"
             }
         )

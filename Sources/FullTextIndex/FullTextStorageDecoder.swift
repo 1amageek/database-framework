@@ -1,7 +1,132 @@
+import DatabaseEngine
 import DatabaseTypes
 import StorageKit
 
 enum FullTextStorageDecoder {
+    /// Decodes only the posting frequency without materializing a Tuple or a
+    /// positions array.
+    static func postingFrequency(
+        from value: ByteString,
+        positionsStored: Bool,
+        term: String,
+        workMeter: DatabaseWorkMeter
+    ) throws -> Int {
+        do {
+            var cursor = TupleCursor(bytes: value)
+            guard let frequency = Int(exactly: try cursor.requireInt64()),
+                  frequency > 0,
+                  (!positionsStored || frequency <= value.count) else {
+                throw FullTextStorageError.corruptedPosting(term: term)
+            }
+            var positionCount = 0
+            var previousPosition: Int64?
+            while !cursor.isAtEnd {
+                guard positionCount < frequency else {
+                    throw FullTextStorageError.corruptedPosting(term: term)
+                }
+                try workMeter.consume(at: .indexScan)
+                let position = try cursor.requireInt64()
+                guard positionsStored,
+                      position >= 0,
+                      previousPosition.map({ $0 < position }) ?? true else {
+                    throw FullTextStorageError.corruptedPosting(term: term)
+                }
+                previousPosition = position
+                positionCount += 1
+            }
+            guard (!positionsStored && positionCount == 0)
+                    || (positionsStored && positionCount == frequency) else {
+                throw FullTextStorageError.corruptedPosting(term: term)
+            }
+            return frequency
+        } catch let error as FullTextStorageError {
+            throw error
+        } catch is TupleError {
+            throw FullTextStorageError.corruptedPosting(term: term)
+        }
+    }
+
+    /// Decodes positions after the caller has admitted storage proportional to
+    /// the encoded value. The cursor borrows the immutable value bytes.
+    static func postingPositions(
+        from value: ByteString,
+        term: String,
+        workMeter: DatabaseWorkMeter
+    ) throws -> [Int] {
+        var positions: [Int] = []
+        positions.reserveCapacity(value.count)
+        _ = try postingPositions(
+            from: value,
+            term: term,
+            into: &positions,
+            workMeter: workMeter
+        )
+        return positions
+    }
+
+    /// Fills caller-owned scratch whose capacity was admitted before this
+    /// function. Existing capacity is retained across posting decodes.
+    static func postingPositions(
+        from value: ByteString,
+        term: String,
+        into positions: inout [Int],
+        workMeter: DatabaseWorkMeter
+    ) throws -> Int {
+        do {
+            var cursor = TupleCursor(bytes: value)
+            guard let frequency = Int(exactly: try cursor.requireInt64()),
+                  frequency > 0,
+                  frequency <= value.count else {
+                throw FullTextStorageError.corruptedPosting(term: term)
+            }
+            positions.removeAll(keepingCapacity: true)
+            var previousPosition: Int?
+            while !cursor.isAtEnd {
+                guard positions.count < frequency else {
+                    throw FullTextStorageError.corruptedPosting(term: term)
+                }
+                try workMeter.consume(at: .indexScan)
+                guard let position = Int(exactly: try cursor.requireInt64()),
+                      position >= 0,
+                      previousPosition.map({ $0 < position }) ?? true else {
+                    throw FullTextStorageError.corruptedPosting(term: term)
+                }
+                positions.append(position)
+                previousPosition = position
+            }
+            guard positions.count == frequency else {
+                throw FullTextStorageError.corruptedPosting(term: term)
+            }
+            return frequency
+        } catch let error as FullTextStorageError {
+            throw error
+        } catch is TupleError {
+            throw FullTextStorageError.corruptedPosting(term: term)
+        }
+    }
+
+    /// Decodes fixed-width document metadata without allocating a Tuple.
+    static func documentMetadataCursor(
+        from value: ByteString
+    ) throws -> (uniqueTermCount: Int64, docLength: Int64) {
+        do {
+            var cursor = TupleCursor(bytes: value)
+            let uniqueTermCount = try cursor.requireInt64()
+            let docLength = try cursor.requireInt64()
+            guard
+                  cursor.isAtEnd,
+                  uniqueTermCount >= 0,
+                  docLength >= 0 else {
+                throw FullTextStorageError.corruptedDocumentMetadata
+            }
+            return (uniqueTermCount, docLength)
+        } catch let error as FullTextStorageError {
+            throw error
+        } catch {
+            throw FullTextStorageError.corruptedDocumentMetadata
+        }
+    }
+
     static func posting(
         from value: ByteString,
         positionsStored: Bool,
@@ -27,13 +152,16 @@ enum FullTextStorageDecoder {
 
             var positions: [Int] = []
             positions.reserveCapacity(tuple.count - 1)
+            var previousPosition: Int?
             for index in 1..<tuple.count {
                 guard let rawPosition = tuple[index] as? Int64,
                       let position = Int(exactly: rawPosition),
-                      position >= 0 else {
+                      position >= 0,
+                      previousPosition.map({ $0 < position }) ?? true else {
                     throw FullTextStorageError.corruptedPosting(term: term)
                 }
                 positions.append(position)
+                previousPosition = position
             }
             return (termFrequency: termFrequency, positions: positions)
         } catch let error as FullTextStorageError {

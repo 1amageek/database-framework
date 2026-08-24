@@ -43,7 +43,7 @@ struct SPARQLFunctionIntegrationTests {
     struct SPARQLFunctionTriple {
         #Directory<SPARQLFunctionTriple>("sparql_function_test_rdf")
 
-        var id: String = UUID().uuidString
+        var id: String
         var subject: RDFTerm
         var predicate: RDFTerm
         var object: RDFTerm
@@ -61,6 +61,7 @@ struct SPARQLFunctionIntegrationTests {
             predicate: String,
             object: String
         ) throws {
+            self.id = UUID().uuidString
             self.subject = try .iri(validating: subject)
             self.predicate = try .iri(
                 validating: "urn:predicate:\(predicate)"

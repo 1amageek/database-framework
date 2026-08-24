@@ -192,7 +192,7 @@ public struct ModelDiffBuilder: Sendable {
         from item: T,
         fieldPath: String
     ) throws -> FieldValue {
-        guard let schema = T.fieldSchemas.first(where: {
+        guard let schema = try T.fieldSchemas.first(where: {
             $0.name == fieldPath && $0.fieldNumber > 0
         }) else {
             throw DiffError.fieldNotFound(

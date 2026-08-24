@@ -93,7 +93,7 @@ extension DatabaseContext {
                 )
                 let item = try runtime.canonicalized(persistedModel)
                 try self.container.securityDelegate?.evaluateGet(
-                    persistedModel,
+                    item,
                     fields: nil
                 )
                 entities.append(
@@ -193,7 +193,7 @@ extension DatabaseContext {
             )
             let item = try runtime.canonicalized(persistedModel)
             try container.securityDelegate?.evaluateGet(
-                persistedModel,
+                item,
                 fields: nil
             )
             return PolymorphicEntity(

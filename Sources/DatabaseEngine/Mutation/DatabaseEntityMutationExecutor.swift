@@ -50,8 +50,7 @@ public struct DatabaseEntityMutationExecutor: Sendable {
         var preparedChanges = try DatabaseRetainedArrayBuilder<PreparedChange>(
             workMeter: workMeter,
             stage: .validation,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: PreparedChange.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(PreparedChange.self),
             expectedCount: changes.count
         )
         var identities = try DatabaseRetainedArrayBuilder<
@@ -59,8 +58,7 @@ public struct DatabaseEntityMutationExecutor: Sendable {
         >(
             workMeter: workMeter,
             stage: .validation,
-            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
-                for: DatabasePreparedEntityMutation.Identity.self
+            layout: try DatabaseRetainedArrayLayout.forElement(DatabasePreparedEntityMutation.Identity.self
             ),
             expectedCount: changes.count
         )
@@ -203,8 +201,7 @@ public struct DatabaseEntityMutationExecutor: Sendable {
             >(
                 workMeter: workMeter,
                 stage: .mutationPlanning,
-                layout: try CanonicalRelationalFootprintMeter
-                    .retainedArrayLayout(for: PersistableMutation.self),
+                layout: try DatabaseRetainedArrayLayout.forElement(PersistableMutation.self),
                 expectedCount: preparedMutation.changes.count
             )
 
@@ -377,8 +374,7 @@ public struct DatabaseEntityMutationExecutor: Sendable {
         >(
             workMeter: workMeter,
             stage: .validation,
-            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
-                for: DatabasePreparedEntityMutation.Precondition.self
+            layout: try DatabaseRetainedArrayLayout.forElement(DatabasePreparedEntityMutation.Precondition.self
             ),
             expectedCount: preconditions.count
         )

@@ -44,7 +44,7 @@ struct CanonicalReadErrorTests {
     @Test("Valid partition field succeeds")
     func validPartitionFieldAccepted() throws {
         let field = try #require(
-            TenantOrder.fieldSchemas.first { $0.name == "tenantID" }
+            try TenantOrder.fieldSchemas.first { $0.name == "tenantID" }
         )
         let binding = try CanonicalPartitionBinding.makeBinding(
             for: TenantOrder.self,
@@ -61,7 +61,7 @@ struct CanonicalReadErrorTests {
     @Test("Partition value must match the compiled field type")
     func invalidPartitionTypeRejected() throws {
         let field = try #require(
-            TenantOrder.fieldSchemas.first { $0.name == "tenantID" }
+            try TenantOrder.fieldSchemas.first { $0.name == "tenantID" }
         )
         #expect(throws: CanonicalReadError.self) {
             _ = try CanonicalPartitionBinding.makeBinding(

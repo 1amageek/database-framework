@@ -43,7 +43,7 @@ struct PostgreSQLPartitionTests {
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            var order = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
+            var order = TenantOrder.fixture(tenantID: tenantID, status: "pending", total: 100.0)
             order.id = orderID
 
             try context.insert(order)
@@ -72,10 +72,10 @@ struct PostgreSQLPartitionTests {
             let order1ID = uniqueID("o1")
             let order2ID = uniqueID("o2")
 
-            var order1 = TenantOrder(tenantID: tenant1, status: "completed", total: 50.0)
+            var order1 = TenantOrder.fixture(tenantID: tenant1, status: "completed", total: 50.0)
             order1.id = order1ID
 
-            var order2 = TenantOrder(tenantID: tenant2, status: "pending", total: 75.0)
+            var order2 = TenantOrder.fixture(tenantID: tenant2, status: "pending", total: 75.0)
             order2.id = order2ID
 
             try context.insert(order1)
@@ -124,10 +124,10 @@ struct PostgreSQLPartitionTests {
             let order1ID = uniqueID("o1")
             let order2ID = uniqueID("o2")
 
-            var order1 = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
+            var order1 = TenantOrder.fixture(tenantID: tenantID, status: "pending", total: 100.0)
             order1.id = order1ID
 
-            var order2 = TenantOrder(tenantID: tenantID, status: "completed", total: 150.0)
+            var order2 = TenantOrder.fixture(tenantID: tenantID, status: "completed", total: 150.0)
             order2.id = order2ID
 
             try context.insert(order1)
@@ -156,7 +156,7 @@ struct PostgreSQLPartitionTests {
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            var order = TenantOrder(tenantID: tenantID, status: "pending", total: 50.0)
+            var order = TenantOrder.fixture(tenantID: tenantID, status: "pending", total: 50.0)
             order.id = orderID
             try context.insert(order)
             try await context.save()
@@ -208,10 +208,10 @@ struct PostgreSQLPartitionTests {
             let order1ID = uniqueID("o1")
             let order2ID = uniqueID("o2")
 
-            var order1 = TenantOrder(tenantID: tenant1, status: "pending", total: 100.0)
+            var order1 = TenantOrder.fixture(tenantID: tenant1, status: "pending", total: 100.0)
             order1.id = order1ID
 
-            var order2 = TenantOrder(tenantID: tenant2, status: "pending", total: 200.0)
+            var order2 = TenantOrder.fixture(tenantID: tenant2, status: "pending", total: 200.0)
             order2.id = order2ID
 
             try context.insert(order1)
@@ -263,7 +263,7 @@ struct PostgreSQLPartitionTests {
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            var order = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
+            var order = TenantOrder.fixture(tenantID: tenantID, status: "pending", total: 100.0)
             order.id = orderID
             try context.insert(order)
             try await context.save()
@@ -291,7 +291,7 @@ struct PostgreSQLPartitionTests {
             let context = container.testBaseContext()
 
             let playerID = uniqueID("player")
-            var player = Player(name: "Test Player", score: 100, level: 5)
+            var player = Player.fixture(name: "Test Player", score: 100, level: 5)
             player.id = playerID
 
             try context.insert(player)
@@ -316,7 +316,7 @@ struct PostgreSQLPartitionTests {
             let orderID = uniqueID("order")
 
             try await container.testBaseContext().withTransaction { transaction in
-                var order = TenantOrder(tenantID: tenantID, status: "tx-test", total: 500.0)
+                var order = TenantOrder.fixture(tenantID: tenantID, status: "tx-test", total: 500.0)
                 order.id = orderID
 
                 try await transaction.save(

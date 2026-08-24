@@ -16,6 +16,15 @@ public struct Player {
     public var name: String = ""
     public var score: Int64 = 0
     public var level: Int64 = 0
+
+    public static func fixture(
+        id: String = UUID().uuidString,
+        name: String = "",
+        score: Int64 = 0,
+        level: Int64 = 0
+    ) -> Self {
+        Self(id: id, name: name, score: score, level: level)
+    }
 }
 
 // MARK: - TenantOrder Model (for Partitioned Directory tests)
@@ -33,4 +42,18 @@ public struct TenantOrder {
     public var tenantID: String = ""
     public var status: String = "pending"
     public var total: Double = 0
+
+    public static func fixture(
+        id: String = UUID().uuidString,
+        tenantID: String = "",
+        status: String = "pending",
+        total: Double = 0
+    ) -> Self {
+        Self(
+            id: id,
+            tenantID: tenantID,
+            status: status,
+            total: total
+        )
+    }
 }

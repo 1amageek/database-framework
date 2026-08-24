@@ -1,5 +1,5 @@
 import DatabaseTypes
-@_spi(DatabaseExecution) import DatabaseWire
+import DatabaseKit
 
 package enum CanonicalRelationalFootprintMeter {
     private static let rowHeaderByteCount: UInt64 = 64
@@ -9,33 +9,42 @@ package enum CanonicalRelationalFootprintMeter {
         of row: CanonicalSourceRow,
         workMeter: DatabaseWorkMeter
     ) throws -> DatabaseIntermediateFootprint {
-        var encodedBytes = try encodedByteCount(
+        var retainedBytes = try retainedByteCount(
             fields: row.fields,
             workMeter: workMeter
         )
-        encodedBytes = try adding(
-            encodedBytes,
-            encodedByteCount(
+        retainedBytes = try adding(
+            retainedBytes,
+            retainedByteCount(
                 fields: row.annotations,
                 workMeter: workMeter
             )
         )
         for (scope, fields) in row.scopedFields {
-            encodedBytes = try adding(encodedBytes, UInt64(scope.utf8.count))
-            encodedBytes = try adding(
-                encodedBytes,
-                encodedByteCount(fields: fields, workMeter: workMeter)
+            let scopeBytes = try adding(
+                collectionEntryByteCount,
+                UInt64(scope.utf8.count)
+            )
+            try DatabaseByteProcessingMeter.consume(
+                byteCount: scopeBytes,
+                workMeter: workMeter,
+                stage: .projection
+            )
+            retainedBytes = try adding(retainedBytes, scopeBytes)
+            retainedBytes = try adding(
+                retainedBytes,
+                retainedByteCount(fields: fields, workMeter: workMeter)
             )
         }
         if let version = row.version {
-            encodedBytes = try adding(
-                encodedBytes,
+            retainedBytes = try adding(
+                retainedBytes,
                 UInt64(version.value.utf8.count)
             )
         }
         return DatabaseIntermediateFootprint(
             rows: 1,
-            bytes: try adding(rowHeaderByteCount, encodedBytes)
+            bytes: try adding(rowHeaderByteCount, retainedBytes)
         )
     }
 
@@ -43,26 +52,101 @@ package enum CanonicalRelationalFootprintMeter {
         of row: QueryRow,
         workMeter: DatabaseWorkMeter
     ) throws -> DatabaseIntermediateFootprint {
-        var encodedBytes = try encodedByteCount(
+        var retainedBytes = try retainedByteCount(
             fields: row.fields,
             workMeter: workMeter
         )
-        encodedBytes = try adding(
-            encodedBytes,
-            encodedByteCount(
+        retainedBytes = try adding(
+            retainedBytes,
+            retainedByteCount(
                 fields: row.annotations,
                 workMeter: workMeter
             )
         )
         if let version = row.version {
-            encodedBytes = try adding(
-                encodedBytes,
+            retainedBytes = try adding(
+                retainedBytes,
                 UInt64(version.value.utf8.count)
             )
         }
         return DatabaseIntermediateFootprint(
             rows: 1,
-            bytes: try adding(rowHeaderByteCount, encodedBytes)
+            bytes: try adding(rowHeaderByteCount, retainedBytes)
+        )
+    }
+
+    package static func footprint(
+        of model: PersistedModel,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseIntermediateFootprint {
+        var retainedBytes = try retainedByteCount(
+            fields: model.fields,
+            workMeter: workMeter
+        )
+        retainedBytes = try adding(
+            retainedBytes,
+            UInt64(MemoryLayout<[String: FieldValue]>.stride)
+        )
+        retainedBytes = try adding(retainedBytes, 64)
+        return DatabaseIntermediateFootprint(
+            rows: 1,
+            bytes: try adding(rowHeaderByteCount, retainedBytes)
+        )
+    }
+
+    package static func footprint(
+        of row: QueryRow,
+        appendingAnnotationNamed name: String,
+        value: FieldValue,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseIntermediateFootprint {
+        guard row.annotations[name] != nil else {
+            return try footprint(
+                try footprint(of: row, workMeter: workMeter),
+                appendingAnnotationNamed: name,
+                value: value,
+                workMeter: workMeter
+            )
+        }
+        var retainedBytes = try retainedByteCount(
+            fields: row.fields,
+            workMeter: workMeter
+        )
+        retainedBytes = try adding(
+            retainedBytes,
+            retainedByteCount(
+                fields: row.annotations,
+                replacingName: name,
+                value: value,
+                workMeter: workMeter
+            )
+        )
+        if let version = row.version {
+            retainedBytes = try adding(
+                retainedBytes,
+                UInt64(version.value.utf8.count)
+            )
+        }
+        return DatabaseIntermediateFootprint(
+            rows: 1,
+            bytes: try adding(rowHeaderByteCount, retainedBytes)
+        )
+    }
+
+    package static func footprint(
+        _ existing: DatabaseIntermediateFootprint,
+        appendingAnnotationNamed name: String,
+        value: FieldValue,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseIntermediateFootprint {
+        try existing.adding(
+            DatabaseIntermediateFootprint(
+                bytes: try retainedEntryByteCount(
+                    name: name,
+                    value: value,
+                    workMeter: workMeter
+                )
+            )
         )
     }
 
@@ -92,53 +176,89 @@ package enum CanonicalRelationalFootprintMeter {
         return total
     }
 
-    package static func retainedArrayLayout<Element>(
-        for type: Element.Type
-    ) throws -> DatabaseRetainedArrayLayout {
-        try DatabaseRetainedArrayLayout.validated(
-            containerByteCount: UInt64(MemoryLayout<[Element]>.stride),
-            elementCapacitySlotByteCount: UInt64(
-                max(1, MemoryLayout<Element>.stride)
-            ),
-            sharedOwnerByteCount: 32,
-            appendAdmissionByteCount: 16
-        )
-    }
-
-    private static func encodedByteCount(
+    private static func retainedByteCount(
         fields: [String: FieldValue],
         workMeter: DatabaseWorkMeter
     ) throws -> UInt64 {
-        _ = workMeter
-        let count: Int
-        do {
-            let limits = try DatabaseWireLimits(
-                maximumFrameBytes: Int.max,
-                maximumStringBytes: Int.max,
-                maximumByteStringBytes: Int.max,
-                maximumCollectionCount:
-                    DatabaseWireLimits.default.maximumCollectionCount,
-                maximumNestingDepth:
-                    DatabaseWireLimits.maximumSupportedNestingDepth,
-                maximumObjectCount:
-                    DatabaseWireLimits.default.maximumObjectCount
+        var total = UInt64(MemoryLayout<[String: FieldValue]>.stride)
+        for (name, value) in fields {
+            total = try adding(
+                total,
+                retainedEntryByteCount(
+                    name: name,
+                    value: value,
+                    workMeter: workMeter
+                )
             )
-            count = try DatabaseWireWriter.encodedByteCount(limits: limits) {
-                (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
-                try writer.writeCount(fields.count)
-                for (key, value) in fields {
-                    try writer.writeString(key)
-                    try value.encode(into: &writer)
-                }
-            }
-        } catch {
-            throw DatabaseIntermediateFootprintError
-                .canonicalValueByteCountUnavailable
         }
-        let entries = try DatabaseIntermediateFootprint(
-            bytes: collectionEntryByteCount
-        ).multiplied(by: UInt64(fields.count)).bytes
-        return try adding(UInt64(count), entries)
+        try workMeter.checkpoint(at: .projection)
+        return total
+    }
+
+    private static func retainedByteCount(
+        fields: [PersistableField],
+        workMeter: DatabaseWorkMeter
+    ) throws -> UInt64 {
+        var total = UInt64(MemoryLayout<[String: FieldValue]>.stride)
+        for field in fields {
+            total = try adding(
+                total,
+                retainedEntryByteCount(
+                    name: field.name,
+                    value: field.value,
+                    workMeter: workMeter
+                )
+            )
+        }
+        try workMeter.checkpoint(at: .projection)
+        return total
+    }
+
+    private static func retainedByteCount(
+        fields: [String: FieldValue],
+        replacingName name: String,
+        value: FieldValue,
+        workMeter: DatabaseWorkMeter
+    ) throws -> UInt64 {
+        var total = UInt64(MemoryLayout<[String: FieldValue]>.stride)
+        for (existingName, existingValue) in fields where existingName != name {
+            total = try adding(
+                total,
+                retainedEntryByteCount(
+                    name: existingName,
+                    value: existingValue,
+                    workMeter: workMeter
+                )
+            )
+        }
+        total = try adding(
+            total,
+            retainedEntryByteCount(
+                name: name,
+                value: value,
+                workMeter: workMeter
+            )
+        )
+        try workMeter.checkpoint(at: .projection)
+        return total
+    }
+
+    private static func retainedEntryByteCount(
+        name: String,
+        value: FieldValue,
+        workMeter: DatabaseWorkMeter
+    ) throws -> UInt64 {
+        let valueBytes = try StorageValueDecoder.retainedFootprint(of: value)
+        let retainedBytes = try adding(
+            collectionEntryByteCount,
+            try adding(UInt64(name.utf8.count), valueBytes)
+        )
+        try DatabaseByteProcessingMeter.consume(
+            byteCount: retainedBytes,
+            workMeter: workMeter,
+            stage: .projection
+        )
+        return retainedBytes
     }
 
     private static func adding(_ lhs: UInt64, _ rhs: UInt64) throws -> UInt64 {

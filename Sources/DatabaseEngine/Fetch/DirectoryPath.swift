@@ -84,6 +84,16 @@ public struct DirectoryPath<T: Persistable>: Sendable {
 
     internal func canonicalPartitions() throws(DirectoryPathError) -> FieldObject {
         try validate()
+        let fieldSchemas: [FieldSchema]
+        do {
+            fieldSchemas = try T.fieldSchemas
+        } catch {
+            throw DirectoryPathError.invalidField(
+                typeName: T.persistableType,
+                field: "*",
+                reason: "the compiled schema contains an invalid default"
+            )
+        }
         var partitions: [(key: String, value: FieldValue)] = []
         partitions.reserveCapacity(T.directoryFieldNames.count)
         var seenNames = Set<String>()
@@ -99,7 +109,7 @@ public struct DirectoryPath<T: Persistable>: Sendable {
             guard let binding = fieldValues.first(where: { $0.name == name }) else {
                 throw DirectoryPathError.missingFields([name])
             }
-            guard let schema = T.fieldSchemas.first(where: {
+            guard let schema = fieldSchemas.first(where: {
                 $0.name == name && $0.fieldNumber == binding.field.number
             }), schema.fieldNumber > 0 else {
                 throw DirectoryPathError.invalidField(
@@ -153,8 +163,17 @@ public struct DirectoryPath<T: Persistable>: Sendable {
         _ model: borrowing T
     ) throws(PersistableEncodingError) -> DirectoryPath<T> {
         var path = DirectoryPath<T>()
+        let fieldSchemas: [FieldSchema]
+        do {
+            fieldSchemas = try T.fieldSchemas
+        } catch let error {
+            throw .invalidSchema(
+                entity: T.persistableType,
+                reason: error.description
+            )
+        }
         for name in T.directoryFieldNames {
-            guard let schema = T.fieldSchemas.first(where: {
+            guard let schema = fieldSchemas.first(where: {
                 $0.name == name && $0.fieldNumber > 0
             }) else {
                 throw .invalidSchema(

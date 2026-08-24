@@ -191,11 +191,11 @@ public struct AutocompleteMaintainer<Item: PersistedEntityValue>: IndexMaintaine
     /// individual words as separate suggestions.
     private func tokenize(_ text: String) -> [String] {
         let normalized = normalizeText(text)
-        let slices = FullTextTextUtilities.tokenSlices(in: normalized)
         var terms: [String] = []
-        terms.reserveCapacity(slices.count)
-        for slice in slices where slice.count >= minPrefixLength {
-            terms.append(String(slice))
+        FullTextTextUtilities.forEachTokenSlice(in: normalized) { slice in
+            if slice.count >= minPrefixLength {
+                terms.append(String(slice))
+            }
         }
         return terms
     }

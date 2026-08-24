@@ -106,10 +106,36 @@ public enum PersistableStorageCodec {
         )
     }
 
+    package static func retainedDecodedByteCount(
+        _ bytes: ByteString,
+        expectedEntity: String? = nil
+    ) throws -> UInt64 {
+        try decodedFootprint(
+            bytes,
+            expectedEntity: expectedEntity
+        ).retainedByteCount
+    }
+
+    package static func decodedFootprint(
+        _ bytes: ByteString,
+        expectedEntity: String? = nil
+    ) throws -> (
+        retainedByteCount: UInt64,
+        transientByteCount: UInt64
+    ) {
+        try PersistableFieldFrameCodec.decodedFootprint(
+            bytes,
+            magic: magic,
+            version: formatVersion,
+            expectedEntity: expectedEntity,
+            limits: storageLimits()
+        )
+    }
+
     private static func requireCompiledSchema<Model: Persistable>(
         _ type: Model.Type
     ) throws {
-        guard !type.fieldSchemas.isEmpty else {
+        guard try !type.fieldSchemas.isEmpty else {
             throw PersistableFieldFrameError.missingCompiledSchema(
                 entity: type.persistableType
             )

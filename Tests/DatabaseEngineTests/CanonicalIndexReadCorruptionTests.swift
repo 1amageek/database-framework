@@ -107,7 +107,7 @@ struct CanonicalIndexReadCorruptionTests {
                     .ascending(CorruptionProbeItem.fields.category.identity)
                 ]
             ),
-            fieldSchemas: CorruptionProbeItem.fieldSchemas
+            fieldSchemas: try CorruptionProbeItem.fieldSchemas
         )
         let engine = InMemoryEngine()
         let schema = try Schema(

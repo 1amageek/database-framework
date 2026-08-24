@@ -1,6 +1,7 @@
 // HNSWGraphCache.swift
 // VectorIndex - In-memory cache for loaded HNSW graph snapshots
 
+import DatabaseEngine
 import DatabaseTypes
 import StorageKit
 import Synchronization
@@ -12,20 +13,50 @@ import SwiftHNSW
 /// not update this cache directly; a committed metadata revision makes the next reader
 /// resolve a different key and load the new graph from storage.
 internal final class HNSWGraphCache: Sendable {
+    internal struct MetadataIdentity: Hashable, Sendable {
+        let version: Int64
+        let byteCount: Int
+        let chunkSize: Int
+        let chunkCount: Int
+        let revision: Int64
+    }
+
     internal struct Key: Hashable, Sendable {
+        // Retaining the domain makes its reference identity stable for the
+        // entire lifetime of a cached snapshot. An ObjectIdentifier alone can
+        // be reused after its object is deallocated.
+        let transactionDomain: StorageTransactionDomain
         let subspacePrefix: ByteString
         let dimensions: Int
         let metric: String
-        let metadata: ByteString
+        // Cache identity retains validated scalar metadata instead of the
+        // backend-owned result buffer that encoded it.
+        let metadata: MetadataIdentity
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.transactionDomain === rhs.transactionDomain
+                && lhs.subspacePrefix == rhs.subspacePrefix
+                && lhs.dimensions == rhs.dimensions
+                && lhs.metric == rhs.metric
+                && lhs.metadata == rhs.metadata
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(ObjectIdentifier(transactionDomain))
+            hasher.combine(subspacePrefix)
+            hasher.combine(dimensions)
+            hasher.combine(metric)
+            hasher.combine(metadata)
+        }
     }
 
     internal final class Snapshot: Sendable {
         private let searchLock = Mutex<Void>(())
 
         let index: HNSWIndexF32
-        let primaryKeysByLabel: [UInt64: Tuple]
+        let primaryKeysByLabel: [UInt64: ByteString]
 
-        init(index: HNSWIndexF32, primaryKeysByLabel: [UInt64: Tuple]) {
+        init(index: HNSWIndexF32, primaryKeysByLabel: [UInt64: ByteString]) {
             self.index = index
             self.primaryKeysByLabel = primaryKeysByLabel
         }
@@ -33,12 +64,32 @@ internal final class HNSWGraphCache: Sendable {
         func search(
             queryVector: Vector,
             k: Int,
-            efSearch: Int
+            efSearch: Int,
+            workMeter: DatabaseWorkMeter? = nil
         ) throws -> [SearchResult] {
             try searchLock.withLock { _ in
                 try index.setEfSearch(efSearch)
                 guard let results = try queryVector.withFloat32Elements({ buffer in
-                    try index.search(buffer, k: k)
+                    guard let workMeter else {
+                        return try index.search(buffer, k: k)
+                    }
+                    let observer = HNSWDatabaseWorkObserver(
+                        workMeter: workMeter,
+                        dimensions: queryVector.count
+                    )
+                    switch try index.search(
+                        buffer,
+                        k: k,
+                        observing: observer
+                    ) {
+                    case .completed(let results):
+                        return results
+                    case .stopped:
+                        try observer.rethrowFailure()
+                        throw VectorIndexError.invalidStructure(
+                            "HNSW search stopped without an observer failure"
+                        )
+                    }
                 }) else {
                     throw VectorIndexError.invalidStructure(
                         "HNSW query does not contain Float32 elements"

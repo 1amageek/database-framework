@@ -121,7 +121,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
                     )
                 ]
             ),
-            fieldSchemas: RuntimeConfigurationScalarEntity.fieldSchemas
+            fieldSchemas: try RuntimeConfigurationScalarEntity.fieldSchemas
         )
         let schemaEntity = try Schema.Entity(
             from: RuntimeConfigurationScalarEntity.self,
@@ -166,7 +166,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
                     )
                 ]
             ),
-            fieldSchemas: RuntimeConfigurationScalarEntity.fieldSchemas
+            fieldSchemas: try RuntimeConfigurationScalarEntity.fieldSchemas
         )
         let schema = try Schema(
             entities: [
@@ -204,7 +204,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
                     )
                 ]
             ),
-            fieldSchemas: RuntimeConfigurationOWLEntity.fieldSchemas
+            fieldSchemas: try RuntimeConfigurationOWLEntity.fieldSchemas
         )
         let schema = try Schema(
             entities: [
@@ -242,7 +242,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
                     )
                 ]
             ),
-            fieldSchemas: RuntimeConfigurationScalarEntity.fieldSchemas
+            fieldSchemas: try RuntimeConfigurationScalarEntity.fieldSchemas
         )
         let schemaEntity = try Schema.Entity(
             from: RuntimeConfigurationScalarEntity.self,

@@ -69,7 +69,7 @@ package enum CanonicalPartitionBinding {
         var binding = DirectoryPath<T>()
         for fieldName in dynamicFieldNames {
             guard let partitionValue = partitions[fieldName],
-                  let fieldSchema = T.fieldSchemas.first(where: {
+                  let fieldSchema = try T.fieldSchemas.first(where: {
                       $0.name == fieldName && $0.fieldNumber > 0
                   }) else {
                 throw CanonicalReadError.invalidPartition(

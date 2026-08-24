@@ -23,7 +23,10 @@ struct BitmapIndexedProduct {
     var inStock: Bool
 
     init(id: String, category: String, brand: String) {
-        self.init(id: id, category: category, brand: brand, inStock: true)
+        self.id = id
+        self.category = category
+        self.brand = brand
+        self.inStock = true
     }
 }
 

@@ -33,7 +33,7 @@ public struct ResolvedIndex: Sendable {
                 name: name,
                 definition: definition
             ),
-            fieldSchemas: itemType.fieldSchemas
+            fieldSchemas: try itemType.fieldSchemas
         )
         self.init(
             descriptor: descriptor,

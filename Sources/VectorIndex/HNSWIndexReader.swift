@@ -1,3 +1,4 @@
+import DatabaseEngine
 import DatabaseTypes
 import StorageKit
 import SwiftHNSW
@@ -13,7 +14,8 @@ struct HNSWIndexReader: Sendable {
         queryVector: Vector,
         k: Int,
         parameters: HNSWSearchParameters,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == storage.dimensions else {
             throw VectorIndexError.dimensionMismatch(
@@ -30,12 +32,14 @@ struct HNSWIndexReader: Sendable {
 
         let graphQueryVector = try storage.graphVector(from: queryVector)
         let snapshot = try await storage.loadSearchSnapshot(
-            transaction: transaction
+            transaction: transaction,
+            workMeter: workMeter
         )
         let results = try snapshot.search(
             queryVector: graphQueryVector,
             k: k,
-            efSearch: parameters.ef
+            efSearch: parameters.ef,
+            workMeter: workMeter
         )
 
         var output: [(primaryKey: [any TupleElement], distance: Double)] = []
@@ -48,9 +52,13 @@ struct HNSWIndexReader: Sendable {
             }
             output.append(
                 (
-                    primaryKey: try primaryKey.elements(),
-                    distance: try storage.canonicalDistance(
-                        from: result.distance
+                    primaryKey: try Tuple.unpack(from: primaryKey),
+                    distance: try await storage.validateSearchDistance(
+                        result.distance,
+                        label: result.label,
+                        queryVector: queryVector,
+                        transaction: transaction,
+                        workMeter: workMeter
                     )
                 )
             )

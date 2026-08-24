@@ -6,25 +6,14 @@ import DatabaseKit
 /// Scored search result from fusion queries
 ///
 /// Represents an item with its relevance score after fusion.
-/// Score is normalized to [0, 1] range where higher is better.
+/// A higher score is better. The numeric range depends on the selected Fusion
+/// strategy; reciprocal-rank and multi-input sums are not constrained to 1.
 ///
-/// **Usage**:
-/// ```swift
-/// let results: [ScoredResult<Product>] = try await context.fuse(Product.self) {
-///     Search(\.description).terms(["coffee"])
-///     Similar(\.embedding, dimensions: 384).query(vector, k: 100)
-/// }
-/// .execute()
-///
-/// for result in results {
-///     print("\(result.item.name): \(result.score)")
-/// }
-/// ```
 public struct ScoredResult<T: Persistable>: Sendable {
     /// The matched item
     public let item: T
 
-    /// Relevance score (0.0 to 1.0, higher is better)
+    /// Relevance score. Higher is better; its range depends on the strategy.
     public let score: Double
 
     public init(item: T, score: Double) {

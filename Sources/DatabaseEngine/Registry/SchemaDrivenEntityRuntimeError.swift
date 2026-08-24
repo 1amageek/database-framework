@@ -4,6 +4,12 @@ public enum SchemaDrivenEntityRuntimeError: Error, Sendable, Equatable,
     CustomStringConvertible {
     case entityMismatch(expected: String, actual: String)
     case unknownField(entity: String, field: String)
+    case fieldIdentityMismatch(
+        entity: String,
+        field: String,
+        expectedNumber: UInt32,
+        actualNumber: UInt32
+    )
     case missingRequiredField(entity: String, field: String)
     case nullRequiredField(entity: String, field: String)
     case invalidFieldValue(
@@ -21,6 +27,13 @@ public enum SchemaDrivenEntityRuntimeError: Error, Sendable, Equatable,
             return "Schema-driven runtime expected entity '\(expected)', got '\(actual)'"
         case .unknownField(let entity, let field):
             return "Entity '\(entity)' does not declare field '\(field)'"
+        case .fieldIdentityMismatch(
+            let entity,
+            let field,
+            let expectedNumber,
+            let actualNumber
+        ):
+            return "Entity '\(entity)' field '\(field)' expected number \(expectedNumber), got \(actualNumber)"
         case .missingRequiredField(let entity, let field):
             return "Entity '\(entity)' is missing required field '\(field)'"
         case .nullRequiredField(let entity, let field):

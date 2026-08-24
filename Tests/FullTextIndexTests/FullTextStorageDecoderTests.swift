@@ -1,5 +1,8 @@
+import DatabaseEngine
+import DatabaseKit
 import Testing
 import StorageKit
+import TestSupport
 @testable import FullTextIndex
 
 @Suite("Full-text storage decoder")
@@ -36,6 +39,102 @@ struct FullTextStorageDecoderTests {
                 term: "swift"
             )
         }
+    }
+
+    @Test("Fusion posting cursors decode without trusting encoded capacity")
+    func fusionPostingCursorContract() throws {
+        let meter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 100,
+                maximumWorkUnits: 1_000,
+                maximumIntermediateRows: 100,
+                maximumIntermediateBytes: 100_000,
+                timeoutMilliseconds: 30_000
+            ),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let posting = Tuple(Int64(2), Int64(0), Int64(5)).pack()
+        #expect(try FullTextStorageDecoder.postingFrequency(
+            from: posting,
+            positionsStored: true,
+            term: "swift",
+            workMeter: meter
+        ) == 2)
+        #expect(try FullTextStorageDecoder.postingPositions(
+            from: posting,
+            term: "swift",
+            workMeter: meter
+        ) == [0, 5])
+
+        let hostileCapacity = Tuple(Int64.max).pack()
+        #expect(throws: FullTextStorageError.self) {
+            _ = try FullTextStorageDecoder.postingPositions(
+                from: hostileCapacity,
+                term: "swift",
+                workMeter: meter
+            )
+        }
+    }
+
+    @Test("Fusion posting decode preserves work-limit failure")
+    func fusionPostingDecodePreservesWorkLimit() throws {
+        let meter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 100,
+                maximumWorkUnits: 1,
+                maximumIntermediateRows: 100,
+                maximumIntermediateBytes: 100_000,
+                timeoutMilliseconds: 30_000
+            ),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        #expect {
+            _ = try FullTextStorageDecoder.postingPositions(
+                from: Tuple(Int64(3), Int64(0), Int64(1), Int64(2)).pack(),
+                term: "swift",
+                workMeter: meter
+            )
+        } throws: { error in
+            guard case .maximumWorkUnits(
+                stage: .indexScan,
+                consumed: 1,
+                requested: 1,
+                maximum: 1
+            ) = error as? DatabaseWorkLimitError else {
+                return false
+            }
+            return true
+        }
+    }
+
+    @Test("Fusion posting decode rejects excess positions before extra work")
+    func fusionPostingDecodeRejectsExcessPositionsImmediately() throws {
+        let frequencyMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(maximumWorkUnits: 1),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        #expect(throws: FullTextStorageError.self) {
+            _ = try FullTextStorageDecoder.postingFrequency(
+                from: Tuple(Int64(1), Int64(0), Int64(1), Int64(2)).pack(),
+                positionsStored: true,
+                term: "swift",
+                workMeter: frequencyMeter
+            )
+        }
+        #expect(frequencyMeter.consumedWorkUnits == 1)
+
+        let positionsMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(maximumWorkUnits: 1),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        #expect(throws: FullTextStorageError.self) {
+            _ = try FullTextStorageDecoder.postingPositions(
+                from: Tuple(Int64(1), Int64(0), Int64(1), Int64(2)).pack(),
+                term: "swift",
+                workMeter: positionsMeter
+            )
+        }
+        #expect(positionsMeter.consumedWorkUnits == 1)
     }
 
     @Test("document metadata requires exactly two nonnegative integers")

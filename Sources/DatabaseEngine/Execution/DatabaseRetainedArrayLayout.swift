@@ -50,6 +50,20 @@ package struct DatabaseRetainedArrayLayout: Sendable, Equatable {
         )
     }
 
+    /// Canonical admission layout for one ordinary Swift `Array` element.
+    package static func forElement<Element>(
+        _ type: Element.Type
+    ) throws -> DatabaseRetainedArrayLayout {
+        try validated(
+            containerByteCount: UInt64(MemoryLayout<[Element]>.stride),
+            elementCapacitySlotByteCount: UInt64(
+                max(1, MemoryLayout<Element>.stride)
+            ),
+            sharedOwnerByteCount: 32,
+            appendAdmissionByteCount: 16
+        )
+    }
+
     package func growth(
         from currentCapacity: Int,
         toFit requiredCount: Int

@@ -105,6 +105,10 @@ private struct VectorReadExecutor: IndexReadExecutor {
             graphCache: graphCache,
             graphResourceLimits: graphResourceLimits
         )
+        let algorithm = try search.resolveAlgorithm(
+            indexName: index.name,
+            context: context
+        )
         return try await context.indexQueryContext.withReadableIndex(
             named: index.name,
             indexType: indexType,
@@ -115,14 +119,12 @@ private struct VectorReadExecutor: IndexReadExecutor {
             guard let readableIndex else { return .empty }
             let matches = try await search.executeSearch(
                 specification: specification,
-                indexName: index.name,
-                fieldName: fieldName,
                 indexSubspace: readableIndex.subspace,
                 queryVector: queryVector,
                 k: boundedK,
-                context: context,
                 transaction: transaction,
-                workMeter: options.workMeter
+                workMeter: options.workMeter,
+                algorithm: algorithm
             )
             let matchReservation = try reserveVectorMatches(
                 matches,
@@ -142,19 +144,32 @@ private struct VectorReadExecutor: IndexReadExecutor {
                 primaryKeys: identifiers,
                 partitions: partitions,
                 transaction: transaction,
+                snapshot: execution.consistency == .snapshot,
                 workMeter: options.workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
             guard fetched.count == matches.count else {
                 throw VectorReadError.fetchedItemCountMismatch(
                     expected: matches.count,
                     actual: fetched.count
+                )
+            }
+            let validator = VectorCanonicalStateValidator(
+                indexSubspace: readableIndex.subspace,
+                fieldName: fieldName,
+                dimensions: specification.dimensions,
+                algorithm: algorithm
+            )
+            for index in matches.indices {
+                guard let model = fetched[index] else {
+                    throw VectorReadError.missingFetchedEntity(
+                        identifiers[index].pack()
+                    )
+                }
+                try await validator.validate(
+                    primaryKey: identifiers[index],
+                    model: model,
+                    transaction: transaction,
+                    workMeter: options.workMeter
                 )
             }
             return try IndexReadResult.build(
@@ -278,6 +293,10 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             k,
             try options.workMeter.storageReadLimitWithSentinel()
         )
+        let algorithm = try resolveAlgorithm(
+            indexName: index.name,
+            context: context
+        )
 
         let orderByFields = try selectQuery.requiredOrderByColumnNames()
         try context.authorizePolymorphicListAccess(
@@ -307,14 +326,12 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             }
             let primaryKeysWithDistances = try await executeSearch(
                 specification: specification,
-                indexName: index.name,
-                fieldName: fieldName,
                 indexSubspace: readableIndex.subspace,
                 queryVector: queryVector,
                 k: boundedK,
-                context: context,
                 transaction: transaction,
-                workMeter: options.workMeter
+                workMeter: options.workMeter,
+                algorithm: algorithm
             )
             let matchReservation = try reserveVectorMatches(
                 primaryKeysWithDistances,
@@ -344,6 +361,25 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                     stage: .indexScan
                 )
             defer { entityReservation.release() }
+            let validator = VectorCanonicalStateValidator(
+                indexSubspace: readableIndex.subspace,
+                fieldName: fieldName,
+                dimensions: specification.dimensions,
+                algorithm: algorithm
+            )
+            for index in primaryKeysWithDistances.indices {
+                guard let entity = entities[index] else {
+                    throw VectorReadError.missingFetchedEntity(
+                        tuples[index].pack()
+                    )
+                }
+                try await validator.validate(
+                    primaryKey: tuples[index],
+                    model: entity.item,
+                    transaction: transaction,
+                    workMeter: options.workMeter
+                )
+            }
             return try makeResponse(
                 results: primaryKeysWithDistances,
                 entities: entities,
@@ -354,20 +390,13 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
     fileprivate func executeSearch(
         specification: VectorIndexSpecification,
-        indexName: String,
-        fieldName: String,
         indexSubspace: Subspace,
         queryVector: Vector,
         k: Int,
-        context: DatabaseContext,
         transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        algorithm: VectorAlgorithm
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
-        let configs = context.container.runtimeConfiguration
-            .indexConfigurations(named: indexName)
-        let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs)
-        let algorithm = runtimePolicy?.algorithm ?? .flat
-
         switch algorithm {
         case .flat:
             return try await FlatVectorIndexReader(
@@ -402,9 +431,9 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                 parameters: HNSWSearchParameters(
                     ef: max(k, hnswParams.efSearch)
                 ),
-                transaction: transaction
+                transaction: transaction,
+                workMeter: workMeter
             )
-            try workMeter.consume(UInt64(results.count), at: .indexScan)
             return results
 
         case .ivf(let ivfParams):
@@ -441,6 +470,16 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                 workMeter: workMeter
             )
         }
+    }
+
+    fileprivate func resolveAlgorithm(
+        indexName: String,
+        context: DatabaseContext
+    ) throws -> VectorAlgorithm {
+        let configurations = context.container.runtimeConfiguration
+            .indexConfigurations(named: indexName)
+        return try VectorRuntimePolicy.resolve(in: configurations)?.algorithm
+            ?? .flat
     }
 
     private func makeResponse(

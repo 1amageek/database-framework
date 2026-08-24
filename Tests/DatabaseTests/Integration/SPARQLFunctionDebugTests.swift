@@ -31,7 +31,7 @@ struct SPARQLFunctionDebugTests {
     @Persistable
     struct SPARQLDebugTriple {
         #Directory<SPARQLDebugTriple>("sparql_debug_functions", "rdf")
-        var id: String = UUID().uuidString
+        var id: String
         var subject: RDFTerm
         var predicate: RDFTerm
         var object: RDFTerm
@@ -49,6 +49,7 @@ struct SPARQLFunctionDebugTests {
             predicate: String,
             object: String
         ) throws {
+            self.id = UUID().uuidString
             self.subject = try .iri(validating: subject)
             self.predicate = try .iri(validating: predicate)
             self.object = try .iri(validating: object)

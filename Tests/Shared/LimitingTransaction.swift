@@ -14,6 +14,10 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
         underlying.capabilities
     }
 
+    public var transactionDomain: StorageTransactionDomain {
+        underlying.transactionDomain
+    }
+
     // MARK: - Range Result
 
     /// Delegates range advancement without materializing backend-owned bytes.

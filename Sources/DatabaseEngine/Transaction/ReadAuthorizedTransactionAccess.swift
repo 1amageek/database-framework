@@ -45,6 +45,10 @@ final class ReadAuthorizedTransactionAccess:
         transaction.capabilities
     }
 
+    var transactionDomain: StorageTransactionDomain {
+        transaction.transactionDomain
+    }
+
     /// Physical compaction is a mutation capability and is not exposed through
     /// read-authorized access.
     var compaction: StorageCompactionAccess? {

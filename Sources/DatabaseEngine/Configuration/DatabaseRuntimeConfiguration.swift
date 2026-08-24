@@ -7,6 +7,7 @@ public struct DatabaseRuntimeConfiguration: Sendable {
     public let executionIdentity: DatabaseExecutionRuntimeIdentity
     public let indexMaintainerProviders: IndexMaintainerProviderRegistry
     public let readExecutors: ReadExecutorRegistry
+    let fusionReadExecutors: FusionReadExecutorRegistry
     public let logicalSourceExecutors: LogicalSourceExecutorRegistry
     public let persistableMutationMaintainers: [any PersistableMutationMaintainer]
     public let authorizationPolicies: AuthorizationPolicyRegistry
@@ -20,6 +21,35 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             IndexMaintainerProviderDescriptor
         ] = [],
         polymorphicIndexReadExecutors: [any PolymorphicIndexReadExecutor] = [],
+        graphTableSourceExecutor: (any GraphTableSourceExecutor)? = nil,
+        sparqlSourceExecutor: (any SPARQLSourceExecutor)? = nil,
+        persistableMutationMaintainers: [any PersistableMutationMaintainer] = [],
+        entityRuntimes: [EntityRuntimeRegistration] = [],
+        authorizationPolicies: [AuthorizationPolicyHandler] = [],
+        indexConfigurations: [any IndexRuntimeConfiguration] = []
+    ) throws(DatabaseRuntimeConfigurationError) {
+        try self.init(
+            executionIdentity: executionIdentity,
+            indexMaintainerProviderDescriptors:
+                indexMaintainerProviderDescriptors,
+            polymorphicIndexReadExecutors: polymorphicIndexReadExecutors,
+            fusionIndexReadExecutors: [],
+            graphTableSourceExecutor: graphTableSourceExecutor,
+            sparqlSourceExecutor: sparqlSourceExecutor,
+            persistableMutationMaintainers: persistableMutationMaintainers,
+            entityRuntimes: entityRuntimes,
+            authorizationPolicies: authorizationPolicies,
+            indexConfigurations: indexConfigurations
+        )
+    }
+
+    package init(
+        executionIdentity: DatabaseExecutionRuntimeIdentity,
+        indexMaintainerProviderDescriptors: [
+            IndexMaintainerProviderDescriptor
+        ] = [],
+        polymorphicIndexReadExecutors: [any PolymorphicIndexReadExecutor] = [],
+        fusionIndexReadExecutors: [any FusionIndexReadExecutor] = [],
         graphTableSourceExecutor: (any GraphTableSourceExecutor)? = nil,
         sparqlSourceExecutor: (any SPARQLSourceExecutor)? = nil,
         persistableMutationMaintainers: [any PersistableMutationMaintainer] = [],
@@ -43,6 +73,9 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         )
         self.readExecutors = try ReadExecutorRegistry(
             polymorphicIndexExecutors: polymorphicIndexReadExecutors
+        )
+        self.fusionReadExecutors = try FusionReadExecutorRegistry(
+            indexExecutors: fusionIndexReadExecutors
         )
         self.logicalSourceExecutors = LogicalSourceExecutorRegistry(
             graphTableExecutor: graphTableSourceExecutor,

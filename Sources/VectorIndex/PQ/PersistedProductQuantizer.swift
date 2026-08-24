@@ -102,6 +102,118 @@ struct PersistedProductQuantizer: Sendable {
         return try outcome.get()
     }
 
+    /// Verifies a persisted code against its canonical vector without
+    /// materializing either payload.
+    func matchesPersistedCode(
+        _ code: ByteString,
+        vector: PersistedVectorView
+    ) throws -> Bool {
+        var outcome: Result<Bool, VectorIndexError>?
+        code.withUnsafeBytes { codeBytes in
+            outcome = Result {
+                () throws(VectorIndexError) -> Bool in
+                try matchesPersistedCode(
+                    codeBytes,
+                    vector: vector
+                )
+            }
+        }
+        guard let outcome else {
+            preconditionFailure("PQ code verification produced no result")
+        }
+        return try outcome.get()
+    }
+
+    /// Validates and scores one retained code through a single code borrow.
+    func validatedDistance(
+        for code: ByteString,
+        vector: PersistedVectorView,
+        using table: ProductQuantizedDistanceTable
+    ) throws -> Double {
+        var outcome: Result<Double, any Error>?
+        code.withUnsafeBytes { codeBytes in
+            outcome = Result {
+                guard try matchesPersistedCode(
+                    codeBytes,
+                    vector: vector
+                ) else {
+                    throw VectorIndexError.invalidStructure(
+                        "PQ code disagrees with its persisted canonical vector"
+                    )
+                }
+                return try distance(
+                    for: codeBytes.bindMemory(to: UInt8.self),
+                    using: table
+                )
+            }
+        }
+        guard let outcome else {
+            preconditionFailure("PQ validated distance produced no result")
+        }
+        return try outcome.get()
+    }
+
+    private func matchesPersistedCode(
+        _ codeBytes: UnsafeRawBufferPointer,
+        vector: PersistedVectorView
+    ) throws(VectorIndexError) -> Bool {
+        guard codeBytes.count == subquantizerCount else {
+            throw VectorIndexError.invalidStructure(
+                "Invalid PQ code length"
+            )
+        }
+        guard vector.count == dimensions else {
+            throw VectorIndexError.dimensionMismatch(
+                expected: dimensions,
+                actual: vector.count
+            )
+        }
+
+        return try vector.withUnsafeBytes {
+            (vectorBytes) throws(VectorIndexError) -> Bool in
+            for (subquantizerIndex, codebook) in codebooks.enumerated() {
+                let vectorOffset = subquantizerIndex
+                    * dimensionsPerSubquantizer
+                let nearest = try codebook.withUnsafeBytes {
+                    (codebookBytes) throws(VectorIndexError) -> Int in
+                    var bestIndex = 0
+                    var bestDistance = Double.infinity
+                    for centroidIndex in 0..<centroidCount {
+                        let centroidOffset = centroidIndex
+                            * dimensionsPerSubquantizer
+                        var distance = 0.0
+                        for componentIndex in 0..<dimensionsPerSubquantizer {
+                            let source = Double(
+                                try PersistedVectorView.element(
+                                    at: vectorOffset + componentIndex,
+                                    in: vectorBytes
+                                )
+                            )
+                            let centroid = Double(
+                                try PersistedVectorView.element(
+                                    at: centroidOffset + componentIndex,
+                                    in: codebookBytes
+                                )
+                            )
+                            let difference = source - centroid
+                            distance += difference * difference
+                        }
+                        if distance < bestDistance {
+                            bestDistance = distance
+                            bestIndex = centroidIndex
+                        }
+                    }
+                    return bestIndex
+                }
+                guard codeBytes[subquantizerIndex]
+                        == UInt8(nearest) else {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+
     func distance(
         for codes: ByteString,
         using table: ProductQuantizedDistanceTable

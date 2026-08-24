@@ -1645,6 +1645,7 @@ extension DatabaseContext {
         try ensureUsable()
         return try await withDataOperation {
             if let binding = ActiveDatabaseTransactionContext.binding {
+                try binding.validate(for: self)
                 #if DATABASE_MULTI_BASE
                 guard binding.resource == self.resource,
                       binding.authorization == self.authorization,
@@ -1670,15 +1671,15 @@ extension DatabaseContext {
                     container: self.container
                 )
                 #if DATABASE_MULTI_BASE
-                let nestedBinding = DatabaseTransactionExecutionBinding(
+                let nestedBinding = try DatabaseTransactionExecutionBinding(
+                    context: self,
                     transaction: admittedStorageAccess,
-                    resource: binding.resource,
-                    authorization: binding.authorization,
                     grantedAccess: requiredAccess,
                     databaseTransaction: databaseTransaction
                 )
                 #else
-                let nestedBinding = DatabaseTransactionExecutionBinding(
+                let nestedBinding = try DatabaseTransactionExecutionBinding(
+                    context: self,
                     transaction: admittedStorageAccess,
                     databaseTransaction: databaseTransaction
                 )
@@ -1733,15 +1734,15 @@ extension DatabaseContext {
                     container: self.container
                 )
                 #if DATABASE_MULTI_BASE
-                let executionBinding = DatabaseTransactionExecutionBinding(
+                let executionBinding = try DatabaseTransactionExecutionBinding(
+                    context: self,
                     transaction: admittedStorageAccess,
-                    resource: self.resource,
-                    authorization: self.authorization,
                     grantedAccess: requiredAccess,
                     databaseTransaction: transaction
                 )
                 #else
-                let executionBinding = DatabaseTransactionExecutionBinding(
+                let executionBinding = try DatabaseTransactionExecutionBinding(
+                    context: self,
                     transaction: admittedStorageAccess,
                     databaseTransaction: transaction
                 )
@@ -1831,6 +1832,7 @@ extension DatabaseContext {
 
         return try await withDataOperation {
             if let binding = ActiveDatabaseTransactionContext.binding {
+                try binding.validate(for: self)
                 #if DATABASE_MULTI_BASE
                 guard binding.resource == self.resource,
                       binding.authorization == self.authorization,
@@ -1881,15 +1883,15 @@ extension DatabaseContext {
                     ? ReadAuthorizedTransactionAccess.admitted(transaction)
                     : transaction
                 #if DATABASE_MULTI_BASE
-                let executionBinding = DatabaseTransactionExecutionBinding(
+                let executionBinding = try DatabaseTransactionExecutionBinding(
+                    context: self,
                     transaction: admittedTransaction,
-                    resource: self.resource,
-                    authorization: self.authorization,
                     grantedAccess: requiredAccess,
                     databaseTransaction: nil
                 )
                 #else
-                let executionBinding = DatabaseTransactionExecutionBinding(
+                let executionBinding = try DatabaseTransactionExecutionBinding(
+                    context: self,
                     transaction: admittedTransaction,
                     databaseTransaction: nil
                 )
@@ -1921,8 +1923,9 @@ extension DatabaseContext {
             #if DATABASE_MULTI_BASE
             if let current = ActiveDatabaseDataRootContext.lease {
                 guard current.resource == resource else {
-                    throw DatabaseRuntimeError.internalError(
-                        "The context target does not match the active data root"
+                    throw DatabaseGrantAuthorizationError.resourceMismatch(
+                        expected: current.resource,
+                        actual: resource
                     )
                 }
                 return try await RequestAuthorization.$context.withValue(
@@ -1985,10 +1988,15 @@ extension DatabaseContext {
 
     #if DATABASE_MULTI_BASE
     package func requireOperationDataRoot() throws -> DatabaseDataRootLease {
-        guard let lease = ActiveDatabaseDataRootContext.lease,
-              lease.resource == resource else {
+        guard let lease = ActiveDatabaseDataRootContext.lease else {
             throw DatabaseRuntimeError.internalError(
-                "The context target does not match the active data root"
+                "A target-bound data root is required"
+            )
+        }
+        guard lease.resource == resource else {
+            throw DatabaseGrantAuthorizationError.resourceMismatch(
+                expected: lease.resource,
+                actual: resource
             )
         }
         return lease

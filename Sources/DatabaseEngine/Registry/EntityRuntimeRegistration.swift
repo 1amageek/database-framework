@@ -1,4 +1,4 @@
-import DatabaseKit
+@_spi(DatabaseExecution) import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -179,6 +179,8 @@ public struct EntityRuntimeDefinition: Sendable {
 
     private var indexReaders: [IndexType: IndexReader]
     private var indexProviders: [IndexType: any EntityIndexProvider]
+    private let canonicalizeStoredModel:
+        EntityRuntimeRegistration.CanonicalizeStoredModel
     private let canonicalizeModel: EntityRuntimeRegistration.CanonicalizeModel
     private let makePersistedModel: EntityRuntimeRegistration.MakePersistedModel
     private let resolveIdentity: EntityRuntimeRegistration.ResolveIdentity
@@ -205,14 +207,41 @@ public struct EntityRuntimeDefinition: Sendable {
         self.entity = entity
         self.indexReaders = [:]
         self.indexProviders = [:]
-        self.canonicalizeModel = {
-            try PersistedModel($0.decode(as: Model.self))
+        let canonicalSchemas = entity.fields.sorted(by: {
+            ($0.fieldNumber, $0.name) < ($1.fieldNumber, $1.name)
+        })
+        self.canonicalizeStoredModel = { model, reservation, workMeter, stage in
+            try Self.canonicalStoredModel(
+                model,
+                entity: entity,
+                canonicalSchemas: canonicalSchemas,
+                reservation: reservation,
+                workMeter: workMeter,
+                stage: stage
+            )
+        }
+        self.canonicalizeModel = { source in
+            let canonicalModel = try Self.canonicalModel(
+                source,
+                entity: entity,
+                canonicalSchemas: canonicalSchemas
+            )
+            return try PersistedModel(
+                canonicalModel.decode(as: Model.self)
+            )
         }
         self.makePersistedModel = {
             try PersistedModel(Model.decodePersistedObject($0))
         }
-        self.resolveIdentity = {
-            try EntityReferenceEncoder.encode($0.decode(as: Model.self))
+        self.resolveIdentity = { source in
+            let canonicalModel = try Self.canonicalModel(
+                source,
+                entity: entity,
+                canonicalSchemas: canonicalSchemas
+            )
+            return try EntityReferenceEncoder.encode(
+                canonicalModel.decode(as: Model.self)
+            )
         }
         self.fetchTableRows = {
             context,
@@ -238,8 +267,7 @@ public struct EntityRuntimeDefinition: Sendable {
             var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
                 stage: .resultMaterialization,
-                layout: try CanonicalRelationalFootprintMeter
-                    .retainedArrayLayout(for: CanonicalSourceRow.self),
+                layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
                 expectedCount: items.count
             )
             for item in items {
@@ -289,21 +317,43 @@ public struct EntityRuntimeDefinition: Sendable {
     /// Builds the canonical runtime for an entity loaded from a schema
     /// manifest. No synthetic `Persistable` type is introduced.
     public init(schemaDriven entity: Schema.Entity) {
+        let canonicalSchemas = entity.fields.sorted(by: {
+            ($0.fieldNumber, $0.name) < ($1.fieldNumber, $1.name)
+        })
         self.entity = entity
         self.indexReaders = [:]
         self.indexProviders = [:]
+        self.canonicalizeStoredModel = { model, reservation, workMeter, stage in
+            try Self.canonicalStoredModel(
+                model,
+                entity: entity,
+                canonicalSchemas: canonicalSchemas,
+                reservation: reservation,
+                workMeter: workMeter,
+                stage: stage
+            )
+        }
         self.canonicalizeModel = { model in
-            try Self.canonicalModel(model, entity: entity)
+            try Self.canonicalModel(
+                model,
+                entity: entity,
+                canonicalSchemas: canonicalSchemas
+            )
         }
         self.makePersistedModel = { object in
             try Self.canonicalModel(
                 try Self.persistedModel(from: object, entity: entity),
-                entity: entity
+                entity: entity,
+                canonicalSchemas: canonicalSchemas
             )
         }
         self.resolveIdentity = { model in
             try Self.identity(
-                for: try Self.canonicalModel(model, entity: entity),
+                for: try Self.canonicalModel(
+                    model,
+                    entity: entity,
+                    canonicalSchemas: canonicalSchemas
+                ),
                 entity: entity
             )
         }
@@ -378,6 +428,7 @@ public struct EntityRuntimeDefinition: Sendable {
             entity: entity,
             indexReaders: indexReaders,
             indexProviders: indexProviders,
+            canonicalizeStoredModel: canonicalizeStoredModel,
             canonicalizeModel: canonicalizeModel,
             makePersistedModel: makePersistedModel,
             resolveIdentity: resolveIdentity,
@@ -405,7 +456,8 @@ public struct EntityRuntimeDefinition: Sendable {
 
     private static func canonicalModel(
         _ model: PersistedModel,
-        entity: Schema.Entity
+        entity: Schema.Entity,
+        canonicalSchemas: [FieldSchema]? = nil
     ) throws -> PersistedModel {
         guard model.entity == entity.name else {
             throw SchemaDrivenEntityRuntimeError.entityMismatch(
@@ -413,16 +465,13 @@ public struct EntityRuntimeDefinition: Sendable {
                 actual: model.entity
             )
         }
-        for field in model.fields where entity.fieldMapByName[field.name] == nil {
-            throw SchemaDrivenEntityRuntimeError.unknownField(
-                entity: entity.name,
-                field: field.name
-            )
+        for field in model.fields {
+            try validateSourceFieldIdentity(field, entity: entity)
         }
 
         var canonicalFields: [PersistableField] = []
         canonicalFields.reserveCapacity(entity.fields.count)
-        for schema in entity.fields.sorted(by: {
+        for schema in canonicalSchemas ?? entity.fields.sorted(by: {
             ($0.fieldNumber, $0.name) < ($1.fieldNumber, $1.name)
         }) {
             guard schema.fieldNumber > 0,
@@ -436,8 +485,8 @@ public struct EntityRuntimeDefinition: Sendable {
             let value: FieldValue
             if let persisted = model.value(forFieldNamed: schema.name) {
                 value = persisted
-            } else if schema.isOptional {
-                value = .null
+            } else if let defaultValue = schema.defaultValue {
+                value = defaultValue
             } else {
                 throw SchemaDrivenEntityRuntimeError.missingRequiredField(
                     entity: entity.name,
@@ -457,6 +506,173 @@ public struct EntityRuntimeDefinition: Sendable {
             entity: entity.name,
             fields: canonicalFields
         )
+    }
+
+    private struct CanonicalSourceLookupSlot: Sendable {
+        let name: String
+        let index: Int
+    }
+
+    private static func canonicalStoredModel(
+        _ model: PersistedModel,
+        entity: Schema.Entity,
+        canonicalSchemas: [FieldSchema],
+        reservation: DatabaseIntermediateReservation,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> (model: PersistedModel, retainedByteCount: UInt64) {
+        try DatabaseByteProcessingMeter.consume(
+            byteCount: UInt64(model.entity.utf8.count + entity.name.utf8.count),
+            workMeter: workMeter,
+            stage: stage
+        )
+        guard model.entity == entity.name else {
+            throw SchemaDrivenEntityRuntimeError.entityMismatch(
+                expected: entity.name,
+                actual: model.entity
+            )
+        }
+
+        let lookupLayout = try DatabaseRetainedHashTableLayout.validated(
+            containerByteCount: UInt64(MemoryLayout<[String: Int]>.stride),
+            elementCapacitySlotByteCount: UInt64(
+                max(1, MemoryLayout<CanonicalSourceLookupSlot>.stride)
+            )
+        )
+        let lookupGrowth = try lookupLayout.growth(
+            from: 0,
+            toFit: model.fields.count
+        )
+        let scratch = try reservation.reserveChild(
+            bytes: try DatabaseIntermediateFootprint(
+                bytes: lookupLayout.containerByteCount
+            ).adding(
+                DatabaseIntermediateFootprint(
+                    bytes: lookupGrowth.additionalByteCount
+                )
+            ).bytes,
+            at: stage
+        )
+        defer { scratch.release() }
+        var sourceByName: [String: Int] = [:]
+        sourceByName.reserveCapacity(lookupGrowth.capacity)
+        for index in model.fields.indices {
+            let field = model.fields[index]
+            try workMeter.consume(at: stage)
+            try DatabaseByteProcessingMeter.consume(
+                byteCount: field.name.utf8.count,
+                workMeter: workMeter,
+                stage: stage
+            )
+            try validateSourceFieldIdentity(field, entity: entity)
+            precondition(
+                sourceByName.updateValue(index, forKey: field.name) == nil,
+                "PersistedModel admitted duplicate field names"
+            )
+        }
+
+        var footprint = try DatabaseIntermediateFootprint(
+            bytes: UInt64(MemoryLayout<PersistedModel>.stride + 64)
+                + UInt64(entity.name.utf8.count)
+        ).adding(
+            try DatabaseIntermediateFootprint(
+                bytes: UInt64(MemoryLayout<PersistableField>.stride + 16)
+            ).multiplied(by: UInt64(canonicalSchemas.count))
+        )
+        for schema in canonicalSchemas {
+            guard schema.fieldNumber > 0,
+                  UInt32(exactly: schema.fieldNumber) != nil else {
+                throw SchemaDrivenEntityRuntimeError.invalidFieldNumber(
+                    entity: entity.name,
+                    field: schema.name,
+                    number: schema.fieldNumber
+                )
+            }
+            try workMeter.consume(at: stage)
+            try DatabaseByteProcessingMeter.consume(
+                byteCount: schema.name.utf8.count,
+                workMeter: workMeter,
+                stage: stage
+            )
+            let value: FieldValue
+            if let sourceIndex = sourceByName[schema.name] {
+                value = model.fields[sourceIndex].value
+            } else if let defaultValue = schema.defaultValue {
+                value = defaultValue
+            } else {
+                throw SchemaDrivenEntityRuntimeError.missingRequiredField(
+                    entity: entity.name,
+                    field: schema.name
+                )
+            }
+            let valueFootprint = try StorageValueDecoder.retainedFootprint(
+                of: value,
+                workMeter: workMeter,
+                stage: stage
+            )
+            try DatabaseByteProcessingMeter.consume(
+                byteCount: valueFootprint,
+                workMeter: workMeter,
+                stage: stage
+            )
+            try validate(value, schema: schema, entity: entity.name)
+            footprint = try footprint.adding(
+                DatabaseIntermediateFootprint(
+                    bytes: UInt64(schema.name.utf8.count)
+                )
+            ).adding(
+                DatabaseIntermediateFootprint(
+                    bytes: valueFootprint
+                )
+            )
+        }
+        try reservation.reserveAdditional(bytes: footprint.bytes, at: stage)
+        do {
+            let constructionScratch = try reservation.reserveChild(
+                bytes: try PersistedModelAdmissionFootprint
+                    .validationScratchByteCount(
+                        fieldCount: canonicalSchemas.count
+                    ),
+                at: stage
+            )
+            defer { constructionScratch.release() }
+            var canonicalFields: [PersistableField] = []
+            canonicalFields.reserveCapacity(canonicalSchemas.count)
+            for schema in canonicalSchemas {
+                guard let number = UInt32(exactly: schema.fieldNumber) else {
+                    preconditionFailure(
+                        "Validated canonical field number disappeared"
+                    )
+                }
+                let value: FieldValue
+                if let sourceIndex = sourceByName[schema.name] {
+                    value = model.fields[sourceIndex].value
+                } else if let defaultValue = schema.defaultValue {
+                    value = defaultValue
+                } else {
+                    preconditionFailure(
+                        "Validated canonical schema value disappeared"
+                    )
+                }
+                canonicalFields.append(
+                    try PersistableField(
+                        number: number,
+                        name: schema.name,
+                        value: value
+                    )
+                )
+            }
+            return (
+                try PersistedModel(
+                    entity: entity.name,
+                    fields: canonicalFields
+                ),
+                footprint.bytes
+            )
+        } catch {
+            reservation.releaseGuaranteedPartial(bytes: footprint.bytes)
+            throw error
+        }
     }
 
     private static func persistedModel(
@@ -489,6 +705,34 @@ public struct EntityRuntimeDefinition: Sendable {
             )
         }
         return try PersistedModel(entity: entity.name, fields: fields)
+    }
+
+    private static func validateSourceFieldIdentity(
+        _ field: PersistableField,
+        entity: Schema.Entity
+    ) throws {
+        guard let schema = entity.fieldMapByName[field.name] else {
+            throw SchemaDrivenEntityRuntimeError.unknownField(
+                entity: entity.name,
+                field: field.name
+            )
+        }
+        guard schema.fieldNumber > 0,
+              let expectedNumber = UInt32(exactly: schema.fieldNumber) else {
+            throw SchemaDrivenEntityRuntimeError.invalidFieldNumber(
+                entity: entity.name,
+                field: schema.name,
+                number: schema.fieldNumber
+            )
+        }
+        guard field.number == expectedNumber else {
+            throw SchemaDrivenEntityRuntimeError.fieldIdentityMismatch(
+                entity: entity.name,
+                field: field.name,
+                expectedNumber: expectedNumber,
+                actualNumber: field.number
+            )
+        }
     }
 
     private static func validate(
@@ -678,8 +922,7 @@ public struct EntityRuntimeDefinition: Sendable {
         var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: options.workMeter,
             stage: .resultMaterialization,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
             expectedCount: models.count
         )
         for model in models {
@@ -1106,6 +1349,7 @@ public struct EntityRuntimeRegistration: Sendable {
 
     private let indexReaders: [IndexType: IndexReader]
     private let fetchTableRowsOperation: FetchTableRows
+    private let canonicalizeStoredModelOperation: CanonicalizeStoredModel
     private let canonicalizeModelOperation: CanonicalizeModel
     private let makePersistedModelOperation: MakePersistedModel
     private let resolveIdentityOperation: ResolveIdentity
@@ -1134,6 +1378,13 @@ public struct EntityRuntimeRegistration: Sendable {
     fileprivate typealias CanonicalizeModel = @Sendable (
         PersistedModel
     ) throws -> PersistedModel
+
+    fileprivate typealias CanonicalizeStoredModel = @Sendable (
+        PersistedModel,
+        DatabaseIntermediateReservation,
+        DatabaseWorkMeter,
+        DatabaseWorkStage
+    ) throws -> (model: PersistedModel, retainedByteCount: UInt64)
 
     fileprivate typealias MakePersistedModel = @Sendable (
         FieldObject
@@ -1186,6 +1437,7 @@ public struct EntityRuntimeRegistration: Sendable {
         entity: Schema.Entity,
         indexReaders: [IndexType: IndexReader],
         indexProviders: [IndexType: any EntityIndexProvider],
+        canonicalizeStoredModel: @escaping CanonicalizeStoredModel,
         canonicalizeModel: @escaping CanonicalizeModel,
         makePersistedModel: @escaping MakePersistedModel,
         resolveIdentity: @escaping ResolveIdentity,
@@ -1200,6 +1452,7 @@ public struct EntityRuntimeRegistration: Sendable {
         self.indexProviders = indexProviders.mapValues {
             EntityIndexProviderDescriptor($0)
         }
+        self.canonicalizeStoredModelOperation = canonicalizeStoredModel
         self.canonicalizeModelOperation = canonicalizeModel
         self.makePersistedModelOperation = makePersistedModel
         self.resolveIdentityOperation = resolveIdentity
@@ -1283,6 +1536,20 @@ public struct EntityRuntimeRegistration: Sendable {
         _ model: PersistedModel
     ) throws -> PersistedModel {
         try canonicalizeModelOperation(model)
+    }
+
+    package func canonicalizedStoredModel(
+        _ model: PersistedModel,
+        reservation: DatabaseIntermediateReservation,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> (model: PersistedModel, retainedByteCount: UInt64) {
+        try canonicalizeStoredModelOperation(
+            model,
+            reservation,
+            workMeter,
+            stage
+        )
     }
 
     /// Constructs the registered persisted model through its compiled field

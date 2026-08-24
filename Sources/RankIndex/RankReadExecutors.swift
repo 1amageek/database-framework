@@ -111,15 +111,9 @@ private struct RankReadExecutor: IndexReadExecutor {
                 primaryKeys: primaryKeys,
                 partitions: partitions,
                 transaction: transaction,
+                snapshot: execution.consistency == .snapshot,
                 workMeter: options.workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
             guard fetched.count == rankedKeys.count else {
                 throw RankReadError.fetchedEntityCountMismatch(
                     expected: rankedKeys.count,

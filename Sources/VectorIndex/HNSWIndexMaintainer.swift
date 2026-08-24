@@ -598,11 +598,12 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
                 break
             }
 
-            guard let pk = snapshot.primaryKeysByLabel[result.label] else {
+            guard let packedPrimaryKey = snapshot.primaryKeysByLabel[result.label] else {
                 throw VectorIndexError.invalidStructure(
                     "HNSW filtered search result references an unknown primary-key label"
                 )
             }
+            let pk = try Tuple(packed: packedPrimaryKey)
 
             // Fetch item and evaluate predicate
             if let item = try await fetchItem(pk, transaction) {
@@ -614,8 +615,11 @@ public struct HNSWIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
                     output.append(
                         (
                             primaryKey: elements,
-                            distance: try storage.canonicalDistance(
-                                from: result.distance
+                            distance: try await storage.validateSearchDistance(
+                                result.distance,
+                                label: result.label,
+                                queryVector: queryVector,
+                                transaction: transaction
                             )
                         )
                     )

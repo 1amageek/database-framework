@@ -555,6 +555,13 @@ struct IndexMaintenanceMatrixE2ETests {
                 .execute()
             #expect(results.map(\.id).contains(article.id))
 
+            let fusion = FusionQuery<MatrixFullTextArticle> {
+                Search(MatrixFullTextArticle.fields.body)
+                    .terms(["database"])
+            }
+            let fused = try await context.execute(fusion)
+            #expect(fused.results.map(\.item.id) == [article.id])
+
             try await cleanup(container: container)
         }
     }

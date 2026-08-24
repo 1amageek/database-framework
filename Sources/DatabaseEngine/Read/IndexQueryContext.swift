@@ -12,13 +12,13 @@ import StorageKit
 ///
 /// **Design Principle**:
 /// - IndexQueryContext provides storage access only
-/// - Each FusionQuery implementation reads its index structure directly
-/// - Unified pattern across all index types
+/// - Ordinary feature readers resolve their schema-admitted index here
+/// - Canonical Fusion execution uses a narrower revocable read capability
 ///
 /// **Usage** (from index modules):
 /// ```swift
-/// // In a feature-owned index reader
-/// func execute(candidates: Set<T.ID>?) async throws -> [ScoredResult<T>] {
+/// // In an ordinary feature-owned index reader
+/// func execute() async throws -> IndexReadResult {
 ///     try await queryContext.withReadableIndex(
 ///         named: indexName,
 ///         indexType: indexType,

@@ -197,7 +197,7 @@ struct PostgreSQLPointReadTests {
 
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
-            var order = TenantOrder(tenantID: tenantID, status: "pending", total: 55.0)
+            var order = TenantOrder.fixture(tenantID: tenantID, status: "pending", total: 55.0)
             order.id = orderID
             try context.insert(order)
             try await context.save()

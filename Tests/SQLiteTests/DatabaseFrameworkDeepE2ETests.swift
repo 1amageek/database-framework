@@ -26,6 +26,11 @@ private struct DeepE2EIndexedTicket {
             mode: .fullText(
                 tokenizer: .simple, storePositions: true, ngramSize: 3, minimumTermLength: 2)))
     #Index(
+        .bitmap(
+            name: "deep_e2e_ticket_status_bitmap",
+            field: \DeepE2EIndexedTicket.status
+        ))
+    #Index(
         .aggregate(
             name: "deep_e2e_ticket_count_by_tenant", function: .count,
             groupBy: [.ascending(\DeepE2EIndexedTicket.tenantID)]))
@@ -220,6 +225,154 @@ private func deepE2EAggregates(
 
 @Suite("DatabaseFramework Deep E2E Tests", .serialized, .heartbeat)
 struct DatabaseFrameworkDeepE2ETests {
+    @Test("Fusion restricts FullText before limit and ranks the admitted candidates")
+    func fusionRestrictsFullTextBeforeLimitAndRanksCandidates() async throws {
+        let schema = try Schema(
+            entities: [try DeepE2EIndexedTicket.schemaEntity],
+            version: .init(1, 0, 0)
+        )
+        let (container, directory) = try await deepE2ETemporarySQLiteContainer(
+            for: schema,
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    DeepE2EIndexedTicket.self
+                )
+            ]
+        )
+        defer {
+            await container.shutdown()
+            deepE2ERemoveTemporaryDirectory(directory)
+        }
+
+        let context = container.testBaseContext()
+        for ticket in [
+            deepE2ETicket(
+                id: "fusion-open-low",
+                tenantID: "fusion",
+                status: "open",
+                priority: 1,
+                amountCents: 10,
+                description: "fusion filler filler filler filler"
+            ),
+            deepE2ETicket(
+                id: "fusion-open-high",
+                tenantID: "fusion",
+                status: "open",
+                priority: 9,
+                amountCents: 20,
+                description: "fusion filler filler filler"
+            ),
+            deepE2ETicket(
+                id: "fusion-closed-global-best",
+                tenantID: "fusion",
+                status: "closed",
+                priority: 100,
+                amountCents: 30,
+                description: "fusion"
+            ),
+            deepE2ETicket(
+                id: "fusion-repeated-phrase",
+                tenantID: "fusion",
+                status: "closed",
+                priority: 0,
+                amountCents: 0,
+                description: "to be or not to be"
+            ),
+            deepE2ETicket(
+                id: "fusion-shorter-phrase",
+                tenantID: "fusion",
+                status: "closed",
+                priority: 0,
+                amountCents: 0,
+                description: "to be or not"
+            ),
+        ] {
+            try context.insert(ticket)
+        }
+        try await context.save()
+
+        let eligible = try Filter(
+            DeepE2EIndexedTicket.fields.status,
+            equals: "open"
+        )
+        let query = FusionQuery<DeepE2EIndexedTicket> {
+            eligible
+            Search(DeepE2EIndexedTicket.fields.description)
+                .terms(["fusion"])
+                .limit(2)
+            Rank(DeepE2EIndexedTicket.fields.priority)
+                .order(.descending)
+        }
+        .strategy(.weighted([0, 1]))
+
+        let response = try await context.execute(query)
+
+        #expect(response.results.map(\.item.id) == [
+            "fusion-open-high",
+            "fusion-open-low",
+        ])
+        #expect(response.results.map(\.score) == [1, 0.5])
+        #expect(response.continuation == nil)
+
+        let firstPage = try await context.execute(
+            query,
+            options: ReadExecutionOptions(pageSize: 1)
+        )
+        #expect(firstPage.results.map(\.item.id) == [
+            response.results[0].item.id,
+        ])
+        let continuation = try #require(firstPage.continuation)
+        let secondPage = try await context.execute(
+            query,
+            options: ReadExecutionOptions(
+                pageSize: 1,
+                continuation: continuation
+            )
+        )
+        #expect(secondPage.results.map(\.item.id) == [
+            response.results[1].item.id,
+        ])
+        #expect(secondPage.continuation == nil)
+
+        let unrestrictedAny = FusionQuery<DeepE2EIndexedTicket> {
+            Search(DeepE2EIndexedTicket.fields.description)
+                .terms(["fusion", "filler"], mode: .any)
+                .limit(1_000_000)
+        }
+        let unrestrictedResponse = try await context.execute(unrestrictedAny)
+        #expect(unrestrictedResponse.results.count == 3)
+        #expect(Set(unrestrictedResponse.results.map(\.item.id)) == [
+            "fusion-open-low",
+            "fusion-open-high",
+            "fusion-closed-global-best",
+        ])
+
+        let repeatedPhrase = FusionQuery<DeepE2EIndexedTicket> {
+            Search(DeepE2EIndexedTicket.fields.description)
+                .terms(["to be or not to be"], mode: .phrase)
+        }
+        let phraseResponse = try await context.execute(repeatedPhrase)
+        #expect(phraseResponse.results.map(\.item.id) == [
+            "fusion-repeated-phrase"
+        ])
+
+        let unavailableBitmap = try Bitmap(
+            DeepE2EIndexedTicket.fields.status,
+            equals: "open"
+        )
+        let unsupportedQuery = FusionQuery<DeepE2EIndexedTicket> {
+            unavailableBitmap
+            Search(DeepE2EIndexedTicket.fields.description)
+                .terms(["fusion"])
+        }
+        await #expect {
+            _ = try await context.execute(unsupportedQuery)
+        } throws: { error in
+            error as? FusionExecutionError
+                == .indexExecutorNotRegistered(.bitmap)
+        }
+    }
+
     @Test("SQLite maintains scalar full-text and aggregation indexes through update delete and rollback")
     func sqliteMaintainsMultipleIndexesThroughUpdateDeleteAndRollback() async throws {
         let schema = try Schema(entities: [try DeepE2EIndexedTicket.schemaEntity], version: .init(1, 0, 0))

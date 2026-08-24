@@ -106,7 +106,7 @@ enum SelectQueryPlanner {
         // SortDescriptor does not model null ordering).
         var residualOrderBy: [SortKey]? = nil
         if let orderBy = selectQuery.orderBy, !orderBy.isEmpty {
-            if let descriptors = sortDescriptors(
+            if let descriptors = try sortDescriptors(
                 from: orderBy,
                 for: T.self,
                 sourceQualifier: tableRef.effectiveName
@@ -303,7 +303,7 @@ enum SelectQueryPlanner {
         from sortKeys: [SortKey],
         for type: T.Type,
         sourceQualifier: String
-    ) -> [SortDescriptor<T>]? {
+    ) throws -> [SortDescriptor<T>]? {
         var descriptors: [SortDescriptor<T>] = []
         descriptors.reserveCapacity(sortKeys.count)
         for sortKey in sortKeys {
@@ -316,7 +316,7 @@ enum SelectQueryPlanner {
                     || column.table == sourceQualifier else {
                 return nil
             }
-            guard let schema = T.fieldSchemas.first(where: {
+            guard let schema = try T.fieldSchemas.first(where: {
                 $0.name == column.column && $0.fieldNumber > 0
             }) else {
                 return nil

@@ -115,12 +115,15 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         self.storePositions = storePositions
         self.ngramSize = ngramSize
         self.minTermLength = minTermLength
-        self.termsSubspace = subspace.subspace("terms")
-        self.docsSubspace = subspace.subspace("docs")
-        self.statsSubspace = subspace.subspace("stats")
-        self.dfSubspace = subspace.subspace("df")
-        self.statsNKey = statsSubspace.pack(Tuple("N"))
-        self.statsTotalLengthKey = statsSubspace.pack(Tuple("totalLength"))
+        self.termsSubspace = FullTextStorageLayout.terms(in: subspace)
+        self.docsSubspace = FullTextStorageLayout.documents(in: subspace)
+        self.statsSubspace = FullTextStorageLayout.statistics(in: subspace)
+        self.dfSubspace = FullTextStorageLayout.documentFrequencies(
+            in: subspace
+        )
+        self.statsNKey = FullTextStorageLayout.documentCountKey(in: subspace)
+        self.statsTotalLengthKey = FullTextStorageLayout
+            .totalDocumentLengthKey(in: subspace)
     }
 
     public func updateIndex(

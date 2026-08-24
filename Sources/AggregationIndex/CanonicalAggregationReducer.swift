@@ -724,7 +724,7 @@ enum CanonicalAggregationReducer {
         item: T,
         field: FieldIdentity
     ) throws -> FieldValue {
-        guard T.fieldSchemas.contains(where: {
+        guard try T.fieldSchemas.contains(where: {
             $0.name == field.name && $0.fieldNumber == field.number
         }) else {
             throw AggregationQueryError.invalidField(field.name)

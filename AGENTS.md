@@ -48,9 +48,9 @@
 - Each Docker invocation owns one test runner process and one disposable
   service. Scenario actors coordinate suites inside that process; separate
   harness runs never share a service or network.
-- The strict SQLite contracts are 111 tests without `MultiBase` and 114
-  tests with it. The existing `MultiBase` backend contracts are 3,440
-  FoundationDB tests and 67 PostgreSQL tests. PostgreSQL tests require an
+- The strict SQLite contracts are 112 tests without `MultiBase` and 115
+  tests with it. The existing `MultiBase` backend contracts are 3,416
+  FoundationDB tests and 68 PostgreSQL tests. PostgreSQL tests require an
   isolated real server.
 - PostgreSQL is addressed as `postgresql:5432` only inside the run network.
   FoundationDB uses the service-generated private cluster file. The runner

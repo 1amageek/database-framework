@@ -846,8 +846,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
         >(
             workMeter: workMeter,
             stage: .expressionEvaluation,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: DatabaseKit.Expression.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(DatabaseKit.Expression.self),
             expectedCount: values.count
         )
         for value in values {

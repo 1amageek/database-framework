@@ -339,10 +339,9 @@ public struct CompositionDataSource: Sendable {
             let context = container.session(
                 authorization: snapshot.authorization
             ).base(member.baseID).newContext()
-            let executionBinding = DatabaseTransactionExecutionBinding(
+            let executionBinding = try DatabaseTransactionExecutionBinding(
+                context: context,
                 transaction: transaction,
-                resource: context.resource,
-                authorization: snapshot.authorization,
                 grantedAccess: .read,
                 databaseTransaction: nil
             )

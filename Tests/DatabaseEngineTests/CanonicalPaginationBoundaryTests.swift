@@ -131,8 +131,7 @@ struct CanonicalPaginationBoundaryTests {
             var builder = try DatabaseRetainedArrayBuilder<DatabaseEngine.QueryRow>(
                 workMeter: execution.workMeter,
                 stage: .resultMaterialization,
-                layout: try CanonicalRelationalFootprintMeter
-                    .retainedArrayLayout(for: DatabaseEngine.QueryRow.self),
+                layout: try DatabaseRetainedArrayLayout.forElement(DatabaseEngine.QueryRow.self),
                 expectedCount: 4
             )
             for row in rows(4) {

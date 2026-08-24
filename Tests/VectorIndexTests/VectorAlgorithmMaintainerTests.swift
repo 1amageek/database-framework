@@ -695,6 +695,50 @@ struct VectorAlgorithmMaintainerTests {
         }
     }
 
+    @Test("PQ rejects a well-formed code that disagrees with its vector")
+    func pqRejectsCodeThatDisagreesWithCanonicalVector() async throws {
+        let database = InMemoryEngine()
+        let context = try makeContext(name: "pq-stale-code")
+        let maintainer = try PQIndexMaintainer<HNSWDocument>(
+            index: context.index,
+            dimensions: 4,
+            metric: .euclidean,
+            subspace: context.indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: PQParameters(m: 2, niter: 2)
+        )
+        let docs = try algorithmDocuments()
+
+        try await database.withTransaction { transaction in
+            try await maintainer.scanItems(
+                docs.map { (item: $0, id: Tuple($0.id)) },
+                transaction: transaction
+            )
+            try await maintainer.train(transaction: transaction)
+
+            let codesSubspace = context.indexSubspace.subspace(
+                PQIndexStorageKey.codes.rawValue
+            )
+            let codeKey = codesSubspace.pack(Tuple("exact"))
+            let storedCode = try #require(
+                try await transaction.getValue(for: codeKey)
+            )
+            var changedCode = storedCode.copyBytes()
+            changedCode[0] &+= 1
+            try transaction.setValue(ByteString(changedCode), for: codeKey)
+        }
+
+        await #expect(throws: VectorIndexError.self) {
+            _ = try await database.withTransaction { transaction in
+                try await maintainer.search(
+                    queryVector: [1, 0, 0, 0],
+                    k: 2,
+                    transaction: transaction
+                )
+            }
+        }
+    }
+
     @Test("PQ retraining replaces every persisted compressed code")
     func pqRetrainingRebuildsPersistedCodes() async throws {
         let database = InMemoryEngine()

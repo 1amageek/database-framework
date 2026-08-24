@@ -144,6 +144,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 offset: nil,
                 orderBy: nil
             )
+            let runtime = try entityRuntime(named: Model.persistableType)
             guard let subspaces = try await openSubspaces(
                 for: type,
                 in: partition
@@ -205,9 +206,10 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                     bytes,
                     expectedEntity: Model.persistableType
                 )
-                let model = try persistedModel.decode(as: Model.self)
+                let canonicalModel = try runtime.canonicalized(persistedModel)
+                let model = try canonicalModel.decode(as: Model.self)
                 try container.securityDelegate?.evaluateGet(
-                    persistedModel,
+                    canonicalModel,
                     fields: nil
                 )
                 models.append(model)
@@ -337,6 +339,24 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 entity: entity,
                 id: id,
                 partition: partition
+            )
+        }
+    }
+
+    func loadRetainedPersistedModel(
+        entity: String,
+        id: Tuple,
+        partition: AnyDirectoryPath?,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseRetainedPersistedModels.Entry? {
+        try await performOperation { _ in
+            try await loadRetainedPersistedModelUnchecked(
+                entity: entity,
+                id: id,
+                partition: partition,
+                snapshot: snapshot,
+                workMeter: workMeter
             )
         }
     }
@@ -914,10 +934,134 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         )
         let model = try runtime.canonicalized(persistedModel)
         try container.securityDelegate?.evaluateGet(
-            persistedModel,
+            model,
             fields: nil
         )
         return model
+    }
+
+    private func loadRetainedPersistedModelUnchecked(
+        entity: String,
+        id: Tuple,
+        partition: AnyDirectoryPath?,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseRetainedPersistedModels.Entry? {
+        let runtime = try entityRuntime(named: entity)
+        if runtime.entity.hasDynamicDirectory, partition == nil {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: entity,
+                fields: runtime.entity.dynamicFieldNames
+            )
+        }
+        guard let subspaces = try await openSubspaces(
+            for: runtime.entity,
+            partition: partition
+        ) else {
+            return nil
+        }
+        let key = subspaces.items.subspace(entity).pack(id)
+        let storage = container.itemStorageFactory.make(
+            transaction: storageAccess,
+            blobsSubspace: subspaces.blobs
+        )
+        guard let data = try await storage.readRetained(
+            for: key,
+            snapshot: snapshot,
+            workMeter: workMeter,
+            stage: .storageRow
+        ) else {
+            return nil
+        }
+        let decodedFootprint: (
+            retainedByteCount: UInt64,
+            transientByteCount: UInt64
+        )
+        do {
+            // The footprint scan validates borrowed UTF-8 views without
+            // materializing the decoded model before its reservation exists.
+            try DatabaseByteProcessingMeter.consume(
+                byteCount: data.count,
+                workMeter: workMeter,
+                stage: .storageRow
+            )
+            decodedFootprint = try PersistableStorageCodec.decodedFootprint(
+                data,
+                expectedEntity: entity
+            )
+            try workMeter.checkpoint(at: .storageRow)
+        }
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: try DatabaseIntermediateFootprint(
+                bytes: decodedFootprint.retainedByteCount
+            ).adding(
+                DatabaseIntermediateFootprint(
+                    bytes: decodedFootprint.transientByteCount
+                )
+            ).bytes,
+            at: .storageRow
+        )
+
+        try DatabaseByteProcessingMeter.consume(
+            byteCount: data.count,
+            passes: 2,
+            workMeter: workMeter,
+            stage: .storageRow
+        )
+        let admitted = try admitRetainedStoredModel(
+            data,
+            entity: entity,
+            runtime: runtime,
+            reservation: reservation,
+            workMeter: workMeter,
+            decodeScratchByteCount: decodedFootprint.transientByteCount
+        )
+        try container.securityDelegate?.evaluateGet(
+            admitted.model,
+            fields: nil
+        )
+        try workMeter.checkpoint(at: .storageRow)
+        // The decoded source model ended with the helper scope. Only the
+        // separately measured canonical model remains retained by the entry.
+        reservation.releaseGuaranteedPartial(
+            bytes: decodedFootprint.retainedByteCount
+        )
+        return DatabaseRetainedPersistedModels.Entry(
+            model: admitted.model,
+            retainedModelFootprint: DatabaseIntermediateFootprint(
+                rows: 1,
+                bytes: admitted.retainedByteCount
+            ),
+            queryRowFootprint: try CanonicalRelationalFootprintMeter.footprint(
+                of: admitted.model,
+                workMeter: workMeter
+            ),
+            reservation: reservation
+        )
+    }
+
+    private func admitRetainedStoredModel(
+        _ data: ByteString,
+        entity: String,
+        runtime: EntityRuntimeRegistration,
+        reservation: DatabaseIntermediateReservation,
+        workMeter: DatabaseWorkMeter,
+        decodeScratchByteCount: UInt64
+    ) throws -> (model: PersistedModel, retainedByteCount: UInt64) {
+        let persistedModel = try DataAccess.deserializePersistedModel(
+            data,
+            expectedEntity: entity
+        )
+        // Both frame decoding and PersistedModel construction have completed;
+        // their validation tables no longer overlap canonical adaptation.
+        reservation.releaseGuaranteedPartial(bytes: decodeScratchByteCount)
+        return try CanonicalStoredModelAdmission.admit(
+            persistedModel,
+            runtime: runtime,
+            reservation: reservation,
+            workMeter: workMeter,
+            stage: .storageRow
+        )
     }
 
     private func scanPersistedModelsUnchecked(
@@ -971,7 +1115,9 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             end: end,
             startingAfter: startingAfter,
             snapshot: false,
-            limit: scanLimitOverflow ? Int.max : requestedScanLimit
+            limit: scanLimitOverflow ? Int.max : requestedScanLimit,
+            workMeter: workMeter,
+            stage: .storageRow
         ).makeAsyncIterator()
         var skipped = 0
         while let (_, data) = try await iterator.next() {
@@ -980,13 +1126,22 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 skipped += 1
                 continue
             }
+            if let workMeter {
+                try DatabaseByteProcessingMeter.consume(
+                    byteCount: data.count,
+                    passes: 2,
+                    workMeter: workMeter,
+                    stage: .storageRow
+                )
+            }
             let persistedModel = try DataAccess.deserializePersistedModel(
                 data,
                 expectedEntity: entity
             )
             let model = try runtime.canonicalized(persistedModel)
+            try workMeter?.checkpoint(at: .storageRow)
             try container.securityDelegate?.evaluateGet(
-                persistedModel,
+                model,
                 fields: nil
             )
             models.append(model)
@@ -1030,8 +1185,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         var changes = try DatabaseRetainedArrayBuilder<EntityMutationChange>(
             workMeter: workMeter,
             stage: .mutationPlanning,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: EntityMutationChange.self)
+            layout: try DatabaseRetainedArrayLayout.forElement(EntityMutationChange.self)
         )
         guard let subspaces = try await openSubspaces(
             for: runtime.entity,
@@ -1052,18 +1206,27 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             end: end,
             startingAfter: nil,
             snapshot: false,
-            limit: storageLimit
+            limit: storageLimit,
+            workMeter: workMeter,
+            stage: .storageRow
         ).makeAsyncIterator()
         var sourceRowCount = 0
         while let (_, data) = try await iterator.next() {
             try workMeter.consume(at: .storageRow)
+            try DatabaseByteProcessingMeter.consume(
+                byteCount: data.count,
+                passes: 2,
+                workMeter: workMeter,
+                stage: .storageRow
+            )
             let persistedModel = try DataAccess.deserializePersistedModel(
                 data,
                 expectedEntity: entity
             )
             let model = try runtime.canonicalized(persistedModel)
+            try workMeter.checkpoint(at: .storageRow)
             try container.securityDelegate?.evaluateGet(
-                persistedModel,
+                model,
                 fields: nil
             )
             guard sourceRowCount < maximumRows else {
@@ -1280,9 +1443,11 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             bytes,
             expectedEntity: Model.persistableType
         )
-        let model = try persistedModel.decode(as: Model.self)
+        let runtime = try entityRuntime(named: Model.persistableType)
+        let canonicalModel = try runtime.canonicalized(persistedModel)
+        let model = try canonicalModel.decode(as: Model.self)
         try container.securityDelegate?.evaluateGet(
-            persistedModel,
+            canonicalModel,
             fields: nil
         )
         return model

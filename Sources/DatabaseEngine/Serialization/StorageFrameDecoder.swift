@@ -155,6 +155,30 @@ package struct StorageFrameDecoder: Sendable {
         return value
     }
 
+    /// Validates one encoded String while returning only a retained view of
+    /// its UTF-8 bytes. Footprint scans use this path so admission can inspect
+    /// the complete frame without materializing a String before its retained
+    /// storage has been reserved.
+    package mutating func readValidatedStringBytes() throws(
+        StorageFrameError
+    ) -> ByteString {
+        let count = try readLength()
+        guard count <= limits.maximumStringBytes else {
+            throw .stringTooLarge(
+                actual: count,
+                maximum: limits.maximumStringBytes
+            )
+        }
+        let payload = try readRawBytes(count: count)
+        let isValid = payload.withUnsafeBytes { bytes in
+            Self.isValidUTF8(bytes)
+        }
+        guard isValid else {
+            throw .invalidUTF8
+        }
+        return payload
+    }
+
     package mutating func readOptionalString() throws(
         StorageFrameError
     ) -> String? {
@@ -240,5 +264,97 @@ package struct StorageFrameDecoder: Sendable {
         let upperBound = lowerBound + count
         offset += count
         return bytes[lowerBound..<upperBound]
+    }
+
+    private static func isValidUTF8(
+        _ bytes: UnsafeRawBufferPointer
+    ) -> Bool {
+        var index = 0
+        while index < bytes.count {
+            let first = bytes[index]
+            switch first {
+            case 0x00...0x7F:
+                index += 1
+            case 0xC2...0xDF:
+                guard hasContinuationBytes(
+                    bytes,
+                    startingAt: index + 1,
+                    count: 1
+                ) else {
+                    return false
+                }
+                index += 2
+            case 0xE0:
+                guard index + 2 < bytes.count,
+                      (0xA0...0xBF).contains(bytes[index + 1]),
+                      isContinuation(bytes[index + 2]) else {
+                    return false
+                }
+                index += 3
+            case 0xE1...0xEC, 0xEE...0xEF:
+                guard hasContinuationBytes(
+                    bytes,
+                    startingAt: index + 1,
+                    count: 2
+                ) else {
+                    return false
+                }
+                index += 3
+            case 0xED:
+                guard index + 2 < bytes.count,
+                      (0x80...0x9F).contains(bytes[index + 1]),
+                      isContinuation(bytes[index + 2]) else {
+                    return false
+                }
+                index += 3
+            case 0xF0:
+                guard index + 3 < bytes.count,
+                      (0x90...0xBF).contains(bytes[index + 1]),
+                      isContinuation(bytes[index + 2]),
+                      isContinuation(bytes[index + 3]) else {
+                    return false
+                }
+                index += 4
+            case 0xF1...0xF3:
+                guard hasContinuationBytes(
+                    bytes,
+                    startingAt: index + 1,
+                    count: 3
+                ) else {
+                    return false
+                }
+                index += 4
+            case 0xF4:
+                guard index + 3 < bytes.count,
+                      (0x80...0x8F).contains(bytes[index + 1]),
+                      isContinuation(bytes[index + 2]),
+                      isContinuation(bytes[index + 3]) else {
+                    return false
+                }
+                index += 4
+            default:
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func hasContinuationBytes(
+        _ bytes: UnsafeRawBufferPointer,
+        startingAt start: Int,
+        count: Int
+    ) -> Bool {
+        guard start <= bytes.count,
+              count <= bytes.count - start else {
+            return false
+        }
+        for index in start..<(start + count) where !isContinuation(bytes[index]) {
+            return false
+        }
+        return true
+    }
+
+    private static func isContinuation(_ byte: UInt8) -> Bool {
+        (byte & 0xC0) == 0x80
     }
 }

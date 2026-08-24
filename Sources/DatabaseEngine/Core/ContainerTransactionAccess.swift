@@ -36,6 +36,10 @@ final class ContainerTransactionAccess: TransactionAccess, Sendable {
         transaction.capabilities
     }
 
+    var transactionDomain: StorageTransactionDomain {
+        transaction.transactionDomain
+    }
+
     var compaction: StorageCompactionAccess? {
         transaction.compaction
     }

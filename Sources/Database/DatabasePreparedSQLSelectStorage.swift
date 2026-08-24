@@ -22,8 +22,7 @@ package final class DatabasePreparedSQLSelectStorage: Sendable {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .expressionEvaluation
     ) throws {
-        let layout = try CanonicalRelationalFootprintMeter
-            .retainedArrayLayout(for: Lease.self)
+        let layout = try DatabaseRetainedArrayLayout.forElement(Lease.self)
         let initialFootprint = try DatabaseIntermediateFootprint(
             bytes: layout.sharedOwnerByteCount
         ).adding(

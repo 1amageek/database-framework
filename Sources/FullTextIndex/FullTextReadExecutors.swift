@@ -559,15 +559,9 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 primaryKeys: limited,
                 partitions: partitions,
                 transaction: transaction,
+                snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
             let modelArrayAdmission = try reserveFullTextArrayCopy(
                 count: fetched.count,
                 element: PersistedModel.self,
@@ -629,15 +623,9 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 primaryKeys: identifiers,
                 partitions: partitions,
                 transaction: transaction,
+                snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
             let modelArrayAdmission = try reserveFullTextArrayCopy(
                 count: fetched.count,
                 element: PersistedModel.self,
@@ -731,15 +719,9 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 primaryKeys: identifiers,
                 partitions: partitions,
                 transaction: transaction,
+                snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
             let modelArrayAdmission = try reserveFullTextArrayCopy(
                 count: fetched.count,
                 element: PersistedModel.self,
@@ -843,10 +825,11 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         }
     }
 
-    private func requireModels(
+    private func requireModels<Models: Collection>(
         identifiers: [Tuple],
-        fetched: [PersistedModel?]
-    ) throws -> [PersistedModel] {
+        fetched: Models
+    ) throws -> [PersistedModel]
+    where Models.Element == PersistedModel? {
         guard identifiers.count == fetched.count else {
             throw FullTextReadError.fetchedItemCountMismatch(
                 expected: identifiers.count,
@@ -1590,7 +1573,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             .normalizedTerms(from: terms.joined(separator: " "))
         guard !normalizedTerms.isEmpty else { return [] }
 
-        let termsSubspace = indexSubspace.subspace("terms")
+        let termsSubspace = FullTextStorageLayout.terms(in: indexSubspace)
         let candidates = try await searchTermsAND(
             normalizedTerms,
             termsSubspace: termsSubspace,
@@ -1629,19 +1612,27 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     positionsByTerm.append([])
                     continue
                 }
-                let positions = try FullTextStorageDecoder.posting(
-                    from: value,
-                    positionsStored: true,
-                    term: term
-                ).positions
+                let admittedPositionBytes = try fullTextPositionByteCount(
+                    maximumPositionCount: value.count
+                )
                 try positionReservation.reserveAdditional(
                     rows: 1,
-                    bytes: try DatabaseIntermediateFootprint(
-                        bytes: UInt64(max(1, MemoryLayout<Int>.stride))
-                    ).multiplied(by: UInt64(positions.count)).adding(
-                        DatabaseIntermediateFootprint(bytes: 32)
-                    ).bytes,
+                    bytes: admittedPositionBytes,
                     at: .indexScan
+                )
+                var positions: [Int] = []
+                positions.reserveCapacity(value.count)
+                _ = try FullTextStorageDecoder.postingPositions(
+                    from: value,
+                    term: term,
+                    into: &positions,
+                    workMeter: workMeter
+                )
+                let retainedPositionBytes = try fullTextPositionByteCount(
+                    maximumPositionCount: positions.count
+                )
+                positionReservation.releaseGuaranteedPartial(
+                    bytes: admittedPositionBytes - retainedPositionBytes
                 )
                 positionsByTerm.append(positions)
             }
@@ -1711,13 +1702,14 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         )
         defer { matchingReservation.release() }
 
-        let statsSubspace = indexSubspace.subspace("stats")
         let totalDocuments = try await statistic(
-            key: statsSubspace.pack(Tuple("N")),
+            key: FullTextStorageLayout.documentCountKey(in: indexSubspace),
             transaction: transaction
         )
         let totalLength = try await statistic(
-            key: statsSubspace.pack(Tuple("totalLength")),
+            key: FullTextStorageLayout.totalDocumentLengthKey(
+                in: indexSubspace
+            ),
             transaction: transaction
         )
         guard totalDocuments > 0, totalLength > 0 else {
@@ -1731,7 +1723,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
         )
 
-        let documentFrequencySubspace = indexSubspace.subspace("df")
+        let documentFrequencySubspace = FullTextStorageLayout
+            .documentFrequencies(in: indexSubspace)
         var frequencies: [String: Int64] = [:]
         frequencies.reserveCapacity(normalizedTerms.count)
         let frequencyReservation = try workMeter.reserveIntermediate(
@@ -1750,8 +1743,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
         }
 
-        let termsSubspace = indexSubspace.subspace("terms")
-        let documentsSubspace = indexSubspace.subspace("docs")
+        let termsSubspace = FullTextStorageLayout.terms(in: indexSubspace)
+        let documentsSubspace = FullTextStorageLayout.documents(
+            in: indexSubspace
+        )
         var scored: [(id: Tuple, score: Double)] = []
         scored.reserveCapacity(matchingIdentifiers.count)
         let scoredBuildReservation = try workMeter.reserveIntermediate(
@@ -1791,11 +1786,13 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     term,
                     in: termFrequencyReservation
                 )
-                termFrequencies[term] = try FullTextStorageDecoder.posting(
-                    from: postingValue,
-                    positionsStored: configuration.storePositions,
-                    term: term
-                ).termFrequency
+                termFrequencies[term] = try FullTextStorageDecoder
+                    .postingFrequency(
+                        from: postingValue,
+                        positionsStored: configuration.storePositions,
+                        term: term,
+                        workMeter: workMeter
+                    )
             }
             try scoredBuildReservation.reserveAdditional(
                 rows: 1,
@@ -1850,6 +1847,17 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return scored
     }
 
+    private func fullTextPositionByteCount(
+        maximumPositionCount: Int
+    ) throws -> UInt64 {
+        precondition(maximumPositionCount >= 0)
+        return try DatabaseIntermediateFootprint(
+            bytes: UInt64(max(1, MemoryLayout<Int>.stride))
+        ).multiplied(by: UInt64(maximumPositionCount)).adding(
+            DatabaseIntermediateFootprint(bytes: 32)
+        ).bytes
+    }
+
     private func statistic(
         key: ByteString,
         transaction: any TransactionAccess
@@ -1895,7 +1903,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> [Tuple] {
-        let termsSubspace = indexSubspace.subspace("terms")
+        let termsSubspace = FullTextStorageLayout.terms(in: indexSubspace)
         let termGroups = normalizeQueryTermGroups(
             terms,
             configuration: configuration

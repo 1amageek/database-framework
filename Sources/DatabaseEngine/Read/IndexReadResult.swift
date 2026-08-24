@@ -124,8 +124,7 @@ public struct IndexReadResultBuilder: ~Copyable {
         self.storage = try DatabaseRetainedArrayBuilder(
             workMeter: workMeter,
             stage: .indexScan,
-            layout: try CanonicalRelationalFootprintMeter.retainedArrayLayout(
-                for: IndexReadRow.self
+            layout: try DatabaseRetainedArrayLayout.forElement(IndexReadRow.self
             ),
             expectedCount: expectedCount
         )
@@ -142,10 +141,20 @@ public struct IndexReadResultBuilder: ~Copyable {
             ),
             workMeter: storage.workMeter
         )
+        try append(
+            footprint: footprint,
+            make: { row }
+        )
+    }
+
+    package mutating func append(
+        footprint: DatabaseIntermediateFootprint,
+        make: () throws -> IndexReadRow
+    ) throws {
         try storage.append(
             footprint: footprint,
             at: .indexScan,
-            make: { row }
+            make: make
         )
     }
 

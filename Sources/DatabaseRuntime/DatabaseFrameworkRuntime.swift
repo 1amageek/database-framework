@@ -168,6 +168,7 @@ public enum DatabaseFrameworkRuntime {
             executionIdentity: executionIdentity,
             indexMaintainerProviderDescriptors: maintainerProviderDescriptors(),
             polymorphicIndexReadExecutors: polymorphicIndexReadExecutors(),
+            fusionIndexReadExecutors: fusionIndexReadExecutors(),
             graphTableSourceExecutor: graphTableSourceExecutor,
             sparqlSourceExecutor: sparqlSourceExecutor,
             persistableMutationMaintainers: persistableMutationMaintainers(),
@@ -175,6 +176,15 @@ public enum DatabaseFrameworkRuntime {
             authorizationPolicies: authorizationPolicies,
             indexConfigurations: indexConfigurations
         )
+    }
+
+    private static func fusionIndexReadExecutors()
+        -> [any FusionIndexReadExecutor] {
+        var executors: [any FusionIndexReadExecutor] = []
+        #if DATABASE_RUNTIME_FULL_TEXT_INDEXES
+        executors.append(FullTextFusionIndexReadExecutor())
+        #endif
+        return executors
     }
 
     private static func definition<Model: Persistable>(

@@ -47,22 +47,35 @@ semantics.
 
 ## Fusion
 
-Fusion combines independent index queries using the public FusionQuery and
-FusionBuilder contracts. Typical combinations include full-text search with
-vector similarity or a bitmap filter with a ranked result.
+Fusion combines staged, context-free inputs using the public `FusionQuery`
+contract. DatabaseKit owns the plan; DatabaseEngine owns candidate flow,
+transaction lifetime, score composition, and output. Each index module owns
+only its physical read algorithm.
 
 ~~~swift
-let results = try await context.fuse(Document.self) {
-    Parallel {
-        Search(\.content).terms(["database"])
-        Similar(\.embedding, dimensions: 1536)
-            .nearest(to: queryVector, k: 10)
-    }
-}.execute()
+let query = FusionQuery<Document> {
+    Filter(Document.fields.isPublished, equals: true)
+    Search(Document.fields.content)
+        .terms(["database"])
+        .limit(20)
+    Rank(Document.fields.popularity)
+        .order(.descending)
+}
+.strategy(.weighted([0, 1]))
+
+let response = try await context.execute(query)
 ~~~
 
-Concrete query types are provided by index modules. DatabaseEngine does not
-hard-code feature-specific index cases.
+The production physical reader currently implemented is full-text `Search`.
+`Filter` and `Rank` execute through the canonical relational engine. Other
+feature inputs already lower to QueryIR but fail preflight with a typed error
+until their owning module supplies and verifies its physical reader. There is
+no silent fallback to an unrestricted or approximate implementation.
+
+Field authorization completes before index-selection errors or feature
+availability are reported. `Search(field)` requires an exact single-field
+full-text index because a multi-field full-text index stores combined postings
+and cannot correctly represent a field-isolated search.
 
 ## Error Behavior
 

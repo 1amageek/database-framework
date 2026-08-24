@@ -115,8 +115,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         var changes = try DatabaseRetainedArrayBuilder<EntityMutationChange>(
             workMeter: workMeter,
             stage: .mutationPlanning,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: EntityMutationChange.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(EntityMutationChange.self),
             expectedCount: rows.count
         )
         for row in rows {

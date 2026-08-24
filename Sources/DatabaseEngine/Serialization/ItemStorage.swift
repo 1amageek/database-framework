@@ -97,6 +97,31 @@ public struct ItemStorage: Sendable {
         )
     }
 
+    /// Reads one entity while admitting retained and assembly storage before
+    /// allocation. The returned bytes own the reservation for their lifetime.
+    package func readRetained(
+        for key: ByteString,
+        snapshot: Bool = false,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) async throws -> ByteString? {
+        guard let envelopeBytes = try await transaction.getValue(
+            for: key,
+            snapshot: snapshot
+        ) else {
+            try workMeter.checkpoint(at: stage)
+            return nil
+        }
+        try workMeter.checkpoint(at: stage)
+        return try await decodeStoredValueRetained(
+            envelopeBytes,
+            for: key,
+            snapshot: snapshot,
+            workMeter: workMeter,
+            stage: stage
+        )
+    }
+
     public func exists(
         for key: ByteString,
         snapshot: Bool = false
@@ -117,7 +142,9 @@ public struct ItemStorage: Sendable {
         startingAfter: ByteString? = nil,
         snapshot: Bool = false,
         limit: Int = 0,
-        reverse: Bool = false
+        reverse: Bool = false,
+        workMeter: DatabaseWorkMeter? = nil,
+        stage: DatabaseWorkStage = .storageRow
     ) -> ItemScanSequence {
         let validationError: ItemStorageError? = limit < 0
             ? .invalidScanLimit(limit)
@@ -130,6 +157,8 @@ public struct ItemStorage: Sendable {
             snapshot: snapshot,
             limit: limit,
             reverse: reverse,
+            workMeter: workMeter,
+            stage: stage,
             validationError: validationError
         )
     }
@@ -285,6 +314,129 @@ public struct ItemStorage: Sendable {
         return plainPayload
     }
 
+    fileprivate func decodeStoredValueRetained(
+        _ envelopeBytes: ByteString,
+        for key: ByteString,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) async throws -> ByteString {
+        guard ItemEnvelope.isEnvelope(envelopeBytes) else {
+            throw ItemStorageError.notEnvelopeFormat
+        }
+        let envelope = try ItemEnvelope.deserialize(envelopeBytes)
+        try validate(envelope)
+
+        let storedPayload: ByteString
+        switch envelope.content {
+        case .inline(let payload):
+            let reservation = try workMeter.reserveIntermediate(
+                bytes: UInt64(payload.count),
+                at: stage
+            )
+            storedPayload = try DatabaseRetainedByteString.make(
+                payload,
+                reservation: reservation,
+                at: stage
+            )
+        case .external(let reference):
+            storedPayload = try await loadRetainedChunks(
+                for: key,
+                envelope: envelope,
+                reference: reference,
+                snapshot: snapshot,
+                workMeter: workMeter,
+                stage: stage
+            )
+        }
+
+        let plainPayload: ByteString
+        switch envelope.encoding {
+        case .identity:
+            plainPayload = storedPayload
+        }
+        try DatabaseByteProcessingMeter.consume(
+            byteCount: plainPayload.count,
+            workMeter: workMeter,
+            stage: stage
+        )
+        let actualChecksum = ItemChecksum.crc32c(plainPayload)
+        guard actualChecksum == envelope.checksum else {
+            throw ItemEnvelopeError.checksumMismatch(
+                expected: envelope.checksum,
+                actual: actualChecksum
+            )
+        }
+        try workMeter.checkpoint(at: stage)
+        return plainPayload
+    }
+
+    private func loadRetainedChunks(
+        for key: ByteString,
+        envelope: ItemEnvelope,
+        reference: ItemEnvelope.ExternalRef,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) async throws -> ByteString {
+        guard let totalSize = Int(exactly: envelope.storedByteCount),
+              let chunkCount = Int(exactly: reference.chunkCount),
+              let chunkSize = Int(exactly: reference.chunkByteCount) else {
+            throw ItemStorageError.invalidChunkLayout
+        }
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: UInt64(totalSize),
+            at: stage
+        )
+        let output = DatabaseRetainedMutableByteBuffer(
+            count: totalSize,
+            reservation: reservation
+        )
+        var loadedByteCount = 0
+        let blobBase = blobPrefix(for: key)
+        for index in 0..<chunkCount {
+            guard let encodedIndex = Int32(exactly: index) else {
+                throw ItemStorageError.invalidChunkLayout
+            }
+            let chunkKey = blobBase.pack(Tuple([encodedIndex]))
+            guard let chunk = try await transaction.getValue(
+                for: chunkKey,
+                snapshot: snapshot
+            ) else {
+                try workMeter.checkpoint(at: stage)
+                throw ItemEnvelopeError.chunkMissing(index: index)
+            }
+            try workMeter.checkpoint(at: stage)
+            let expectedByteCount = Swift.min(
+                chunkSize,
+                totalSize - loadedByteCount
+            )
+            guard chunk.count == expectedByteCount else {
+                throw ItemEnvelopeError.chunkSizeMismatch(
+                    index: index,
+                    expected: expectedByteCount,
+                    actual: chunk.count
+                )
+            }
+            // The assembly copy is a separate CPU pass from the checksum
+            // performed after the complete payload has been materialized.
+            try DatabaseByteProcessingMeter.consume(
+                byteCount: chunk.count,
+                workMeter: workMeter,
+                stage: stage
+            )
+            output.append(copying: chunk)
+            loadedByteCount += expectedByteCount
+        }
+        guard loadedByteCount == totalSize else {
+            throw ItemEnvelopeError.payloadSizeMismatch(
+                expected: envelope.storedByteCount,
+                actual: UInt64(loadedByteCount)
+            )
+        }
+        return output.finalize()
+    }
+
     private func loadChunks(
         for key: ByteString,
         envelope: ItemEnvelope,
@@ -356,6 +508,8 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
     private let snapshot: Bool
     private let limit: Int
     private let reverse: Bool
+    private let workMeter: DatabaseWorkMeter?
+    private let stage: DatabaseWorkStage
     private let validationError: ItemStorageError?
 
     init(
@@ -366,6 +520,8 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         snapshot: Bool,
         limit: Int,
         reverse: Bool,
+        workMeter: DatabaseWorkMeter?,
+        stage: DatabaseWorkStage,
         validationError: ItemStorageError?
     ) {
         self.storage = storage
@@ -375,6 +531,8 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         self.snapshot = snapshot
         self.limit = limit
         self.reverse = reverse
+        self.workMeter = workMeter
+        self.stage = stage
         self.validationError = validationError
     }
 
@@ -384,6 +542,8 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
                 storage: nil,
                 cursor: nil,
                 snapshot: snapshot,
+                workMeter: workMeter,
+                stage: stage,
                 pendingError: validationError
             )
         }
@@ -399,6 +559,8 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
                 streamingMode: limit > 0 ? .small : .wantAll
             ),
             snapshot: snapshot,
+            workMeter: workMeter,
+            stage: stage,
             pendingError: nil
         )
     }
@@ -409,17 +571,23 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         private var storage: ItemStorage?
         private var cursor: KeyValueCursor?
         private let snapshot: Bool
+        private let workMeter: DatabaseWorkMeter?
+        private let stage: DatabaseWorkStage
         private var pendingError: ItemStorageError?
 
         fileprivate init(
             storage: ItemStorage?,
             cursor: KeyValueCursor?,
             snapshot: Bool,
+            workMeter: DatabaseWorkMeter?,
+            stage: DatabaseWorkStage,
             pendingError: ItemStorageError?
         ) {
             self.storage = storage
             self.cursor = cursor
             self.snapshot = snapshot
+            self.workMeter = workMeter
+            self.stage = stage
             self.pendingError = pendingError
         }
 
@@ -442,11 +610,23 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
                     return nil
                 }
                 cursor = activeCursor
-                let data = try await storage.decodeStoredValue(
-                    envelopeBytes,
-                    for: key,
-                    snapshot: snapshot
-                )
+                let data: ByteString
+                if let workMeter {
+                    try workMeter.checkpoint(at: stage)
+                    data = try await storage.decodeStoredValueRetained(
+                        envelopeBytes,
+                        for: key,
+                        snapshot: snapshot,
+                        workMeter: workMeter,
+                        stage: stage
+                    )
+                } else {
+                    data = try await storage.decodeStoredValue(
+                        envelopeBytes,
+                        for: key,
+                        snapshot: snapshot
+                    )
+                }
                 return (key, data)
             } catch {
                 finish()

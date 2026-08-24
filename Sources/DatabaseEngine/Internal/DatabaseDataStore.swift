@@ -136,7 +136,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
         let startTime = container.monotonicClock.now
-
         do {
             let results: [T] = try await container.transactionExecutor.withTransaction(configuration: .default, clock: container.monotonicClock) { transaction in
                 // Use ItemStorage for proper handling of large values
@@ -628,7 +627,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Fetch models by IDs (parallel reads for 10-30× speedup)
     private func fetchByIds<T: Persistable>(_ type: T.Type, ids: [Tuple]) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
-
         // Pre-compute keys outside transaction
         let keys = ids.map { typeSubspace.pack($0) }
 
@@ -987,7 +985,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
         let startTime = container.monotonicClock.now
-
         do {
             let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
@@ -1250,7 +1247,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
     ) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let keys = ids.map { typeSubspace.pack($0) }
-
         let storage = self.container.itemStorageFactory.make(
             transaction: transaction,
             blobsSubspace: self.blobsSubspace
@@ -1452,14 +1448,19 @@ package final class DatabaseDataStore: DataStore, Sendable {
             return nil
         }
 
-        let persistedModel = try DataAccess.deserializePersistedModel(
+        let storedModel = try DataAccess.deserializePersistedModel(
             bytes,
             expectedEntity: T.persistableType
         )
-        let result = try persistedModel.decode(as: T.self)
+        let canonicalModel = try runtime(for: T.persistableType).canonicalized(
+            storedModel
+        )
+        let result = try canonicalModel.decode(as: T.self)
 
-        // Evaluate GET security via delegate after fetch
-        try securityDelegate?.evaluateGet(persistedModel, fields: nil)
+        try securityDelegate?.evaluateGet(
+            canonicalModel,
+            fields: nil
+        )
 
         return result
     }

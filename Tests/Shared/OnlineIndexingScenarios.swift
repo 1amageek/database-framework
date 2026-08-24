@@ -347,7 +347,7 @@ public struct PlayerIdentifierIndexDefinition {
                 name: name,
                 keys: [.ascending(Player.fields.id.identity)]
             ),
-            fieldSchemas: Player.fieldSchemas
+            fieldSchemas: try Player.fieldSchemas
         )
         return ResolvedIndex(
             descriptor: descriptor,

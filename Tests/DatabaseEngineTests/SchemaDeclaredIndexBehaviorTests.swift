@@ -686,7 +686,7 @@ struct SchemaDeclaredIndexBehaviorTests {
                 name: indexName,
                 keys: [.ascending(CatalogItem.fields.category.identity)]
             ),
-            fieldSchemas: CatalogItem.fieldSchemas
+            fieldSchemas: try CatalogItem.fieldSchemas
         )
         let engine = InMemoryEngine()
         let schema = try Schema(

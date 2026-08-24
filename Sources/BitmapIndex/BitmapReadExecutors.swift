@@ -137,15 +137,9 @@ private struct BitmapReadExecutor: IndexReadExecutor {
                 primaryKeys: primaryKeys,
                 partitions: partitions,
                 transaction: transaction,
+                snapshot: execution.consistency == .snapshot,
                 workMeter: options.workMeter
             )
-            let fetchedReservation = try DatabaseIntermediateCollectionMeter
-                .reservePersistedModels(
-                    fetched,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { fetchedReservation.release() }
             return try IndexReadResult.build(
                 workMeter: options.workMeter,
                 ordering: .unordered,

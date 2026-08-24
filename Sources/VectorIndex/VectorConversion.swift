@@ -31,27 +31,7 @@ public struct VectorConversion: Sendable {
     public static func extractFloat32Vector(
         from fieldValues: [any TupleElement]
     ) throws -> Vector {
-        guard fieldValues.count == 1, let element = fieldValues.first else {
-            throw VectorIndexError.invalidStructure(
-                "A vector index expression must produce exactly one field value"
-            )
-        }
-
-        let fieldValue: FieldValue
-        if let canonical = element as? CanonicalFieldValueTupleElement {
-            // DataAccess creates this retained element for model fields. Read
-            // its prepared value directly so indexing does not encode and then
-            // decode a large vector merely to cross the TupleElement API.
-            fieldValue = canonical.prepared.value
-        } else {
-            do {
-                fieldValue = try FieldValue(tupleElement: element)
-            } catch {
-                throw VectorIndexError.invalidStructure(
-                    "The vector index expression did not produce a canonical field value: \(error)"
-                )
-            }
-        }
+        let fieldValue = try canonicalFieldValue(from: fieldValues)
 
         guard case .vector(let vector) = fieldValue else {
             throw VectorIndexError.invalidArgument(
@@ -59,6 +39,220 @@ public struct VectorConversion: Sendable {
             )
         }
         return try float32Vector(from: vector)
+    }
+
+    /// Compares a canonical model vector with a retained persisted Float32
+    /// payload without materializing either vector into an intermediate array.
+    static func matchesPersistedVector(
+        _ persisted: PersistedVectorView,
+        fieldValues: [any TupleElement]
+    ) throws(VectorIndexError) -> Bool {
+        try matchesPersistedVector(
+            persisted,
+            fieldValue: canonicalFieldValue(from: fieldValues)
+        )
+    }
+
+    static func matchesPersistedVector(
+        _ persisted: PersistedVectorView,
+        fieldValue: FieldValue
+    ) throws(VectorIndexError) -> Bool {
+        guard case .vector(let vector) = fieldValue else {
+            throw .invalidArgument(
+                "A vector index expression must resolve to FieldValue.vector"
+            )
+        }
+        guard vector.count == persisted.count else {
+            return false
+        }
+
+        return try persisted.withUnsafeBytes {
+            (persistedBytes) throws(VectorIndexError) -> Bool in
+            switch vector.elementType {
+            case .int8:
+                return try compareIntegerElements(
+                    of: vector,
+                    persistedBytes: persistedBytes,
+                    borrowing: { body in
+                        vector.withInt8Elements(body)
+                    }
+                )
+            case .int16:
+                return try compareIntegerElements(
+                    of: vector,
+                    persistedBytes: persistedBytes,
+                    borrowing: { body in
+                        vector.withInt16Elements(body)
+                    }
+                )
+            case .int32:
+                return try compareIntegerElements(
+                    of: vector,
+                    persistedBytes: persistedBytes,
+                    borrowing: { body in
+                        vector.withInt32Elements(body)
+                    }
+                )
+            case .int64:
+                return try compareIntegerElements(
+                    of: vector,
+                    persistedBytes: persistedBytes,
+                    borrowing: { body in
+                        vector.withInt64Elements(body)
+                    }
+                )
+            case .uint8:
+                return try compareIntegerElements(
+                    of: vector,
+                    persistedBytes: persistedBytes,
+                    borrowing: { body in
+                        vector.withUInt8Elements(body)
+                    }
+                )
+            case .uint16:
+                return try compareIntegerElements(
+                    of: vector,
+                    persistedBytes: persistedBytes,
+                    borrowing: { body in
+                        vector.withUInt16Elements(body)
+                    }
+                )
+            case .uint32:
+                return try compareIntegerElements(
+                    of: vector,
+                    persistedBytes: persistedBytes,
+                    borrowing: { body in
+                        vector.withUInt32Elements(body)
+                    }
+                )
+            case .uint64:
+                return try compareIntegerElements(
+                    of: vector,
+                    persistedBytes: persistedBytes,
+                    borrowing: { body in
+                        vector.withUInt64Elements(body)
+                    }
+                )
+            case .float32:
+                return try compareFloatingElements(
+                    of: vector,
+                    persistedBytes: persistedBytes,
+                    borrowing: { body in
+                        vector.withFloat32Elements(body)
+                    }
+                )
+            case .float64:
+                return try compareFloatingElements(
+                    of: vector,
+                    persistedBytes: persistedBytes,
+                    borrowing: { body in
+                        vector.withFloat64Elements(body)
+                    }
+                )
+            }
+        }
+    }
+
+    private static func canonicalFieldValue(
+        from fieldValues: [any TupleElement]
+    ) throws(VectorIndexError) -> FieldValue {
+        guard fieldValues.count == 1, let element = fieldValues.first else {
+            throw .invalidStructure(
+                "A vector index expression must produce exactly one field value"
+            )
+        }
+
+        if let canonical = element as? CanonicalFieldValueTupleElement {
+            // DataAccess creates this retained element for model fields. Read
+            // its prepared value directly so indexing does not encode and then
+            // decode a large vector merely to cross the TupleElement API.
+            return canonical.prepared.value
+        }
+        do {
+            return try FieldValue(tupleElement: element)
+        } catch {
+            throw .invalidStructure(
+                "The vector index expression did not produce a canonical field value: \(error)"
+            )
+        }
+    }
+
+    private static func compareIntegerElements<Element>(
+        of vector: Vector,
+        persistedBytes: UnsafeRawBufferPointer,
+        borrowing: (((UnsafeBufferPointer<Element>) -> Void) -> Void?)
+    ) throws(VectorIndexError) -> Bool where Element: BinaryInteger {
+        var comparison: Result<Bool, VectorIndexError>?
+        guard borrowing({ elements in
+            comparison = Result {
+                () throws(VectorIndexError) -> Bool in
+                try integerElementsMatch(
+                    elements,
+                    persistedBytes: persistedBytes
+                )
+            }
+        }) != nil, let comparison else {
+            throw inconsistentStorage(for: vector)
+        }
+        return try comparison.get()
+    }
+
+    private static func compareFloatingElements<Element>(
+        of vector: Vector,
+        persistedBytes: UnsafeRawBufferPointer,
+        borrowing: (((UnsafeBufferPointer<Element>) -> Void) -> Void?)
+    ) throws(VectorIndexError) -> Bool where Element: BinaryFloatingPoint {
+        var comparison: Result<Bool, VectorIndexError>?
+        guard borrowing({ elements in
+            comparison = Result {
+                () throws(VectorIndexError) -> Bool in
+                try floatingElementsMatch(
+                    elements,
+                    persistedBytes: persistedBytes
+                )
+            }
+        }) != nil, let comparison else {
+            throw inconsistentStorage(for: vector)
+        }
+        return try comparison.get()
+    }
+
+    private static func integerElementsMatch<Element>(
+        _ elements: UnsafeBufferPointer<Element>,
+        persistedBytes: UnsafeRawBufferPointer
+    ) throws(VectorIndexError) -> Bool where Element: BinaryInteger {
+        for index in elements.indices {
+            let expected = try PersistedVectorView.element(
+                at: index,
+                in: persistedBytes
+            )
+            guard Float(elements[index]).bitPattern == expected.bitPattern else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func floatingElementsMatch<Element>(
+        _ elements: UnsafeBufferPointer<Element>,
+        persistedBytes: UnsafeRawBufferPointer
+    ) throws(VectorIndexError) -> Bool where Element: BinaryFloatingPoint {
+        for index in elements.indices {
+            let converted = Float(elements[index])
+            guard converted.isFinite else {
+                throw .invalidArgument(
+                    "A vector element exceeds the finite Float32 range"
+                )
+            }
+            let expected = try PersistedVectorView.element(
+                at: index,
+                in: persistedBytes
+            )
+            guard converted.bitPattern == expected.bitPattern else {
+                return false
+            }
+        }
+        return true
     }
 
     static func float32Vector(from vector: Vector) throws -> Vector {

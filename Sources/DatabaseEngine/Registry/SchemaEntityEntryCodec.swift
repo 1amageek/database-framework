@@ -7,7 +7,7 @@ import StorageKit
 /// This is an engine storage format, not the client/server wire protocol.
 enum SchemaEntityEntryCodec {
     private static let magic: UInt32 = 0x4353_4244
-    private static let version: UInt16 = 3
+    private static let version: UInt16 = 4
 
     static func encode(
         _ entity: Schema.Entity,
@@ -166,6 +166,13 @@ enum SchemaEntityEntryCodec {
         writer.writeBool(field.isOptional)
         writer.writeBool(field.isArray)
         try writer.writeOptionalString(field.referenceTargetEntity)
+        writer.writeBool(field.defaultValue != nil)
+        if let defaultValue = field.defaultValue {
+            try writer.writeLengthPrefixed {
+                writer throws(StorageFrameError) in
+                try StorageValueEncoder.write(defaultValue, into: &writer)
+            }
+        }
     }
 
     static func write(
@@ -691,13 +698,26 @@ enum SchemaEntityEntryCodec {
                 value: rawType
             )
         }
+        let isOptional = try reader.readBool()
+        let isArray = try reader.readBool()
+        let referenceTargetEntity = try reader.readOptionalString()
+        let defaultValue: FieldValue?
+        if try reader.readBool() {
+            defaultValue = try reader.readLengthPrefixed {
+                reader throws(StorageFrameError) in
+                try StorageValueDecoder.read(from: &reader)
+            }
+        } else {
+            defaultValue = Optional<FieldValue>.none
+        }
         return FieldSchema(
             name: name,
             fieldNumber: number,
             type: type,
-            isOptional: try reader.readBool(),
-            isArray: try reader.readBool(),
-            referenceTargetEntity: try reader.readOptionalString()
+            isOptional: isOptional,
+            isArray: isArray,
+            referenceTargetEntity: referenceTargetEntity,
+            defaultValue: defaultValue
         )
     }
 

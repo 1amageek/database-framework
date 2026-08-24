@@ -5,6 +5,16 @@ import DatabaseKit
 package struct DatabaseFieldReadAuthorizationPlan: Sendable {
     package let fieldsByEntity: [String: Set<String>]
 
+    package func merging(
+        _ other: DatabaseFieldReadAuthorizationPlan
+    ) -> DatabaseFieldReadAuthorizationPlan {
+        var merged = fieldsByEntity
+        for (entity, fields) in other.fieldsByEntity {
+            merged[entity, default: []].formUnion(fields)
+        }
+        return DatabaseFieldReadAuthorizationPlan(fieldsByEntity: merged)
+    }
+
     package static func make(
         query: SelectQuery,
         schema: Schema

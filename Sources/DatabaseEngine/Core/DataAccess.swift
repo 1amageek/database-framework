@@ -120,6 +120,20 @@ public struct DataAccess: Sendable {
         from model: PersistedModel,
         keyPath: String
     ) throws -> [any TupleElement] {
+        let value = try extractFieldValue(from: model, keyPath: keyPath)
+        if case .array(let values) = value {
+            return try FieldValue.toTupleElements(values)
+        }
+        return [try value.toTupleElement()]
+    }
+
+    /// Returns the canonical primitive value without crossing the tuple
+    /// adaptation boundary. Execution paths that consume FieldValue semantics
+    /// use this to avoid an intermediate existential array.
+    package static func extractFieldValue(
+        from model: PersistedModel,
+        keyPath: String
+    ) throws -> FieldValue {
         let components = keyPath.split(
             separator: ".",
             omittingEmptySubsequences: false
@@ -143,10 +157,7 @@ public struct DataAccess: Sendable {
             }
             value = nested
         }
-        if case .array(let values) = value {
-            return try FieldValue.toTupleElements(values)
-        }
-        return [try value.toTupleElement()]
+        return value
     }
 
     /// Resolve an item's canonical persistence identifier.

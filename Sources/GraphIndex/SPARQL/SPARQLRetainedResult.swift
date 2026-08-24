@@ -46,8 +46,7 @@ package struct SPARQLRetainedResult: Sendable {
         var values = try DatabaseRetainedArrayBuilder<FieldValue>(
             workMeter: workMeter,
             stage: .expressionEvaluation,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: FieldValue.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(FieldValue.self),
             expectedCount: count
         )
         for index in 0..<count {

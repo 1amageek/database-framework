@@ -138,7 +138,7 @@ struct DatabaseWorkMeterTests {
         let meter = makeWorkMeter(
             budget: ExecutionBudget(
                 maximumRows: 1,
-                maximumWorkUnits: 1,
+                maximumWorkUnits: 16,
                 maximumIntermediateRows: 1,
                 maximumIntermediateBytes: 0,
                 timeoutMilliseconds: 30_000

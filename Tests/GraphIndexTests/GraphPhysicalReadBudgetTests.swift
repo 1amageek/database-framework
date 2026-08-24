@@ -512,6 +512,10 @@ struct GraphPhysicalReadBudgetTests {
             underlying.capabilities
         }
 
+        var transactionDomain: StorageTransactionDomain {
+            underlying.transactionDomain
+        }
+
         func getValue(for key: ByteString, snapshot: Bool) async throws -> ByteString? {
             try await underlying.getValue(for: key, snapshot: snapshot)
         }

@@ -22,7 +22,7 @@ public enum EntityReferenceEncoder {
 
         for component in Model.directoryPathComponents {
             guard case .dynamicField(let name) = component else { continue }
-            guard let schema = Model.fieldSchemas.first(where: { $0.name == name }),
+            guard let schema = try Model.fieldSchemas.first(where: { $0.name == name }),
                   schema.fieldNumber > 0 else {
                 throw EntityReferenceEncodingError.invalidCompiledSchema(
                     entity: Model.persistableType,

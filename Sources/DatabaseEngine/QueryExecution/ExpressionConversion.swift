@@ -201,10 +201,10 @@ extension Expression {
 
 private extension Persistable {
     static func persistedFieldIdentity(named name: String) -> FieldIdentity? {
-        for schema in fieldSchemas where schema.name == name && schema.fieldNumber > 0 {
-            return FieldIdentity(name: schema.name, number: schema.fieldNumber)
+        guard let number = fieldNumber(for: name), number > 0 else {
+            return nil
         }
-        return nil
+        return FieldIdentity(name: name, number: number)
     }
 }
 

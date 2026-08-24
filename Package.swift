@@ -100,20 +100,20 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-types.git",
-            from: "26.0730.0"
+            revision: "d075edcb37f8a7be845c5be4d6a7a226d899505b"
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0819.0",
+            revision: "cca9c9da970c7cbf2d41e8f7471632df0aa92ff2",
             traits: databaseKitTraits
         ),
         .package(
             url: "https://github.com/1amageek/swift-hnsw.git",
-            from: "1.1.4"
+            revision: "499948ca5037ccac8e7126525f4be359c4d42697"
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            revision: "00d4c48e824f1055e02f51ebdffe5b8dc42645d3"
+            revision: "3b7ef845b315fcb5d858bbe4d1ca36d5ab9c080e"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
@@ -848,6 +848,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 "DatabaseRuntime",
+                "FullTextIndex",
                 "ScalarIndex",
                 "GraphIndex",
                 "TestSupport",

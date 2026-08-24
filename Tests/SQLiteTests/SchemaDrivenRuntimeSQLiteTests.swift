@@ -264,27 +264,19 @@ struct SchemaDrivenRuntimeSQLiteTests {
         )
     }
 
-    @Test("Schema-driven adaptation rejects invalid canonical values")
-    func invalidCanonicalValuesAreRejected() throws {
+    @Test("Schema-driven adaptation applies defaults and rejects invalid canonical values")
+    func defaultsAreAppliedAndInvalidCanonicalValuesAreRejected() throws {
         let entity = try SchemaDrivenRuntimeAccount.schemaEntity
         let runtime = EntityRuntimeDefinition(schemaDriven: entity)
             .registration()
 
-        do {
-            _ = try runtime.persistedModel(
-                from: try FieldObject([
-                    (key: "id", value: .string("missing-age")),
-                    (key: "email", value: .string("person@example.com")),
-                ])
-            )
-            Issue.record("Expected a missing required field failure")
-        } catch SchemaDrivenEntityRuntimeError.missingRequiredField(
-            let entityName,
-            let field
-        ) {
-            #expect(entityName == SchemaDrivenRuntimeAccount.persistableType)
-            #expect(field == "age")
-        }
+        let defaulted = try runtime.persistedModel(
+            from: try FieldObject([
+                (key: "id", value: .string("missing-age")),
+                (key: "email", value: .string("person@example.com")),
+            ])
+        )
+        #expect(defaulted.value(forFieldNamed: "age") == .int64(0))
 
         do {
             _ = try runtime.persistedModel(

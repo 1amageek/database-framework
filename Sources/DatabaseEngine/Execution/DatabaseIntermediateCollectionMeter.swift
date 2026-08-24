@@ -8,31 +8,6 @@ import StorageKit
 /// Before the consumer allocates a second representation it uses this meter to
 /// keep the returned owner charged for the complete overlap lifetime.
 package enum DatabaseIntermediateCollectionMeter {
-    package static func reservePersistedModels(
-        _ models: [PersistedModel?],
-        workMeter: DatabaseWorkMeter,
-        stage: DatabaseWorkStage
-    ) throws -> DatabaseIntermediateReservation {
-        var footprint = try arrayFootprint(
-            count: models.count,
-            element: PersistedModel?.self
-        )
-        for model in models {
-            guard let model else { continue }
-            footprint = try footprint.adding(
-                CanonicalRelationalFootprintMeter.footprint(
-                    of: try QueryRowCodec.encode(model),
-                    workMeter: workMeter
-                )
-            )
-        }
-        return try workMeter.reserveIntermediate(
-            rows: UInt64(models.count),
-            bytes: footprint.bytes,
-            at: stage
-        )
-    }
-
     package static func reservePolymorphicEntities(
         _ entities: [PolymorphicEntity?],
         workMeter: DatabaseWorkMeter,

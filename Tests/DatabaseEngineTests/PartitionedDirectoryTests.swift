@@ -43,7 +43,7 @@ struct PartitionedDirectoryTests {
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            var order = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
+            var order = TenantOrder.fixture(tenantID: tenantID, status: "pending", total: 100.0)
             order.id = orderID
 
             try context.insert(order)
@@ -72,10 +72,10 @@ struct PartitionedDirectoryTests {
             let order1ID = uniqueID("order1")
             let order2ID = uniqueID("order2")
 
-            var order1 = TenantOrder(tenantID: tenant1, status: "completed", total: 50.0)
+            var order1 = TenantOrder.fixture(tenantID: tenant1, status: "completed", total: 50.0)
             order1.id = order1ID
 
-            var order2 = TenantOrder(tenantID: tenant2, status: "pending", total: 75.0)
+            var order2 = TenantOrder.fixture(tenantID: tenant2, status: "pending", total: 75.0)
             order2.id = order2ID
 
             try context.insert(order1)
@@ -125,7 +125,7 @@ struct PartitionedDirectoryTests {
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            var order = TenantOrder(tenantID: tenantID, status: "shipped", total: 200.0)
+            var order = TenantOrder.fixture(tenantID: tenantID, status: "shipped", total: 200.0)
             order.id = orderID
             try context.insert(order)
             try await context.save()
@@ -149,10 +149,10 @@ struct PartitionedDirectoryTests {
             let order1ID = uniqueID("order1")
             let order2ID = uniqueID("order2")
 
-            var order1 = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
+            var order1 = TenantOrder.fixture(tenantID: tenantID, status: "pending", total: 100.0)
             order1.id = order1ID
 
-            var order2 = TenantOrder(tenantID: tenantID, status: "completed", total: 150.0)
+            var order2 = TenantOrder.fixture(tenantID: tenantID, status: "completed", total: 150.0)
             order2.id = order2ID
 
             try context.insert(order1)
@@ -181,7 +181,7 @@ struct PartitionedDirectoryTests {
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            var order = TenantOrder(tenantID: tenantID, status: "pending", total: 50.0)
+            var order = TenantOrder.fixture(tenantID: tenantID, status: "pending", total: 50.0)
             order.id = orderID
             try context.insert(order)
             try await context.save()
@@ -233,10 +233,10 @@ struct PartitionedDirectoryTests {
             let order1ID = uniqueID("order1")
             let order2ID = uniqueID("order2")
 
-            var order1 = TenantOrder(tenantID: tenant1, status: "pending", total: 100.0)
+            var order1 = TenantOrder.fixture(tenantID: tenant1, status: "pending", total: 100.0)
             order1.id = order1ID
 
-            var order2 = TenantOrder(tenantID: tenant2, status: "pending", total: 200.0)
+            var order2 = TenantOrder.fixture(tenantID: tenant2, status: "pending", total: 200.0)
             order2.id = order2ID
 
             try context.insert(order1)
@@ -284,7 +284,7 @@ struct PartitionedDirectoryTests {
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            var order = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
+            var order = TenantOrder.fixture(tenantID: tenantID, status: "pending", total: 100.0)
             order.id = orderID
             try context.insert(order)
             try await context.save()
@@ -308,7 +308,7 @@ struct PartitionedDirectoryTests {
             let context = container.testBaseContext()
 
             let playerID = uniqueID("player")
-            var player = Player(name: "Test Player", score: 100, level: 5)
+            var player = Player.fixture(name: "Test Player", score: 100, level: 5)
             player.id = playerID
 
             try context.insert(player)
@@ -331,7 +331,7 @@ struct PartitionedDirectoryTests {
             let context = container.testBaseContext()
 
             let playerID = uniqueID("player")
-            var player = Player(name: "Delete Test", score: 50, level: 1)
+            var player = Player.fixture(name: "Delete Test", score: 50, level: 1)
             player.id = playerID
 
             try context.insert(player)
@@ -365,7 +365,7 @@ struct PartitionedDirectoryTests {
             let tenantID = uniqueID("tenant")
             let orderID = uniqueID("order")
 
-            var order = TenantOrder(tenantID: tenantID, status: "processing", total: 150.0)
+            var order = TenantOrder.fixture(tenantID: tenantID, status: "processing", total: 150.0)
             order.id = orderID
 
             try context.insert(order)
@@ -392,7 +392,7 @@ struct PartitionedDirectoryTests {
             let orderID = uniqueID("order")
 
             try await container.testBaseContext().withTransaction { transaction in
-                var order = TenantOrder(tenantID: tenantID, status: "tx-test", total: 500.0)
+                var order = TenantOrder.fixture(tenantID: tenantID, status: "tx-test", total: 500.0)
                 order.id = orderID
 
                 try await transaction.save(order, precondition: .notExists)

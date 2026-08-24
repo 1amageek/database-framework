@@ -72,6 +72,7 @@ struct PQIndexReader: Sendable {
             return try await exactSearch(
                 queryVector: queryVector,
                 k: k,
+                expectedVectorCount: metadata.vectorCount,
                 transaction: transaction,
                 workMeter: workMeter
             )
@@ -86,6 +87,10 @@ struct PQIndexReader: Sendable {
             centroidCount: parameters.ksub,
             codebooks: codebooks
         )
+        try workMeter?.consume(
+            pqEncodingWorkUnits(),
+            at: .indexScan
+        )
         let distanceTable = try quantizer.distanceTable(
             for: queryVector,
             metric: metric
@@ -97,6 +102,7 @@ struct PQIndexReader: Sendable {
             comparator: { $0.distance > $1.distance }
         )
         let codesSubspace = subspace.subspace(PQIndexStorageKey.codes.rawValue)
+        let vectorsSubspace = subspace.subspace(PQIndexStorageKey.vectors.rawValue)
         let (begin, end) = codesSubspace.range()
         var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(begin),
@@ -106,6 +112,7 @@ struct PQIndexReader: Sendable {
             snapshot: true,
             streamingMode: .iterator
         )
+        var scannedCodeCount = 0
 
         try await cursor.consume { key, code in
             try workMeter?.consume(at: .indexScan)
@@ -118,14 +125,38 @@ struct PQIndexReader: Sendable {
             guard code.count == parameters.m else {
                 throw VectorIndexError.invalidStructure("Invalid PQ code length")
             }
+            let vectorKey = vectorsSubspace.pack(primaryKey)
+            guard let vectorBytes = try await transaction.getValue(
+                for: vectorKey,
+                snapshot: true
+            ) else {
+                throw VectorIndexError.invalidStructure(
+                    "PQ code has no persisted canonical vector"
+                )
+            }
+            let vector = try VectorConversion.persistedVector(
+                vectorBytes,
+                expectedCount: dimensions
+            )
+            try workMeter?.consume(
+                pqEncodingWorkUnits(),
+                at: .indexScan
+            )
+            scannedCodeCount += 1
             nearest.insert(
                 (
                     primaryKey: try primaryKey.elements(),
-                    distance: try quantizer.distance(
+                    distance: try quantizer.validatedDistance(
                         for: code,
+                        vector: vector,
                         using: distanceTable
                     )
                 )
+            )
+        }
+        guard scannedCodeCount == metadata.vectorCount else {
+            throw VectorIndexError.invalidStructure(
+                "PQ metadata vector count disagrees with persisted codes"
             )
         }
 
@@ -161,6 +192,7 @@ struct PQIndexReader: Sendable {
     private func exactSearch(
         queryVector: Vector,
         k: Int,
+        expectedVectorCount: Int,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
@@ -179,6 +211,7 @@ struct PQIndexReader: Sendable {
             heapType: .max,
             comparator: { $0.distance > $1.distance }
         )
+        var scannedVectorCount = 0
         try await cursor.consume { key, value in
             try workMeter?.consume(at: .indexScan)
             let primaryKey: Tuple
@@ -193,6 +226,7 @@ struct PQIndexReader: Sendable {
                 value,
                 expectedCount: dimensions
             )
+            scannedVectorCount += 1
             nearest.insert(
                 (
                     primaryKey: try primaryKey.elements(),
@@ -204,7 +238,18 @@ struct PQIndexReader: Sendable {
                 )
             )
         }
+        guard scannedVectorCount == expectedVectorCount else {
+            throw VectorIndexError.invalidStructure(
+                "PQ metadata vector count disagrees with persisted vectors"
+            )
+        }
         return nearest.sorted()
+    }
+
+    private func pqEncodingWorkUnits() -> UInt64 {
+        let (workUnits, overflow) = UInt64(dimensions)
+            .multipliedReportingOverflow(by: UInt64(parameters.ksub))
+        return overflow ? UInt64.max : workUnits
     }
 
     private func hasStoredVector(

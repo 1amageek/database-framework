@@ -639,8 +639,7 @@ public struct CompositionQueryPlanner: Sendable {
         var rows = try DatabaseRetainedArrayBuilder<DatabaseEngine.QueryRow>(
             workMeter: workMeter,
             stage: .joinCandidate,
-            layout: try CanonicalRelationalFootprintMeter
-                .retainedArrayLayout(for: DatabaseEngine.QueryRow.self)
+            layout: try DatabaseRetainedArrayLayout.forElement(DatabaseEngine.QueryRow.self)
         )
         var cursor = MemberCursor(member: member)
         while let row = try await nextRow(

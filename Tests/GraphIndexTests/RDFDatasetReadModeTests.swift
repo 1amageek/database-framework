@@ -421,6 +421,10 @@ struct RDFDatasetReadModeTests {
             underlying.capabilities
         }
 
+        var transactionDomain: StorageTransactionDomain {
+            underlying.transactionDomain
+        }
+
         func getValue(for key: ByteString, snapshot: Bool) async throws -> ByteString? {
             observations.recordValue(snapshot: snapshot)
             return try await underlying.getValue(for: key, snapshot: snapshot)

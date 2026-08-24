@@ -435,7 +435,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         indexSubspace: Subspace,
         transaction: any TransactionAccess
     ) async throws -> [Tuple] {
-        let termsSubspace = indexSubspace.subspace("terms")
+        let termsSubspace = FullTextStorageLayout.terms(in: indexSubspace)
 
         let termGroups = normalizeQueryTermGroups(
             terms,

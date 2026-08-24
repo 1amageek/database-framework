@@ -3,11 +3,27 @@ enum FullTextTextUtilities {
         character.isLetter || character.isNumber
     }
 
-    static func tokenSlices(in value: String) -> [Substring] {
-        value.split(
-            omittingEmptySubsequences: true,
-            whereSeparator: { !isTokenCharacter($0) }
-        )
+    static func forEachTokenSlice<Failure: Error>(
+        in value: String,
+        _ body: (Substring) throws(Failure) -> Void
+    ) throws(Failure) {
+        var tokenStart: String.Index?
+        var cursor = value.startIndex
+        while cursor < value.endIndex {
+            let next = value.index(after: cursor)
+            if isTokenCharacter(value[cursor]) {
+                if tokenStart == nil {
+                    tokenStart = cursor
+                }
+            } else if let start = tokenStart {
+                try body(value[start..<cursor])
+                tokenStart = nil
+            }
+            cursor = next
+        }
+        if let tokenStart {
+            try body(value[tokenStart..<value.endIndex])
+        }
     }
 
     static func trimmingWhitespace(_ value: String) -> Substring {

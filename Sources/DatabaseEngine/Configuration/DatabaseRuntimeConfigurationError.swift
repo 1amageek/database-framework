@@ -7,7 +7,7 @@ public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
     case duplicateIndexMaintainerProvider(IndexType)
     case duplicateIndexReadExecutor(IndexType)
     case duplicatePolymorphicIndexReadExecutor(IndexType)
-    case duplicateFusionReadExecutor(String)
+    case duplicateFusionReadExecutor(IndexType)
     case duplicatePersistableMutationMaintainer(identifier: String)
     case duplicatePersistableType(entityName: String)
     case duplicateAuthorizationPolicy(entityName: String)

@@ -18,7 +18,8 @@ struct SchemaEntityEntryCodecRankTests {
                 FieldSchema(
                     name: "score",
                     fieldNumber: 2,
-                    type: .int64
+                    type: .int64,
+                    defaultValue: .int64(0)
                 ),
             ],
             polymorphicMembership: PolymorphicMembership(
@@ -38,6 +39,8 @@ struct SchemaEntityEntryCodecRankTests {
         let decoded = try SchemaEntityEntryCodec.decode(encoded)
 
         #expect(decoded == entity)
+        #expect(decoded.fields[0].defaultValue == nil)
+        #expect(decoded.fields[1].defaultValue == .int64(0))
         #expect(
             decoded.polymorphicMembership?.indexes.first?.definition == .rank(score: "score")
         )

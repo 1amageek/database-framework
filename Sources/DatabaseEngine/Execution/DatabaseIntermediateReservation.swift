@@ -48,7 +48,7 @@ public final class DatabaseIntermediateReservation: Sendable {
     /// Child ownership is intentionally independent from this token. It is
     /// used when a new owner must be admitted before an existing unique owner
     /// is consumed, while still allowing either lifetime to end first.
-    func reserveChild(
+    package func reserveChild(
         rows: UInt64 = 0,
         bytes: UInt64 = 0,
         at stage: DatabaseWorkStage
@@ -65,7 +65,7 @@ public final class DatabaseIntermediateReservation: Sendable {
     ///
     /// The lock order is always retained owner followed by admission child.
     /// No framework path acquires these two reservation locks in reverse.
-    func absorbGuaranteedPartial(
+    package func absorbGuaranteedPartial(
         from child: DatabaseIntermediateReservation,
         rows: UInt64 = 0,
         bytes: UInt64 = 0
@@ -132,7 +132,7 @@ public final class DatabaseIntermediateReservation: Sendable {
 
     /// Rolls back an internal claim whose existence is guaranteed by linear
     /// ownership. Violations indicate a framework implementation defect.
-    func releaseGuaranteedPartial(
+    package func releaseGuaranteedPartial(
         rows: UInt64 = 0,
         bytes: UInt64 = 0
     ) {

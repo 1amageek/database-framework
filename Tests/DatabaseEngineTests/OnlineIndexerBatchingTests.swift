@@ -181,7 +181,7 @@ struct OnlineIndexerBatchingTests {
         let index = try PlayerIdentifierIndexDefinition.make(name: "single_idx")
         let ctx = try await BatchingIndexingContext(index: index)
 
-        var player = Player(name: "Only One", score: 100, level: 1)
+        var player = Player.fixture(name: "Only One", score: 100, level: 1)
         player.id = "single"
         try await ctx.insertPlayers([player])
 

@@ -4,6 +4,7 @@ import DatabaseKit
 import DatabaseTypes
 import StorageKit
 import Synchronization
+import TestSupport
 @testable import VectorIndex
 
 @Suite("Vector Conversion")
@@ -349,8 +350,8 @@ struct VectorConversionTests {
         #expect(candidateOwner.borrowCount - candidateBorrowsBeforeSearch == 1)
     }
 
-    @Test("PQ reader borrows codebook and compressed code payloads once")
-    func pqReaderBorrowsPersistedPayloadsOnce() async throws {
+    @Test("PQ validation keeps code and vector payloads borrowed")
+    func pqValidationKeepsPersistedPayloadsBorrowed() async throws {
         let database = InMemoryEngine()
         let subspace = Subspace(prefix: Tuple("zero-copy", "pq").pack())
         var codebookValues = [Float](repeating: 0, count: 256 * 2)
@@ -359,10 +360,16 @@ struct VectorConversionTests {
             bytes: VectorConversion.floatArrayToBytes(codebookValues).copyBytes()
         )
         let codeOwner = BorrowCountingVectorBytesOwner(bytes: [0])
+        let vectorOwner = BorrowCountingVectorBytesOwner(
+            bytes: VectorConversion.floatArrayToBytes([1, 0]).copyBytes()
+        )
         let codebookSubspace = subspace.subspace(
             PQIndexStorageKey.codebooks.rawValue
         )
         let codesSubspace = subspace.subspace(PQIndexStorageKey.codes.rawValue)
+        let vectorsSubspace = subspace.subspace(
+            PQIndexStorageKey.vectors.rawValue
+        )
         let metadataKey = subspace.pack(
             Tuple([PQIndexStorageKey.metadata.rawValue])
         )
@@ -383,9 +390,14 @@ struct VectorConversionTests {
                 ByteString(retaining: codeOwner),
                 for: codesSubspace.pack(Tuple("item"))
             )
+            try transaction.setValue(
+                ByteString(retaining: vectorOwner),
+                for: vectorsSubspace.pack(Tuple("item"))
+            )
         }
         let codebookBorrowsBeforeSearch = codebookOwner.borrowCount
         let codeBorrowsBeforeSearch = codeOwner.borrowCount
+        let vectorBorrowsBeforeSearch = vectorOwner.borrowCount
 
         let reader = try PQIndexReader(
             subspace: subspace,
@@ -402,8 +414,77 @@ struct VectorConversionTests {
         }
 
         #expect(results.count == 1)
-        #expect(codebookOwner.borrowCount - codebookBorrowsBeforeSearch == 1)
+        #expect(codebookOwner.borrowCount - codebookBorrowsBeforeSearch == 2)
         #expect(codeOwner.borrowCount - codeBorrowsBeforeSearch == 1)
+        #expect(vectorOwner.borrowCount - vectorBorrowsBeforeSearch == 1)
+    }
+
+    @Test("Canonical entity validation borrows persisted vector storage")
+    func canonicalEntityValidationBorrowsPersistedVectorStorage() async throws {
+        let database = InMemoryEngine()
+        let subspace = Subspace(
+            prefix: Tuple("zero-copy", "canonical-vector").pack()
+        )
+        let label: UInt64 = 0
+        let vectorOwner = BorrowCountingVectorBytesOwner(
+            bytes: VectorConversion.floatArrayToBytes([1, 0]).copyBytes()
+        )
+        try await database.withTransaction { transaction in
+            try transaction.setValue(
+                HNSWLabelCodec.tuple(label).pack(),
+                for: subspace.subspace("l").pack(Tuple("item"))
+            )
+            try transaction.setValue(
+                ByteString(retaining: vectorOwner),
+                for: subspace.subspace("v").pack(
+                    HNSWLabelCodec.tuple(label)
+                )
+            )
+        }
+        let validator = VectorCanonicalStateValidator(
+            indexSubspace: subspace,
+            fieldName: "embedding",
+            dimensions: 2,
+            algorithm: .hnsw(.default)
+        )
+        let meter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let matching = try PersistedModel(
+            HNSWDocument(
+                id: "item",
+                title: "Matching",
+                embedding: Vector(float32: [1, 0])
+            )
+        )
+        try await database.withTransaction { transaction in
+            try await validator.validate(
+                primaryKey: Tuple("item"),
+                model: matching,
+                transaction: transaction,
+                workMeter: meter
+            )
+        }
+
+        let mismatching = try PersistedModel(
+            HNSWDocument(
+                id: "item",
+                title: "Mismatching",
+                embedding: Vector(float32: [0, 1])
+            )
+        )
+        await #expect(throws: VectorIndexError.self) {
+            try await database.withTransaction { transaction in
+                try await validator.validate(
+                    primaryKey: Tuple("item"),
+                    model: mismatching,
+                    transaction: transaction,
+                    workMeter: meter
+                )
+            }
+        }
+        #expect(vectorOwner.borrowCount == 2)
     }
 }
 
