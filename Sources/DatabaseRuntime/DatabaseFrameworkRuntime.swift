@@ -193,6 +193,9 @@ public enum DatabaseFrameworkRuntime {
         #if DATABASE_RUNTIME_SPATIAL_INDEXES
         executors.append(SpatialFusionIndexReadExecutor())
         #endif
+        #if DATABASE_RUNTIME_VECTOR_INDEXES
+        executors.append(VectorFusionIndexReadExecutor())
+        #endif
         return executors
     }
 

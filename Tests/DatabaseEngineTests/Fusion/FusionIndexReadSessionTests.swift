@@ -44,6 +44,10 @@ struct FusionIndexReadSessionTests {
                     let session = try FusionIndexReadSession(
                         index: ReadableIndex(
                             descriptor: descriptor,
+                            physicalLayout: try IndexPhysicalLayout(
+                                name: "test.fusion-session",
+                                revision: 1
+                            ),
                             subspace: root
                         ),
                         transaction: recording,
@@ -99,6 +103,10 @@ struct FusionIndexReadSessionTests {
                 let session = try FusionIndexReadSession(
                     index: ReadableIndex(
                         descriptor: descriptor,
+                        physicalLayout: try IndexPhysicalLayout(
+                            name: "test.fusion-session",
+                            revision: 1
+                        ),
                         subspace: root
                     ),
                     transaction: recording,
@@ -409,6 +417,10 @@ struct FusionIndexReadSessionTests {
         return try FusionIndexReadSession(
             index: ReadableIndex(
                 descriptor: descriptor,
+                physicalLayout: try IndexPhysicalLayout(
+                    name: "test.fusion-session",
+                    revision: 1
+                ),
                 subspace: Subspace("fusion-session", "scripted")
             ),
             transaction: ScriptedReadTransaction(

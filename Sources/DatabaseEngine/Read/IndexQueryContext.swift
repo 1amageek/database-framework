@@ -170,6 +170,8 @@ public struct IndexQueryContext: Sendable {
         }
         return ReadableIndex(
             descriptor: descriptor,
+            physicalLayout: try context.container
+                .executionIndexPhysicalLayout(named: descriptor.name),
             subspace: subspace
         )
     }
@@ -209,6 +211,8 @@ public struct IndexQueryContext: Sendable {
         }
         return ReadableIndex(
             descriptor: descriptor,
+            physicalLayout: try context.container
+                .executionIndexPhysicalLayout(named: descriptor.name),
             subspace: subspace
         )
     }

@@ -325,6 +325,10 @@ struct FusionExecutionContractTests {
             let session = try FusionIndexReadSession(
                 index: ReadableIndex(
                     descriptor: descriptor,
+                    physicalLayout: try IndexPhysicalLayout(
+                        name: "test.fusion-contract",
+                        revision: 1
+                    ),
                     subspace: indexSubspace
                 ),
                 transaction: transaction,
