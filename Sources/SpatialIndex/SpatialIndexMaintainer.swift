@@ -18,7 +18,7 @@ import StorageKit
 /// **Index Structure**:
 /// ```
 /// Key: [indexSubspace][spatialCode][primaryKey]
-/// Value: '' (empty)
+/// Value: SpatialIndexValueCodec(exact geographic point or position)
 /// ```
 ///
 /// **Usage**:
@@ -58,15 +58,17 @@ public struct SpatialIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
         transaction: any TransactionAccess
     ) async throws {
         if let oldItem = oldItem {
-            if let oldKey = try buildIndexKey(for: oldItem) {
-                try transaction.clear(key: oldKey)
+            if let oldEntry = try buildIndexEntryComponents(for: oldItem) {
+                try transaction.clear(key: oldEntry.key)
             }
         }
 
         if let newItem = newItem {
-            if let newKey = try buildIndexKey(for: newItem) {
-                let value = try CoveringValueBuilder.build(for: newItem, index: index)
-                try transaction.setValue(value, for: newKey)
+            if let newEntry = try buildIndexEntryComponents(for: newItem) {
+                try transaction.setValue(
+                    SpatialIndexValueCodec.encode(newEntry.coordinate),
+                    for: newEntry.key
+                )
             }
         }
     }
@@ -76,9 +78,11 @@ public struct SpatialIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
         id: Tuple,
         transaction: any TransactionAccess
     ) async throws {
-        if let indexKey = try buildIndexKey(for: item, id: id) {
-            let value = try CoveringValueBuilder.build(for: item, index: index)
-            try transaction.setValue(value, for: indexKey)
+        if let entry = try buildIndexEntryComponents(for: item, id: id) {
+            try transaction.setValue(
+                SpatialIndexValueCodec.encode(entry.coordinate),
+                for: entry.key
+            )
         }
     }
 
@@ -87,8 +91,8 @@ public struct SpatialIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
         for item: Item,
         id: Tuple
     ) async throws -> [ByteString] {
-        if let key = try buildIndexKey(for: item, id: id) {
-            return [key]
+        if let entry = try buildIndexEntryComponents(for: item, id: id) {
+            return [entry.key]
         }
         return []
     }
@@ -191,7 +195,13 @@ public struct SpatialIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
     /// **Sparse index behavior**:
     /// If the coordinate field is nil, returns nil (no index entry).
     ///
-    private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> ByteString? {
+    private func buildIndexEntryComponents(
+        for item: Item,
+        id: Tuple? = nil
+    ) throws -> (
+        key: ByteString,
+        coordinate: SpatialIndexStoredCoordinate
+    )? {
         guard let expression = index.rootExpression as? FieldKeyExpression else {
             throw SpatialIndexMaintenanceError.invalidFieldExpression(
                 indexName: index.name
@@ -223,7 +233,15 @@ public struct SpatialIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
             )
         }
 
-        let spatialCode = encodeSpatialCode(point: point, height: height)
+        let coordinate = SpatialIndexStoredCoordinate(
+            point: point,
+            height: height
+        )
+        let spatialCode = SpatialCodeEncoder.encode(
+            coordinate,
+            encoding: encoding,
+            level: level
+        )
 
         // Extract primary key
         let primaryKeyTuple: Tuple
@@ -240,41 +258,9 @@ public struct SpatialIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
             }
         }
 
-        return try packAndValidate(Tuple(allElements))
-    }
-
-    private func encodeSpatialCode(
-        point: GeographicPoint,
-        height: Double?
-    ) -> UInt64 {
-        switch encoding {
-        case .s2:
-            return S2Geometry.encode(
-                latitude: point.latitude,
-                longitude: point.longitude,
-                level: level
-            )
-
-        case .morton:
-            let x = MortonCode.normalize(
-                point.longitude,
-                min: -180,
-                max: 180
-            )
-            let y = MortonCode.normalize(
-                point.latitude,
-                min: -90,
-                max: 90
-            )
-            if let height {
-                let z = MortonCode.normalize(
-                    height,
-                    min: -1000,
-                    max: 10000
-                )
-                return MortonCode.encode3D(x: x, y: y, z: z, level: level)
-            }
-            return MortonCode.encode2D(x: x, y: y, level: level)
-        }
+        return (
+            key: try packAndValidate(Tuple(allElements)),
+            coordinate: coordinate
+        )
     }
 }

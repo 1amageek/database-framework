@@ -190,6 +190,9 @@ public enum DatabaseFrameworkRuntime {
         #if DATABASE_RUNTIME_LEADERBOARD_INDEXES
         executors.append(LeaderboardFusionIndexReadExecutor())
         #endif
+        #if DATABASE_RUNTIME_SPATIAL_INDEXES
+        executors.append(SpatialFusionIndexReadExecutor())
+        #endif
         return executors
     }
 

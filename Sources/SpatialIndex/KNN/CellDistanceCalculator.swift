@@ -175,9 +175,10 @@ public struct CellDistanceCalculator: Sendable {
         let a = halfLatitudeSine * halfLatitudeSine +
                 DatabaseMath.cosine(lat1) * DatabaseMath.cosine(lat2) *
                 halfLongitudeSine * halfLongitudeSine
+        let clampedA = min(1, max(0, a))
         let c = 2 * DatabaseMath.arcTangent(
-            y: DatabaseMath.squareRoot(a),
-            x: DatabaseMath.squareRoot(1 - a)
+            y: DatabaseMath.squareRoot(clampedA),
+            x: DatabaseMath.squareRoot(1 - clampedA)
         )
 
         return earthRadiusMeters * c
