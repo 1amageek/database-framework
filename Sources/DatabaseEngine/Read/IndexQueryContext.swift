@@ -11,8 +11,9 @@ import StorageKit
 /// Each index module is responsible for its own search logic.
 ///
 /// **Design Principle**:
-/// - IndexQueryContext provides storage access only
-/// - Ordinary feature readers resolve their schema-admitted index here
+/// - IndexQueryContext owns schema, field-security, and lifecycle admission
+///   for physical index reads
+/// - Feature modules own query semantics and consume only admitted indexes
 /// - Canonical Fusion execution uses a narrower revocable read capability
 ///
 /// **Usage** (from index modules):
@@ -154,6 +155,13 @@ public struct IndexQueryContext: Sendable {
             indexType: indexType,
             for: type
         )
+        guard let entity = schema.entitiesByName[T.persistableType] else {
+            throw IndexQueryContextError.entityNotFound(T.persistableType)
+        }
+        try context.authorizeIndexFieldRead(
+            entity: entity,
+            descriptor: descriptor
+        )
         let path: AnyDirectoryPath?
         if let binding = try partitionBinding(for: type) {
             path = try AnyDirectoryPath(binding)
@@ -197,6 +205,10 @@ public struct IndexQueryContext: Sendable {
         guard let entity = schema.entitiesByName[entityName] else {
             throw IndexQueryContextError.entityNotFound(entityName)
         }
+        try context.authorizeIndexFieldRead(
+            entity: entity,
+            descriptor: descriptor
+        )
         let path = try CanonicalPartitionBinding.makeAnyBinding(
             for: entity,
             partitions: partitions

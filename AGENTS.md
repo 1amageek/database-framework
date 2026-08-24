@@ -49,7 +49,7 @@
   service. Scenario actors coordinate suites inside that process; separate
   harness runs never share a service or network.
 - The strict SQLite contracts are 112 tests without `MultiBase` and 115
-  tests with it. The existing `MultiBase` backend contracts are 3,416
+  tests with it. The existing `MultiBase` backend contracts are 3,447
   FoundationDB tests and 68 PostgreSQL tests. PostgreSQL tests require an
   isolated real server.
 - PostgreSQL is addressed as `postgresql:5432` only inside the run network.

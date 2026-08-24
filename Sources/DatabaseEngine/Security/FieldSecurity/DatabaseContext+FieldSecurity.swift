@@ -19,13 +19,19 @@ extension DatabaseContext {
         )
     }
 
-    @_spi(DatabaseExecution)
-    public func authorizeIndexFieldRead(
+    package func authorizeIndexFieldRead(
         entity: Schema.Entity,
         descriptor: IndexDescriptor
     ) throws {
-        try authorizeFieldReads(
-            .index(entity: entity, descriptor: descriptor)
+        let plan = DatabaseFieldReadAuthorizationPlan.index(
+            entity: entity,
+            descriptor: descriptor
         )
+        guard !plan.isCovered(
+            by: RequestFieldAuthorization.fieldsByEntity
+        ) else {
+            return
+        }
+        try authorizeFieldReads(plan)
     }
 }

@@ -15,6 +15,17 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         return DatabaseFieldReadAuthorizationPlan(fieldsByEntity: merged)
     }
 
+    package func isCovered(
+        by authorizedFieldsByEntity: [String: Set<String>]?
+    ) -> Bool {
+        guard let authorizedFieldsByEntity else { return false }
+        return fieldsByEntity.allSatisfy { entity, requiredFields in
+            guard let authorizedFields = authorizedFieldsByEntity[entity]
+            else { return false }
+            return authorizedFields.isSuperset(of: requiredFields)
+        }
+    }
+
     package static func make(
         query: SelectQuery,
         schema: Schema

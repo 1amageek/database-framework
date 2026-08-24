@@ -4,6 +4,39 @@ import Testing
 
 @Suite("Canonical query field authorization scope")
 struct DatabaseFieldReadAuthorizationPlanTests {
+    @Test("Authorization coverage requires every entity and field")
+    func authorizationCoverageRequiresEveryEntityAndField() {
+        let plan = DatabaseFieldReadAuthorizationPlan(
+            fieldsByEntity: [
+                "Parent": ["id", "groupID"],
+                "Child": ["secret"],
+            ]
+        )
+
+        #expect(!plan.isCovered(by: nil))
+        #expect(
+            !plan.isCovered(
+                by: ["Parent": ["id", "groupID"]]
+            )
+        )
+        #expect(
+            !plan.isCovered(
+                by: [
+                    "Parent": ["id"],
+                    "Child": ["secret"],
+                ]
+            )
+        )
+        #expect(
+            plan.isCovered(
+                by: [
+                    "Parent": ["id", "groupID", "token"],
+                    "Child": ["id", "secret"],
+                ]
+            )
+        )
+    }
+
     @Test("Correlated subqueries authorize inner and outer fields in their own scopes")
     func correlatedSubqueryScopes() throws {
         let schema = try makeSchema()
