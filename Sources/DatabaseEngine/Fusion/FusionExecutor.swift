@@ -296,7 +296,8 @@ enum FusionExecutor {
             scoring: input.scoring,
             limit: limit,
             access: session,
-            workMeter: options.workMeter
+            workMeter: options.workMeter,
+            timestamp: context.container.wallClock.now
         )
         let coverage: FusionInputCoverage
         do {

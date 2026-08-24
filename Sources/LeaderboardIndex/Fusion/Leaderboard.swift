@@ -69,7 +69,7 @@ public struct Leaderboard<Item: Persistable>: FusionQueryInput, Sendable {
                     parameters: parameters
                 )
             ),
-            scoring: .annotation(name: "score", order: .higherIsBetter),
+            scoring: .position,
             limit: resultLimit
         )
     }
