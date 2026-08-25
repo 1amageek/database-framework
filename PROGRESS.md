@@ -12,12 +12,12 @@
   - [x] Split feature-minimal and all-feature runtime capability expectations
   - [x] Add exact discovery/count contracts for the resulting lanes
   - [x] Review trait dependency direction and commit the sprint
-- [ ] Sprint 3: Deterministic concurrency and durable atomicity evidence
-  - [ ] Rebuild OnlineIndexer atomicity tests around failure injection and durable reopen
-  - [ ] Rebuild snapshot conflict tests around competing commits
-  - [ ] Rebuild iterator concurrency tests around an overlap barrier
-  - [ ] Rebuild concurrent save tests around a blocked first save and exact error matching
-  - [ ] Review transaction ownership and commit the sprint
+- [x] Sprint 3: Deterministic concurrency and durable atomicity evidence
+  - [x] Rebuild OnlineIndexer atomicity tests around failure injection and durable reopen
+  - [x] Rebuild snapshot conflict tests around competing commits
+  - [x] Rebuild iterator concurrency tests around an overlap barrier
+  - [x] Rebuild concurrent save tests around a blocked first save and exact error matching
+  - [x] Review transaction ownership and commit the sprint
 - [ ] Sprint 4: Canonical graph execution contract
   - [ ] Add failing GRAPH_TABLE semantic, resource, cancellation, and SQL entry tests
   - [ ] Implement one metered retained GRAPH_TABLE execution path for direct and canonical reads

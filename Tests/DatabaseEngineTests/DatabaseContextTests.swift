@@ -47,13 +47,19 @@ struct DatabaseContextFoundationDBTests {
     private func setupContainer() async throws -> DBContainer {
         try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        return try await setupContainer(storageEngine: database)
+    }
+
+    private func setupContainer(
+        storageEngine: any StorageEngine
+    ) async throws -> DBContainer {
 
         // Use try Schema(entities: [try Type.schemaEntity]) to properly register types
         let schema = try Schema(entities: [try ContextUser.schemaEntity, try ContextProduct.schemaEntity], version: Schema.Version(1, 0, 0))
 
         return try await DBContainer.open(
             testing: schema,
-            configuration: .testing(storageEngine: database),
+            configuration: .testing(storageEngine: storageEngine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 executionIdentity: DatabaseExecutionRuntimeIdentity(
                     identifier: "database-tests",
@@ -416,7 +422,15 @@ struct DatabaseContextFoundationDBTests {
 
     @Test("Concurrent saves throw error")
     func concurrentSavesThrowError() async throws {
-        let container = try await setupContainer()
+        let control = StorageTransactionControl()
+        let baseEngine = try await FoundationDBScenarioCoordinator.shared
+            .makeEngine()
+        let container = try await setupContainer(
+            storageEngine: ControlledStorageEngine(
+                base: baseEngine,
+                control: control
+            )
+        )
         // Clean up at START of test
         try await cleanup(container: container)
 
@@ -431,40 +445,23 @@ struct DatabaseContextFoundationDBTests {
             try context.insert(user)
         }
 
-        let save1 = Task {
+        let commitBarrier = control.suspendNextMutatingCommit()
+        let firstSave = Task {
             try await context.save()
         }
+        await commitBarrier.waitUntilEntered()
 
-        let save2 = Task {
+        do {
             try await context.save()
-        }
-
-        var results: [Result<Void, Error>] = []
-
-        do {
-            try await save1.value
-            results.append(.success(()))
+            Issue.record("Expected a concurrent save rejection")
+        } catch let error as DatabaseContextError {
+            #expect(error == .concurrentSaveNotAllowed)
         } catch {
-            results.append(.failure(error))
+            Issue.record("Expected DatabaseContextError, got \(error)")
         }
 
-        do {
-            try await save2.value
-            results.append(.success(()))
-        } catch {
-            results.append(.failure(error))
-        }
-
-        let successes = results.filter { if case .success = $0 { return true } else { return false } }
-        #expect(successes.count >= 1, "At least one save should succeed")
-
-        let failures = results.filter { if case .failure = $0 { return true } else { return false } }
-        for result in failures {
-            if case .failure(let error) = result {
-                #expect(error is DatabaseContextError, "Concurrent save should throw DatabaseContextError")
-            }
-        }
-
+        commitBarrier.release()
+        try await firstSave.value
         #expect(context.hasChanges == false)
     }
 

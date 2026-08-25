@@ -4,6 +4,7 @@
 // Comprehensive tests for Transaction infrastructure
 
 import DatabaseTypes
+import Foundation
 import Testing
 import StorageKit
 import FDBStorage
@@ -147,93 +148,85 @@ struct TransactionComprehensiveTests {
         #expect(results.count == 5)
     }
 
-    @Test("Multiple concurrent iterators")
-    func multipleConcurrentIterators() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
-
-        try await runner.run(configuration: .default) { tx in
-            for i in 0..<20 {
-                try tx.setValue([UInt8(i)], for: [0, 5, UInt8(i)])
-            }
-        }
-
-        let results = try await runner.run(configuration: .default) { tx in
-            let items1 = try await tx.collectRange(
-                from: .firstGreaterOrEqual([0, 5, 0]),
-                to: .firstGreaterOrEqual([0, 5, 7]),
-                snapshot: true
-            )
-            let items2 = try await tx.collectRange(
-                from: .firstGreaterOrEqual([0, 5, 7]),
-                to: .firstGreaterOrEqual([0, 5, 14]),
-                snapshot: true
-            )
-            let items3 = try await tx.collectRange(
-                from: .firstGreaterOrEqual([0, 5, 14]),
-                to: .firstGreaterOrEqual([0, 6]),
-                snapshot: true
-            )
-
-            return (items1.count, items2.count, items3.count)
-        }
-
-        #expect(results.0 > 0)
-        #expect(results.1 > 0)
-        #expect(results.2 > 0)
-    }
-
     // MARK: - Snapshot Tests
 
     @Test("Snapshot read does not conflict")
     func snapshotReadDoesNotConflict() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
-
-        // Setup initial data
-        try await runner.run(configuration: .default) { tx in
-            try tx.setValue([1], for: [0, 6, 1])
-        }
-
-        // Read with snapshot: true (should not add to conflict range)
-        let value = try await runner.run(configuration: .default) { tx in
-            let pairs = try await tx.collectRange(
-                from: .firstGreaterOrEqual([0, 6]),
-                to: .firstGreaterOrEqual([0, 7]),
-                limit: 1,
-                snapshot: true
-            )
-            return pairs.first?.1
-        }
-
-        #expect(value != nil)
+        try await verifyRangeReadConflict(
+            snapshot: true,
+            expectsConflict: false
+        )
     }
 
     @Test("Non-snapshot read adds to conflict range")
     func nonSnapshotReadAddsToConflictRange() async throws {
+        try await verifyRangeReadConflict(
+            snapshot: false,
+            expectsConflict: true
+        )
+    }
+
+    private func verifyRangeReadConflict(
+        snapshot: Bool,
+        expectsConflict: Bool
+    ) async throws {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
+        let subspace = Subspace(
+            prefix: Tuple(
+                "test",
+                "snapshot-conflict",
+                UUID().uuidString
+            ).pack()
+        )
+        let observedKey = subspace.pack(Tuple("observed"))
+        let readerWriteKey = subspace.pack(Tuple("reader-write"))
+        let range = subspace.range()
 
-        // Setup initial data
-        try await runner.run(configuration: .default) { tx in
-            try tx.setValue([1], for: [0, 7, 1])
+        try await database.withTransaction { transaction in
+            try transaction.setValue([0x01], for: observedKey)
         }
 
-        // Read with snapshot: false (adds to conflict range)
-        let value = try await runner.run(configuration: .default) { tx in
-            let pairs = try await tx.collectRange(
-                from: .firstGreaterOrEqual([0, 7]),
-                to: .firstGreaterOrEqual([0, 8]),
-                limit: 1,
-                snapshot: false
+        let reader = try database.createTransaction()
+        var cursor = reader.rangeCursor(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
+            limit: 1,
+            reverse: false,
+            snapshot: snapshot,
+            streamingMode: .iterator
+        )
+        let observed = try await cursor.next()
+        try await cursor.finish()
+        #expect(observed?.0 == observedKey)
+        #expect(observed?.1 == ByteString([0x01]))
+
+        let competingWriter = try database.createTransaction()
+        try competingWriter.setValue([0x02], for: observedKey)
+        try await competingWriter.commit()
+
+        try reader.setValue([0x03], for: readerWriteKey)
+        if expectsConflict {
+            do {
+                try await reader.commit()
+                Issue.record("Expected a serializable range-read conflict")
+            } catch let failure as StorageError {
+                #expect(failure.code == .transactionConflict)
+                #expect(failure.operation == .commit)
+                #expect(failure.backend == .foundationDB)
+            } catch {
+                Issue.record("Expected StorageError, got \(error)")
+            }
+        } else {
+            try await reader.commit()
+        }
+
+        try await database.withTransaction { transaction in
+            try transaction.clearRange(
+                beginKey: range.begin,
+                endKey: range.end
             )
-            return pairs.first?.1
         }
-
-        #expect(value != nil)
     }
 
     // MARK: - Nested getRange Tests

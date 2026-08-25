@@ -38,11 +38,17 @@ struct QueryCursorTests {
     private func setupContainer() async throws -> DBContainer {
         try await FoundationDBScenarioCoordinator.shared.initialize()
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        return try await setupContainer(storageEngine: database)
+    }
+
+    private func setupContainer(
+        storageEngine: any StorageEngine
+    ) async throws -> DBContainer {
 
         let schema = try Schema(entities: [try PaginatedUser.schemaEntity], version: Schema.Version(1, 0, 0))
         return try await DBContainer.open(
             for: schema,
-            configuration: .testing(storageEngine: database),
+            configuration: .testing(storageEngine: storageEngine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 executionIdentity: DatabaseExecutionRuntimeIdentity(
                     identifier: "database-tests",
@@ -416,7 +422,15 @@ struct QueryCursorTests {
     @Test("Concurrent next calls return disjoint pages")
     func concurrentNextCallsAreSerialized() async throws {
         try await FoundationDBScenarioCoordinator.shared.withSerializedAccess {
-            let container = try await setupContainer()
+            let control = StorageTransactionControl()
+            let baseEngine = try await FoundationDBScenarioCoordinator.shared
+                .makeEngine()
+            let container = try await setupContainer(
+                storageEngine: ControlledStorageEngine(
+                    base: baseEngine,
+                    control: control
+                )
+            )
             try await cleanup(container: container)
 
             let context = container.testBaseContext()
@@ -426,11 +440,29 @@ struct QueryCursorTests {
                 .batchSize(5)
                 .build()
 
-            async let first = cursor.next()
-            async let second = cursor.next()
-            let pages = try await [first, second]
+            let firstRangeAdvance = control.suspendNextRangeAdvance()
+            let secondRangeAdvance = control.suspendNextRangeAdvance()
+            let first = Task {
+                try await cursor.next()
+            }
+            await firstRangeAdvance.waitUntilEntered()
+
+            let secondInvocation = StorageOperationBarrier()
+            let second = Task {
+                secondInvocation.signalEntry()
+                return try await cursor.next()
+            }
+            await secondInvocation.waitUntilEntered()
+
+            firstRangeAdvance.release()
+            let firstPage = try await first.value
+            await secondRangeAdvance.waitUntilEntered()
+            secondRangeAdvance.release()
+            let secondPage = try await second.value
+            let pages = [firstPage, secondPage]
             let names = pages.flatMap(\.items).map(\.name)
 
+            #expect(control.maximumSuspendedRangeAdvanceCount == 1)
             #expect(names.count == 10)
             #expect(Set(names).count == 10)
             #expect(Set(names) == Set((0..<10).map {
