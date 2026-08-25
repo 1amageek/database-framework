@@ -1,39 +1,26 @@
 # Progress
 
-- [x] Sprint 1: FoundationDB scenario lifecycle ownership
-  - [x] Define the cancellation and engine lifetime contracts from existing call paths
-  - [x] Add failing focused tests for immediate waiter cancellation and authoritative scenario shutdown
-  - [x] Implement cancellable FIFO waiting without ownership leakage
-  - [x] Make the scenario coordinator own every created engine through shutdown completion
-  - [x] Review lifecycle, cancellation, failure, and nested-scenario paths
-  - [x] Run focused verification and commit the sprint
-- [x] Sprint 2: Trait-independent test graph
-  - [x] Separate backend-independent unit tests from FoundationDB compilation conditions
-  - [x] Split feature-minimal and all-feature runtime capability expectations
-  - [x] Add exact discovery/count contracts for the resulting lanes
-  - [x] Review trait dependency direction and commit the sprint
-- [x] Sprint 3: Deterministic concurrency and durable atomicity evidence
-  - [x] Rebuild OnlineIndexer atomicity tests around failure injection and durable reopen
-  - [x] Rebuild snapshot conflict tests around competing commits
-  - [x] Rebuild iterator concurrency tests around an overlap barrier
-  - [x] Rebuild concurrent save tests around a blocked first save and exact error matching
-  - [x] Review transaction ownership and commit the sprint
-- [x] Sprint 4: Canonical graph execution contract
-  - [x] Add failing GRAPH_TABLE semantic, resource, cancellation, and SQL entry tests
-  - [x] Implement one metered retained GRAPH_TABLE execution path for direct and canonical reads
-  - [x] Reject or execute every declared path and node-label semantic explicitly
-  - [x] Add typed RDF dataset resolution and exact SPARQL function failures
-  - [x] Replace empty SPARQL admission success with a nonempty end-to-end fixture
-  - [x] Review authorization, transaction, resource, and capability boundaries and commit the sprint
-- [ ] Sprint 5: Specialized index public-path evidence
-  - [ ] Add Rank public builder and canonical executor behavior tests
-  - [ ] Add Bitmap public builder and canonical executor behavior tests
-  - [ ] Replace Spatial proxy tests with production polygon, KNN, radius, and bounds tests
-  - [ ] Add Bitmap, Leaderboard, Spatial, and Vector Fusion resource lifecycle tests
-  - [ ] Add required real-backend cursor and value-lifetime coverage
-  - [ ] Review zero-copy and resource ownership and commit the sprint
+- [x] Sprint 1: FoundationDB scenario lifecycle ownership (`3546f4fe`)
+- [x] Sprint 2: Trait-independent test graph (`05e2f1eb`)
+- [x] Sprint 3: Deterministic concurrency and durable atomicity evidence (`426aeee1`)
+- [x] Sprint 4: Canonical graph execution contract (`6e6123c8`)
+- [ ] Sprint 5: Engine-owned read session
+  - [ ] Review transitive admission, descendant draining, schema-generation binding, authorization, snapshot, and cancellation on the production path; fix only violations of this contract
+  - [ ] Run one consolidated standard and `MultiBase` focused suite after the implementation is stable
+  - [ ] Commit the coherent read-session change
+- [ ] Sprint 6: Retained result and byte lifetime ownership
+  - [ ] Keep every escaped Version payload charged for its complete element lifetime
+  - [ ] Review SQL, RDF, polymorphic, and Version allocation, copy, retention, release, cancellation, and failure paths; fix only violations of retained-result ownership
+  - [ ] Run one consolidated lifetime suite after the implementation is stable
+  - [ ] Commit the coherent retained-lifetime change
+- [ ] Sprint 7: Specialized index canonical read contracts
+  - [ ] Compile the specialized-index production and direct test targets
+  - [ ] Review public semantics, authorization, corruption failure, resource ownership, and zero-copy behavior; fix only violations of the specialized-index contract
+  - [ ] Run one consolidated specialized-index suite after the implementation is stable
+  - [ ] Commit the coherent specialized-index change
 - [ ] Integrated verification
-  - [ ] Audit incomplete implementations, conditional synchronization, and dependency direction
-  - [ ] Run the affected focused and package-level test matrix with reviewed counts
-  - [ ] Run final production review and resolve every finding
-  - [ ] Confirm commit history and push the current branch to its configured upstream
+  - [ ] Audit incomplete implementations, conditional synchronization, unsafe ownership, dependency direction, and local path dependencies
+  - [ ] Reconcile intentional test additions in `scripts/docker/versions.env` and `.github/workflows/ci.yml`
+  - [ ] Run each affected GraphIndexes, SQLite, PostgreSQL, FoundationDB, and macOS parity lane once
+  - [ ] Complete the final production review and resolve every finding
+  - [ ] Confirm coherent sprint commits and no task-external unpushed commit, then push the current branch
